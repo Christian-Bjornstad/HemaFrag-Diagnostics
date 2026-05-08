@@ -1,0 +1,288 @@
+import { Button, HorizontalBox, LineEdit, VerticalBox } from "std-widgets.slint";
+
+export component MainWindow inherits Window {
+    in-out property <string> status_text: "HemaFrag Diagnostics desktop is ready for Rust engine runs.";
+    in-out property <string> log_text: "Rust + Slint desktop shell connected to fraggler-core.\n";
+    in-out property <string> analysis_kind: "clonality";
+    in-out property <[string]> input_sources: [];
+    in-out property <string> output_path: "";
+    in-out property <string> last_artifact_path: "";
+    in-out property <string> last_run_summary: "No runs yet.";
+    in-out property <string> active_hint: "Clonality: use .fsa from IGK/KDE/TCRg-style workflows.";
+
+    callback show_contract();
+    callback select_analysis(string);
+    callback run_analysis();
+    callback add_files();
+    callback add_folder();
+    callback remove_source(int);
+    callback browse_output();
+    callback clear_log();
+    callback open_output();
+    callback open_last_artifact();
+    callback open_docs();
+
+    title: "HemaFrag Diagnostics";
+    width: 1200px;
+    height: 900px;
+    background: #ffffff;
+
+    HorizontalLayout {
+        // --- SIDEBAR ---
+        Rectangle {
+            width: 260px;
+            background: #1e293b;
+
+            VerticalLayout {
+                padding: 24px;
+                spacing: 20px;
+
+                Text {
+                    text: "HemaFrag Diagnostics";
+                    font_size: 24px;
+                    font_weight: 700;
+                    color: #f8fafc;
+                }
+                
+                Rectangle { height: 10px; }
+
+                Text { text: "NAVIGATION"; font_size: 11px; font_weight: 600; color: #94a3b8; }
+                
+                Button { text: "Analyze"; height: 40px; }
+                Button { text: "History"; height: 40px; clicked => { root.open_output(); } }
+                Button { text: "Artifacts"; height: 40px; clicked => { root.open_last_artifact(); } }
+
+                Rectangle { } // Flexible spacer
+
+                Text { text: "HELP & INFO"; font_size: 11px; font_weight: 600; color: #94a3b8; }
+                Button { text: "Documentation"; height: 40px; clicked => { root.open_docs(); } }
+                Button { text: "Contract View"; height: 40px; clicked => { root.show_contract(); } }
+
+                Rectangle { height: 1px; background: #334155; }
+
+                Text {
+                    text: "HemaFrag Rust Engine v0.1.0";
+                    font_size: 10px;
+                    color: #64748b;
+                    horizontal_alignment: center;
+                }
+            }
+        }
+
+        // --- MAIN CONTENT ---
+        VerticalLayout {
+            padding: 32px;
+            spacing: 24px;
+
+            // Header
+            HorizontalLayout {
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "New Analysis Project"; font_size: 32px; font_weight: 700; color: #0f172a; }
+                    Text { text: "Batch process directories or individual samples with the Rust engine."; font_size: 14px; color: #64748b; }
+                }
+                Rectangle { } // Flexible spacer
+                Button {
+                    text: "Run Analysis";
+                    height: 48px;
+                    width: 160px;
+                    clicked => { root.run_analysis(); }
+                }
+            }
+
+            Rectangle { height: 1px; background: #e2e8f0; }
+
+            // Config Cards
+            HorizontalLayout {
+                spacing: 20px;
+                height: 480px;
+
+                // Source Queue Card
+                Rectangle {
+                    background: #f8fafc;
+                    border_radius: 12px;
+                    border_width: 1px;
+                    border_color: #e2e8f0;
+                    width: 60%;
+
+                    VerticalLayout {
+                        padding: 24px;
+                        spacing: 16px;
+
+                        HorizontalLayout {
+                            Text { text: "RUN QUEUE / SOURCES"; font_size: 12px; font_weight: 700; color: #475569; }
+                            Rectangle { }
+                            Text { text: root.input_sources.length + " source(s)"; font_size: 11px; color: #64748b; }
+                        }
+
+                        // Source List Area
+                        Rectangle {
+                            background: #ffffff;
+                            border_radius: 8px;
+                            border_width: 1px;
+                            border_color: #e2e8f0;
+                            
+                            VerticalLayout {
+                                padding: 8px;
+                                spacing: 4px;
+                                
+                                for source[i] in root.input_sources : HorizontalLayout {
+                                    spacing: 8px;
+                                    height: 32px;
+                                    Rectangle {
+                                        background: #f1f5f9;
+                                        border_radius: 4px;
+                                        HorizontalLayout {
+                                            padding_left: 10px;
+                                            padding_right: 10px;
+                                            Text {
+                                                text: source;
+                                                font_size: 13px;
+                                                color: #334155;
+                                                vertical_alignment: center;
+                                            }
+                                            Rectangle { } // spacer
+                                            Button {
+                                                text: "×";
+                                                width: 24px;
+                                                clicked => { root.remove_source(i); }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if root.input_sources.length == 0 : Text {
+                                    text: "Queue is empty. Add files or folders to begin.";
+                                    color: #94a3b8;
+                                    font_size: 13px;
+                                    horizontal_alignment: center;
+                                    vertical_alignment: center;
+                                }
+                                
+                                Rectangle {} // Push items to top
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Button { text: "Add Files..."; clicked => { root.add_files(); } width: 120px; }
+                            Button { text: "Add Folder..."; clicked => { root.add_folder(); } width: 120px; }
+                        }
+
+                        VerticalLayout {
+                            spacing: 8px;
+                            Text { text: "Output Directory"; font_size: 14px; font_weight: 500; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                LineEdit { text <=> root.output_path; }
+                                Button { text: "Browse"; clicked => { root.browse_output(); } }
+                            }
+                        }
+                        
+                        Rectangle {
+                            background: #eff6ff;
+                            border_radius: 8px;
+                            height: 60px;
+                            Text {
+                                x: 12px;
+                                y: 12px;
+                                text: root.status_text;
+                                color: #1e40af;
+                                font_size: 13px;
+                                wrap: word-wrap;
+                                width: parent.width - 24px;
+                            }
+                        }
+                    }
+                }
+
+                // Analysis Options Card
+                Rectangle {
+                    background: #ffffff;
+                    border_radius: 12px;
+                    border_width: 1px;
+                    border_color: #e2e8f0;
+                    width: 40%;
+
+                    VerticalLayout {
+                        padding: 24px;
+                        spacing: 16px;
+
+                        Text { text: "ANALYSIS MODE"; font_size: 12px; font_weight: 700; color: #475569; }
+
+                        VerticalLayout {
+                            spacing: 10px;
+                            Button {
+                                text: "Clonality" + (root.analysis_kind == "clonality" ? " (Active)" : "");
+                                clicked => { root.select_analysis("clonality"); }
+                            }
+                            Button {
+                                text: "FLT3" + (root.analysis_kind == "flt3" ? " (Active)" : "");
+                                clicked => { root.select_analysis("flt3"); }
+                            }
+                            Button {
+                                text: "General" + (root.analysis_kind == "general" ? " (Active)" : "");
+                                clicked => { root.select_analysis("general"); }
+                            }
+                        }
+
+                        Rectangle {
+                            background: #f1f5f9;
+                            border_radius: 8px;
+                            height: 80px;
+                            Text {
+                                x: 12px;
+                                y: 12px;
+                                width: parent.width - 24px;
+                                text: root.active_hint;
+                                color: #475569;
+                                font_size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Results Summary
+            Rectangle {
+                background: #ecfeff;
+                border_radius: 8px;
+                height: 44px;
+                HorizontalLayout {
+                    padding_left: 16px;
+                    padding_right: 16px;
+                    Text {
+                        text: "Result: " + root.last_run_summary;
+                        color: #083344;
+                        font_weight: 600;
+                        vertical_alignment: center;
+                    }
+                }
+            }
+
+            // Engine Log
+            VerticalLayout {
+                spacing: 8px;
+                HorizontalLayout {
+                    Text { text: "ENGINE LOGS"; font_size: 12px; font_weight: 700; color: #475569; }
+                    Rectangle { } // Flexible spacer
+                    Button { text: "Clear Logs"; clicked => { root.clear_log(); } height: 24px; }
+                }
+                Rectangle {
+                    background: #0f172a;
+                    border_radius: 10px;
+                    VerticalLayout {
+                        padding: 16px;
+                        Text {
+                            text: root.log_text;
+                            color: #94a3b8;
+                            font_size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,16 @@
+FROM tobix/pywine:3.10
+
+# Wine pip needs build dependencies before running PyInstaller
+RUN apt-get update && apt-get install -y --no-install-recommends zip && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt .
+COPY packaging/build-requirements.txt packaging/build-requirements.txt
+RUN wine python -m pip install --no-cache-dir -r packaging/build-requirements.txt
+RUN wine python -m pip install --no-cache-dir -r requirements.txt
+
+# Copy source
+COPY . .
+
+# Run Build script using Wine execution
+CMD ["wine", "python", "build_qt.py"]

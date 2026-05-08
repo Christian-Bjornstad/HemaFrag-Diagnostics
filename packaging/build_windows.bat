@@ -1,0 +1,55 @@
+@echo off
+REM ============================================================
+REM Build HemaFrag Diagnostics — Windows Desktop Bundle
+REM ============================================================
+REM Prerequisites:
+REM   - Python 3.10+ installed
+REM   - Run from the OUS\ project root
+REM
+REM Usage:
+REM   packaging\build_windows.bat
+REM
+REM Output:
+REM   dist\HemaFrag_Windows and dist\releases\HemaFrag_Windows.zip
+REM ============================================================
+
+echo ============================================================
+echo   Building HemaFrag Diagnostics for Windows
+echo ============================================================
+
+cd /d "%~dp0\.."
+
+REM Create and activate venv if needed
+if not exist "fraggler-win-venv" (
+    echo Creating virtual environment...
+    python -m venv fraggler-win-venv
+)
+
+call fraggler-win-venv\Scripts\activate.bat
+
+REM Install dependencies
+pip install -r requirements.txt
+pip install -r packaging\build-requirements.txt
+
+REM Clean previous builds
+if exist build rmdir /s /q build
+if exist dist rmdir /s /q dist
+
+REM Build
+echo.
+echo Running unified desktop build...
+echo.
+
+python build_qt.py
+
+echo.
+echo ============================================================
+echo   Build complete!
+echo   Folder: dist\HemaFrag_Windows
+echo   Zip   : dist\releases\HemaFrag_Windows.zip
+echo.
+echo   To run:
+echo     dist\HemaFrag_Windows\HemaFrag.exe
+echo ============================================================
+
+pause

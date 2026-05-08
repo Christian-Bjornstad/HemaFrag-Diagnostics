@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    name: Python checks
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install Python dependencies
+        run: python3 -m pip install -r requirements.txt
+      - name: Compile key modules
+        run: |
+          python3 -m py_compile \
+            qt_app.py \
+            gui_qt/main_window.py \
+            gui_qt/tabs/tab_batch.py \
+            gui_qt/tabs/tab_ladder.py \
+            gui_qt/dialogs/ladder_dialog.py \
+            core/batch.py \
+            core/runner.py \
+            core/analyses/clonality/ladder_review_gate.py \
+            core/utils.py
+      - name: Run unit tests
+        run: python3 -m unittest tests/test_ladder_review_gate.py tests/test_water_filter.py
+
+  rust:
+    name: Rust checks
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: fraggler-v2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test --workspace

@@ -1,0 +1,61 @@
+# macOS / editor metadata
+.DS_Store
+._*
+.obsidian/
+ObsidianVault/.obsidian/
+
+# Python caches / environments
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+env/
+ENV/
+
+# Build and packaging outputs
+build/
+dist/
+*.spec.log
+release_artifacts/
+validation_outputs/
+
+# Rust build outputs
+fraggler-v2/target/
+
+# Local runtime binaries. Build from fraggler-v2/ when needed.
+bin/fraggler-cli
+
+# Generated analysis outputs and review scratch
+artifacts/
+tmp/
+tmp_*/
+review_bundle*/
+output_*.txt
+output_*.tsv
+output_*.json
+
+# Local clinical/input data. Keep source-control examples synthetic only.
+data/*
+!data/README.md
+*.fsa
+*.hid
+*.ab1
+*.ladder_adj.json
+
+# Generated reports/workbooks/documents
+*.xlsx
+*.xls
+*.csv
+*.html
+*.pdf
+*.docx
+
+# Logs
+*.log

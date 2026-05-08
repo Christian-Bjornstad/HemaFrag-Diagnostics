@@ -1,0 +1,460 @@
+"""
+HemaFrag Diagnostics — Main Pipeline.
+
+``run_pipeline`` processes all .fsa files in a directory, classifies them,
+fits ladders, detects peaks, builds DIT reports, and orchestrates the full
+analysis flow.
+"""
+from __future__ import annotations
+
+import os
+import re
+import sys
+import __main__
+import threading
+import time
+from pathlib import Path
+from collections import defaultdict
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+
+from fraggler.fraggler import print_green, print_warning
+
+from config import resolve_analysis_excel_output_path
+from core.analyses.clonality.config import (
+    ASSAY_CONFIG,
+    LIZ_LADDER,
+    ROX_LADDER,
+    SL_TARGET_FRAGMENTS_BP,
+    SL_WINDOW_BP,
+)
+from core.analyses.clonality.classification import classify_fsa
+from core.analyses.clonality.tracking_excel import (
+    CLONALITY_TRACKING_FILENAME,
+    resolve_original_input_path,
+    resolve_source_run_dir,
+    update_clonality_tracking_workbook,
+)
+from core.analysis import (
+    LADDER_FIT_PROFILE_CLONALITY_LIZ500,
+    LADDER_FIT_PROFILE_CLONALITY_ROX400HD,
+    analyse_fsa_liz,
+    analyse_fsa_rox,
+    auto_detect_sl_peaks,
+    compute_ladder_qc_metrics,
+    compute_sl_area_metrics,
+)
+from core.plotting_plotly import (
+    compute_group_ymax_for_entries,
+    build_interactive_assay_batch_plot_html,
+)
+from core.plotting_mpl import compute_zoom_ymax
+from core.html_reports import (
+    extract_dit_from_name,
+)
+from core.analyses.shared_pipeline import (
+    finalize_pipeline_run,
+    normalize_pipeline_paths,
+    scan_fsa_files,
+)
+from core.utils import strip_stage_prefix
+
+
+def _scan_files(fsa_dir: Path, mode: str = "all") -> list[Path]:
+    """Scans for .fsa files, filtering out water files and optionally non-controls."""
+    fsa_files = scan_fsa_files(fsa_dir, mode=mode)
+    if fsa_files:
+        print_green(f"Fant {len(fsa_files)} .fsa-filer: {[p.name for p in fsa_files]}")
+    return fsa_files
+
+
+def _progress_timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _emit_progress(
+    progress_callback,
+    *,
+    phase: str,
+    file_name: str = "",
+    files_done: int = 0,
+    files_total: int = 0,
+    note: str = "",
+) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(
+        {
+            "folder_name": "",
+            "job_name": "",
+            "phase": phase,
+            "file_name": file_name,
+            "files_done": int(files_done),
+            "files_total": int(files_total),
+            "jobs_done": 0,
+            "jobs_total": 0,
+            "heartbeat_at": _progress_timestamp(),
+            "note": note,
+        }
+    )
+
+
+def _should_use_multiprocessing() -> bool:
+    disabled = os.environ.get("FRAGGLER_DISABLE_MULTIPROCESSING", "").strip().lower()
+    if disabled in {"1", "true", "yes", "on"}:
+        return False
+    if getattr(sys, "frozen", False):
+        return False
+    main_file = getattr(__main__, "__file__", "")
+    if not main_file or str(main_file).startswith("<"):
+        return False
+    if not Path(main_file).exists():
+        return False
+    return True
+
+
+def _analyze_single_file(fsa_path: Path) -> dict | None:
+    """Analyze a single FSA file. Returns an entry dict or None if skipped.
+
+    This is a top-level function (not a closure) so it can be pickled
+    for multiprocessing.
+    """
+    classified = classify_fsa(fsa_path)
+    if classified is None:
+        return None
+
+    (
+        assay,
+        group,
+        ladder,
+        trace_channels,
+        peak_channels,
+        primary_peak_channel,
+        bp_min,
+        bp_max,
+    ) = classified
+
+    sample_channel = trace_channels[0]
+
+    try:
+        if ladder == "LIZ":
+            fsa = analyse_fsa_liz(
+                fsa_path,
+                sample_channel,
+                ladder_name=LIZ_LADDER,
+                ladder_fit_profile=LADDER_FIT_PROFILE_CLONALITY_LIZ500,
+            )
+        else:
+            fsa = analyse_fsa_rox(
+                fsa_path,
+                sample_channel,
+                ladder_name=ROX_LADDER,
+                ladder_fit_profile=LADDER_FIT_PROFILE_CLONALITY_ROX400HD,
+            )
+    except Exception as ex:
+        print_warning(f"[ANALYZE] Skipping unreadable file {fsa_path.name}: {ex}")
+        return None
+
+    if fsa is None:
+        return None
+
+    peaks_by_channel: dict[str, pd.DataFrame | None] = {}
+    if assay == "SL":
+        try:
+            peaks_by_channel = auto_detect_sl_peaks(
+                fsa,
+                peak_channels=peak_channels,
+                targets_bp=SL_TARGET_FRAGMENTS_BP,
+                window_bp=SL_WINDOW_BP,
+                min_height=800.0,
+            )
+        except Exception as ex:
+            print_warning(f"[SL] Klarte ikke autovalg av SL-peaks for {fsa.file_name}: {ex}")
+            peaks_by_channel = {ch: pd.DataFrame(columns=["basepairs", "peaks", "keep"]) for ch in peak_channels}
+    else:
+        for ch in peak_channels:
+            peaks_by_channel[ch] = pd.DataFrame(columns=["basepairs", "peaks", "keep"])
+
+    ymax = compute_zoom_ymax(fsa, bp_min, bp_max, trace_channels, assay_name=assay)
+
+    # Ladder QC
+    expected_ladder_steps = list(
+        map(float, getattr(fsa, "expected_ladder_steps", getattr(fsa, "ladder_steps", [])))
+    )
+    fitted_ladder_steps = list(map(float, getattr(fsa, "ladder_steps", [])))
+    ladder_fit_strategy = str(getattr(fsa, "ladder_fit_strategy", "auto_full"))
+    ladder_missing_expected_steps = list(
+        map(float, getattr(fsa, "ladder_missing_expected_steps", []))
+    )
+    ladder_fit_note = str(
+        getattr(
+            fsa,
+            "ladder_fit_note",
+            "All expected ladder steps were fitted." if not ladder_missing_expected_steps else "Manual ladder review recommended.",
+        )
+    )
+    ladder_review_required = bool(
+        getattr(fsa, "ladder_review_required", bool(ladder_missing_expected_steps))
+    )
+    ladder_qc_status = str(getattr(fsa, "ladder_qc_status", "ok") or "ok")
+    ladder_r2, n_ladder_steps, n_size_standard_peaks = np.nan, np.nan, np.nan
+    ladder_mean_residual_bp, ladder_max_residual_bp, ladder_max_curvature = np.nan, np.nan, np.nan
+    ladder_linear_r2, ladder_quadratic_r2 = np.nan, np.nan
+    ladder_linear_mean_residual_bp, ladder_linear_max_residual_bp = np.nan, np.nan
+    ladder_quadratic_mean_residual_bp, ladder_quadratic_max_residual_bp = np.nan, np.nan
+    try:
+        metrics = compute_ladder_qc_metrics(fsa)
+        ladder_r2 = metrics["r2"]
+        n_ladder_steps = metrics["n_ladder_steps"]
+        n_size_standard_peaks = metrics["n_size_standard_peaks"]
+        ladder_mean_residual_bp = metrics["mean_abs_error_bp"]
+        ladder_max_residual_bp = metrics["max_abs_error_bp"]
+        ladder_linear_r2 = metrics["linear_trend_r2"]
+        ladder_quadratic_r2 = metrics["quadratic_trend_r2"]
+        ladder_linear_mean_residual_bp = metrics["linear_trend_mean_abs_error_bp"]
+        ladder_linear_max_residual_bp = metrics["linear_trend_max_abs_error_bp"]
+        ladder_quadratic_mean_residual_bp = metrics["quadratic_trend_mean_abs_error_bp"]
+        ladder_quadratic_max_residual_bp = metrics["quadratic_trend_max_abs_error_bp"]
+        ladder_max_curvature = metrics["max_curvature"]
+        if ladder_fit_strategy == "manual_adjustment":
+            ladder_qc_status = "manual_adjustment"
+        elif bool(getattr(fsa, "ladder_missing_signal", False)):
+            ladder_qc_status = "missing_ladder"
+        elif ladder_review_required:
+            ladder_qc_status = "review_required"
+    except Exception as ex:
+        print_warning(f"[LADDER_QC] Klarte ikke beregne QC for {fsa.file_name}: {ex}")
+        ladder_qc_status = "ladder_qc_failed"
+
+    # SL-area
+    sl_metrics = None
+    if assay == "SL":
+        try:
+            sl_metrics = compute_sl_area_metrics(
+                fsa,
+                trace_channel=primary_peak_channel,
+                targets_bp=SL_TARGET_FRAGMENTS_BP,
+                window_bp=SL_WINDOW_BP,
+            )
+        except Exception as ex:
+            print_warning(f"[SL] Klarte ikke beregne SL-area for {fsa.file_name}: {ex}")
+
+    # Pre-calculate tracking peaks to avoid re-detection later (saves time + allows dropping raw FSA)
+    from core.qc.qc_rules import QCRules
+    from core.qc.qc_markers import markers_for_entry, evaluate_peak_near_bp_with_fallback
+    
+    rules = QCRules() # Default rules for tracking
+    tracking_marker_results = {}
+    markers = markers_for_entry({"fsa": fsa, "assay": assay, "ladder": ladder}, rules)
+    for marker in markers:
+        channel = primary_peak_channel if marker["channel"] == "primary" else str(marker["channel"])
+        res = evaluate_peak_near_bp_with_fallback(
+            fsa=fsa,
+            channel=channel,
+            target_bp=float(marker["expected_bp"]),
+            window_bp=float(marker["window_bp"]),
+            baseline_correct=True,
+            name=marker.get("name"),
+        )
+        tracking_marker_results[marker["name"]] = res["selected"]
+
+    rust_clonality_preview = getattr(fsa, "rust_clonality_preview", None)
+    top_rust_assay = {}
+    if isinstance(rust_clonality_preview, dict):
+        ranked_assays = rust_clonality_preview.get("ranked_assays") or []
+        if isinstance(ranked_assays, list) and ranked_assays:
+            first = ranked_assays[0]
+            if isinstance(first, dict):
+                top_rust_assay = first
+
+    return {
+        "fsa": fsa,
+        "file_name": fsa.file_name,
+        "original_file_path": str(resolve_original_input_path(getattr(fsa, "file", None)) or getattr(fsa, "file", "") or ""),
+        "source_run_dir": resolve_source_run_dir({"fsa": fsa}),
+        "peaks_by_channel": peaks_by_channel,
+        "tracking_marker_results": tracking_marker_results,
+        "trace_channels": trace_channels,
+        "primary_peak_channel": primary_peak_channel,
+        "ymax": ymax,
+        "assay": assay,
+        "group": group,
+        "ladder": ladder,
+        "bp_min": bp_min,
+        "bp_max": bp_max,
+        "dit": extract_dit_from_name(fsa.file_name),
+        "ladder_qc_status": ladder_qc_status,
+        "ladder_r2": ladder_r2,
+        "ladder_mean_residual_bp": ladder_mean_residual_bp,
+        "ladder_max_residual_bp": ladder_max_residual_bp,
+        "ladder_linear_r2": ladder_linear_r2,
+        "ladder_quadratic_r2": ladder_quadratic_r2,
+        "ladder_linear_mean_residual_bp": ladder_linear_mean_residual_bp,
+        "ladder_linear_max_residual_bp": ladder_linear_max_residual_bp,
+        "ladder_quadratic_mean_residual_bp": ladder_quadratic_mean_residual_bp,
+        "ladder_quadratic_max_residual_bp": ladder_quadratic_max_residual_bp,
+        "ladder_max_curvature": ladder_max_curvature,
+        "n_ladder_steps": n_ladder_steps,
+        "n_size_standard_peaks": n_size_standard_peaks,
+        "ladder_fit_strategy": ladder_fit_strategy,
+        "ladder_missing_expected_steps": ladder_missing_expected_steps,
+        "ladder_fit_note": ladder_fit_note,
+        "ladder_review_required": ladder_review_required,
+        "ladder_review_reason": str(getattr(fsa, "rust_review_primary_reason", "") or ""),
+        "ladder_review_reason_codes": list(getattr(fsa, "rust_review_reason_codes", []) or []),
+        "ladder_review_summary": str(getattr(fsa, "rust_review_summary", "") or ""),
+        "ladder_expected_step_count": len(expected_ladder_steps),
+        "ladder_fitted_step_count": len(fitted_ladder_steps),
+        "rust_preview_top_assay": str(top_rust_assay.get("assay_name") or ""),
+        "rust_preview_top_score": float(top_rust_assay.get("score", np.nan))
+        if top_rust_assay.get("score") is not None
+        else np.nan,
+        "rust_preview_top_clonal_groups": int(top_rust_assay.get("clonal_group_count", 0) or 0),
+        "rust_preview_top_dominant_ratio": float(top_rust_assay.get("best_dominant_ratio", np.nan))
+        if top_rust_assay.get("best_dominant_ratio") is not None
+        else np.nan,
+        "sl_metrics": sl_metrics,
+    }
+
+
+def _analyze_files(
+    fsa_files: list[Path],
+    *,
+    progress_callback=None,
+) -> tuple[list[dict], int]:
+    """Performs analysis (ladder fitting, peak detection) on a list of FSA files.
+
+    Uses multiprocessing to analyze files in parallel across available CPU cores.
+    """
+    total_files = len(fsa_files)
+    use_multiprocessing = (
+        progress_callback is None
+        and _should_use_multiprocessing()
+        and total_files >= 2
+    )
+
+    if not use_multiprocessing:
+        from config import APP_SETTINGS
+
+        if APP_SETTINGS.get("engine", {}).get("use_rust", False) and fsa_files:
+            try:
+                from core.rust_bridge import prime_rust_worker_results
+
+                primed = prime_rust_worker_results(fsa_files, "clonality")
+                if primed:
+                    print_green(f"[RUST] Primed {primed} clonality files through persistent worker.")
+            except Exception as ex:
+                print_warning(f"[RUST] Failed to prewarm clonality worker cache ({ex}).")
+
+        results = []
+        for index, path in enumerate(fsa_files, start=1):
+            _emit_progress(
+                progress_callback,
+                phase="analyze",
+                file_name=path.name,
+                files_done=index - 1,
+                files_total=total_files,
+                note="file_started",
+            )
+
+            stop_event = threading.Event()
+            file_started = time.monotonic()
+
+            def _heartbeat() -> None:
+                elapsed = 0
+                while not stop_event.wait(30.0):
+                    elapsed = int(time.monotonic() - file_started)
+                    print_warning(
+                        f"[ANALYZE] Slow file: {path.name} still running after {elapsed}s "
+                        f"({index}/{total_files})."
+                    )
+                    _emit_progress(
+                        progress_callback,
+                        phase="analyze",
+                        file_name=path.name,
+                        files_done=index - 1,
+                        files_total=total_files,
+                        note="slow_file" if elapsed >= 30 else "heartbeat",
+                    )
+
+            heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+            heartbeat_thread.start()
+            try:
+                results.append(_analyze_single_file(path))
+            finally:
+                stop_event.set()
+                heartbeat_thread.join(timeout=0.1)
+
+            _emit_progress(
+                progress_callback,
+                phase="analyze",
+                file_name=path.name,
+                files_done=index,
+                files_total=total_files,
+                note="file_complete",
+            )
+    else:
+        from multiprocessing import Pool, cpu_count
+
+        n_workers = max(1, cpu_count() - 1)
+
+        try:
+            with Pool(n_workers) as pool:
+                results = pool.map(_analyze_single_file, fsa_files)
+        except Exception as ex:
+            # Fallback to sequential if multiprocessing fails (e.g. frozen app)
+            print_warning(f"[PARALLEL] Multiprocessing failed ({ex}), falling back to sequential.")
+            results = [_analyze_single_file(p) for p in fsa_files]
+
+    entries = [r for r in results if r is not None]
+    skipped = len(fsa_files) - len(entries)
+
+    print_green(f"[MASTER] Totalt {len(entries)} filer analysert. {skipped} skippet.")
+    return entries, skipped
+
+
+def run_pipeline(
+    fsa_dir: Path,
+    base_outdir: Path | None = None,
+    assay_folder_name: str | None = None,
+    return_entries: bool = False,
+    make_dit_reports: bool = True,
+    mode: str = "all",
+    tracking_excel_path: Path | None = None,
+    update_tracking_workbook: bool = True,
+    progress_callback=None,
+) -> list[dict] | None:
+
+    """
+    Kjør full HemaFrag-pipeline på alle .fsa-filer i fsa_dir.
+    """
+    fsa_dir, assay_dir = normalize_pipeline_paths(fsa_dir, base_outdir, assay_folder_name)
+
+    # 1) Scan
+    fsa_files = _scan_files(fsa_dir, mode)
+    if not fsa_files:
+        return [] if return_entries else None
+
+    # 2) Analyze
+    entries, _ = _analyze_files(fsa_files, progress_callback=progress_callback)
+    if not entries:
+        print_warning("Ingen gyldige entries etter analyse – avslutter.")
+        return [] if return_entries else None
+
+    if update_tracking_workbook:
+        resolved_tracking_excel_path = tracking_excel_path or resolve_analysis_excel_output_path(
+            "clonality",
+            assay_dir,
+            CLONALITY_TRACKING_FILENAME,
+        )
+        update_clonality_tracking_workbook(resolved_tracking_excel_path, entries)
+
+    return finalize_pipeline_run(
+        entries,
+        assay_dir,
+        return_entries=return_entries,
+        make_dit_reports=make_dit_reports,
+        mode=mode,
+    )

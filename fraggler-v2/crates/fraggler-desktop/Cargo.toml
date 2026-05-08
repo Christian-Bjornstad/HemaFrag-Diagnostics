@@ -1,0 +1,22 @@
+[package]
+name = "fraggler-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+build = "build.rs"
+
+[dependencies]
+anyhow.workspace = true
+camino.workspace = true
+open.workspace = true
+rfd = "0.15"
+slint.workspace = true
+uuid.workspace = true
+
+fraggler-core = { path = "../fraggler-core" }
+walkdir = "2.5.0"
+tracing.workspace = true
+
+[build-dependencies]
+slint-build = "1"
