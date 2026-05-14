@@ -2492,3 +2492,1381 @@
   - åpne popup -> Ladder Studio -> lagre `manual_adjusted`/`reviewed_no_change`
   - bekreft at `Run Manual Fixes + Build DIT` først er disabled, deretter enabled når alle cases er løst
   - bekreft at final DIT/tracking bygges fra hele sessionen, ikke bare rerunnet enkeltfil
+
+## 2026-05-08 - GitHub repo cleanup and initial push
+- Ryddet repoet for GitHub:
+  - oppdatert `.gitignore` slik at rådata, `.fsa`, Excel/Word-rapporter, review bundles, `artifacts/`, `build/`, `dist/`, Rust `target/`, caches og lokal `bin/fraggler-cli` holdes utenfor Git
+  - lagt til `.gitattributes`
+  - lagt til GitHub Actions workflow for Python kontraktstester og Rust workspace checks
+  - oppdatert `README.md` til `HemaFrag Diagnostics`
+  - lagt til `data/README.md` og `bin/.gitkeep`
+- Ryddet `.git`:
+  - før: ca `2.9G`, med gamle løse objekter
+  - etter `git gc --prune=now`: ca `5.6M`
+- Verifisering før commit:
+  - `python3 -m unittest tests/test_ladder_review_gate.py tests/test_water_filter.py`: `5` tests ok
+  - `python3 -m py_compile ...`: ok
+  - `cargo test --workspace`: `72` fraggler-core tests + `5` engine-contract tests ok
+  - estimert GitHub source-sett: ca `194` filer / `11M`
+- Git:
+  - initial commit: `2ab6b3a Initial HemaFrag Diagnostics repo`
+  - remote: `https://github.com/Christian-Bjornstad/HemaFrag-Diagnostics.git`
+  - pushed `main` to `origin/main`
+
+## 2026-05-08 - FLT3 ROX500 QC first-class mode
+- Implementerte FLT3 ROX500 som bruker-/rapportnavn med intern `LIZ500_250` ladder og `DATA105` size-standardkanal.
+- `core/analyses/flt3/pipeline.py` har nå en kanonisk FLT3 size-standard-resolver:
+  - default uten override er fortsatt `GS500ROX/DATA4`
+  - `ROX500`, `LIZ500`, `LIZ500_250` og `LIZ500250` gir `SizeStandard=ROX500`, `InternalLadder=LIZ500_250`, `SizeStandardChannel=DATA105`
+- Oppdaterte FLT3 detail-output med `SizeStandard`, `InternalLadder` og `SizeStandardChannel`.
+- Gjorde `scripts/run_flt3_liz500_qc_all_injections.py` til ROX500 QC-only runner med stabile outputkolonner, år-/run-filter, limit, JSON/CSV/XLSX/HTML-output og midlertidig env override som ryddes opp etter kjøring.
+- La til `scripts/run_flt3_rox500_qc_all_injections.py` som tydelig ROX500 entrypoint/wrapper.
+- Oppdaterte Qt `TabFlt3Validation` slik at clean HemaFrag kan kjøre lokal ROX500 QC uten legacy `run_flt3_backfill_validation.py`. Run-name-filter er nå valgfritt/blankt som default for `/Volumes/T7 Shield/DATA/flt3`.
+- Verifisering:
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py gui_qt/tabs/tab_flt3_validation.py`: ok
+  - importtest av FLT3 pipeline/config/classification og Qt-fanen: ok
+  - lokal tom-data smoke mot `data/flt3`: skrev ROX500 QC-filer med forventede kolonner
+  - T7 smoke mot `/Volumes/T7 Shield/DATA/flt3` med `--year 2025 --year 2026 --limit 3`: analyserte `3` ekte FSA, skrev ROX500 QC CSV/XLSX/HTML/JSON, og output hadde `SizeStandard=ROX500`, `InternalLadder=LIZ500_250`, `SizeStandardChannel=DATA105`
+- Videre ROX500 status-test samme økt:
+  - Lagde en spredt 30-filers symlink-sample fra `/Volumes/T7 Shield/DATA/flt3` 2025/2026 i `/private/tmp/hemafrag_flt3_rox500_sample_input`.
+  - Kjørte ROX500 QC-only til `/private/tmp/hemafrag_rox500_sample30`.
+  - Resultat: `30/30` rader skrevet, status `3 PASS`, `23 REVIEW`, `4 FAIL`; ladder-QC `6 ok`, `20 review_required`, `4 analysis_failed`.
+  - Viktig funn: infrastrukturen og rapportkolonnene fungerer, men ROX500/LIZ500-fit er ikke klar som bred grønn QC. Flere rader får høye lineære residualer, og enkelte `PASS`-rader kan fortsatt ha lineær max rundt `32-35 bp` fordi dagens FLT3 QC-status ikke strammer inn på lineære ROX500-metrikker. Neste FLT3-steg bør derfor være ROX500-spesifikk ladder-QC-gating og deretter fit-tuning, ikke full arkivpromotering.
+
+## 2026-05-08 - FLT3 ROX500GS correction
+- Kritisk korrigering etter visuell review: tidligere ROX500-implementasjon gikk via Rust `general`/`LIZ500_250`, som kunne falle tilbake til `ROX400HD` når `DATA105` manglet. Dette er feil for normal FLT3.
+- Endret normal/default FLT3 ROX500 til:
+  - `SizeStandard=ROX500`
+  - `InternalLadder=GS500ROX`
+  - Rust `AnalysisKind::Flt3`
+  - foretrukket size-standardkanal `DATA105` når den finnes, ellers `DATA4` for eldre filer
+  - eksplisitt `LIZ500`/`LIZ500_250` beholdes bare som override
+- Oppdaterte Rust kanalprioritet for FLT3 fra `DATA4 -> DATA105` til `DATA105 -> DATA4`, og bygde ny release `fraggler-cli`.
+- Oppdaterte Python fallback i `analyse_fsa_rox` slik at fallback bruker valgt size-standardkanal, ikke hardkodet `DATA4`.
+- La inn GS500ROX lineær QC-gate i FLT3 pipeline:
+  - review når lineær max `>6 bp`, mean `>3 bp` eller R2 `<0.9985`
+  - review reason `poor_gs500rox_linear_fit`
+  - residual review reason `high_gs500rox_residual` når spline max trigger lokal grense
+- Verifisering:
+  - `python3 -m py_compile config.py core/analysis.py core/analyses/flt3/pipeline.py scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py gui_qt/tabs/tab_flt3_validation.py core/rust_bridge.py`: ok
+  - resolver-test: default/`ROX500`/`GS500ROX` gir `ROX500/GS500ROX/DATA105`; `LIZ500` gir eksplisitt `LIZ500_250/DATA105`
+  - 4-filers target-test med god ekstern kontroll: godfilen kjører `DATA105` og PASS; eldre arkivfiler uten `DATA105` faller tilbake til `DATA4` men fortsatt `GS500ROX`
+  - 15-filers spread smoke etter fix: `15` analysert, `12 PASS`, `3 REVIEW`, `0 FAIL`, alle `InternalLadder=GS500ROX`
+- Nye store inspeksjonsbilder ligger i `/private/tmp/hemafrag_rox500_four_images_v2/`:
+  - `01_GOOD_rox500gs_data105.png`
+  - `02_BAD_extreme_linear_review.png`
+  - `03_BAD_residual_review_013.png`
+  - `04_BAD_residual_review_015.png`
+- Åpent: peak-detection/rapportering bommer fortsatt på noen ekte sample-peaks i visuelt gode fits. Neste FLT3-steg bør være sample-peak candidate/ITD/TKD peak-picking, ikke mer ROX400/LIZ ladder-routing.
+
+## 2026-05-08 - MQ/MilliQ water filtering
+- Bruker presiserte at `MQ` betyr MilliQ-vann og skal behandles som `V`/vann.
+- Oppdatert `core.utils.is_water_file()`:
+  - matcher `MQ`, `MilliQ` og `milli-q`
+  - håndterer også nummererte temp-/QC-prefixer som `011__MQ...`
+- Oppdatert FLT3 ROX500 QC raw metadata:
+  - `ControlPrefix=V` for MQ
+  - `IncludedInAnalysis=False` for MQ
+- Verifisering:
+  - `python3 -m pytest tests/test_water_filter.py`: `2 passed`
+  - `python3 -m py_compile core/utils.py scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py core/analyses/shared_pipeline.py core/batch.py core/runner.py`: ok
+  - ROX500 QC smoke med `011__MQ_H11...`: MQ ble ikke analysert (`0` QC-rader), men ble bevart i raw metadata med `ControlPrefix=V` og `IncludedInAnalysis=False`.
+
+## 2026-05-08 - FLT3-ITD low-level peak supplement
+- Etter riktig ROX500GS-ladder var neste problem at Rust FLT3-preview kunne returnere bare WT, selv når korrigert sampletrace hadde små, visuelt reelle post-WT peaks.
+- Endret FLT3-ITD peak detection:
+  - `peak_height_min=20`, `peak_prominence_min=10`, `peak_distance=8`
+  - når Rust-preview finnes, beholdes preview-WT/sterke calls, men Python peak scan supplerer FLT3-ITD kandidatpeaks
+  - ratio for `FLT3-ITD` er fortsatt `manual_required`; dette er synlighet/kandidatfangst, ikke automatisk positiv-kall
+- ROX500 QC-output har nå egne kandidatkolonner:
+  - `DetectedWTBPs`
+  - `DetectedMutantBPs`
+  - `DetectedPeakCount`
+  - kandidatvisningen filtrerer WT-skulder og tiny noise før `DetectedMutantBPs`
+- Kontrollfil `26OUM04272_ITD__300426_A01_C99174DD.fsa`:
+  - ladder fortsatt `ROX500/GS500ROX/DATA105`, QC `PASS`
+  - `DetectedWTBPs=328.29`
+  - `DetectedMutantBPs=351.00, 357.70, 412.49, 418.19`
+  - `Ratio=0.0` fordi manuell ITD-ratio fortsatt kreves
+- 15-filers spread smoke etter peak-supplement:
+  - `15` analysert, `13 PASS`, `2 REVIEW`, `0 FAIL`
+  - `MQ` var filtrert ut fra analyse
+  - alle analyserte rader `InternalLadder=GS500ROX`
+- Verifisering:
+  - `python3 -m py_compile config.py core/analysis.py core/analyses/flt3/config.py core/analyses/flt3/pipeline.py core/utils.py scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py gui_qt/tabs/tab_flt3_validation.py core/rust_bridge.py`: ok
+  - `python3 -m pytest tests/test_water_filter.py`: `2 passed`
+
+## 2026-05-08 - FLT3 ROX500 QC runtime investigation
+- Bruker rapporterte at FLT3-kjøring stopper opp/tar uventet lang tid.
+- Funn:
+  - `--workers` var akseptert i CLI/UI, men runneren kjørte faktisk sekvensielt. La inn tydelig warning ved `workers != 1`.
+  - Statuslinjer ble buffered, så kjøringen kunne se frosset ut. Per-fil start/DONE/FAIL/ERROR printer nå med `flush=True`.
+  - QC-only kunne falle inn i gammel deep-search fallback. `_temporary_rox500_env()` setter nå `HEMAFRAG_SKIP_DEEP_SEARCH=True` for ROX500 QC.
+  - Første stack-sample viste SciPy/minpack fra Gaussian area-fit i lavnivå ITD-supplementet; supplementet bruker nå fast area i stedet.
+  - Senere cProfile av `013__25OUM12394_ITD_1-25__250825_A03_C990WO66.fsa` viste hovedflaskehals i Python `_attempt_flt3_template_fit()`, spesielt pandas-kopiering i inner-loop peakvalg.
+- Ytelsesfix:
+  - `_choose_template_candidate_time()` og `_choose_template_trace_peak()` bruker nå NumPy-array-scoring i inner loop.
+  - La til vektorisert `_flt3_ladder_intensity_penalty_array()`.
+  - `core/rust_bridge.py` logger tid for persistent Rust worker (`Worker finished in Xs`, feil og cached-resultat).
+- Målinger:
+  - Treig hardcase `013__25OUM12394...`: ca `144.2s` før profilfix, `32.1s` etter første NumPy-fix, `22.0s` etter trace-peak-fix.
+  - 15-filers ROX500 smoke etter fix: `13 PASS`, `2 REVIEW`, `0 FAIL`, alle `InternalLadder=GS500ROX`; normalfiler ligger rundt `9-11s`, review/hardcase rundt `12-24s`, NTC rundt `27s`.
+- Åpent:
+  - Runneren er fortsatt sekvensiell; ekte `workers`/parallelisering er neste store throughput-steg.
+  - Rust FLT3 primitive-kjøring ligger fortsatt rundt `9-12s` per fil i denne QC-flyten, som er grunnkostnaden før Python postprosess.
+
+## 2026-05-08 - FLT3 ROX500 QC multiprocessing
+- Implementerte ekte prosess-parallellisering i `scripts/run_flt3_liz500_qc_all_injections.py`:
+  - `workers > 1` bruker `ProcessPoolExecutor`
+  - hver worker analyserer én fil om gangen og returnerer bare ferdig QC-rad til hovedprosessen
+  - hovedprosessen skriver fortsatt CSV/XLSX/HTML/JSON og eier ryddig progresslogg
+  - parallell worker-stdout/stderr dempes slik at `[INFO]` fra child-prosesser ikke kommer ute av rekkefølge
+  - worker-crash gir `FAIL`-rad med `parallel_worker_failed` i stedet for å stoppe hele runnen
+  - hvis multiprocessing ikke er tilgjengelig i sandbox/restricted miljø, faller runneren tilbake til sekvensiell med warning
+- Progress max i callback settes nå til antall klassifiserte/analyserbare filer, ikke alle råfiler.
+- Verifisering:
+  - `python3 -m py_compile scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py core/analyses/flt3/pipeline.py core/rust_bridge.py core/analysis.py core/utils.py`: ok
+  - `python3 -m pytest tests/test_water_filter.py`: `2 passed`
+  - parallell smoke `--limit 4 --workers 2`: `4 PASS`
+  - siste parallell smoke `--limit 2 --workers 2`: `2 PASS`
+  - 15-filers smoke med `--workers 4`: `13 PASS`, `2 REVIEW`, `0 FAIL`, `real 78.91s`
+  - 15-filers smoke med `--workers 6`: samme QC-resultat, `real 75.00s`
+- Praktisk anbefaling: bruk `4-6` workers på denne maskinen. `6` ga litt bedre total på 15-filers sample, men høyere per-fil tid enn `4`.
+
+## 2026-05-09 - FLT3 GS500ROX Rust speedup
+- Bruker ba om å bruke tiden på å gjøre Rust-motoren for FLT3 god og rask.
+- Hovedfunn:
+  - `GS500ROX` har `16` forventede steg.
+  - Rust brukte tidligere `expected_peak_count < 20` som proxy for LIZ-ladder.
+  - Dermed havnet FLT3/GS500ROX i LIZ-spesifikke kandidatbaner, LIZ-rescue-logikk og unødvendig morph/SNIP-baselinearbeid.
+- Rust-endringer i `fraggler-v2/crates/fraggler-core/src/primitives.rs`:
+  - `select_ladder_peaks()` tar nå eksplisitt `LadderKind`.
+  - `LIZ500_250` er eneste ladder som får morph/SNIP-kandidatbaner og LIZ-rescues.
+  - `GS500ROX` behandles som ROX-familie sammen med `ROX400HD`, men med egne coverage-/tail-vinduer.
+  - `coverage_peak_candidates()` og `candidate_has_tail_coverage()` bruker ladder-kind i stedet for generell peak-count-proxy.
+  - `analyse_primitives()` beregner ikke lenger morph/SNIP-baseline for `GS500ROX`/`ROX400HD` når disse banene ikke brukes.
+  - La inn regresjonstest `select_ladder_peaks_keeps_gs500rox_out_of_liz_baseline_lanes`.
+- QC-only Python-endringer:
+  - `_should_attempt_flt3_template_rescue()` kan slås av med `HEMAFRAG_FLT3_SKIP_TEMPLATE_RESCUE`.
+  - ROX500 QC-runnerens midlertidige env setter denne til `True`, slik at QC-only rapporterer Rust `REVIEW` raskt i stedet for å bruke mange sekunder på gammel Python rescue.
+  - Negative controls bruker `fast_area=True` i fallback peak detection; NTC trenger ikke tung Gaussian/lmfit area-estimering i QC-only.
+- Målinger:
+  - Direkte Rust FLT3 primitive på representative filer falt fra ca `14-17s` process-spawn / `9-12s` persistent worker til ca `0.05-0.70s` direkte.
+  - Inne i Python-runner ligger Rust-loggene nå typisk rundt `0.0-1.3s`.
+  - `004__NTC_ITD...` gikk fra ca `35.7s` til ca `0.9s`, fortsatt `PASS (negative_control_no_relevant_peaks)`.
+  - `013__25OUM12394...` gikk fra ca `11.8s` etter Rust-fix til ca `1.1s` med QC-only template-rescue-skip, fortsatt `REVIEW`.
+  - 15-filers spread med `4` workers gikk til `real 19.90s`, samme QC-resultat som før (`13 PASS`, `2 REVIEW`, `0 FAIL`).
+  - 30-filers spread med `6` workers gikk til `real 29.35s`, `30` raw, `29` analysert, `23 PASS`, `6 REVIEW`, `0 FAIL`; MQ/vann ble filtrert ut.
+- Verifisering:
+  - `cargo test -p fraggler-core select_ladder_peaks_keeps_gs500rox_out_of_liz_baseline_lanes -- --nocapture`: ok
+  - `cargo test --workspace`: ok
+  - `cargo build --release -p fraggler-cli`: ok, og release-binæren ble kopiert til lokal `bin/fraggler-cli`
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py core/rust_bridge.py core/analysis.py core/utils.py`: ok
+  - `python3 -m pytest tests/test_water_filter.py`: `2 passed`
+- Viktig kontrakt videre:
+  - Normal FLT3 default er fortsatt `ROX500/GS500ROX`, `DATA105` foretrukket med `DATA4` fallback.
+  - QC-only kan skippe template-rescue for fart, men produksjonsløp skal ikke gjøre det uten eksplisitt env/valg.
+  - Clonality LIZ/ROX-baner skal ikke påvirkes av FLT3 GS500ROX-spesialiseringen.
+
+## 2026-05-09 - FLT3 review images and control notes
+- Bruker presiserte:
+  - `NTC` er `No Template Control` og tilsvarer negativ kontrollfil.
+  - `GS500ROX` er bygget opp som en ladder-familie på samme måte som `LIZ500_250`, men med annen dye/channel/data og derfor egne forventede tider og signalmønstre.
+- Oppdatert prosjektminnet med denne kontrakten.
+- Laget store PNG-reviewbilder fra dagens ROX500/GS500ROX-motor i `/private/tmp/hemafrag_rox500_review_images_current/`:
+  - `01_GOOD_TKD_PASS.png`
+  - `02_GOOD_ITD_PASS_WITH_CANDIDATES.png`
+  - `03_NTC_NEGATIVE_CONTROL_PASS.png`
+  - `04_REVIEW_ITD_013.png`
+  - `05_REVIEW_D835_015.png`
+  - `06_REVIEW_NTC_RATIO_030.png`
+- Hvert bilde viser GS500ROX ladder-fit med valgte ladderpeaks, full sampletrace og zoomet samplevindu for manuell review.
+
+## 2026-05-10 - FLT3 ladder-only QC direction
+- Bruker presiserte at målet nå er bra ladder-fit og gode/nøyaktige rapporter, ikke automatisk sample peak-calling i QC-løpet. Sampletopper velges av bruker/operator.
+- Oppdatert prosjektminnet med kontrakten: ROX500 QC skal være ladder-fit/QC-only; ratio skal ikke fylles ut som auto-fasit i QC.
+- Implementerte `HEMAFRAG_FLT3_LADDER_ONLY_QC` i `core/analyses/flt3/pipeline.py`:
+  - `_build_entry_from_candidate()` analyserer ladder/sizing, men hopper over sample peak detection når env er satt.
+  - `PeakQC` settes til `not_evaluated_ladder_only`.
+- ROX500 QC-runneren setter ladder-only mode i sin midlertidige env:
+  - `RustWTBP`, `RustMutantBPs`, `DetectedWTBPs`, `DetectedMutantBPs`, `WT_bp`, area-felt og `Ratio` blankes i QC-output.
+  - `QCStatus` blir `PASS`/`REVIEW` basert på ladder-QC, med `QCReason=ladder_qc_ok` når ladder er god.
+  - HTML-rapporten sier eksplisitt at sample peak detection og ratio ikke evalueres i denne QC-only runnen.
+- Verifisering:
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py`: ok
+  - `python3 -m pytest tests/test_water_filter.py`: `2 passed`
+  - smoke `--limit 4 --workers 2` mot `/private/tmp/hemafrag_flt3_rox500_sample_input`: `4 PASS`, alle `PeakQC=not_evaluated_ladder_only`, sample peak-/ratiofelt blanke.
+- Laget nye ladder-only PNG-reviewbilder i `/private/tmp/hemafrag_rox500_ladder_only_images_current/`, uten sampletrace eller sample peaklabels.
+
+## 2026-05-10 - FLT3 ROX500 ladder-only 80-file probe
+- Kjørte ROX500/GS500ROX ladder-only QC-probe mot `/Volumes/T7 Shield/DATA/flt3` for 2025/2026 med `--limit 80`, output i `/private/tmp/hemafrag_rox500_ladder_only_probe80`.
+- Resultat: `80` analysert, `75 PASS`, `5 REVIEW`, `0 FAIL`; `66` filer med `1s` injection og `14` med `3s`.
+- Alle analyserte rader hadde `PeakQC=not_evaluated_ladder_only`, som bekrefter at QC-løpet nå evaluerer ladder/sizing uten å fylle sample peak-/ratiofelt som auto-fasit.
+- Mønsteret var nyttig:
+  - Vanlige ITD/TKD-filer passet stort sett godt med lineær R2 rundt `0.9999`.
+  - To undiluted ITD-filer fra `C990RHN2` ble borderline review med plausible, men litt høyere lineære residualer (`linear max` ca `5.2-6.0 bp`).
+  - Tre `C990RHLW` ITD/ratio-kontroller fikk katastrofal GS500ROX-fit (`linear max` ca `69-81 bp`, R2 ca `0.91-0.94`).
+- Viktig motorlæring: Rust guardrail avviste de katastrofale `C990RHLW`-kandidatene med `GS500ROX first anchor too late`, men Python fallback laget likevel en komplett, dårlig `auto_full`-fit som rapporten kunne tegne. Neste fix bør bevare Rust guardrail-reason og unngå å presentere en fallback-fit som om den er en reell ladderløsning i GS500ROX QC.
+- Laget store ladder-only reviewbilder i `/private/tmp/hemafrag_rox500_ladder_only_probe80_images/` med tre gode og fem review-eksempler for manuell sammenligning.
+
+## 2026-05-10 - FLT3 GS500ROX guardrail hydration fix
+- Fikset konkret årsak til dårlige ROX500 QC-bilder: `GS500ROX` ble i `core/rust_bridge.py` først matchet som generell `ROX`, så guarded Rust-fits med `16` steg falt ut fordi generell ROX-hydrering forventer minst `19` steg.
+- Endret guardrail-hydrering slik at `GS500ROX` vurderes før generell ROX:
+  - komplett `16/16` GS500ROX-fit kan beholdes som Rust-eid selv om første anchor er litt sen (`first anchor too late`)
+  - dette krever god lineær QC (`linear max <= 4.75`, `linear mean <= 1.90`, `linear R2 >= 0.99975`), spline max `<= 1.0 bp`, span minst `2500`, og sen tail/500-dekning (`last anchor >= 4500`)
+  - fits uten sen tail får fortsatt ikke passere guardrailen
+- La til `tests/test_gs500rox_guardrail.py` for å sikre at C990RHLW-lignende guarded GS500ROX-fit kan hydreres før generell ROX-regel, og at tidlig/manglende tail fortsatt avvises.
+- Verifisering:
+  - `python3 -m py_compile core/rust_bridge.py tests/test_gs500rox_guardrail.py`: ok
+  - `python3 -m pytest tests/test_gs500rox_guardrail.py tests/test_water_filter.py`: `4 passed`
+  - målrettet 5-filers probe mot tre C990RHLW-katastrofer + to RHN2-borderline: C990RHLW gikk til `3 PASS`, RHN2 ble fortsatt `2 REVIEW`.
+  - ny 80-filers ladder-only probe mot T7 gikk fra `75 PASS / 5 REVIEW` til `78 PASS / 2 REVIEW`; de tre tidligere C990RHLW-fallbackfeilene er nå `PASS`, mens de to ekte borderline RHN2-filene fortsatt er `REVIEW`.
+- Ny 80-filers output: `/private/tmp/hemafrag_rox500_ladder_only_probe80_guardrail_fix`.
+
+## 2026-05-10 - FLT3 GS500ROX Rust-only start repair
+- Bruker presiserte at FLT3 ladder-fit skal være `100%` Rust, ikke Python ladder fallback.
+- Deaktiverte Python ladder-fitting fallback for `analysis_id=flt3` + `GS500ROX` i `core/analysis.py`; hvis Rust ikke leverer fit, skal filen heller bli review/fail enn å få en Python-fallback ladder.
+- Oppdaterte QC-logglabel for denne banen fra `Python API` til `Rust-only ladder engine`, slik at kjøringer ikke ser ut som Python-fit.
+- Flyttet C990RHLW-startfiksen inn i Rust:
+  - ny `repair_gs500rox_start_anchor_sequence()` i `fraggler-core`
+  - den kjører i både `select_best_combination()` og post-preview repair
+  - post-preview repair bruker nå full ladder candidate-pool, ikke bare thinned/reduced fit-pool, slik at svake men ekte startankere rett etter blob kan vurderes
+  - aksept krever forbedret lineær QC, trygg `linear max/mean/R2`, komplett `16/16` GS500ROX og sen `490/500`-tail
+- Konkret effekt på `NTC_ITD_1-10__100125_H01_C990RHLW.fsa`:
+  - første anchor flyttet `1728 -> 1701`
+  - `LadderLinearMaxBp` ca `3.763 -> 3.003`
+  - `LadderLinearMeanBp` ca `1.548 -> 1.290`
+  - `LadderLinearR2` ca `0.999849 -> 0.999895`
+- Verifisering:
+  - `cargo test -p fraggler-core repair_gs500rox_start_anchor_sequence_moves_late_blob_anchor_to_cleaner_family -- --nocapture`: ok
+  - `cargo build --release -p fraggler-cli`: ok
+  - `python3 -m py_compile core/analysis.py core/rust_bridge.py`: ok
+  - 5-filers targeted Rust-only probe: `3 PASS`, `2 REVIEW`; ingen Python fallback
+  - 80-filers T7 ladder-only probe til `/private/tmp/hemafrag_rox500_ladder_only_probe80_rust_only`: `78 PASS`, `2 REVIEW`, `0 FAIL`; reviewene er fortsatt de to RHN2 undiluted ITD-filene med høyere lineær restfeil.
+
+## 2026-05-10 - FLT3 Rust-first architecture cleanup
+- Videreført brukerbeslutningen om at FLT3 skal ligge nær klonalitetens arkitektur: Rust eier ladder/sizing-motoren, Python eier orkestrering, kontroll-/assaymetadata og rapport.
+- Endret normal `GS500ROX` produksjonspipeline:
+  - `_should_attempt_flt3_template_rescue()` returnerer nå `False` for default `GS500ROX` Rust-only mode
+  - gamle Python short-trace partial rescue og lenient ROX fallback kjøres ikke i default `GS500ROX`
+  - legacy-rescue kan slås på eksplisitt med `HEMAFRAG_FLT3_ENABLE_PYTHON_LADDER_RESCUE=True`
+- Utvidet ROX500 QC-rapporten med eksplisitte review-artefakter:
+  - `FLT3_ROX500_QC_Review_Rows.csv`
+  - workbook-fanen `Review_Rows`
+  - `review_row_count` og `review_csv` i JSON/payload
+- Verifisering:
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py core/analysis.py core/rust_bridge.py`: ok
+  - `python3 -m pytest tests/test_gs500rox_guardrail.py tests/test_water_filter.py`: `4 passed`
+  - 5-filers ROX500 QC-probe til `/private/tmp/hemafrag_gs500_rust_contract_review_probe5`: `3 PASS`, `2 REVIEW`, `review_row_count=2`, workbook har `Review_Rows`.
+
+## 2026-05-10 - FLT3 ROX500 larger probes and channel-report fix
+- Kjørte større ROX500/GS500ROX ladder-only QC-prøver for å se hvor motoren står:
+  - 250-filers T7-probe mot `/Volumes/T7 Shield/DATA/flt3` for 2025/2026 til `/private/tmp/hemafrag_rox500_rust_contract_probe250`: `248 PASS`, `2 REVIEW`, `0 FAIL`, `250` analysert, `review_row_count=2`.
+  - De to reviewene var fortsatt RHN2 undiluted ITD-filer med borderline lineær QC (`linear max` ca `5.2-6.0 bp`), ikke katastrofale feil.
+  - 120-filers spread-symlink over eldre/nyere T7-materiale til `/private/tmp/hemafrag_rox500_rust_contract_spread120_final`: `120` raw, `51` analysert, `30 PASS`, `17 REVIEW`, `4 FAIL`, `review_row_count=21`.
+- Fikset en konkret exception i eldre 2024 D835 NTC:
+  - `003__NTC_D835_KUTT__010224_D03_2024_02_01_FLT3_ef.fsa` ga før `KeyError: None`.
+  - Årsak: `analyse_fsa_rox()` opprettet gammel `FsaFile` uten eksplisitt size-standardkanal for `GS500ROX`; autodetect kunne returnere `None`.
+  - Løsning: `core/analysis.py` leser ABI `DATA*`-kanaler først og velger eksplisitt `DATA105` når den finnes, ellers `DATA4` før Rust-kallet.
+  - Etter fix blir samme fil `REVIEW` med Rust GS500ROX-fit, ikke Python-exception.
+- Strammet QC-rapportering:
+  - `preferred_size_standard_channel` er nå foretrukket kanal (`DATA105`), mens `size_standard_channel_counts` viser faktisk kanalfordeling.
+  - Fail-rader leser også ABI-kanal direkte, slik at eldre filer uten `DATA105` ikke feilrapporteres som `DATA105`.
+  - Final spread-run viser `size_standard_channel_counts={"DATA4": 51}` og ingen DIT-output.
+- Verifisering:
+  - `python3 -m py_compile core/analysis.py scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py`: ok
+  - `python3 -m pytest tests/test_gs500rox_guardrail.py tests/test_water_filter.py`: `4 passed`
+  - Final workbook har arkene `All_Analyzed_QC`, `Review_Rows`, `Summary_By_Injection`, `Raw_Metadata_All_FSA`.
+  - Outputfiler: CSV/XLSX/HTML/JSON, raw metadata, summary by injection og review rows; ingen DIT-rapporter i QC-only.
+
+## 2026-05-10 - FLT3 3730-only spread probe
+- Bruker presiserte at mange 2024 FLT3-filer ble kjørt på `3130`, så modellvalidering for nå skal bare bruke `3730`.
+- Fant og fikset en filterfeil i `scripts/run_flt3_liz500_qc_all_injections.py`:
+  - `--require-run-name-contains 3730` matchet tidligere bare filsti/mappenavn, og ga derfor `0` rader på `/Volumes/T7 Shield/DATA/flt3`.
+  - Filteret matcher nå også ABI-metadatafeltene `RunN1`, `MCHN1`, `HCFG3`, `MODL1` og `RPrN1`.
+  - `limit` brukes nå inkrementelt i candidate-filteret, slik at quick probes ikke trenger å metadata-lese alle filer før de stopper.
+- ABI-verifisering:
+  - 2024-eksempel hadde `HCFG3=3130xl`, `MCHN1=3130DNA-...`, `RunN1=Run_3130DNA...`.
+  - 2025/2026-eksempel hadde `HCFG3=3730xl`, `MCHN1=3730DNA-...`, `MODL1=3730`, `RunN1=Run_3730DNA...`.
+- Første 500 3730-filer fra T7 (`--year 2025 --year 2026 --require-run-name-contains 3730 --limit 500`) til `/private/tmp/hemafrag_rox500_3730_probe500`:
+  - `500` analysert, `430 PASS`, `70 REVIEW`, `0 FAIL`.
+  - Alle analyserte rader var `DATA4`, `PeakQC=not_evaluated_ladder_only`.
+  - Reviewene klumpet seg i få run, spesielt 2025-02-18/21; bare `4` rader hadde `poor_gs500rox_linear_fit > 6 bp`, mens mange var borderline `~5.3-5.9 bp` med intern konsistent Rust-fit.
+  - Store inspeksjonsbilder: `/private/tmp/hemafrag_rox500_3730_probe500_images/`.
+- Spredt 500-filers 3730-sample over 2025/2026 via symlink-input `/private/tmp/hemafrag_rox500_3730_spread500_input`, output `/private/tmp/hemafrag_rox500_3730_spread500`:
+  - `500` analysert, `367 PASS`, `128 REVIEW`, `5 FAIL`.
+  - Injeksjon: `278` med `1s`, `221` med `3s`, `1` med `2s`.
+  - Kanal: `497 DATA4`, `3 DATA105`.
+  - Lineær QC for analyserbare fits: p50 `4.641 bp`, p90 `5.303 bp`, p95 `5.569 bp`, max `90.500 bp`.
+  - Harde FAIL-caser:
+    - `170__25OUM11534_p2_TKD-kutting__240725_B05_H9C0VC6E.fsa`
+    - `196__IVS-P001_TKD_KUTTING__080825_G04_H9C0ZIZ2.fsa`
+    - `056__25OUM04888_p1_RATIO__250324_C04_H9C0VADZ.fsa`
+    - `188__NTC_TKD_kutting__010825_F04_H9C0ZIZF.fsa`
+    - `495__26OUM04955_ITD_ratio_250326_D08_H9H1DHZH.fsa`
+  - Verste REVIEW-caser peker på to hovedfeilmodi: `blob_dominated_start` og `poor_gs500rox_linear_fit`; `198__25OUM12253_RATIO__130825_A03_C990WO65.fsa` hadde ekstrem `linear max=90.500 bp`.
+  - Store inspeksjonsbilder for `5 FAIL` + `7` verste REVIEW ligger i `/private/tmp/hemafrag_rox500_3730_spread500_images/`.
+- Sandboxnotat: prosessparallellisering ble blokkert av lokal sandbox (`PermissionError`), så disse T7-probene falt tilbake til sekvensiell kjøring. App/vanlig terminal med tillatt multiprocessing bør fortsatt kunne bruke `--workers`.
+- Verifisering:
+  - `python3 -m py_compile scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py`: ok
+  - QC-only-output skrev CSV/XLSX/HTML/JSON, raw metadata, summary by injection og review rows; ingen DIT-rapporter ble generert.
+- Brukerreview av første fire bilder:
+  - bilde 1 og 3 mangler ladder og er menneskelig/prep-feil, ikke motoroptimaliseringsmål.
+  - bilde 2 ser visuelt perfekt ut, men står `analysis_failed`; dette er falsk hard fail/guardrail-hydrering som bør fikses.
+  - bilde 4 har bare feil `35 bp`; riktig anchor skal litt tidligere og på omtrent samme signalstyrkenivå som `50 bp`-peaken.
+
+## 2026-05-10 - FLT3 GS500ROX compact-span and 35 bp repair
+- Fikset de to reelle brukerreviewede casene fra 3730-bildene:
+  - `495__26OUM04955_ITD_ratio_250326_D08_H9H1DHZH.fsa` var visuelt perfekt, men ble `analysis_failed` fordi Python guardrail krevde `span >= 2500` og sen tail `>=4500`; Rust-fiten var komplett `16/16`, lineært sterk (`max 3.888 bp`, `mean 1.778 bp`, `R2 0.999822`) og hadde kompakt 3730-span `2489`. Guardrail-hydrering tillater nå smalt slike kompakte, sterke GS500ROX 3730-fits når første anchor er trygg og siste anchor er minst rundt `3900`.
+  - `493__26OUM04662_ITD_ratio_250326_A10_H9H1DHZH.fsa` valgte før svak `35 bp` på scan `1509`; Rust GS500ROX start-repair får nå søke litt tidligere og brukes også på kompakte 3730-fits med tail rundt `3900+`. Den flyttet `35 bp` til scan `1454`, med QC `linear max 10.268 -> 2.998 bp`, `mean 2.314 -> 1.601 bp`, `R2 0.999531 -> 0.999856`.
+- Target QC på de to filene til `/private/tmp/hemafrag_rox500_target_fix_output_v2`: `2 PASS`, `0 REVIEW`, `0 FAIL`.
+- Oppdaterte kontrollbilder:
+  - `/private/tmp/hemafrag_rox500_target_fix_images/01_UPDATED_493__26OUM04662_ITD_ratio_250326_A10_H9H1DHZH.png`
+  - `/private/tmp/hemafrag_rox500_target_fix_images/02_UPDATED_495__26OUM04955_ITD_ratio_250326_D08_H9H1DHZH.png`
+- Verifisering:
+  - `python3 -m py_compile core/rust_bridge.py`: ok
+  - `cargo test -p fraggler-core repair_gs500rox_start_anchor_sequence_moves_late_blob_anchor_to_cleaner_family -- --nocapture`: ok
+  - `cargo build --release -p fraggler-cli`: ok
+  - `python3 -m pytest tests/test_gs500rox_guardrail.py tests/test_water_filter.py`: `5 passed`
+
+## 2026-05-10 - FLT3 3730 spread500_b learning run
+- Laget en ny deterministisk, spredt 500-filers 3730-sample fra `/Volumes/T7 Shield/DATA/flt3` 2025/2026 etter compact-span/35bp-fiks.
+  - Input symlinks: `/private/tmp/hemafrag_rox500_3730_spread500_b_input`
+  - Output: `/private/tmp/hemafrag_rox500_3730_spread500_b`
+  - Kandidatgrunnlag: `7311` ikke-vann FLT3 3730-filer.
+- Resultat:
+  - `500` analysert
+  - `455 PASS`, `41 REVIEW`, `4 FAIL`
+  - `review_row_count=45`
+  - kanal: `497 DATA4`, `3 DATA105`
+  - injeksjon: `281` 1s, `217` 3s, `2` 2s
+  - lineær max: p50 `3.6605 bp`, p90 `4.9009 bp`, p95 `5.22085 bp`, max `22.924 bp`
+  - runtime sekvensielt i sandbox: `real 278s`; multiprocessing ble blokkert med `PermissionError`.
+- Dette er tydelig bedre enn forrige spredte 500-runde (`367 PASS`, `128 REVIEW`, `5 FAIL`). De siste fiksene fjernet flere falske hard-fails og flyttet mange borderline-caser til PASS.
+- Gjenværende hard FAIL:
+  - `187__IVS-P001_TKD_kutting__060825_F04_H9C0ZIZ8.fsa`
+  - `193__NTC_ITD-ufort__080825_F01_H9C0ZIZ2.fsa`
+  - `092__25OUM08172_p2_ITD_ufort__220525_E02_H9C0ZJ3R.fsa`
+  - `293__25OUM16353_p1_ITD__231025_A01_H920G05E.fsa`
+- Høyeste REVIEW:
+  - `192__25OUM12104_p2_TKD_KUTTING__080825_B04_H9C0ZIZ2.fsa`: `linear max 22.924`, `blob_dominated_start`
+  - `339__NTC_D835__241125_D03_C92141SO.fsa`: `linear max 21.811`, `blob_dominated_start`
+  - `219__25OUM13249_Itd_Ratio__290825_F04_H9C0ZJF6.fsa`: `linear max 16.626`, dårlig lineær fit
+- Inspeksjonsbilder for `4 FAIL` + `6` høyeste REVIEW ligger i `/private/tmp/hemafrag_rox500_3730_spread500_b_images/`.
+- Læring: etter compact-span/35bp-fiks er majoriteten av 3730 GS500ROX nå stabil. Neste modellarbeid bør være visuell triage av de nye 10 bildene for å skille manglende ladder/prep-feil fra ekte blob/start- og lineær-fit motorfeil.
+- Brukerreview av første fem bilder:
+  - bilde 1 (`187__IVS-P001_TKD_kutting__060825_F04_H9C0ZIZ8.fsa`) mangler ladder og er prep/menneskelig feil, ikke motortreningscase.
+  - bilde 2 (`193__NTC_ITD-ufort__080825_F01_H9C0ZIZ2.fsa`) er skikkelig feil: riktig `35 bp` skal starte der Rust nå har satt `160 bp`.
+  - bilde 3 (`092__25OUM08172_p2_ITD_ufort__220525_E02_H9C0ZJ3R.fsa`) er nesten riktig, men `340 bp` skal være der `350 bp` er satt, og `350 bp` skal litt senere; dagens `340 bp` er satt på blob.
+  - bilde 4 (`293__25OUM16353_p1_ITD__231025_A01_H920G05E.fsa`) starter altfor sent: riktig `35 bp` er der Rust nå har satt `150 bp`.
+  - bilde 5 (`192__25OUM12104_p2_TKD_KUTTING__080825_B04_H9C0ZIZ2.fsa`) har svake signaler, men samme startfeil: riktig `35 bp` skal starte der Rust nå har satt `150 bp`.
+- Ny motorlæring fra reviewen: vi trenger en smal GS500ROX “late family rebase” som kan tolke valgt `150/160 bp` som ekte `35 bp` når startankerne mangler/er blob, ikke bare flytte første anchor litt tidligere. Dette er en større family-shift-feil enn compact 35bp-repair.
+
+## 2026-05-10 - FLT3 ROX500 larger T7 learning runs
+- Kjørte en større 2000-filers 3730-sample fra `/Volumes/T7 Shield/DATA/flt3` via symlink-input:
+  - Input: `/private/tmp/hemafrag_rox500_3730_spread2000_input`
+  - Output: `/private/tmp/hemafrag_rox500_3730_spread2000`
+  - Resultat: `2000` analysert, `1822 PASS`, `160 REVIEW`, `18 FAIL`
+  - `review_row_count=178`
+  - kanal: `1984 DATA4`, `16 DATA105`
+  - injeksjon: `1129` 1s, `8` 2s, `863` 3s
+  - lineær max: p50 `3.6725 bp`, p90 `4.9436 bp`, p95 `5.20185 bp`, p99 `6.50268 bp`, max `90.500 bp`
+  - runtime sekvensielt i sandbox: `real 1114s`; multiprocessing ble blokkert med `PermissionError`.
+- Laget inspeksjonsbilder for alle `18 FAIL` + `12` verste REVIEW:
+  - `/private/tmp/hemafrag_rox500_3730_spread2000_images/`
+  - indeks: `/private/tmp/hemafrag_rox500_3730_spread2000_images/image_index.csv`
+- Kjørte deretter en ny, ikke-overlappende 3000-filers blokk fra samme T7-kandidatgrunnlag:
+  - Input: `/private/tmp/hemafrag_rox500_3730_next3000_input`
+  - Output: `/private/tmp/hemafrag_rox500_3730_next3000`
+  - Kandidatgrunnlag ved setup: `7423` ikke-vann FLT3-kandidater etter 2024/3130 og vann/MQ-filter
+  - Resultat: `3000` analysert, `2694 PASS`, `274 REVIEW`, `32 FAIL`
+  - `review_row_count=306`
+  - kanal: `3000 DATA4`
+  - injeksjon: `1529` 1s, `1471` 3s
+  - lineær max: p50 `3.619 bp`, p90 `4.984 bp`, p95 `5.33895 bp`, p99 `7.59309 bp`, max `90.500 bp`
+  - runtime sekvensielt i sandbox: `real 1582s`; multiprocessing ble blokkert med `PermissionError`.
+- Laget inspeksjonsbilder for alle `32 FAIL` + `16` verste REVIEW:
+  - `/private/tmp/hemafrag_rox500_3730_next3000_images/`
+  - indeks: `/private/tmp/hemafrag_rox500_3730_next3000_images/image_index.csv`
+- Mønster fra de store kjøringene:
+  - Majoriteten av 3730 GS500ROX/ROX500-ladder passerer nå stabilt: samlet siste to store kjøringer `4516/5000 PASS` (`90.3%`), `434 REVIEW`, `50 FAIL`.
+  - Harde FAIL er fortsatt nesten utelukkende `analysis_failed` etter Rust selection + Python hydration guardrail, ofte svake/manglende ladder eller kjente start-family feil.
+  - REVIEW/FAIL klumper seg i få runs, særlig `Run_3730DNA_2025-08-11_11-47_0067`, `Run_3730DNA_2025-08-11_13-41_0068`, og `Run_3730DNA_2025-09-03_17-00_0121`.
+  - Gjentakende ekstremcase `25OUM12253_RATIO__130825_A03_C990WO65.fsa` ligger fortsatt på `linear max 90.500 bp`, og bør brukes som P0 visuell modellcase.
+  - Flere `NTC`, `IVS-0000`, `IVS-P001`, `TKD_kutting` og `D835`-kontroller med svakt signal må skilles tydelig fra motorfeil; NTC er negativ kontroll, mens `MQ`/`V` er vann og skal ikke forventes å gi ladder/sample-signal.
+- Neste anbefalte motorarbeid: implementer en smal GS500ROX late-family rebase i Rust for caser der valgt `150/160 bp` åpenbart er sann `35 bp`, og en separat high-end 340/350 de-blobber for caser der `340` settes på blob rett før ekte `340/350`-par.
+
+## 2026-05-11 - FLT3 ROX500 fail-triage og 6000 scan guardrail
+- Bruker gikk gjennom `50` FAIL-bilder i `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage.html` og merket `28` som manglende ladder / menneskelig prep-feil: `1,3,4,5,6,7,10,14,16,17,18,19,22,23,24,25,26,28,34,35,36,37,43,44,45,46,47,50`. Disse skal ikke brukes som motortreningscaser.
+- Oppdaterte lokal triage-index med `human_triage=missing_ladder_human_error` eller `needs_review`, og laget `fail_triage_remaining_only.html` med kun de `22` gjenværende læringskandidatene.
+- Diagnostikk på de `22` gjenværende FAILene viste `17` fra samme run `Run_3730DNA_2025-08-11_11-47_0067`, så dette er delvis run-/plate-spesifikk startfamilie/blob-problematikk, ikke 22 uavhengige motorfeil.
+- Tre gjenværende caser hadde Rust-valgte GS500ROX-familier som gikk for langt ut (`last` ca `10918`, `11448`, `12438` scans). Implementerte derfor en eksplisitt GS500ROX absolutt grense på `6000` scans i Rust review-assessment (`anchor_beyond_scan_limit`) og Python bridge hydration/validation.
+- Verifisering: `python3 -m pytest tests/test_gs500rox_guardrail.py -q` passet (`5 passed`), og `cargo test -p fraggler-core --quiet` passet (`74 + 5` tests).
+- Etter brukerobservasjon om at 8.11.2025-filene ofte setter `160 bp` rundt `1500` scans, ble GS500ROX strammet videre:
+  - Rust candidate-pool filtrerer nå bort GS500ROX-kandidater før `1300` scans.
+  - Python bridge avviser GS500ROX-hydrering hvis første anchor er før `1300`.
+  - Rust review-assessment flagger `poor_gs500rox_linear_fit`, `short_gs500rox_anchor_span` og komplett fit med tidlig tail (`tail_missing`) for GS500ROX.
+- Rerun på de `22` gjenværende FAIL-læringskandidatene etter 1300-floor:
+  - `under1300=0`, så tidlige blobs er fjernet fra valgt familie.
+  - `21/22` får nå Rust review-reason; de `17` 8.11.2025-casene flagges som `poor_gs500rox_linear_fit;short_gs500rox_anchor_span;tail_missing`.
+  - Dette bekrefter at 1300-floor er nødvendig, men ikke nok: 8.11 trenger fortsatt late-family rebase eller sterkere familie-/tailmodell, fordi motoren nå starter rundt `1523-1672` og kaller det `35 bp` selv når bruker mener dette egentlig er rundt `150/160 bp`.
+  - Ny lokal triage-side: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_remaining_floor1300.html`.
+- Bruker markerte triage-rad `11` som akseptabel: “så bra vi får den til å bli”. Den har `first=1711`, `last=4853`, `span=3142`, `linear max=5.68`, `mean=2.12`, `R2=0.999703`, og beholdes som accepted-limit, ikke videre tuning target.
+- Bruker observerte at flere GS500ROX-fits bommer fordi tidlige gap er for stramme, særlig `35-50 bp` og `100-139 bp`. Justerte Rust `gs500_start_penalty` slik at `35-50` tåler lengre gap før high-penalty, og `100-139` får et bredere, lavvektet vindu.
+- Rerun på de `22` etter gap-relax:
+  - `7/22` endret valgt fit.
+  - Rad `12` forbedret tydelig (`linear max 6.09 -> 4.78`, `mean 2.20 -> 1.82`, `R2 0.999668 -> 0.999784`) og ble accepted-limit.
+  - Rad `11` forble uendret og accepted-limit.
+  - Ny lokal triage-side: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_remaining_gap_relax.html`.
+- Etter brukerønske om å prøve `35 bp`/`50 bp` som start rundt `1400-1600`, ble GS500ROX-startscoringen gjort mer eksplisitt:
+  - `35 bp` får mykt startvindu `1400-1600` scans, med lav late-penalty etter `1600` og hardere tidlig-penalty før `1400`.
+  - `35-50` gap high-penalty er utvidet videre, og `100-139` er fortsatt bredt/lavvektet.
+  - LIZ beholder gammel 16-step startpenalty; GS500ROX-regelen er ikke lenger koblet bare til `ladder_sizes.len() == 16`.
+- Rerun på samme `22` viste `3` endrede fits:
+  - Rad `11` forbedret (`first 1711 -> 1663`, `gap35_50 78 -> 126`, `linear max 5.68 -> 4.13`, `mean 2.12 -> 1.71`, `R2 0.999703 -> 0.999807`) og forblir accepted-limit.
+  - Rad `12` flyttet `first 1534 -> 1496`, `gap35_50 107 -> 145`, fortsatt accepted-limit (`linear max 4.62`).
+  - Rad `49` endret, men er fortsatt over `6000` og review/hard-fail-kandidat.
+  - Ny lokal triage-side: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_remaining_start_window.html`.
+- Testet en mer målrettet GS500ROX `35/50` start-pair repair som kan bytte de to første ankerne sammen i `1400-1660`-området, også når halen er kort. Dette er tryggere enn å bare senke gap-penalty globalt.
+- Rerun på samme `22` etter start-pair repair:
+  - `5/22` endret fit.
+  - Flere 8.11-caser fikk bedre `linear mean`/`R2`, f.eks. rad `9/31` gikk `linear mean 9.15 -> 7.59` og `R2 0.99354 -> 0.99470`, men `linear max` er fortsatt altfor høy (`~30 bp`).
+  - Dette viser at `35/50`-pair alene ikke løser 8.11-feilfamilien. Neste riktige modellspor er en større GS500ROX startblokk-repair (`35/50/75/100/139`) eller en tail-forankret familie-rebase, ikke bare mer løs gapstraff.
+  - Ny lokal triage-side: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_remaining_start_pair.html`.
+- Implementerte og testet en smal GS500ROX startblokk-repair for `35/50/75/100/139`:
+  - Trigges bare på dårlige GS500ROX-fits (`linear max > 8` eller `linear mean > 3.5`).
+  - Kandidater tas fra `1400` til før `150 bp`, begrenset rundt forventet lineær startblokk, maks `8` kandidater per steg.
+  - Aksepteres bare ved tydelig lineær gevinst og fortsatt brukbar QC-profil.
+- Rerun på samme `22`:
+  - `10/22` endret fit.
+  - Flere 8.11-caser forbedret tydelig, f.eks. rad `13/38` (`linear max 27.66 -> 20.97`, `mean 14.36 -> 9.80`, `R2 0.988 -> 0.994`) og rad `30` (`linear max 16.80 -> 14.81`, `mean 8.32 -> 5.71`, `R2 0.996 -> 0.998`).
+  - Casene er fortsatt review, men startblokk er klart bedre retning enn bare `35/50` pair.
+  - Ny lokal triage-side: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_remaining_start_block.html`.
+- Testet tail-forankret GS500ROX startblokk-rebase ved å estimere lineær scan-akse fra bakre del av valgt fit og søke startblokken rundt den aksen.
+  - Rerun på samme `22` ga `0` endringer utover startblokk-resultatet.
+  - Læring: dagens tail i 8.11 short-tail-casene er ikke en trygg fasit alene; halen er sannsynligvis også forskjøvet/for kort. Neste reelle motorsteg må være en full-family rebase som søker startblokk og hale sammen, ikke bare tail-ankret start.
+  - Ny lokal triage-side: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_remaining_tail_rebase.html`.
+- Implementerte en guardet GS500ROX full-family rebase:
+  - Trigges kun på tydelig dårlige GS500ROX review-cases (`linear max > 12` eller `linear mean > 5`).
+  - Bygger små kandidatsett rundt en bred lineær akse for alle 16 GS500ROX-steg, bruker beam-pruning, og aksepterer bare kandidater med stor lineær gevinst og brukbar QC-profil.
+- Rerun på samme `22`:
+  - `7` ekstra endringer over tail-rebase.
+  - Rad `41` forbedret kraftig (`linear max 40.6 -> 12.4`, `mean 14.9 -> 7.38`, `R2 0.983 -> 0.997`).
+  - Rad `39` forbedret (`linear max 18.0 -> 9.19`, `mean 8.84 -> 4.21`, `R2 0.995 -> 0.999`).
+  - Fortsatt review, men full-family rebase er klart riktig motorretning for 8.11 short-tail/late-family-casene.
+  - Ny lokal triage-side: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_remaining_full_rebase.html`.
+- Bruker påpekte at tidligere HTML fortsatt brukte gamle PNG-er. Regenererte derfor nye full-rebase-bilder direkte fra dagens Rust `best_scan_indices`:
+  - Full/wide: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_current_full_rebase_figures.html`
+  - Zoomet relevant ladder-region uten 6000-utstrekking: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_current_full_rebase_zoomed.html`
+- Undersøkte 8.11-radene `13,15,20,21,27,29,30,31,32,33,38,39,41,42` der baseline ser ut til å stoppe:
+  - Alle har faktisk `DATA1-DATA4` lengde `3533` scans i ABI-dataene; `DATA5-DATA8` er `429`.
+  - Dette er ikke plotting eller vår baseline-korrigering som klipper; den aktuelle 8.11-kjøringen ser ut til å være kort/annen run-konfigurasjon. Derfor stopper signalet rundt scan `3533`, og modeller som forventer tail til `3900-4500` må behandle disse som short-run/short-tail.
+- Bruker bestemte at 8.11 short-run/interrupted-scan-filene droppes fra videre læringspanel. Regenererte filtrert HTML med y-akse cap `2500`:
+  - `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_current_full_rebase_filtered_y2500.html`
+  - Droppet `17` interrupted-scan cases (`trace_len=3533`, alle fra `Run_3730DNA_2025-08-11_11-47_0067`).
+  - Beholdt `5` full-length cases (`trace_len=12461`): rad `11`, `12`, `40`, `48`, `49`.
+- Etter brukerreview av filtrerte bilder ble GS500ROX baseline-lanes lagt til i Rust:
+  - GS500ROX beregner nå `morph_open_151` og `SNIP_40` baseline-korrigerte spor, men bruker dem som alternative kandidatbaner bare når default-fit har dårlig lineær QC.
+  - GS500ROX kandidatpool filtreres nå både under `1300` og over `6000` scans, slik at 6000-regelen håndheves før fit/plot, ikke bare i QC-review.
+  - Ny sammenligningsside med y-akse cap `2500`: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_baseline_lanes_y2500.html`.
+  - På de 5 full-length casene ble rad `48` forbedret fra `last=11448`, `linear max=25.06` til `last=4262`, `linear max=3.53`; rad `49` fra `last=11613`, `linear max=31.53` til `last=4513`, `linear max=3.48`.
+  - Rad `40` står fortsatt igjen som ekte problemcase (`linear max ~40.45`, `blob_dominated_start`, `tail_missing`), altså ikke løst av baseline alene.
+  - Verifisert med `python3 -m pytest tests/test_gs500rox_guardrail.py -q`, `cargo test -p fraggler-core --quiet`, og `cargo build --release -p fraggler-cli`.
+- Etter brukerpresisering om at clonality bruker morph/SNIP som vanlige kandidat-supplements, ble GS500ROX endret tilsvarende:
+  - `morph_open_151` og `SNIP_40` inngår nå i normal GS500ROX kandidatpool, ikke bare som alternative lanes ved dårlig fit.
+  - Scan-vinduet `1300..6000` brukes fortsatt på GS500ROX-kandidater fra alle baseline-spor.
+  - Ny test: `select_ladder_peaks_uses_gs500rox_baseline_candidate_supplements`.
+  - Ny side: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_baseline_supplements_y2500.html`.
+  - På de 5 full-length casene: rad `48`/`49` forblir gode (`linear max ~3.53/~3.48`), rad `40` forbedres fra `~40.45` til `~23.42` men er fortsatt review/problemcase, og rad `11` holder seg akseptabel (`~4.27`).
+  - Verifisert med målrettet Rust-test, `python3 -m pytest tests/test_gs500rox_guardrail.py -q`, `cargo test -p fraggler-core --quiet`, og `cargo build --release -p fraggler-cli`.
+- Etter brukerobservasjon om at `35 bp` fortsatt bommer litt, ble GS500ROX gitt en smal saturated-first-blob repair:
+  - Hvis første valgte anchor er saturert (`>=25000 RFU`) og en renere kandidat ligger rett før, kan bare `35 bp` flyttes dersom lineær QC ikke går materielt ned.
+  - Ny test: `repair_gs500rox_start_anchor_sequence_moves_saturated_first_blob_to_cleaner_neighbor`.
+  - Ny side: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_gs500rox_35_deblob_y2500.html`.
+  - På 5 full-length casene flyttet rad `12` `35 bp` fra `1515 -> 1496` og rad `49` fra `1559 -> 1538`. Rad `11`/`48` står uendret; rad `40` er fortsatt review/problemcase.
+  - Verifisert med målrettet Rust-test, `python3 -m pytest tests/test_gs500rox_guardrail.py -q`, `cargo test -p fraggler-core --quiet`, og `cargo build --release -p fraggler-cli`.
+- Bruker avviste `35 bp` saturated-first-blob-repairen visuelt og ba om å gå tilbake.
+  - Reverterte den siste repairen og tilhørende test.
+  - Beholder fortsatt baseline-supplements-versjonen med morph/SNIP i normal GS500ROX kandidatpool.
+  - Gå tilbake til siden: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_fail_triage/fail_triage_baseline_supplements_y2500.html`.
+  - Verifisert etter rollback med `python3 -m pytest tests/test_gs500rox_guardrail.py -q`, `cargo test -p fraggler-core --quiet`, og `cargo build --release -p fraggler-cli`.
+
+## 2026-05-11 - FLT3 ROX500 500-file review run etter baseline-supplements
+- Kjørte en ny stratifisert 500-filers full-length 3730-lignende ROX500 review-runde fra `/Volumes/T7 Shield/DATA/flt3/2025` og `2026`.
+  - Vann/MQ/V/blank ble filtrert ut; `NTC` ble beholdt som negativ kontroll.
+  - Short/interrupted traces `<6000` ble droppet (`5` funnet i første uttrekk).
+  - Output: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_large_review_2026-05-11/`.
+  - Review-panel: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_large_review_2026-05-11/review_panel.html`.
+- Resultat:
+  - `500` analysert
+  - `321 PASS`
+  - `179 REVIEW`
+  - `0 FAIL`
+  - runtime ca `456.9s` inkl. trace-filter og rendering
+- Review-årsaker:
+  - `blob_dominated_start`: `175`
+  - `poor_gs500rox_linear_fit`: `5`
+- Tolkning:
+  - De fleste review ser nå ut til å være QC/review-gate-kalibrering rundt `blob_dominated_start`, ikke nødvendigvis feil fit. Flere har god lineær QC (`max ~3.7-4.5`, R2 ~0.9998).
+  - De viktigste visuelle læringscasene er toppene med `poor_gs500rox_linear_fit`, særlig `25OUM13468_D835__050925_F04_C990WOJA.fsa` (`linear max 30.37`), `25OUM04792_p2_RATIO__250324_G04_H9C0VADZ.fsa` (`19.51`), `NTC_D835_06022026_D03_H9C0VCG8.fsa` (`10.50`), `NTC_TKD_kutting__010825_F04_H9C0ZIZF.fsa` (`8.17`) og `26OUM01826_Ratio_03022026_D04_H9C0VCGD.fsa` (`7.16`).
+- Brukerreview av bilde 1 (`25OUM13468_D835__050925_F04_C990WOJA.fsa`):
+  - Bruker ser ingen tydelige laddertopper og baseline ser dårlig ut.
+  - Merket i `analysis_rows.csv` og `panel_rows.csv` som `human_triage=missing_or_weak_ladder_not_training`.
+  - Skal ikke brukes som motor-læringscase; dette er mer sannsynlig svakt/manglende ladder/signal-prep enn fit-modellfeil.
+
+## 2026-05-11 - FLT3 ROX500 annoterte review-fikser
+- Bruker annoterte de første review-radene i 500-filerspanelet. Merket `25OUM13468_D835__050925_F04_C990WOJA.fsa`, `25OUM04792_p2_RATIO__250324_G04_H9C0VADZ.fsa` og `NTC_TKD_kutting__010825_F04_H9C0ZIZF.fsa` som manglende/svakt ladder-signal og ikke motortreningscaser.
+- Implementerte en GS500ROX `blob_dominated_start` waiver for komplette sterke fits: hvis eneste problem er startblob men lineær QC er sterk (`max <= 4.8`, `mean <= 2.25`, `R2 >= 0.99965`), fjernes review-årsaken. Dette gjør gode/akseptable blob-start-fits mindre støyende i review-listen.
+- Implementerte en ny GS500ROX shift-right startrepair for mettet første `35 bp`:
+  - Trigger bare når første anchor er ekstrem høyde-outlier mot resten av startfamilien og ligger tidlig.
+  - Flytter `35/50` sammen til renere topper litt senere, ikke bare `35` alene.
+  - Aksepteres bare innen smale QC-grenser (`linear max <= 6.25`, `mean <= 2.35`, `R2 >= 0.99955`) og uten stor regresjon mot eksisterende fit.
+  - Ny Rust-test: `repair_gs500rox_start_anchor_sequence_can_shift_saturated_35_right`.
+- Rerun på de `18` annoterte radene:
+  - `9/18` endret valgt fit, alle i brukerens `35_late`-kategori.
+  - Eksempler: `NTC_ITD__020925_D01_H9C0ZJEZ.fsa` flyttet start fra `[1478,1530,...]` til `[1500,1598,...]`; `25OUM03004_p1_RATIO__240225_B04_C9U07902.fsa` flyttet `[1457,1585,...]` til `[1512,1585,...]`.
+  - `accepted_good_fit` (`IVS-0000_ITD_X25__091225_C03_C92141YK.fsa`) holdt samme peaks, men bør ikke lenger reviewes bare på `blob_dominated_start`.
+  - `26OUM01826_Ratio_03022026_D04_H9C0VCGD.fsa` står igjen som egen `340/350` tail-plausibility sak; enkel tail-shift ga dårligere lineær QC og ble ikke implementert.
+- Ny før/etter-side for annoterte filer:
+  - `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_large_review_2026-05-11/annotated_after_start_shift/review_panel_after_start_shift.html`
+  - Blå linjer er ny Rust-fit; røde stiplete linjer viser tidligere anchors der de endret seg. Y-akse cap `2500`.
+- Verifisering:
+  - `cargo test -p fraggler-core --quiet`: pass (`76 + 5` tests)
+  - `cargo build --release -p fraggler-cli`: pass
+  - `python3 -m pytest tests/test_gs500rox_guardrail.py -q`: pass (`6 passed`)
+
+## 2026-05-11 - FLT3 ROX500 1500-file run etter start-shift repair
+- Kjørte en ny større QC-run på `/Volumes/T7 Shield/DATA/flt3` med `--year 2025 --year 2026 --require-run-name-contains 3730 --limit 1500 --workers 6`.
+  - Sandbox blokkerte prosesspool (`PermissionError`), så runneren falt tilbake til sekvensiell kjøring.
+  - Output: `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_large_run_after_start_shift_2026-05-11/`.
+- Resultat:
+  - `1500` analysert av `21283` rå `.fsa` metadata-rader
+  - `1457 PASS`
+  - `35 REVIEW`
+  - `8 FAIL`
+  - `1456 ok`, `35 review_required`, `1 manual_adjustment`, `8 analysis_failed`
+  - `DATA4: 1452`, `DATA105: 48`
+  - Injeksjonstider analysert: `1s: 1066`, `2s: 24`, `3s: 410`
+- Ny review-side:
+  - `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_large_run_after_start_shift_2026-05-11/review_figures_y2500/review_panel.html`
+  - Inneholder alle `43` non-PASS rader og `12` high-error PASS-kontroller, y-akse cap `2500`, x-vindu `1300-4700`.
+- Foreløpig tolkning:
+  - Review-støyen fra `blob_dominated_start` er kraftig redusert sammenlignet med 500-filerspanelet (`179 REVIEW` før, men ikke samme sample).
+  - De `8 FAIL` ligger samlet i `2025_03_26_FLT3_ITD_RATIO_ef_H9C0VADZ_2025-03-26_0587` og feiler som `analysis_failed`, trolig lavt/uklart ladder-signal heller enn normal fit-regresjon.
+  - Gjenstående modell-læring bør fokusere på de verste fit-radene med faktisk ladder-signal, særlig `25OUM08837_p1_RATIO__300525_C04_H9C0ZJ3G.fsa` (`linear max 6.446`, `mean 3.046`), `NTC_FLT3_RATIO__110325_F01_C9U07BJV.fsa` (`5.863`), og `25OUM03774_p1_ITD_ufort__070325_C01_C9U07BJX.fsa` (`5.776`).
+
+## 2026-05-11 - FLT3-plan korrigert etter brukerreview
+- Bruker har nå gått gjennom `36` FLT3-bilder i chatten. Hovedbeskjed: mye var bra, men FLT3-planen må korrigeres før videre arbeid.
+- Viktig kanalavklaring: de `48` radene som kom ut med `SizeStandardChannel=DATA105` i 1500-filerskjøringen er feil for normal ROX500/GS500ROX-arbeid. Siden vi bruker ROX-ladder her, skal `DATA4` brukes.
+- Oppdaterte `ObsidianVault/03_Open_Items.md` med egen FLT3 ROX500/GS500ROX-plan: ren `DATA4` som neste kanalgrunnlag, re-run samme utvalg etter fiksen, og sammenlign mot de `36` manuelle kommentarene før nye motor-repairs promoteres.
+- Oppdaterte `01_Project_Memory.md` med varig superseding-notat: `DATA105` er bare for eksplisitt `LIZ500_250` override/ekstern kontrollmodus, ikke normal ROX500/GS500ROX.
+
+## 2026-05-11 - FLT3 36-bilders reviewpresisering
+- Bruker presiserte etter 36-bilders gjennomgangen av `/Users/christian/Desktop/HemaFrag/local_triage/hemafrag_rox500_large_run_after_start_shift_2026-05-11/review_figures_y2500/review_panel.html`:
+  - Mange av radene er perfekt fitted / visuelt gode, selv om de står som `review_required`.
+  - Noen sliter fortsatt med `35 bp` og `50 bp` plassering.
+  - Viktig mønster: i flere slike feil skal `35 bp` plasseres der dagens `50 bp` står, og `50 bp` skal videre til neste riktige peak. Dette peker mot startpar-/startfamilie-repair, ikke enkel `35 bp`-flytt.
+  - Panelrad `1-8` er uten reell ladder og skal være `FAIL`/datakvalitet, ikke motortrening.
+- De konkrete radene `1-8` i panelet er alle `DATA4`, `analysis_failed`: `25OUM04778_p1_RATIO`, `25OUM04778_p2_RATIO`, `25OUM04792_p1_RATIO`, `25OUM04792_p2_RATIO`, `25OUM04888_p1_RATIO`, `25OUM04888_p2_RATIO`, `NTC_RATIO`, og `IVS-0000_RATIO` fra `H9C0VADZ`.
+- Oppdaterte `03_Open_Items.md` og `01_Project_Memory.md` med denne splitten, slik at neste FLT3-plan skiller tydelig mellom perfekt/akseptabel fit, `35/50` startfamiliefeil og manglende ladder/fail.
+
+## 2026-05-11 - FLT3 GS500ROX 35/50 strategy shadow eval
+- Laget `scripts/gs500rox_start_strategy_shadow_eval.py` for å teste flere `35/50`- og startblokkstrategier mot rad `9-36` i brukerens reviewpanel uten å automatisk promotere dem.
+- Shadow-resultat:
+  - Residual-optimalisert `35/50/75/100/139` startblokk endret alle `28` testede rader, ofte med bedre lineær residual.
+  - Det er for aggressivt som produksjonsregel fordi brukeren allerede har markert mange av disse radene som visuelt gode/perfekte.
+  - Den bokstavelige regelen “dagens `50 bp` blir ny `35 bp`” var ikke lineært konkurransedyktig alene; den økte ofte residualene. Hvis dette mønsteret skal brukes, må det gjøres som familie-/tail-aware rebase, ikke som isolert startparskift.
+- Produksjonsforsøk:
+  - Testet en smal GS500ROX repair-gate der ekstra tidlige kandidatpeaks bare brukes når aktuell fit allerede har `linear max > 6 bp` eller `mean > 3 bp`.
+  - Live verifikasjon på representative panelrader viste ingen forbedring på rad `9`; kandidat-/scoringslogikken i Rust endte fortsatt med samme valg.
+  - En bredere variant påvirket rad `26` og `33`, som er visuelt gode/ikke-review, og ble derfor strammet inn igjen.
+- Verifisering etter siste kodevariant:
+  - `cargo build --release -p fraggler-cli`: ok
+  - `cargo test -p fraggler-core repair_gs500rox_start_anchor_sequence --quiet`: ok
+  - `python3 -m pytest tests/test_gs500rox_guardrail.py -q`: `6 passed`
+- Konklusjon: Ikke promoter residual-only startblokk bredt. Neste riktige steg er en review-only, manuelt annoteringsstyrt GS500ROX full-family rebase som samtidig vurderer startfamilie og hale, og som eksplisitt beskytter visuelt gode/perfekte rader.
+
+## 2026-05-11 - All clonality raw T7 overnight run
+- Startet full raw klonalitetskjøring for `/Volumes/T7 Shield/DATA/2024_DATA`, `/Volumes/T7 Shield/DATA/2025_data` og `/Volumes/T7 Shield/DATA/2026`.
+- Manifestet inneholder `28220` klonalitets-lignende ikke-vann `.fsa`-filer: `13321` fra 2024, `11796` fra 2025 og `3103` fra 2026.
+- Kjøringen går detached i `screen` session `hemafrag_clonality_20260511`, med `caffeinate`, `5` Rust-workers, partial output og logg i `/Volumes/T7 Shield/HemaFrag_all_clonality_raw_t7_overnight_2026-05-11`.
+- Runneren `scripts/run_all_clonality_raw_t7_overnight.py` logger enkeltfil-feil og fortsetter, og restarter worker etter timeout/exception.
+
+## 2026-05-12 - All clonality raw T7 overnight result
+- Nattkjøringen fullførte med `status=0` kl. `2026-05-11T22:59:16+02:00`.
+- Alle `28220/28220` filer ble analysert uten run errors: `ok_rows=28220`, `water_excluded=0`.
+- Morgenklassene ble: `complete_qc_ok=27709`, `ok=182`, `rust_review=190`, `soft_qc_watch=32`, `known_operator_or_bad_data=107`.
+- Ladderoppsummering: `LIZ500_250` `11043` filer med `21` review og p95 linear max ca `4.11`; `ROX400HD` `17177` filer med `174` review og p95 linear max ca `4.58`.
+- Resultatfiler ligger i `/Volumes/T7 Shield/HemaFrag_all_clonality_raw_t7_overnight_2026-05-11`, særlig `live_summary.tsv`, `live_summary_classified.tsv`, `morning_active_watchlist.tsv` og `morning_summary.md`.
+
+## 2026-05-12 - Clonality ok review HTML
+- Laget annoterbart HTML-panel for de `182` nattkjøringsfilene i `morning_class=ok`.
+- Output ligger i `/Volumes/T7 Shield/HemaFrag_all_clonality_raw_t7_overnight_2026-05-11/review_html_ok/review_panel.html`.
+- Panelet bruker dynamisk x-/y-vindu rundt hele valgt ladder, viser candidate peaks, Rust-valgte punkter og bp-labels, og lagrer annotasjoner i browser localStorage med JSON-export.
+
+## 2026-05-12 - Clonality ok annotations, ROX compressed-family fix
+- Hentet brukerens browser-annotasjoner fra `review_html_ok`: `23` annoterte rader (`21` labels, `18` tekstnotater). Lokal kopi: `local_triage/ok_browser_annotations_merged.json`.
+- Hovedlæring:
+  - LIZ-ok-panelet har flere små fot/apex-/lokal blokkfeil (`35/50`, `150/160`, `490/500`).
+  - ROX-ok-panelet hadde flere større falske ok: komplett fit, men hele familien er komprimert/for sen. Typisk: `50/60 bp` starter rundt `1900-2200` når ekte start ligger nærmere `1600-1700`, og `320/340 bp` lander der `400 bp` burde være.
+- Rust-endring:
+  - Åpnet eksisterende `repair_rox_full_span_family_rebuild` for mistenkelig komprimerte ROX400HD-fits, ikke bare de med svært dårlig lineær QC.
+  - La til review-reason `suspicious_compressed_rox_family` for komplette ROX400HD-fits som fortsatt ser komprimerte/for sene ut etter repair.
+- Effekt på de `182` opprinnelige `ok`-radene: `7` selection changes, `5` nye review-flagg. De store reparerte annoterte ROX-eksemplene inkluderer `RK_trB_mixB`, `RK_DHJH_mixE`, `PK_FR1`, `24OUM09662_DHJHmixD` og `24OUM12202_TCRbeta_mixC`.
+- Verifisering: `cargo build --release -p fraggler-cli` ok og `cargo test -p fraggler-core repair_rox --quiet` ga `7 passed`.
+
+## 2026-05-12 - Clonality selected-peak plausibility gate
+- Bruker presiserte en viktig regel fra OK-panelet: gode residualer er ikke nok; valgte ladderankere må også være ekte lokale peaks, ikke baseline/fot/skulderpunkter.
+- La derfor inn to separate Rust review-gates i `fraggler-v2/crates/fraggler-core/src/primitives.rs`:
+  - `selected_baseline_like_ladder_peaks` for komplette `ROX400HD`/`LIZ500_250`-fits der valgte ankere er baseline-/fot-lignende og det finnes renere nabotopp.
+  - `selected_weak_liz_ladder_peaks` for LIZ-fits der valgte ankere er tydelige svake familie-outliers, særlig svak tail i ellers sterk LIZ-familie.
+- Dette er bevisst review-gating, ikke en strengere residual cutoff: en pen kurve på feil punkter skal ikke lenger bli stille `ok`.
+- Kontroll mot de `182` opprinnelige OK-radene etter ny release-binær: `20/182` går nå til review, `0` errors. De nye flaggene inkluderer annoterte LIZ-rader `24OUM13573_IGK` og `PK1_tcrgA`, samt flere ROX-rader med baseline/fot-ankere som `24OUM10462_DHJH_mixD`, `24OUM09663_FR2` og `PK_DHJH_mixE`.
+- Oppdaterte samme HTML-panel i `/Volumes/T7 Shield/HemaFrag_all_clonality_raw_t7_overnight_2026-05-11/review_html_ok/review_panel.html` med ny 182-rerun, nye PNG-er og synlige OK/REVIEW-badges. Browser-annotasjoner bevares via samme `localStorage`-nøkkel.
+- Verifisering: `cargo test -p fraggler-core repair_rox --quiet` ga `7 passed`, `cargo build --release -p fraggler-cli` ok, og `bin/fraggler-cli` ble synkronisert med release-binæren.
+
+## 2026-05-12 - Clonality guarded apex recenter pass
+- Bruker påpekte at ny review-gating ikke var nok: flere valgte ankere ligger fortsatt på baseline/foten til riktig peak, særlig i start og hale.
+- Endret Rust apex-recenter slik at den kan bruke hele ladder candidate-poolen, ikke bare den smalere fit-poolen, og økte ROX apex-vindu fra `9` til `22` scans.
+- Første variant var for aggressiv (`36/182` selection changes) og flyttet flere visuelt gode/lave-residual ROX-fits. Den ble strammet med krav om at nåværende ROX-punkt faktisk ser baseline-/fot-lignende ut, og med brems mot kosmetiske flytt som forverrer QC på lave/moderate fits.
+- Endelig kontroll mot OK-panelet: `5/182` selection changes, `0` errors, `22` review-flagg. Flyttede annoterte fot-saker inkluderer `24OUM02736_IGK`, `24OUM13573_IGK`, `24OUM02880_IGK`, `24OUM11560_SL` og `24OUM12406_SL`.
+- De store ROX-feilene der hele start/tail-familien er forskjøvet står fortsatt igjen som egne start/tail-family repair-saker; de skal ikke løses med bred apex-snap.
+- Oppdaterte `/Volumes/T7 Shield/HemaFrag_all_clonality_raw_t7_overnight_2026-05-11/review_html_ok/review_panel.html` og `review_rows.tsv` med den nye smale reparasjonen.
+- Verifisering: `cargo test -p fraggler-core apex_recenter --quiet` og `cargo test -p fraggler-core repair_rox --quiet` passerte, `cargo build --release -p fraggler-cli` ok, og `bin/fraggler-cli` ble synkronisert.
+
+## 2026-05-12 - Clonality ROX consistent-height family repair
+- Bruker viste konkret ROX-eksempel `24OUM11474_FR3__260724_C06_C920V426.fsa`: mange ekte laddertopper ligger som en tydelig jevn familie rundt ca `1200 RFU`, mens Rust valgte flere baseline-/fotpunkter selv om residualene var tilsynelatende gode.
+- La inn en smal `repair_rox_consistent_height_family_sequence` i Rust for `ROX400HD`:
+  - finner rene, sterke peaks i `1500-3850` scan-regionen med lav baseline-ratio og høy prominence/height-purity,
+  - bruker median høyde som familieanker og krever nøyaktig `21` konsistente peaks,
+  - promoterer bare hvis lineær fit er sterk og dagens fit enten har baseline-lignende valgte punkter eller kandidaten har tydelig material gevinst.
+- Eksempel `007` flytter nå fra baseline-/fotsekvensen til den sterke familien `[1579, 1630, 1786, 1841, 1946, 2111, 2166, 2276, 2331, 2387, 2501, 2613, 2728, 2844, 2902, 2960, 3076, 3191, 3306, 3420, 3533]`, med lineær QC ca `4.01/1.49/R2 0.999718`.
+- Regenererte lokalt shadow-panel for de `23` annoterte radene: `/Users/christian/Desktop/HemaFrag/local_triage/ok_annotated23_shadow_html/review_panel.html`. Her er rød/current nå oppdatert Rust-fit; blå/shadow er bare resterende lokal snap-sammenligning.
+- Verifisering: ny målrettet Rust-test `repair_rox_consistent_height_family_sequence_rejects_baseline_foot_points` passerer, `cargo test -p fraggler-core repair_rox --quiet` passerer (`8` tester), `cargo test -p fraggler-core apex_recenter --quiet` passerer (`5` tester), `cargo build --release -p fraggler-cli` ok, og `bin/fraggler-cli` er synkronisert.
+
+## 2026-05-12 - ROX median-family refinement and 182-file local test
+- Strammet `repair_rox_consistent_height_family_sequence` etter brukerpresisering: median skal være familieanker, ikke gjennomsnitt. Kandidater rangeres nå etter log-avstand fra medianhøyden pluss liten shape-penalty, og hvis det finnes mer enn `21` rene kandidater velges de `21` mest median-konsistente før fit-scoringen.
+- Testen dekker nå både en høy blob/outlier og en lavere clean-ish outlier som ikke skal bli valgt inn i familien.
+- Rerun på de `23` annoterte radene beholdt ønsket effekt: `007 / 24OUM11474...` står fortsatt på den sterke familien med lineær QC ca `4.01/1.49/R2 0.999718`, og store ROX-forskyvningscaser som `24OUM10462`, `24OUM09663` og `24OUM12406` holder start nær `1600-1700`.
+- Kjørte også lokal full render/rerun av alle `182` opprinnelige `ok`-filer uten å skrive til T7: `/Users/christian/Desktop/HemaFrag/local_triage/ok_182_median_family_html/review_panel.html`. Resultat: `182/182` renderet.
+- Verifisering: målrettet median-family-test ok, `cargo test -p fraggler-core repair_rox --quiet` ok, `cargo build --release -p fraggler-cli` ok, og `bin/fraggler-cli` er synkronisert.
+
+## 2026-05-12 - LIZ median-family repair with 80 RFU floor
+- Bruker påpekte at baseline-nære mulige peaks fortsatt kan ligge i poolen, og ba om at peaks under `80 RFU` ikke skal inngå i medianfamilie-beregning. Dette er nå eksplisitt for median-family-sporet.
+- La inn `repair_liz_consistent_height_family_sequence` for `LIZ500_250`:
+  - bruker bare kandidater med `height >= 80`, `prominence >= 55`, lav baseline-ratio og rimelig purity,
+  - forankrer familiehøyden i median, ikke gjennomsnitt,
+  - velger de `16` mest median-konsistente LIZ-peakene og krever sterk lineær QC før overstyring,
+  - promoterer bare ved tydelig gevinst eller når dagens fit har flere baseline-/svake valgte punkter.
+- Ny test `repair_liz_consistent_height_family_sequence_ignores_sub_80_baseline_peaks` dekker baselinepeaks under `80 RFU` og en høy outlier som ikke skal velges.
+- Rerun på de `23` annoterte radene viste ny LIZ-gevinst på `PK1_tcrgA__220425_E01_H9C0ZIYX.fsa`: lineær QC ca `5.75/2.30 -> 3.78/1.80`. ROX-gevinstene fra median-family-sporet ble beholdt.
+- Regenererte både `/Users/christian/Desktop/HemaFrag/local_triage/ok_annotated23_shadow_html/review_panel.html` og `/Users/christian/Desktop/HemaFrag/local_triage/ok_182_median_family_html/review_panel.html`.
+- Verifisering: `cargo test -p fraggler-core consistent_height_family --quiet`, `cargo test -p fraggler-core repair_rox --quiet`, `cargo test -p fraggler-core repair_liz --quiet` og `cargo build --release -p fraggler-cli` ok; `bin/fraggler-cli` er synkronisert.
+
+## 2026-05-12 - 150 annotated OK rows learning pass
+- Hentet brukerens `ok_182_median_family_html` browser-annotasjoner direkte fra Codex-browserens LevelDB og lagret dem i `local_triage/ok_182_browser_annotations.json`.
+- Annoteringsfordeling: `150` markerte av `182`; `60 good`, `65 minor`, `15 wrong`, `10 operator`, `32` umerket. Operator-rader ble holdt utenfor læringsgrunnlaget.
+- Skrev sammenslått tabell: `local_triage/ok_182_median_family_html/review_rows_with_annotations.tsv`.
+- Kjørte live-eval av de `140` ikke-operator-markerte radene til `local_triage/ok_182_live_annotated_eval.tsv`.
+- Viktig læring:
+  - `good`-radene har praktisk talt ingen valgte baseline-/fotankere (`baseline_like_sel=0` i hele good-settet), selv når residualene ikke alltid er perfekte.
+  - Flere `wrong`-rader har mange valgte baseline-/fotankere eller sub-80 RFU valgte punkter, særlig komprimerte/for sene ROX-familier som `PK_DHJH_mixE`, `24OUM10666_IKZF1_mix4`, `24OUM11548_SL` og `PK_DHJH_mixD`.
+  - En aggressiv "velg 21 av N median-clean ROX-kandidater" ble testet. Den forbedret `24OUM11548_SL` (`baseline_like 6 -> 0`, linear max ca `5.05 -> 4.00`), men flyttet også en brukermerket `good`-rad (`PK_TCRbeta_mixA__211124`) dårligere. Den ble derfor ikke beholdt som produksjonsregel.
+- Beholdt tryggere læring: median-family-sporet skal være smalt og bare brukes når dagens fit har baseline-/sub-80-problem; gode stabile fits uten slike peak-plausibilitetsfeil skal ikke flyttes bare fordi en alternativ rekkefølge finnes.
+- Regenererte `/Users/christian/Desktop/HemaFrag/local_triage/ok_182_median_family_html/review_panel.html` etter rollback til tryggere variant.
+- Verifisering etter endelig variant: `cargo test -p fraggler-core consistent_height_family --quiet`, `cargo test -p fraggler-core repair_rox --quiet`, `cargo test -p fraggler-core repair_liz --quiet`, `cargo build --release -p fraggler-cli` ok, og `bin/fraggler-cli` er synkronisert.
+
+## 2026-05-12 - Annotated OK shadow learning, live review split
+- Kjørte et shadow-only median/family-eval på de `140` ikke-operator-markerte radene (`local_triage/ok_182_shadow_family_eval.tsv`).
+- Konklusjon: bred family/median-resekvensering er for risikabel som global reparasjon. Den kan forbedre enkelte `wrong`-rader, men flytter for mange `minor` og gir også regresjoner i noen `wrong`/`good`-nære saker.
+- Kjørte derfor live Rust review-status på alle `182` opprinnelige OK-rader med dagens binær (`local_triage/ok_182_live_current_review_status.tsv`).
+- Live-motoren flagger nå `9/182` til review. Mot brukerens `150` annoteringer gir dette `7/15 wrong` fanget, `0/60 good` flagget og `0/65 minor` flagget. Dette støtter at `selected_baseline_like_ladder_peaks` og `selected_weak_liz_ladder_peaks` er riktige smale QC-regler for pen-residual-men-feil-peak-problemet.
+- Laget eget lite valideringspanel for disse `9` live-flaggede OK-radene: `local_triage/ok_182_live_current_review_html/review_panel.html`.
+- De `8` gjenværende `wrong` uten live-review ser mest ut som ROX start-/rekkefølge-/haleproblemer med ekte peaks, ikke baseline-foot-problemer. Gap-analyse viser særlig flere med uvanlig stort `60->90`-gap og/eller tidlig ROX-familieforskyvning; dette bør testes videre som egen smal ROX start-family/review-regel, ikke som bred median-family-swap.
+
+## 2026-05-12 - Minor-focused ROX collapsed 100 bp repair
+- Bruker ba om mer fokus på `minor` for å hente konkrete gevinster, ikke bare flytte wrong til review.
+- Shadow- og gapanalyse av de `65` minor-radene viste en tydelig ROX400HD-klynge: `90->100`-gap kollapset til ca `31-37` scans, etterfulgt av for stort `100->120`-gap. Visuelt/sekvensmessig tilsvarer dette at `100 bp` står på for tidlig peak/fot og bør flyttes til neste ekte topp.
+- La inn smal `repair_rox_collapsed_100_anchor_sequence` i Rust. Den aktiveres bare for komplett `ROX400HD` med kollapset `90->100` og stort `100->120`, flytter bare `100 bp`, krever ren kandidatpeak, normaliserte nye gap og minst ca `0.45 bp` lineær max-gevinst uten mean/R2-regresjon.
+- Effekt på de `182` OK-radene mot brukerannoteringene: `22/65 minor` fikk forbedret peakvalg og lavere linear max, `0/60 good` endret, `0` minor/wrong/good fikk dårligere linear max, og ingen nye review-flagg.
+- Oppdatert lokalt panel med nye bilder: `local_triage/ok_182_median_family_html/review_panel.html`.
+- Verifisering: `cargo test -p fraggler-core repair_rox --quiet` ok, `cargo build --release -p fraggler-cli` ok, og `bin/fraggler-cli` er synkronisert.
+
+## 2026-05-12 - Minor image comparison and ROX collapsed 150 bp repair
+- Sammenliknet kontaktark av forbedrede `minor`, stabile `good` og gjenværende `minor` i `local_triage/ok_182_visual_compare/`.
+- Bildemønsteret etter `100 bp`-fiksen: de forbedrede minor-filene ser ut som normale gode ROX-familier, men hadde en lokal startblokkfeil; stabile good-filer har jevne tidlige ROX-gap og ble ikke rørt.
+- Neste tydelige minor-klynge var `120->150` for kort og `150->160` for langt. Dette tilsvarer at `150 bp` står én liten peak for tidlig.
+- La inn smal `repair_rox_collapsed_150_anchor_sequence` som bare flytter `150 bp` ved dette gapmønsteret, med ren kandidatpeak og krav om lineær max-gevinst uten mean/R2-regresjon.
+- Samlet effekt etter `100 bp` + `150 bp` minor-fiksene på de `182` OK-radene: `29/65 minor` forbedret, `0/60 good` endret, `0` nye review-flagg og ingen labelgruppe med `linear max`-regresjon.
+- Regenererte oppdatert lokalt HTML-panel: `local_triage/ok_182_median_family_html/review_panel.html`.
+- Gjenværende mulig minor-klynge er ROX startpar med stort `50->60`-gap (`>=82` scans), særlig mixA/TCRbA-lignende spor. Den bør testes forsiktig i shadow før produksjon fordi den også finnes i noen `wrong`/operator-rader og kan kreve ekte startpar-/family-arbiter, ikke enkel residual-flytt.
+
+## 2026-05-12 - Baseline/blob comparison after minor fixes
+- Etter `100 bp`/`150 bp`-minor-fiksene ble valgte peak-features analysert for alle `good`, `minor` og `wrong` i 182-panelet (`local_triage/ok_182_selected_peak_features.tsv`).
+- Viktig baseline-læring: `good` og `minor` har nå `0` valgte peaks med høy baseline-ratio/lav purity etter de nye fiksene. `wrong` har fortsatt mange slike peaks. Dermed er gjenværende `minor` ikke primært baseline-foot, men små rekkefølge-/gapavvik eller akseptable blob-apexer.
+- Viktig blob-nyanse: en høyere/renere nabo er ikke automatisk riktig peak. For flere forbedrede minor-filer ligger riktig `100 bp` på en mindre topp rett etter en stor blob; å flytte tilbake til den store blobben ville gjøre gapstrukturen feil. Peak-plausibilitet må derfor alltid kombineres med ladder-gap og familieposisjon.
+- Shadow-test av stort `50->60`-gap fant foreløpig bare én klar numerisk minor-kandidat (`PK_TCRb_A_031224_B07_C990RI4B`, rad `123`) der `60 bp` kan flyttes tidligere og linear max forbedres ca `3.45 -> 2.08`. Dette er ikke promotert ennå; mønsteret er mer risikabelt og bør sammenliknes visuelt/med flere caser før Rust-regel.
+
+## 2026-05-12 - General ROX minor learning taxonomy
+- Etter siste minor-fikser ble gjenværende ROX-minor delt i læringsklasser i stedet for å presses med én global regel.
+- `good`-kontrollene har svært stramme ROX-startgap: `50->60` median ca `53`, `60->90` ca `163`, `90->100` ca `58`, `100->120` ca `109`, `120->150` ca `173`.
+- Gjenværende `minor`-avvik:
+  - `large_50_60_gap`: `14/65` minor, men også `2/12` wrong. Shadow fant bare rad `123` som klar trygg numerisk kandidat. Ikke nok for produksjonsregel.
+  - `large_60_90_gap`: `11/65` minor og `6/12` wrong. Shadow-test av å flytte/innsette `90 bp` ga `0` trygge kandidater, så dette er trolig startfamilie/run-drift eller krever bredere arbiter.
+  - `large_150_160_still`: `5/65` minor. To ekstra rader (`31`, `33`) kunne forbedres litt, men under produksjonsterskel. Behold terskelen for å beskytte visuelt akseptable fits.
+  - `tail_340_360_odd`: `0/65` minor, men `3/12` wrong. Dette peker mot at tail-gapfeil er mer relevant for wrong/review enn for minor-gevinster nå.
+- Praktisk læring: baseline-/purity-signaler skiller godt mellom `wrong` og resten, men minor-gevinster etter denne runden handler mest om lokale gapmønstre. Blob-apexer må godtas når de er eneste gap-konsistente peak; ikke velg bort en blob bare fordi en nabo er høyere/renere.
+
+## 2026-05-12 - Review-set learning split while T7 unavailable
+- Bruker ba om å fortsette generell læring og også se på `rust_review`-gruppen, men fokusere på gode/lærbare review-rader heller enn baseline-/dataproblemer.
+- Laget full lokalt review-panel for `190` review-rader: `local_triage/review_190_learning_html/review_panel.html` (`189/190` bilder renderet).
+- Laget filtrert læringspanel med `42` moderate review-kandidater: `local_triage/review_learning_candidates_html/review_panel.html` (`40/42` bilder renderet) og kontaktark i `local_triage/review_learning_candidates_html/contact_sheets/`.
+- T7 ble senere utilgjengelig (`/Volumes/T7 Shield/DATA` manglet), så videre live-rerun av rå `.fsa` kunne ikke fullføres. Lokal bildebasert læring ble skrevet til `local_triage/review_learning_notes_2026-05-12.md`.
+- Review-settet splittes i minst fire læringsklasser:
+  - ikke-lærbare datakvalitet/lavsignal/støy-rader, særlig flere `25OUMXXX_*_C92141SL` og flate/noisy LIZ,
+  - rene ROX-familier som er shifted/late-start og trolig trenger full-family rebase, ikke single-step snap,
+  - lokale ROX-gapdefekter som ligner OK-minor-fiksene, men med større risiko fordi review-familien kan være mer globalt forskjøvet,
+  - LIZ strong-family sequence errors der synlige ekte peaks finnes, men start/tail-sekvensen er feil.
+- Viktig review-læring: blob i seg selv skal ikke straffes. Det som skiller lærbare rader er om en gap-/familiekonsistent ekte peakfamilie finnes. Baseline-heavy selections bør primært være review/QC eller smal repair, ikke bred treningsgrunnlag.
+- Neste steg når T7 er mountet: rerun de `42` læringskandidatene mot reelle raw paths, lage live TSV med gaps/baseline/purity, og shadow-teste ROX full-family rebase bare på clean shifted-family rader. Sammenlikn alltid mot de `60 good` og `65 minor` OK-kontrollene før produksjon.
+
+## 2026-05-12 - Review 190 live rerun after T7 remount
+- T7 ble tilgjengelig igjen og full `rust_review`-gruppe på `190` rader ble re-kjørt med dagens Rust-motor (`local_triage/review_190_current_live.tsv`).
+- Alle `190/190` analyserte uten feil. Dagens motor flytter `33` gamle review-rader ut av review (`31` ROX, `2` LIZ), mens `157` står igjen som review (`140` ROX, `17` LIZ).
+- De største automatisk løste radene er klassiske sterke ROX/LIZ-familier som tidligere hadde dårlige residualer, f.eks. `24OUM13569_TCRbeta_C__100924_A05`, `24OUM11427_TCRb_mixC`, `NK_TRB_mixC`, `24OUM12472_DHJH_mixD`, samt LIZ-radene `24OUM13962_IGK` og `24OUM14022_TCRg_B`.
+- Laget nytt balansert læringspanel fra de gjenværende review-radene: `local_triage/review_190_current_learnable_html/review_panel.html` (`62` rader, `61` bilder) og kontaktark i `local_triage/review_190_current_learnable_html/contact_sheets/`.
+- Visuell split etter kontaktark: mange `25OUMXXX_*_C92141SL`-ROX-rader er lavsignal/støy med valgte peaks langs baseline og bør ikke brukes som produksjonstrening. Noen 2024-ROX-rader har derimot klare høye laddertopper blandet med sub-80 baseline-valg og er bedre kandidater for smal review/repair-logikk.
+- Konkret eksempel: `24OUM07270_FR1_24052024_A02_C990JXOA.fsa` velger mange ankere på ca `15-35 RFU` selv om sterke kandidater rundt `1000 RFU` finnes i samme familie. Dette støtter en framtidig regel som bare aktiveres når valgt sekvens har flere sub-80/baseline-ankere og sterke familie-kandidater finnes.
+- LIZ-læring: en visuelt sterk LIZ som `PK2_TCRg_A_060525_E08_C920XX21.fsa` har mange høye peaks, men brute-force på de høye kandidatene fant ikke en enkel perfekt 16-peak lineær løsning. Derfor skal LIZ ikke auto-godkjennes kun på høyde/median; gap-/familiegeometri må fortsatt styre.
+- Klassifiserte de `157` gjenværende review-radene i `local_triage/review_190_learning_groups.tsv`: `42` lavsignal-ROX som ikke bør trenes på, `20` learnable ROX med sterk familie + lave valgte ankere, `5` learnable LIZ-geometricases, `12` LIZ geometry/weak-tail, `1` ROX shifted/threshold, og `77` blandede hard-review.
+- Viktig negativ ROX-test: naiv "velg 21 rene/høye kandidater" på `24OUM07270_*` blir trukket inn i tidlig blob-klynge og gir mye verre laddergeometri. Høyde/median alene er ikke nok.
+- Viktig negativ LIZ-test: lokale bytter av lave punkter til nærliggende høye peaks på `PK2_TCRg_A_060525_E08_C920XX21.fsa` og andre sterke LIZ-eksempler forbedret ikke lineærene. LIZ må fortsatt styres av geometri/start-tail-modell, ikke bare høyde.
+- Testet en shadow-only ROX beam-arbiter på de `20` learnable ROX strong-family/low-anchor-radene. Arbiteren prøvde å kombinere geometri, familiehøyde, sub-80-straff og tidlig blob-guard. Den ga `0/20` trygge forbedringer: kandidatene fikk ofte færre lave ankere, men dårligere linear max/mean eller feil familie.
+- Ny tolkning: flere av disse ROX-reviewene er ikke en enkel "valgt lav peak i stedet for høy peak"-feil, men fragmentert/ufullstendig synlig ROX-ladderfamilie der motoren bruker små ekte peaks for å holde en komplett 21-step geometri. Dette bør foreløpig forbedre QC/review-forklaringen mer enn auto-repair.
+- Etter brukerpresisering om at ekte peaks skal foretrekkes selv om residualene blir moderat dårligere, ble ROX-shadowen kjørt på nytt med residual som guard i stedet for hovedmål. Dette fant `5/20` interessante real-peak-forslag der sub-80 ankere falt kraftig (`12-18` ned til `5-6`) mens linear max/mean ble liggende på review-nivå (`~16-18 / ~7-9`).
+- Laget eget læringspanel for disse fem forslagene: `local_triage/rox_real_peak_preference_shadow/review_panel.html` og `summary.tsv`. Rød = dagens residual-favoriserte fit, blå = real-peak-preferert shadow.
+- Ny læring: en framtidig "real peak preference under review" eller operator-suggestion mode kan være mer riktig enn å auto-godkjenne residual-favoriserte småpeaks. Disse forslagene skal ikke inn som automatisk OK ennå; de er bedre review-kandidater for manuell vurdering.
+- Bruker presiserte deretter at `linear max > 10 bp` er skikkelig feil. LIZ-gjennomgangen ble derfor holdt som review/annotering, ikke auto-repair: bare én LIZ-review ligger under `10 bp` (`24OUM09914_KDE`, `9.55/4.77`), og én er borderline rett over (`23OUM02409_KDE`, `10.16/2.21`).
+- Laget dedikert annoterbart LIZ-panel med `17/17` bilder: `local_triage/liz_17_annotation_html/review_panel.html`. Panelet har `Good/Minor/Wrong/Operator/data/Unclear`, autosave i browser, `Export annotations`, `Copy JSON`, og synlig JSON-boks for enklere uthenting av annoteringer.
+- Hentet deretter siste LIZ-annotasjonsversjon fra Codex-browser localStorage etter at bruker påpekte at alle var klikket: `local_triage/liz_17_browser_annotations_latest.json` og `local_triage/liz_17_annotated_summary_latest.tsv`.
+- Riktig LIZ-label-fordeling ble `11 operator`, `3 wrong`, `2 unclear`, `1 minor`. Dermed er brukerobservasjonen bekreftet: mesteparten av LIZ-panelet er menneskelige/operatorfeil og skal ikke trenes på.
+- Lærbart LIZ-signal er smalt: `23OUM02409_KDE__030124_C10_C9R0HJTA.fsa` er eneste `minor` og ligger borderline (`10.16/2.21`) med sterke ekte peaks; wrong-radene (`PK_IGK`, `24OUM13615_IGK`, `PK_KDE`) støtter fortsatt `>10 bp` review/wrong og `selected_weak_liz_ladder_peaks`. Ingen bred LIZ-produksjonspatch fra dette panelet.
+- Kjørte LIZ-shadow-søk bare på de `1 minor` + `3 wrong` ikke-operator-radene. Ingen wrong-rad hadde en kandidatsekvens som kom under `10 bp` linear max. `PK_IGK` kunne bare forbedres svakt (`~11.79/5.65 -> ~11.43/4.98`) og forble review/wrong.
+- Praktisk LIZ-læring: `linear max > 10` skal fortsatt være review, `linear mean > 4.5` sammen med weak-tail/weak-anchor er sterkt wrong-signal, mens borderline `~10 bp` med lav mean (`~2`) og sterke koherente peaks kan være minor/review heller enn auto-repair.
+- Bruker pekte på to nye LIZ-signaler: kandidatpoolen kan mangle legitime tail-kandidater, og valgte LIZ-peaks over `5000` scans bør egentlig ikke skje. La derfor inn smal Rust-endring: ny review-årsak `selected_late_liz_ladder_peaks` når valgte LIZ-ankere er `>5000`, og utvidet legitim late-tail kandidatdekning fra `4381..=4600` til `4381..=5000`.
+- Testet også en score-straff for LIZ-tail `>5000`, men den ble rullet tilbake fordi den kunne flytte en wrong-rad til en enda dårligere tidlig sekvens. Review-gate beholdes, aggressiv scoreflytting beholdes ikke.
+- Fokus-rerun: `23OUM02409_KDE` minor ble uendret; `PK_IGK` og `24OUM13615_IGK` beholder fit, men får nå `selected_late_liz_ladder_peaks` i tillegg til weak/poor linear review. `PK_KDE` timeouter fortsatt i 30s live-helper.
+- Verifisering: `cargo test -p fraggler-core liz --quiet` ok, release-build ok og `bin/fraggler-cli` synkronisert. Full `cargo test -p fraggler-core --quiet` har fortsatt én ROX-waiver-testfeil under dagens strengere ROX-reviewlogikk, ikke fra LIZ-endringen.
+- Bruker annoterte nytt `next_learning_annotation`-panel. Riktig uttrekk er lagret i `local_triage/next_learning_browser_annotations_latest.json`, `next_learning_annotated_summary_latest.tsv` og `next_learning_filtered_non_operator.tsv`.
+- Fordeling: `20 operator`, `1 unclear`, `3 wrong`, `1 minor`. Dette bekrefter at nesten alle ROX strong-family/low-anchor-radene fra 2024-05-24 ikke skal læres av fordi LIZ500 ladder var brukt på ROX-prøver eller ladder manglet.
+- Gjenstående læringsrader etter filtrering: ROX `24OUM10879_IKZF1_mix4_r12__D06_C920V46C.fsa` (wrong, alle relevante peaks > ca `300 RFU` ifølge bruker), LIZ `23OUM02409_KDE` (minor, 35/50 bp litt senere), LIZ `PK_IGK` (wrong, alt litt sent og 500 bp bør være <4200 scans), og LIZ `24OUM13615_IGK` (wrong, start/139/150/160 forskjøvet).
+- Laget nytt annoteringspanel med `30` gjenværende ROX `other_review`-kandidater etter å ha filtrert bort forrige `operator`/`unclear`, LIZ-rader og åpenbart lavsignal: `local_triage/next_rox_review_annotation_html/review_panel.html`.
+- Panelet har `30/30` bilder, fungerende `Good/Minor/Wrong/Operator/data/Unclear`, autosave, `Export annotations`, `Copy JSON` og JSON-boks. Hensikten er å få mer manuell filtrering før videre modellæring, spesielt fordi flere 2024-05-24-rader kan være operator/wrong-ladder og skal fjernes hvis bruker markerer dem.
+- Etter brukerannotering av `next_rox_review_annotation_html` ble hele 24.05.2024 ROX-kjøringen vurdert som operator/wrong-ladder og tatt ut av aktiv T7-datarot.
+- Flyttet `2024_05_24_FR123_tmt_C990JXOA_2024-05-27_1320` (`96` `.fsa`) og `2024_05_24_SL_TCRb_tmt_C9R0HJZ6_2024-05-27_1318` (`96` `.fsa`) fra `/Volumes/T7 Shield/DATA/2024_DATA/` til `/Volumes/T7 Shield/EXCLUDED_BAD_RUNS/2024_05_24_wrong_ladder_operator/`.
+- Verifisert at disse to mappene ikke lenger ligger under aktiv `/Volumes/T7 Shield/DATA/2024_DATA`. En separat `2024_05_25_TCRg_IgK_Kde_tmt_C9R0HJZ5...`-mappe har filer med `24052024` i filnavnet, men ble ikke rørt fordi den ser ut som en annen LIZ/TCRg/IgK/KDE-kjøring.
+- Ny læringsrunde etter 24.05-ekskludering: reell ROX-læringscase ble `24OUM10879_IKZF1_mix4_r12__D06_C920V46C.fsa`, mens LIZ-casene fortsatt støtter review/wrong-grenser heller enn auto-repair.
+- Live-inspeksjon av `24OUM10879` viste at `mix4_r12` hadde en komplett ren tidlig ROX-familie (`1559..3559`, 21 av 22 clean peaks), men dagens fit dro halen ut i baseline-/fotpunkter til `5665`. Beste clean-family kombinasjon ga ca `4.02/1.53/R2 0.99971`.
+- Implementerte smal Rust-repair `repair_rox_clean_early_family_sequence`: aktiveres bare for komplett `ROX400HD` med høy residual, sen valgt hale (`last >= 4300`), minst fire sene baseline-/fotankere, og en komplett ren tidlig familie (`1450..3700`, høyde/prominence/purity-guardrails) med `linear max <= 5`, `mean <= 2.4`, `R2 >= 0.9994`.
+- Effekt live: `24OUM10879_IKZF1_mix4_r12__D06_C920V46C.fsa` gikk fra review `13.06/4.78/R2 0.99613` med valgt hale til `5665`, til ikke-review `4.07/1.52/R2 0.99971` med sekvens `1559..3559`.
+- Nære kontroller `24OUM10879_IKZF1_mix1_r9__A06_C920V46C.fsa` og `24OUM10879_IKZF1_mix3_r11__C06_C920V46C.fsa` sto uendret og ikke-review.
+- Bred 182-OK-kontroll etter patch: `182/182` analysert uten feil; `0/60 good` og `0/65 minor` ble review. Output: `local_triage/ok_182_after_clean_early_family_eval.tsv`.
+- Laget visuelt valideringspanel: `local_triage/rox_clean_early_family_validation_html/review_panel.html` (`3/3` bilder).
+- Verifisering: `cargo test -p fraggler-core repair_rox_clean_early_family --quiet`, `cargo test -p fraggler-core repair_rox --quiet`, `cargo test -p fraggler-core consistent_height_family --quiet` ok; `cargo build --release -p fraggler-cli` ok og `bin/fraggler-cli` synkronisert.
+- Bruker ba deretter om nytt konkret fokus på `minor`. Gap-analyse av de `65` minor-radene etter tidligere `100/150 bp`-fikser viste at hovedresten er små lokale start-/rekkefølgeavvik, særlig stort ROX `50->60`-gap.
+- Implementerte smal `repair_rox_large_50_60_gap_sequence`: flytter kun `60 bp` tidligere når komplett `ROX400HD` har unormalt stort `50->60`-gap (`82..125` scans), ren kandidat mellom `43..76` scans etter `50 bp`, god prominence/purity, og lineær QC forbedres uten mean/R2-regresjon.
+- Shadow og live 182-kontroll etter stramming: `6` brukermerkede `minor` flyttet bedre, `0/60 good` flyttet, `0` nye review, `182/182` uten feil. Forbedrede minor-caser: `RK_TRb_mixA__231225_F01_H920FZXT`, `25OUM20431_TRb_mixA__060126_A02_H920FZY9`, `RK_TCRb_A_020525_B07_C920XX29`, `RK_TRB_mixA__280225_F01_C9U07BS6`, `RK_trB_mixA__210524_E07_C9R0HJYZ`, `PK_TCRb_A_031224_B07_C990RI4B`.
+- Output/eval: `local_triage/ok_182_after_large_50_60_gap_eval_v3.tsv`. Regenererte oppdatert OK-panel: `local_triage/ok_182_median_family_html/review_panel.html` (`182/182` bilder).
+- Verifisering: `cargo test -p fraggler-core repair_rox --quiet` og `cargo test -p fraggler-core consistent_height_family --quiet` ok; `cargo build --release -p fraggler-cli` ok og `bin/fraggler-cli` synkronisert.
+- Etter ny brukeroppdatering av 182-panelet ble fersk Codex-browser localStorage hentet til `local_triage/ok_182_browser_annotations_latest.json` og sammenslått i `local_triage/ok_182_latest_annotations_eval.tsv`. Ny labelstatus: `90 good`, `51 minor`, `7 wrong`, `10 operator`, `24` blanke.
+- Baseline-feature-måling med dagens motor viste at ferske `minor` ikke lenger har valgte severe baseline-/fotankere; baselineproblemet er nå primært i gjenværende `wrong`/operator/LIZ-review. For `minor` er de lærbare feilene fortsatt små lokale ROX-ankerbytter.
+- Brukerkommentar på `PK_TRb_mixB__020925_E06_H9C0ZJF2.fsa`: `120 bp` står litt sent og bør flyttes tidligere til sterkere peak. Shadow-søk på fersk `good+minor` fant akkurat én trygg kandidat og `0 good`-treff.
+- Implementerte smal `repair_rox_large_100_120_gap_sequence`: flytter bare `120 bp` tidligere når `100->120` er for langt, `120->150` er for kort, kandidaten er ren og betydelig sterkere enn nåværende 120, og lineær QC forbedres uten mean/R2-regresjon.
+- Live 182-rerun etter patch: eneste endring var `PK_TRb_mixB__020925_E06_H9C0ZJF2.fsa`, fra `4.93/1.80` til `4.38/1.55`; `0` good endret. Output: `local_triage/ok_182_after_120_gap_eval.tsv`.
+- Regenererte oppdatert OK-panel igjen: `local_triage/ok_182_median_family_html/review_panel.html` (`182/182` bilder).
+- Verifisering: `cargo test -p fraggler-core repair_rox_large_100_120_gap --quiet`, `cargo test -p fraggler-core repair_rox --quiet`, release-build ok og `bin/fraggler-cli` synkronisert.
+- Bruker presiserte at målet er globale repairs/læring, og at `good` også kan flyttes hvis de blir reelt bedre. Ny policy: good-endringer kan aksepteres når de forbedrer residual/mean/R2 og peak-kvalitet, men good-regresjoner skal fortsatt blokkeres.
+- Testet bredere median-/family-shadow på ferske `90 good` + `51 minor`. Bred median-regel fant flere minor-kandidater, men også good-treff og minst én good-regresjon når terskelen for `150 bp`-repair ble løsnet. Den brede endringen ble derfor rullet tilbake.
+- Konkret læring: `150 bp`-klyngen (`120->150` kort, `150->160` lang) er lovende og ga to minor-forbedringer i shadow (`PK_FR3__141125_D11`, `NK_FR3__311025_H05`), men eksisterende repair-rekkefølge kan samtidig trigge good-regresjon. Neste produksjonsforsøk bør være en isolert ny `150 bp later-only` repair som ikke gjenbruker den brede collapsed-150-aksepten.
+- Bruker presiserte videre at fokus ikke bare er `150 bp`, men minor med baseline-/fotvalg og feil `50/60 bp` mapping. Start-inspeksjon viste mange mixA/TCRbA-minor med lav/ren liten `50 bp`, høy `60 bp`, og langt `60->90`-gap; noen har moderate fot-/baseline-signaler i startområdet.
+- Testet global `repair_rox_start_prefix_pair_sequence` som kan flytte `50/60`-prefikset sammen før langt `60->90`-gap. Første brede variant ga flere minor-gevinster, men også mean/R2-regresjoner; den ble strammet til lav/moderat residual og krav om forbedret max, mean og R2.
+- Endelig live 182-resultat: `2` ferske minor forbedret (`RK_TCRb_mixA__220324_B07_C9R0HK0U`, `RK_TCRb_A_150525_E01_H9C0ZJ8L`), `0` good endret, og én blank rad forbedret. Høy-residual 50/60-caser står igjen for en mer robust startmodell.
+- Regenererte `local_triage/ok_182_median_family_html/review_panel.html` med dagens motor (`182/182` bilder). Verifisering: `cargo test -p fraggler-core repair_rox --quiet` ok, release-build ok og `bin/fraggler-cli` synkronisert.
+
+## 2026-05-12 - ROX start-prefix curvature guard
+- Bruker ba om å vurdere curvature tilbake for `50/60 bp`-startfeil, men med hovedkrav om ekte peaks fremfor baseline og ingen skikkelig dårlige residualer.
+- La inn curvature som ekstra guard i `repair_rox_start_prefix_pair_sequence`: kandidat-startpar må ha bedre peak-plausibilitet, `linear max < 8`, ikke reelt svekket R2, og må ikke gjøre både linear max og linear mean verre. Rene good/startfamilier får ikke flyttes til dårligere mean-fit.
+- Live 182-kontroll mot `local_triage/ok_182_after_120_gap_eval.tsv`, sammenliknet på `raw_path` for å håndtere duplikate filnavn: `2` ferske `minor` forbedret, `0` `good` endret, `0` nye review. Begge forbedringene er `RK_TRB_mixA__160124_E01_C990RHN7.fsa`-rader med bedre startpar.
+- Output/eval: `local_triage/ok_182_after_curvature_start_prefix_eval_v3.tsv`. Regenererte `local_triage/ok_182_median_family_html/review_panel.html` (`182/182` bilder).
+- Verifisering: `cargo test -p fraggler-core repair_rox --quiet` ok, `cargo build --release -p fraggler-cli` ok og `bin/fraggler-cli` synkronisert.
+
+## 2026-05-12 - LIZ weak-anchor block repair
+- Bruker pekte på LIZ-radene `24OUM02736_IGK__200224_A08_C9R0HJZA.fsa` og `24OUM13573_IGK__040924_G01_C920V42R.fsa`, der svake/sub-120 RFU ankere ble valgt selv om tydelige ekte LIZ-peaks lå nær.
+- La inn `repair_liz_weak_anchor_block_sequence`, som teller svake LIZ-ankere i ellers sterk familie og prøver små lokale 1-2-punktsblokker mot renere nabopeaks. La også inn smal tail-rescue i `filter_liz_peak_pool_for_fit` for sterke LIZ-tailkandidater rundt `4380..4565`.
+- Live 182-kontroll mot curvature-basen: `3` LIZ-rader flyttet, `0` good endret. `24OUM02736` ble bedre og falt ut av review (`5.04/1.95 -> 4.39/1.91`), `24OUM13573` fikk midtanker `2343 -> 2361` og bedre mean/R2 men står fortsatt review pga svak siste `4484`, og `24OUM02880` fikk en moderat weak-anchor flytt men står fortsatt review.
+- Output/eval: `local_triage/ok_182_after_liz_weak_anchor_eval.tsv`. Regenererte `local_triage/ok_182_median_family_html/review_panel.html` (`182/182` bilder).
+- Verifisering: `cargo test -p fraggler-core repair_liz --quiet` ok, `cargo build --release -p fraggler-cli` ok og `bin/fraggler-cli` synkronisert.
+
+## 2026-05-12 - Bad/uncertain overnight review run
+- Bruker ba om å ta med alle mulige dårlige/usikre, også de som tidligere ble satt i review. Laget `scripts/run_bad_uncertain_clonality_overnight.py` for robust rerun med per-fil feilhåndtering, progressiv `bad_uncertain_live_results.tsv`, bilde-rendering og samlet HTML-panel.
+- Manifestet er utvidet til `272` saker: `190` aktive review-rader, `82` OK-rader som ikke er good/operator eller fortsatt er blank/minor/wrong/unclear, review-candidates/learning groups, low-signal review, og flyttede 24.05-rader som finnes under `/Volumes/T7 Shield/EXCLUDED_BAD_RUNS/2024_05_24_wrong_ladder_operator/`.
+- Kjente 24.05 operator/wrong-ladder paths inkluderes bare for inspeksjon og merkes `resolved_24_05_excluded_operator_run`; de skal ikke brukes som global treningsgrunnlag uten ny manuell reklassifisering. Operator-labels fra annoteringspaneler holdes fortsatt ute.
+- Startet detached `screen`-kjøring `hemafrag_bad_uncertain_20260512` mot `local_triage/bad_uncertain_overnight_2026-05-12/`. Første helsesjekk viste `processed 25/272` og oppdatert `bad_uncertain_live_results.tsv`, så kjøringen fortsetter uavhengig av Codex-terminalen.
+- Laget morgenplan i `local_triage/bad_uncertain_overnight_2026-05-12/tomorrow_learning_plan.md`: først splitte learnable non-operator LIZ/ROX fra low-signal, known wrong-ladder/operator og >10 residual hard failures; deretter teste globale repairs bare på klare sterke signaler med ikke-regresjon mot good-kontroller.
+- Morgenstatus 2026-05-13: nattkjøringen fullførte `272/272` kl. `22:09:40`, med `272` OK analyser, `272` rendringer, `0` analysefeil og `0` renderfeil. `157/272` står fortsatt review (`138` ROX, `19` LIZ), mens `115/272` ikke lenger reviewes av dagens motor. HTML-panelet ligger i `local_triage/bad_uncertain_overnight_2026-05-12/review_panel.html`.
+
+## 2026-05-13 - Strong-signal review learning pass
+- Filtrerte nattkjøringen ned til `54` learnable-ish review-rader etter å ha holdt 24.05 operator/wrong-ladder og low-signal/do-not-train utenfor primær læring (`35` ROX, `19` LIZ).
+- Laget kontaktark `local_triage/bad_uncertain_overnight_2026-05-12/learnable_easy_contact_sheet.png` og diagnostikk `easy_review_diagnostics.tsv` / `easy20_family_shadow.tsv` for de letteste sterke signalene.
+- Viktig funn: `24OUM11548_SL__260724_H01_C920V425.fsa` har en klar ROX-feil der dagens fit velger sene baseline/fot-ankere (`3982/4056/4211`) selv om en tidligere ren 21-peak familie gir bedre lineær fit (`5.05/1.59 -> 4.00/1.51`). Dette er et godt review/suggestion-eksempel.
+- Negativ produksjonslæring: en bredere ROX "velg beste 21 fra større ren median-family pool" virker fristende på `24OUM11548`, men gir for mange flyttinger/regresjoner på tidligere good-kontroller når den kjøres automatisk. Den skal ikke promoteres som global auto-repair nå; bruk heller som shadow/suggestion eller med en mer presis "late sub-80 tail false-family" trigger.
+- Robusthetsfiks: `core/rust_bridge.py` lukker nå Rust-worker-prosessen ved timeout. Uten dette kan et forsinket worker-svar forskyve neste request og forurense brede reruns etter én tung fil, observert ved `PK_KDE__090924_E11_C920V451.fsa`.
+
+## 2026-05-13 - Bad/uncertain annotations cleanup and ROX minor start shadow
+- Hentet brukerens ferske Codex-browser localStorage for nattpanelet `local_triage/bad_uncertain_overnight_2026-05-12/review_panel.html`.
+- Label-fordeling:
+  - `149 operator/data`
+  - `44 good`
+  - `74 minor`
+  - `5 wrong`
+- Flyttet alle `149` operator/data-råfiler ut av aktivt rådatagrunnlag til `/Volumes/T7 Shield/EXCLUDED_BAD_RUNS/operator_data_annotated_2026-05-13/`.
+  - Manifest: `local_triage/operator_data_moved_to_excluded_2026-05-13.tsv`
+  - Full annoteringsuttrekk: `local_triage/bad_uncertain_annotated_summary_latest.tsv`
+- Laget rent minor-panel uten operator/data/good: `local_triage/bad_uncertain_minor_focus_html/review_panel.html` (`74` cases).
+- Testet en ROX `50/60/90` minor-startrebase i Rust shadow/auto:
+  - bred nok til å flytte `18` minor
+  - men flyttet også `8` brukermerkede `good`, flere med nye `poor_linear_rox_fit`
+  - derfor ble auto-kallet deaktivert igjen og eksperimentkoden fjernet fra produksjonskoden; regelen skal ikke promoteres før bedre guards finnes.
+- Laget annoterbart shadow-panel for startforslagene:
+  - `local_triage/bad_uncertain_minor_50_60_shadow_html/review_panel.html`
+  - `42` ROX-minor cases
+  - rød = dagens fit, blå = foreslått `50/60/90` start-rebase.
+- Verifisering etter deaktivering av auto-kallet:
+  - `cargo test -p fraggler-core repair_rox --quiet`: ok
+  - `cargo build --release -p fraggler-cli`: ok
+  - lokal `bin/fraggler-cli` synkronisert.
+
+## 2026-05-13 - ROX 50/60/90 shadow follow-up
+- Bruker annoterte `42` blå shadow-forslag i `local_triage/bad_uncertain_minor_50_60_shadow_html/review_panel.html`; sammendraget viser `39 good`, `3 minor`, `0 wrong`, så selve shadow-retningen er visuelt nyttig.
+- Testet flere produksjonsvarianter for å beholde disse startvalgene:
+  - direkte `old 60 -> ny 50`, ren kandidat `45..65` scans senere som ny `60`, og dagens `90/100` beholdt
+  - full repair-pool i stedet for redusert scoring-pool
+  - moderat større tidlig ROX-kandidatpool
+  - trace-basert rescue rundt forventet ny `60 bp`
+- Beste live-match mot shadow steg bare fra `8/42` til `10/42`, og bred OK-kontroll viste at varianten kunne skape nye review på brukermerkede good-filer. Endringene ble derfor rullet tilbake fra produksjonskoden.
+- Viktig læring: shadow-panelet er riktig læringssignal, men trygg global løsning må bygges tidligere i kandidatmodell/peak-feature-laget og valideres mot good-kontroller. Å tvinge start-rebase etter fit er ikke trygt nok alene.
+- Verifisering etter rollback: `cargo test -p fraggler-core repair_rox --quiet` ok, `cargo build --release -p fraggler-cli` ok og `bin/fraggler-cli` synkronisert.
+
+## 2026-05-13 - ROX visual start-pair experiment
+- Testet en bredere Python-prototype på annotert `50/60/90`-shadow: alle `42/42` blå startkandidater finnes som ekte DATA4-peaks. Problemet er dermed beslutning/arbiter, ikke peak detection.
+- Lovende prototype: trace-basert `50/60` start-pair rescue som beholder dagens `90/100`, krever langt `60->90`-gap, suspekt current start, kandidat under `8 bp` linear max / `2.4 bp` mean og bedre visuell startfamilie. På bad/uncertain-labels ga prototypen `42/70` minor-forslag og `0/42` good-forslag.
+- Portet en smal Rust-variant `repair_rox_visual_start_pair_from_trace` etter eksisterende ROX post-preview repairs. Live shadow-effekt er foreløpig moderat (`19/42` endret, `8/42` eksakt shadow-match), fordi Rusts eksisterende post-repairs og scorer fortsatt velger noen residual-foretrukne startpar.
+- Verifisering: release-build ok, `bin/fraggler-cli` synkronisert, `cargo test -p fraggler-core repair_rox --quiet` ok. Neste steg er visuelt panel/annotering av de faktiske Rust-deltaene før regelen regnes som ferdig.
+
+## 2026-05-13 - T7 13_05 production batch
+- Bruker la ny data på T7 i `/Volumes/T7 Shield/13_05`. Mappen inneholdt tre run-mapper: `2026_05_12_DHJH_SL_IKZ_CFB_C991748T_2026-05-13_0770`, `2026_05_12_TCRG_IGK_KDE_CFB_C991748S_2026-05-13_0769` og `2026_05_12_FR123_TCRB_CFB_C99174J4_2026-05-13_0771`.
+- Kjørte vanlig HemaFrag clonality batch med Rust aktiv, aggregert per pasient og output til `/Volumes/T7 Shield/13_05/HemaFrag_batch_2026-05-13`.
+- Batchscanner fant `137` gyldige `.fsa`-filer og grupperte dem til `10` jobber (`9` pasientjobber + `1` QC-jobb). Alle `10/10` jobber fullførte uten batchfeil.
+- Aggregert rapportmappe: `/Volumes/T7 Shield/13_05/HemaFrag_batch_2026-05-13/reports_2026-05-13`.
+- Genererte `9` pasient-HTML-rapporter, `QC_REPORT_QC.html`, full `Clonality_Tracking.xlsx` og ladder review-gate bundle.
+- Ladder review-gate shadow-resultat: `137` entries, `0` review-cases, ikke blokkert.
+- Full tracking-workbook i `reports_2026-05-13/Clonality_Tracking.xlsx` har `96` pasientrader, alle med `LadderQC=ok`; lineær ladder-QC på disse radene: mean max residual ca `4.20 bp`, max `6.39 bp`, mean residual ca `1.60 bp`, min linear R2 ca `0.999511`.
+
+## 2026-05-13 - ROX 50/60 visual repair continuation
+- Fant en viktig kanalfeil i det nye ROX visual-start-eksperimentet: `repair_rox_visual_start_pair_from_trace` fikk sample-kanalen i stedet for size-standard/ladder-kanalen. Det forklarte baseline-/fotvalg som `1691/1751` når ekte DATA4-peaks lå rundt `1710/1759`.
+- Patchet preview-byggeren slik at den holder `sample_trace` og `ladder_trace` separat. `sample_trace` brukes fortsatt til sample mapping, mens trace-basert ROX visual repair leser faktisk laddertrace.
+- La også inn en guard slik at visual start-repair ikke brukes mens alternative lanes sammenlignes, men først etter lane-valg. Dette hindrer at en reparasjon påvirker selve lane-arbiterens sammenligning.
+- Live shadow-eval på `42` annoterte ROX 50/60/90-cases: `15/42` eksakt shadow-match, `40/42` endret, `1` review. Det er bedre enn gammel `8/42`, men fortsatt for bred til produksjon.
+- OK-182-kontroll mot `ok_182_after_120_gap_eval.tsv` viste fortsatt for mye bevegelse (`82/182` selection-delta, `7` nye review), blant annet sene komprimerte ROX-familier i noen good-kontroller. Dette betyr at regelen fortsatt er læring/shadow, ikke ferdig auto-fix.
+- Genererte nytt annoterbart læringspanel for faktiske live-deltaer og risikable kontroller: `local_triage/rox_start_repair_learning_html/review_panel.html` (`51` cases). Dette panelet skal brukes til å skille ekte gevinster fra over-aggressive startflyttinger.
+- Ny forbedring samme økt: direct-prioritet for ROX start der gammel `60 bp` blir ny `50 bp` når gammel `50 bp` er baseline/foot/blob og direct-kandidaten holder lineær max `<=6 bp`. Dette matcher brukerens shadow-annotering bedre enn å velge en lavere skulder rett ved apex.
+- Resultat etter direct-prioritet: annotert shadow-sett `33/42` eksakt match, `40/42` endret og `0` review. OK-182-kontrollen har fortsatt `6` nye review, men disse ser primært ut som egen sen-lane/baseline-modus, ikke direct-start-prioriteten alene.
+- Oppdatert annoteringspanel: `local_triage/rox_direct_start_priority_html/review_panel.html` (`49` cases).
+- Fortsatte med de `6` nye OK-182-reviewkontrollene. Alle er en annen feilmodus enn direct `50/60`: hele ROX-familien hopper sent (`50 bp` typisk fra ca `1635-1754` til `1908-2230`) og ender i `selected_baseline_like_ladder_peaks`.
+- Testet smale guards i `repair_rox_full_span_family_rebuild`, `select_best_combination` og lane-arbiter fallback. De fjernet ikke de seks kontrollene, som betyr at den sene familien allerede kan være default/beste kandidat i dagens motorstate, ikke bare et post-repair-overstyr.
+- Status: direct-start-fiksen beholdes som lovende (`33/42`, `0` review), mens de seks kontrollene skal behandles som egen scoring-/candidate-family-regel: normal ROX-startfamilie må beskyttes mot sen baseline-/lane-familie selv når residualen holder seg under ca `6 bp`.
+- Testet en `late-family -> first strong family` rescue for tilfeller der hele ROX-familien starter for sent. Den første enkle varianten beholdt `33/42` shadow og reduserte OK-182 nye review fra `6` til `5`, men de resterende fem har ekstra sterke midtfamilie-/støypunkter som gjør “første 21 sterke peaks” for naivt.
+- Nytt panel med nåværende beste modell: `local_triage/rox_direct_start_strongfirst_html/review_panel.html` (`48` cases). Neste forbedring bør velge normal-startfamilien med gap-/ladder-order-DP, ikke bare første sterke peaks.
+- Testet deretter ROX broad gap-template som generell revert-guard. Dette ble forkastet fordi OK-182-kontrollen gikk feil vei (`5 -> 7` nye review), selv om shadow fortsatt holdt `33/42`. ROX-gaptemplate skal derfor ikke slås på globalt; eventuell DP/gap-logikk må gates bare inne i late-family-rescue for de sene kontrollcasene.
+
+## 2026-05-13 - ROX late-family DP rescue
+- Sammenliknet de fem gjenværende OK-182 late-family-regresjonene visuelt mot gode direct-start-filer. Fellesmønsteret var rent normal-start ladder til venstre, men valgt familie hoppet sent og brukte baseline-/fotpunkter i mid/hale.
+- Kjørte en Python DP-prototype over sterke ROX-kandidater (`height >= 250`, `prominence >= 45`, lav baseline-ratio) med `ROX_BROAD_GAP_MEDIAN`. Den fant normal-startfamilien som beste gapfamilie i alle fem late-family-casene.
+- Portet dette til Rust som smal `repair_rox_late_to_first_strong_family_sequence`: bare `ROX400HD`, komplett fit, current first anchor `>1850`, startkandidat `1520..1850`, beam på gaprytme/peak-kvalitet, og hard accept `linear max <= 6`, `linear mean <= 2.8`, `linear R2 >= 0.9988`.
+- Viktig tuning: kandidatvalg inne i denne rescue-pathen prioriterer DP/gapfamilie før marginalt penere linear residual. Uten dette kunne tail-valg igjen lande på baseline/fot selv om starten ble riktig.
+- Eval etter release-build og binær-sync:
+  - annotert ROX 50/60/90 shadow: `33/42` eksakt match, `40/42` endret, `0` review, match-labels `31 good` + `2 minor`
+  - OK-182 kontroll mot `ok_182_after_120_gap_eval.tsv`: `0` nye review, ned fra `5`; `75/182` selection-delta ligger hovedsakelig fra allerede kjente direct-start/minor-repairs
+- Genererte nytt panel med dagens modell: `local_triage/rox_direct_start_late_dp_html/review_panel.html` (`48/48` bilder) og kontaktark for de fem late-family-fiksene: `local_triage/rox_late_dp_fixed_contact_sheet.png`.
+- Verifisering: `cargo test -p fraggler-core repair_rox --quiet` ok, `cargo build --release -p fraggler-cli` ok, og `bin/fraggler-cli` er synkronisert.
+
+## 2026-05-13 - Annotated late-DP panel follow-up
+- Hentet brukerens browser-annoteringer fra `local_triage/rox_direct_start_late_dp_html/review_panel.html`.
+  - `43 good`
+  - `4 minor`
+  - `1 wrong`
+  - rå annotering: `local_triage/rox_direct_start_late_dp_browser_annotations_latest.json`
+  - tabell: `local_triage/rox_direct_start_late_dp_annotated_summary.tsv`
+- Kommentarene pekte på tre lærbare minor-mønstre:
+  - LIZ `24OUM13573_IGK`: svak `500 bp` ved siden av sterkt tail-doublet
+  - ROX `24OUM01687_TCRbA`: `260 bp` valgt på fot rett bak ekte apex
+  - ROX `24OUM01691_TCRbA`: `180/190/220 bp` valgt på fot rett bak ekte apex
+  - ROX `NK_TCRb_A__150224`: fortsatt startfamilie-rebase-problem (`50/60/90`) snarere enn enkel apex-snap
+- Implementerte smal ROX apex-foot-utvidelse:
+  - ROX apex-radius `22 -> 28`
+  - ekstrem family-foot kan snappe til mye sterkere ren kandidat selv om current linear max er under `5`, så lenge hard QC-guard fortsatt holder
+  - Dette flyttet `24OUM01687` sin `260 bp` til apex og `24OUM01691` sine `180/190/220 bp` til apex.
+- Implementerte smal LIZ weak-tail-doublet:
+  - aktiveres når siste `500 bp`-anker er svakt og et sterkt `490/500`-par finnes nær halen
+  - krever ca `linear max <= 7.2`, `mean <= 2.6`, `R2 >= 0.99955`
+  - Dette flyttet `24OUM13573` tail fra `[4452, 4484]` til `[4403, 4452]` og fjernet review (`selected_weak_liz_ladder_peaks`), med linear ca `6.88/1.92/0.999732`.
+- Kontroll etter patch:
+  - `OK182`: `0` nye review, `1` analyse-error på kjent `25OUMXXX_F07_C92141SL`-rad
+  - `50/60/90` shadow: `31/42` eksakt match, `0` review. Match falt fra `33/42` fordi apex-foot-regelen endrer noen visuelt mer apex-riktige ROX-valg; dette bør vurderes visuelt før ytterligere start-rebase.
+  - `24OUM02880_IGK` står fortsatt wrong/review og bør ikke tvinges med tail-only-fiks.
+- Regenererte oppdatert panel: `local_triage/rox_direct_start_after_annotations_html/review_panel.html` (`48/48` bilder) og minor-kontaktark `local_triage/rox_direct_start_after_annotations_minor_contact_sheet.png`.
+- Verifisering: `cargo test -p fraggler-core repair_liz --quiet`, `cargo test -p fraggler-core repair_rox --quiet`, `cargo build --release -p fraggler-cli`, og `bin/fraggler-cli` synkronisert.
+
+## 2026-05-13 - Post-annotation LIZ multi-anchor cleanup
+- Bruker annoterte oppdatert panel og markerte de nye fiksene som gode:
+  - `24OUM13573_IGK` good
+  - `24OUM01687_TCRbA` good
+  - `24OUM01691_TCRbA` good
+  - `25OUM16737_M_TCRbA` og `RK_TRb_mixA` good
+  - `24OUM02880_IGK` ble nå `minor` i stedet for tidligere `wrong`
+- Hentet annoteringene til `local_triage/rox_direct_start_after_annotations_browser_annotations_latest.json`.
+- Analyserte `24OUM02880_IGK`: review skyldtes flere samtidige svake LIZ-ankere (`50`, `100`, `200`, `450`-området), men sterke lokale alternativer finnes ved blant annet `1927`, `2515` og `4034`.
+- Implementerte smal `repair_liz_weak_multi_anchor_sequence`:
+  - bare `LIZ500_250`, komplett 16-anker fit
+  - aktiverer bare ved `2..5` svake ankere i ellers sterk familie
+  - prøver lokale kandidatsett rundt weak anchors
+  - aksepterer bare når weak-count faller til `<=1`, minst to weak anchors forbedres, linear max `<=6.8`, mean `<=2.35`, R2 `>=0.99960`, og ingen stor regresjon mot current
+- Effekt på `24OUM02880_IGK`: flyttet fra `[1540,1666,1784,1965,2156,2214,2273,2532,...,4064,4267,4315]` til `[1540,1666,1784,1927,2156,2214,2273,2515,...,4034,4267,4315]`; linear ca `6.06/1.79/0.999767`; review fjernet.
+- Kontroll etter patch:
+  - OK-182: `0` nye review, kjent `1` analyse-error på `25OUMXXX_F07_C92141SL`
+  - annotert 50/60/90 shadow: `31/42`, `0` review
+  - `NK_TCRb_A__150224` står fortsatt som separat ROX start-family case; det er ikke en weak-anchor/LIZ-fiks.
+- Regenererte nytt panel: `local_triage/rox_direct_start_after_liz_multi_html/review_panel.html` og fokus-kontaktark `local_triage/rox_direct_start_after_liz_multi_focus_contact_sheet.png`.
+- Verifisering: `cargo test -p fraggler-core repair_liz --quiet`, `cargo test -p fraggler-core repair_rox --quiet`, `cargo build --release -p fraggler-cli`, og `bin/fraggler-cli` synkronisert.
+
+## 2026-05-13 - Active-file-only follow-up panel
+- Bruker ba om at neste HTML bare skal inneholde de aktuelle filene, ikke hele panelet.
+- Hentet nye annoteringer fra `local_triage/rox_direct_start_after_liz_multi_html/review_panel.html`:
+  - good: `24OUM13573_IGK`, `25OUM16737_M_TCRbA`, `24OUM01687_TCRbA`
+  - minor: `24OUM02880_IGK`, `NK_TCRb_A__150224`
+- `24OUM02880_IGK`: bruker kommenterte at bare `35/50 bp` gjenstår. Lokale trace-topper viser kandidat rundt `1634` for `50 bp`, men den er fortsatt ikke i live peak-poolen selv etter ekstra LIZ micro-vindu; ingen trygg produksjonsendring beholdt for dette ennå.
+- `NK_TCRb_A__150224`: løsnet smalt ROX starttrippel-repair og lot den bruke repair-poolen. Ny start ble `[1718, 1775, 1949]` for `50/60/90`, som matcher brukerkommentaren om å flytte starttrippelen senere. QC ca `4.38/1.66/0.999650`, fortsatt no-review.
+- Kontroll etter ROX starttrippel-endring: OK-182 `0` nye review, `50/60/90` shadow `30/42`, `0` review.
+- Laget lite aktivt panel med bare de to gjenværende/aktuelle filene: `local_triage/active_liz_rox_remaining_html/review_panel.html` (`2/2` bilder).
+
+## 2026-05-13 - Final active LIZ 50 bp candidate rescue
+- Bruker annoterte det lille aktive panelet:
+  - `NK_TCRb_A__150224` er nå good
+  - `24OUM02880_IGK` er fortsatt minor, med kommentar om at bare `50 bp` må litt tidligere fra foten til selve peak
+- Diagnostikk viste at riktig `50 bp`-kandidat rundt `1634` fantes i trace, men ikke i live `ladder_peak_preview`. Den ble filtrert bort før scoring, så dette var kandidatbevaring, ikke residualvalg.
+- Utvidet LIZ hardcase-startrescue:
+  - `liz_hardcase_anchor_rescue_needed` trigger nå også ved sterk tidlig blob + svak late-start-anchor i `1640..1710`
+  - `preserve_liz_hardcase_anchor_candidates` henter lokale rescue-topper i `1618..1688`
+- Effekt på `24OUM02880_IGK`: valgt start endret fra `[1540,1666,1784,...]` til `[1540,1634,1784,...]`; linear ca `3.15/1.50/0.999876`; fortsatt no-review.
+- Kontroll: OK-182 `0` nye review; `50/60/90` shadow `30/42`, `0` review.
+- Laget nytt lite panel med bare de to aktive final-check-filene: `local_triage/active_liz_rox_final_check_html/review_panel.html`.
+
+## 2026-05-13 - Broad non-operator final control
+- Kjørte bred kontrollrunde med siste Rust-motor på alle bad/uncertain/review-rader som ikke var operator/data, med de to siste aktive filene (`24OUM02880_IGK`, `NK_TCRb_A`) behandlet som ferdig good etter brukerens final-check.
+- Rerun-output: `local_triage/broad_nonoperator_rerun_2026-05-13/nonoperator_latest_rerun.tsv`.
+- Resultat: `123` non-operator/data rader, `122` analyser OK og `1` timeout/error (`PK_KDE__090924_E11_C920V451.fsa`).
+- Alle `72` tidligere minor-rader som ble rerunnet er nå `review=False` med siste motor.
+- Det som fortsatt trenger vurdering er `8` current review + `1` timeout/error. Laget lite annoterbart panel bare for disse: `local_triage/broad_nonoperator_rerun_2026-05-13/current_review_or_error_html/review_panel.html`.
+- De gjenstående current-review-radene er hovedsakelig ROX med høy linear residual/baseline-lignende valg (`24OUM03702_SL`, `24OUM09619_FR1`, `24OUM10028_FR3`, `24OUM11157_IKZF1`, `24OUM13569_TCRbeta_C`, `24OUM07009_FR2`) og LIZ-restcaser fra `C920V451` (`24OUM13615_IGK`, `PK_IGK`, timeout på `PK_KDE`).
+- Sjekket ABIF-instrumentmetadata for de `9` restfilene: alle er `MODL1=3730`, `HCFG3=3730xl`, `MCHN1=3730DNA-...`; ingen er 3130.
+- Hentet brukerens annoteringer fra Codex-browser localStorage til `local_triage/broad_nonoperator_current_review_browser_annotations_latest.json` og `local_triage/broad_nonoperator_current_review_annotated_summary.tsv`.
+  - `24OUM03702_SL` ble merket `good`.
+  - `PK_KDE` ble merket `operator` fordi bildet manglet og bør droppes fra læring.
+  - `24OUM13615_IGK`, `PK_IGK`, `24OUM13569_TCRbeta_C`, `24OUM07009_FR2` og `24OUM10028_FR3` ble merket `wrong` med konkrete start-/blob-/tail-kommentarer.
+  - `24OUM11157_IKZF1` og `24OUM09619_FR1` står foreløpig uten label/kommentar.
+
+## 2026-05-13 - Strong median-family repair for 2024 ROX leftovers
+- Sammenliknet de annoterte 2024-restcasene mot gode ROX-familier. Fire ROX-filer hadde samme feilmodus: en sterk ren 21-peak familie finnes tidlig/midt i trace, mens dagens fit lar halen gå til baseline-/fotpeaks eller starter for tidlig i blob.
+- Implementerte smal `repair_rox_strong_median_family_sequence` i Rust:
+  - bare `ROX400HD`, komplett 21-anker fit
+  - aktiverer bare ved tydelig dårlig current fit (`linear max > 10`, `mean > 4.5`, umulig tidlig start, eller flere baseline-like valgte ankere)
+  - bruker clean/median-height peakfamilie og `ROX_BROAD_GAP_MEDIAN` DP, men bare inne i denne gatede repair-pathen
+  - aksepterer bare kandidat med `linear max <= 6`, `mean <= 2.8`, `R2 >= 0.9988`
+- Effekt på restpanelet:
+  - `24OUM13569_TCRbeta_C`: ca `22.67/8.39 -> 3.84/1.40`
+  - `24OUM10028_FR3`: ca `13.89/6.19 -> 3.93/1.47`
+  - `24OUM11157_IKZF1`: ca `12.91/5.03 -> 4.32/1.60`
+  - `24OUM09619_FR1`: ca `11.64/4.57 -> 3.79/1.45`
+  - `24OUM07009_FR2` ble ikke tvunget fordi beste sterke-family kandidat fortsatt var for svak (`> 6 bp` max).
+- Testet en tilsvarende smal LIZ strong-median-family repair for `24OUM13615`, men live-motoren beholdt dagens sekvens; LIZ-restene (`24OUM13615`, `PK_IGK`) står derfor fortsatt som egne hardcases.
+- Bred kontroll: OK-182 rerun med ny binær ga `0` nye review og `1` kjent analysefeil. Non-operator rerun ga nå bare `5` reason/error-rader: brukermerket good `24OUM03702`, wrong `24OUM07009`, wrong `24OUM13615`, wrong `PK_IGK`, og operator/drop `PK_KDE` timeout.
+- Laget to nye HTML-paneler:
+  - fikset ROX for visuell bekreftelse: `local_triage/broad_nonoperator_rerun_2026-05-13/fixed_by_strong_median_family_html/review_panel.html`
+  - reelle gjenværende læringscases: `local_triage/broad_nonoperator_rerun_2026-05-13/remaining_after_strong_median_family_html/review_panel.html`
+- Verifisering: `cargo test -p fraggler-core repair_liz --quiet`, `cargo test -p fraggler-core repair_rox --quiet`, `cargo build --release -p fraggler-cli`, og `bin/fraggler-cli` synkronisert.
+
+## 2026-05-13 - LIZ blob-start rescue and final two-case panel
+- Bruker så at de tre gjenværende casene fortsatt var dårlige og ba om videre globale tanker/fiks.
+- Sammenliknet de to LIZ-restene visuelt mot gode familier. `24OUM13615_IGK` hadde en tydelig ren midtfamilie, men dagens start brukte en enorm blob som `35 bp` og svake/baseline-ish ankere senere.
+- Prototypet og portet smal `repair_liz_blob_start_family_sequence`:
+  - bare `LIZ500_250`, komplett 16-anker current fit, og bare når current lineær max er > `10 bp`
+  - trigger krever tidlig blob eller flere weak anchors
+  - DP over live peak-pool fra `1400..5450`, men rejecter saturerte peaks utenom `100 bp`
+  - final accept krever ca `linear max <= 6.2`, `mean <= 2.9`, `R2 >= 0.99920`, og tydelig forbedring over current
+- Live-effekt:
+  - `24OUM13615_IGK`: `13.04/5.02/0.998430 -> 5.75/2.26/0.999664`, review fjernet, valgt sekvens `[1514,1589,1735,1911,2099,2155,2212,2445,2733,3053,3294,3355,3668,3955,4187,4235]`.
+  - `PK_IGK` forble review. Løst prototype-søk fant ikke en trygg komplett 16-anker familie under guardrails.
+  - `24OUM07009_FR2` forble review. Beste visuelt/lineært rene løsning er en delvis ROX-familie til ca `340/360 bp` (`~3.5/1.37` for 19 ankere), mens alle komplette `380/400`-valg er enten baseline eller ikke-ladder blob. Ingen produksjonsendring ble beholdt for å ikke tvinge falske tail-ankere.
+- Regenererte lite HTML-panel med bare de to reelle gjenværende filene: `local_triage/broad_nonoperator_rerun_2026-05-13/remaining_needing_help_after_liz_blob_html/review_panel.html`.
+- Kontroll:
+  - `cargo test -p fraggler-core repair_liz --quiet` ok
+  - `cargo test -p fraggler-core repair_rox --quiet` ok
+  - `cargo build --release -p fraggler-cli` ok og `bin/fraggler-cli` synkronisert
+  - OK-182 kontroll på `181` tilgjengelige filer: `0` reviews; `25OUMXXX_F07_C92141SL.fsa` manglet fortsatt som kjent råfil.
+
+## 2026-05-13 - PK_IGK clean late-tail grid rescue
+- Fortsatte på de to restfilene etter brukerens ønske.
+- Dypere Python-søk for `PK_IGK__090924_E09_C920V451.fsa` viste at en bedre komplett LIZ-sekvens finnes, men den krever å godta to rene `490/500`-tailankere etter scan `5000`: `[1551,1692,1828,2098,2385,2502,2534,2923,3256,3832,4100,4146,4627,4944,5342,5438]`.
+- Portet en smal `repair_liz_clean_late_tail_family_sequence`:
+  - bare `LIZ500_250`, komplett current fit med dårlig lineær QC
+  - grid-søk over tidlig startanchor og ren tailanchor, der sekvensen bygges rundt forventet lineær scan-posisjon
+  - aksepterer bare kandidat med ca `linear max <= 10`, `mean <= 4.05`, `R2 >= 0.99870`, maks to sene LIZ-tailankere, ingen saturerte non-100 anchors og ren late-tail peak-kvalitet
+  - la også inn en smal late-tail review-waiver med samme rene-tail/QC-krav, slik at ekte sen `490/500` ikke alene gir review
+- Live-effekt:
+  - `PK_IGK`: `11.46/5.69/0.998110 -> 9.88/3.80/0.999062`, review fjernet.
+  - `24OUM13615_IGK` holder seg på forrige gode blob-start-løsning (`5.75/2.26`, no-review).
+  - `24OUM07009_FR2` er fortsatt eneste reelle rest. ROX-prototyping bekrefter at ren delvis familie til ca `340/360 bp` er god, men komplett `380/400` krever falsk baseline eller ikke-ladder blob; ingen produksjonsendring ble beholdt.
+- Kontroll:
+  - `cargo test -p fraggler-core repair_liz --quiet` ok
+  - `cargo test -p fraggler-core repair_rox --quiet` ok
+  - `cargo build --release -p fraggler-cli` ok og `bin/fraggler-cli` synkronisert
+  - OK-182 kontroll på `181` tilgjengelige filer: `0` reviews; samme kjente manglende `25OUMXXX_F07_C92141SL.fsa`
+- Nye HTML-paneler:
+  - fikset LIZ for visuell bekreftelse: `local_triage/broad_nonoperator_rerun_2026-05-13/fixed_liz_after_pk_grid_html/review_panel.html`
+  - eneste gjenværende review: `local_triage/broad_nonoperator_rerun_2026-05-13/remaining_needing_help_after_pk_grid_html/review_panel.html`
+
+## 2026-05-13 - PK_IGK annotation rollback to review
+- Bruker annoterte `fixed_liz_after_pk_grid_html`:
+  - `24OUM13615_IGK` = `Good`
+  - `PK_IGK` = `Wrong`
+- Visuell gjennomgang av `PK_IGK` bekreftet at clean-tail/grid-kandidaten var numerisk bedre, men valgte flere lave baseline-/weak-family punkter i `150/160/200/350`-området mens sterke ekte peaks lå rett ved. Dette skal ikke bli grønt bare fordi lineær max er under `10 bp`.
+- Strammet derfor to ting:
+  - både `repair_liz_blob_start_family_sequence` og `repair_liz_clean_late_tail_family_sequence` avviser kandidater med mer enn to prominence-outliers relativt til kandidatens sterke familie
+  - `selected_weak_liz_anchor_counts` bruker nå en sterk-family prominence-referanse, ikke medianen av alle valgte ankere, slik at bimodale fits med mange små baselinepunkter flagges
+- Live-status etter patch:
+  - `24OUM13615_IGK` står fortsatt no-review og er brukermerket good
+  - `PK_IGK` står fortsatt på samme beste numeriske sekvens (`9.88/3.80/0.999062`), men er nå review med `selected_weak_liz_ladder_peaks`
+  - `24OUM07009_FR2` er fortsatt ROX review
+- OK-182 kontroll på `181` tilgjengelige filer ga fortsatt `0` reviews.
+- Nye paneler:
+  - good/fixed: `local_triage/broad_nonoperator_rerun_2026-05-13/fixed_after_weak_ref_html/review_panel.html`
+  - reelle restcases: `local_triage/broad_nonoperator_rerun_2026-05-13/remaining_needing_help_after_weak_ref_html/review_panel.html`
+
+## 2026-05-13/14 - Full T7 overnight clonality rerun
+- Startet full rådata-kjøring i detached `screen`-session `hemafrag_clonality_20260513`, med output til `/Volumes/T7 Shield/HemaFrag_all_clonality_raw_t7_overnight_2026-05-13`.
+- Kjørte bare aktive DATA-røtter:
+  - `/Volumes/T7 Shield/DATA/2024_DATA`
+  - `/Volumes/T7 Shield/DATA/2025_data`
+  - `/Volumes/T7 Shield/DATA/2026`
+- Operator-/datafeil som tidligere er flyttet til `/Volumes/T7 Shield/EXCLUDED_BAD_RUNS/...` ble dermed ikke skannet fra aktive DATA-røtter.
+- Scan fant `28,068` klonalitetsfiler:
+  - 2024: `5,314` LIZ500_250 og `7,931` ROX400HD
+  - 2025: `4,510` LIZ500_250 og `7,210` ROX400HD
+  - 2026: `1,206` LIZ500_250 og `1,897` ROX400HD
+- Kjøringen fullførte `2026-05-14T00:59:55+02:00` med status `0`. Ingen per-file analysefeil i sluttrapporten.
+- Sluttall:
+  - `28,068` rader totalt
+  - `27,967` complete-QC-ok
+  - `34` review, `59` soft-fail/watch, `34` severe-fail før morgenklassifisering
+  - morgenklassifisering: `27,852` complete_qc_ok, `107` known_operator_or_bad_data, `56` ok, `31` rust_review, `22` soft_qc_watch
+- Viktige filer:
+  - `live_summary.tsv`
+  - `live_summary_classified.tsv`
+  - `morning_active_watchlist.tsv`
+  - `morning_summary.md`
+  - `morning_summary_by_ladder.tsv`
+
+## 2026-05-14 - Full-run review/QC-watch annotation panel
+- Laget ett annoterbart HTML-panel for de `53` aktuelle filene fra full T7-kjøringens morgenklassifisering:
+  - `31` `rust_review`
+  - `22` `soft_qc_watch`
+  - `known_operator_or_bad_data` er ikke tatt med
+- Panel: `local_triage/full_t7_2026_05_14_review_qc_watch_html/review_panel.html`.
+- Inputliste: `local_triage/full_t7_2026_05_14_review_qc_watch_html/review_qc_watch_input.tsv`.
+- `49/53` bilder ble rendret direkte via live Rust-analyse. Fire LIZ-rader traff render-timeout, men fikk fallback-bilder fra råtrace + lagret valgt laddersekvens slik at alle `53/53` cases er synlige i HTML-en.
+- Annoteringsknappene er samme localStorage/export-oppsett som tidligere `render_clonality_review_html.py`-paneler.
+
+## 2026-05-14 - First learning pass from 24/53 full-run annotations
+- Hentet brukerens Codex-browser localStorage for `full_t7_2026_05_14_review_qc_watch_html`:
+  - rå JSON: `local_triage/full_t7_2026_05_14_review_qc_watch_browser_annotations_latest.json`
+  - sammenslått TSV: `local_triage/full_t7_2026_05_14_review_qc_watch_annotated_summary_latest.tsv`
+  - status: `24` labeler (`18 minor`, `1 wrong`, `3 operator`, `2 unclear`) og `21` tekstnotater
+- Annoteringene viser en konsistent LIZ-feilmodus:
+  - `35/50 bp` velger ofte tidlig blob/fot i stedet for en renere peak rett etterpå
+  - `139/150/160 bp` havner ofte på fot/baseline eller blir en peak forskjøvet i forhold til en tydeligere familie
+  - flere av de relevante midt-anker-kandidatene kan være høye rene peaks, så en enkel “høy peak = blob” regel blir for grov
+- Testet en bredere LIZ-scorestraff for isolerte lave/baseline-like punkter. Den ble forkastet fordi den flyttet en annotert rad i feil retning og er for global.
+- Beholdt en smal `repair_liz_shifted_start_mid_family_sequence`:
+  - bare `LIZ500_250`, bare ustabile fits
+  - tester “dropp tidlig blob og flytt 35..150 frem” og “flytt 139/150/160 triplet rundt neste rene peak”
+  - aksepterer bare hvis residual-QC holder seg under harde grenser og peak-plausibilitet ikke blir verre
+- Effekt på `19` annoterte `minor/wrong` rader: `1` trygg endring, `24OUM02613_IGK__200224_C07_C9R0HJZA.fsa`, der `35 bp` flyttes fra `1521` til `1558`; linear mean bedres `2.50 -> 2.30`, linear max øker marginalt `7.44 -> 7.49`, og review forblir false.
+- OK-182 kontroll etter endringen: `181` tilgjengelige filer, `0` errors, `0` reviews. Sammenliknet med forrige weak-ref-kontroll var det bare noen få selection-delta og ingen QC-brudd.
+- Laget lite oppdatert panel for de `19` annoterte minor/wrong-radene etter siste motor: `local_triage/full_t7_2026_05_14_annotated_minor_wrong_after_shift_html/review_panel.html` (`19/19` bilder, ett fallback-bilde etter render-timeout).
+
+## 2026-05-14 - Full 53 annotation learning split and ROX nonlinear waiver
+- Hentet siste brukerannoteringer fra all-53 panelet og brukte bare `good`/`minor`/`wrong` som læringsgrunnlag.
+- Skrev/brukte disse filene:
+  - `local_triage/full_t7_2026_05_14_review_qc_watch_browser_annotations_all53_latest.json`
+  - `local_triage/full_t7_2026_05_14_review_qc_watch_annotated_summary_all53.tsv`
+  - `local_triage/full_t7_2026_05_14_learning_non_operator_all53.tsv`
+  - `local_triage/full_t7_2026_05_14_excluded_operator_unclear_all53.tsv`
+- Annoteringssplitten er nå `38` lærbare rader (`29 minor`, `6 good`, `3 wrong`) og `15` ekskluderte (`13 operator`, `2 unclear`). Ekskluderte rader skal ikke brukes til modellæring.
+- Sammenliknet de seks `ROX400HD`-radene bruker merket `good`. Alle hadde komplett `21/21` ROX-familie og rene kvadratiske fitmetrikker, men fikk review på grunn av `poor_linear_rox_fit` og/eller `suspicious_compressed_rox_family`.
+- Patchet Rust-reviewgaten i `fraggler-v2/crates/fraggler-core/src/primitives.rs` med en smal komplett-ROX nonlinear waiver:
+  - tillater bare reason-settet `poor_linear_rox_fit`/`suspicious_compressed_rox_family`
+  - krever komplett ROX, lineær QC innen waiverrammen, og kvadratisk QC `max <= 2.6`, `mean <= 1.25`, `R2 >= 0.99980`
+  - fjerner ikke peak-plausibilitetsårsaker som baseline-like valgte ankere.
+- Verifisering:
+  - `cargo test -p fraggler-core repair_rox --quiet` ok
+  - `cargo build --release -p fraggler-cli` ok
+  - `bin/fraggler-cli` synkronisert
+  - de seks brukermerkede ROX-good-filene er nå `review=False`.
+- Robust rerun av de `38` lærbare radene etter patch: `0` analysefeil, `6/6` ROX-good grønne, `17` LIZ-rader står fortsatt som reell læring/review.
+- Laget nytt lite HTML-panel kun for de aktuelle gjenværende LIZ-casene, med bilder gjenbrukt fra all-53-panelet for å unngå tung re-render:
+  - `local_triage/full_t7_2026_05_14_remaining_liz_after_rox_waiver_html/review_panel.html`
+  - `17/17` bilder, annoteringsknapper intakt.
+
+## 2026-05-14 - LIZ weak-anchor cleanup from remaining learning set
+- Fortsatte på de `17` gjenværende lærbare LIZ-casene etter ROX-waiver.
+- Laget diagnostikk av valgte LIZ-ankere og lokale sterkere nabokandidater:
+  - `local_triage/full_t7_2026_05_14_after_rox_nonlinear_waiver_final/liz_remaining_anchor_diagnostics.tsv`
+  - `local_triage/full_t7_2026_05_14_after_rox_nonlinear_waiver_final/weak_neighbor_local_proto.tsv`
+- Funn:
+  - flere poor-linear-caser trenger større start-/midtfamilie-rebase og skal ikke løses med residual-only endring
+  - en smal gruppe hadde bare `2-3` svake/baseline-nære ankere med tydelige lokale sterkere peaks rett ved
+- Patchet `repair_liz_weak_multi_anchor_sequence` med en ny smal accept-bane:
+  - kun når weak-count går helt til `0`
+  - kun når current weak-count er `<=3`
+  - krever fortsatt LIZ no-review-lignende QC (`linear max <= 9.8`, `mean <= 3.20`, `R2 >= 0.99930`)
+  - tillater bare liten residual-regresjon (`max <= current + 1.20`, `mean <= current + 0.55`)
+- Effekt på de `38` lærbare radene:
+  - `25OUM07652_Kde_150525_C12_H9C0ZJ8K.fsa`: review -> no-review; valgte `50 bp` fra `1669 -> 1696`, `300 bp` fra `3229 -> 3269`
+  - `24OUM02950_tcrgB__200224_B06_C9R0HJZA.fsa`: review -> no-review; valgte `160/200/250` til sterkere lokale peaks
+  - user-marked `wrong` ble ikke grønne
+  - `6/6` ROX-good forble `review=False`
+  - total læringsstatus etter patch: `38` rader, `0` errors, `15` reviews igjen
+- Kontroll:
+  - `cargo test -p fraggler-core repair_liz --quiet` ok
+  - `cargo build --release -p fraggler-cli` ok, og `bin/fraggler-cli` synkronisert
+  - OK-182 kontroll: `181/181` analysert, `0` errors, `0` reviews
+- Laget oppdatert lite panel kun for de `15` gjenværende LIZ-casene:
+  - `local_triage/full_t7_2026_05_14_remaining_liz_after_weak_cleanup_html/review_panel.html`
+  - `15/15` bilder, annoteringsknapper intakt.
+
+## 2026-05-14 - LIZ mid-triplet left-shift cleanup
+- Fortsatte på de `15` gjenværende lærbare LIZ-filene etter weak-cleanup, med fokus på globale regler som ikke lærer av `operator/data` eller `unclear`.
+- Testet en prefix-/gap-template-prototype for tail/foot-problemer. Den var for bred/treg som produksjonsgrep, men viste et stabilt mønster i midtfamilien:
+  - `139/150/160` kan være én peak for langt til høyre i enkelte poor-linear 2024-LIZ minor-filer.
+  - renere venstrekandidat + dagens `139/150` kan gi korrekt `139/150/160` uten å endre halen.
+- Patchet `fraggler-v2/crates/fraggler-core/src/primitives.rs` med `repair_liz_mid_triplet_left_shift_sequence`:
+  - kun LIZ500_250, komplett 16-step fit
+  - aktiveres bare når current fit fortsatt er review-/poor-linear-aktig
+  - krever rene familiepeaks og lineær QC etter flytt: `max <= 8.0`, `mean <= 3.35`, `R2 >= 0.9990`
+  - krever minst `1.8 bp` forbedring i linear max og bare liten mean-regresjon.
+- Effekt på 38 lærbare all-53-rader:
+  - `PK2_tcrgB__200224_D06_C9R0HJZA.fsa`: review -> no-review
+  - selected endret fra `[1558, 1635, 1785, 1964, 2215, 2274, 2380, ...]` til `[1558, 1635, 1785, 1928, 2157, 2215, 2274, ...]`
+  - linear max/mean forbedret `11.76/3.14 -> 3.25/1.62`
+  - user-marked `wrong` ble ikke flyttet av denne patchen.
+- Verifisering:
+  - `cargo test -p fraggler-core repair_liz --quiet` ok
+  - `cargo build --release -p fraggler-cli` ok, `bin/fraggler-cli` synkronisert
+  - 38 lærbare rader etter korrekt `suggested_review`-eval: `0` errors, `14` reviews igjen (`12` minor + `2` wrong)
+  - OK-182 kontroll etter patch: `181/181`, `0` errors, `0` reviews.
+- Laget oppdatert lite HTML-panel for de `12` gjenværende lærbare minor-filene:
+  - `local_triage/full_t7_2026_05_14_remaining_liz_after_triplet_html/review_panel.html`
+  - `12/12` bilder etter å gjenbruke fallback-bilde for `26OUM00877...`, annoteringsknapper intakt.
+
+## 2026-05-14 - LIZ suffix baseline-to-apex cleanup
+- Hentet brukerens annoteringer fra Codex-browser localStorage for:
+  - `local_triage/full_t7_2026_05_14_remaining_liz_after_triplet_html/review_panel.html`
+  - lagret som `local_triage/full_t7_2026_05_14_remaining_liz_after_triplet_browser_annotations_latest.json`
+- Alle `12` aktuelle rader var `minor`. Hovedmønster:
+  - flere start-/midtfamilier trenger fortsatt større rebase og holdes i review
+  - mange suffix-ankere (`300/340/350/400/450/490/500`) ligger på fot/baseline med rene peaks litt senere eller på neste label
+- Laget diagnostikk:
+  - `local_triage/full_t7_2026_05_14_after_mid_triplet_left_shift/liz_remaining_baseline_candidate_diagnostics.tsv`
+  - `local_triage/full_t7_2026_05_14_after_mid_triplet_left_shift/liz_suffix_apex_proto.tsv`
+- Patchet Rust med `repair_liz_weak_suffix_apex_sequence`:
+  - kjører sent i LIZ-repairkjeden, etter midtfamilie-repairs
+  - krever minst to svake suffix-ankere
+  - bruker lokale rene peaks og tillater label-shift til neste valgte peak når det matcher fot/baseline-mønsteret
+  - aksepterer bare nesten komplett weak-cleanup (`trial_weak_count <= 1`) og lineær QC `max <= 8.0`, `mean <= 3.4`, `R2 >= 0.9990`
+- Effekt på `38` lærbare all-53-rader:
+  - review-count `14 -> 12`
+  - `23OUM02288_KDE__030124_B09_C9R0HJTA.fsa`: review -> no-review; tail flyttet `450/490/500` fra baseline/fot til sterkere toppfamilie
+  - `PK_KDE__240424_C07_C9R0HK4B.fsa`: review -> no-review; `300/350/400/450/490/500` flyttet opp fra baseline/fot; max/mean ca `2.21/0.95 -> 2.64/1.28`
+  - `RK_IGK__191224_F09_C9H20ZYI.fsa` fikk tail flyttet opp fra baseline med `max < 8`, men står fortsatt review og bør inspiseres videre
+  - brukermerkede `wrong` ble ikke endret fra review-status
+- Verifisering:
+  - `cargo test -p fraggler-core repair_liz --quiet` ok
+  - `cargo build --release -p fraggler-cli` ok, `bin/fraggler-cli` synkronisert
+  - OK-182 kontroll: `181/181`, `0` errors, `0` reviews
+- Laget nytt panel kun for de `10` gjenværende minor-filene:
+  - `local_triage/full_t7_2026_05_14_remaining_liz_after_suffix_apex_html/review_panel.html`
+  - `10/10` bilder etter fallback-copy for to render-timeouts, annoteringsknapper intakt.
+
+## 2026-05-14 - LIZ residual-guided rebase prototype rejected
+- Etter bruker så at suffix-panelet fortsatt hadde samme feilmodus, testet jeg en bredere LIZ full-family/rebase-prototype som søker rene kandidatpeaks rundt hele ladderet og prøver å løfte baseline-/fotvalg.
+- Python-prototypen kunne finne numerisk gode alternativer for enkelte poor-linear minor-filer, men Rust-porten var enten for forsiktig og gjorde `0` nyttige endringer, eller for tidlig i repair-kjeden og flyttet allerede gode/no-review LIZ-filer før smalere repairs fikk virke.
+- Siste trygge variant, lagt som sent fallback, ga `0` selection-delta mot suffix-apex-resultatet på de `38` lærbare all-53-radene (`12` reviews, `28` soft_fail, uendret).
+- OK-182-kontroll av den aktive fallback-varianten viste at en bredere versjon kunne lage ny soft-watch på en OK-fil; regelen ble derfor ikke koblet inn i produksjonskjeden.
+- Viktig læring: de gjenværende LIZ-casene trenger mer spesifikk årsaksgating enn “residual + renere peaks”. Neste forsøk bør bygge egne regler for:
+  - poor-linear start/mid rebase der `35/50/75/100/139/150/160` er én familie forskjøvet
+  - baseline-like suffix/tail der reviewårsaken fortsatt er peak-plausibilitet, ikke bare dårlig residual
+  - eksplisitt beskyttelse av no-review fits før en bred rebase får lov å kjøre
+- Verifisering etter at bred fallback ble koblet ut:
+  - `cargo test -p fraggler-core repair_liz --quiet` ok
+  - `cargo build --release -p fraggler-cli` ok, `bin/fraggler-cli` synkronisert
+
+## 2026-05-14 - LIZ prefix/mid explicit block attempt rejected
+- Testet en smalere produksjonsvariant etter residual-rebase-forkastingen: kun LIZ poor-linear (`linear max > 10`), kun første/midtre blokk (`35/50/75/100/139/150/160`), og hard aksept `linear max <= 8`.
+- Første generiske beam-versjon var for treg på hardfilen `PK_IGK__050424_G09_C9R0HJTC.fsa` og kunne timeout'e.
+- En senere eksplisitt mønsterversjon var raskere, men ga ingen selection-delta på de 10 aktuelle suffix-panelet-radene. Den ble derfor fjernet igjen.
+- Læring: prototypens numerisk gode alternativer er ikke direkte tilgjengelige gjennom live Rust peak-pool/repair-state med dagens guards. Neste nyttige arbeid bør først instrumentere/eksportere candidate-pool og per-trial forkastelsesgrunn for de fire poor-linear-filene, før ny Rust-regel skrives.
+- Verifisering etter opprydding:
+  - `cargo test -p fraggler-core repair_liz --quiet` ok
+  - `cargo build --release -p fraggler-cli` ok, `bin/fraggler-cli` synkronisert
+
+## 2026-05-14 - LIZ poor-linear local anchor grid side-lane
+- Bruker ba om tyngre metode for hardcasene, inkludert wavelet/lokal apex, median/same-signal peakfamilie og tydelig avvisning av baseline-/blob-peaks.
+- Kjørte en tung Python-diagnostikk med lokal peak/wavelet-kandidater på fem aktuelle LIZ-restfiler. Funn:
+  - `PK_KDE__040924_D07_C920V42R.fsa`: riktig forbedring krever `50 bp` til `1624` og `300 bp` til `3091`, med lineær QC rundt `2.6/1.3`.
+  - `PK_IGK__260324_D06_C9R0HK0R.fsa`: riktig forbedring krever `160 bp` til `2258`, med lineær QC rundt `2.7/1.2`.
+  - `PK_IGK__050424...` og `PK_IGK__150224...` har også start/mid-rebase-mønster, men trengte candidate-rescue før Rust kunne se de aktuelle toppene.
+  - `26OUM00877...` har for mye weak/baseline-problematikk til å slippes grønn av denne poor-linear-regelen; den skal fortsatt være review.
+- Første Rust-forsøk la kandidatene inn i global LIZ-pool. Det forbedret flere poor-linear-filer, men flyttet også `26OUM00877...` feil (`linear max` ble ca `16.7`). Dette ble strammet.
+- Beholdt endelig løsning som en egen poor-linear side-lane:
+  - `build_ladder_fit_preview` prøver ekstra lokale LIZ-kandidater bare når current preview allerede har `linear max > 10`.
+  - Kandidat-rescue henter smale lokale toppvinduer rundt `50 bp`, `160 bp` og `300 bp` (`1600..1688`, `2235..2278`, `3060..3125`).
+  - `repair_liz_poor_linear_local_anchor_grid_sequence` aksepterer bare lokale bytter i `50/160/300 bp` når sluttfit holder `linear max <= 8`, `mean <= 3.6`, `R2 >= 0.9990`, og peak-/domain-plausibilitet ikke eksploderer.
+- Effekt på de 10 suffix-restfilene:
+  - `PK_IGK__150224_G08_C9R0HK1W.fsa`: review -> no-review, ca `14.64/4.43 -> 4.21/1.75`.
+  - `PK_KDE__040924_D07_C920V42R.fsa`: review -> no-review, ca `11.56/2.47 -> 3.07/1.37`.
+  - `PK_IGK__050424_G09_C9R0HJTC.fsa`: review -> no-review, ca `23.44/6.15 -> 5.07/1.97`.
+  - `PK_IGK__260324_D06_C9R0HK0R.fsa`: review -> no-review, ca `11.06/1.86 -> 2.71/1.23`.
+  - `26OUM00877...` står uendret i review.
+- Bred læringskontroll på `38` lærbare all-53-rader: `0` errors, review-count `12 -> 8`.
+- OK-182 kontroll: `182` rader, `1` kjent manglende råfil (`25OUMXXX_F07_C92141SL.fsa`), `0` reviews, `1` soft-watch no-review (`24OUM09884_Kde__24062024_C04_C990JWWW.fsa`).
+- Nytt lite HTML-panel med bare de `8` gjenværende review-filene:
+  - `local_triage/full_t7_2026_05_14_remaining_after_poor_linear_grid_side_lane_html/review_panel.html`
+  - `8/8` bilder etter fallback-copy for `26OUM00877...`.
+
+## 2026-05-14 - LIZ weak/baseline anchor grid cleanup
+- Bruker pekte på at de gjenværende review-filene ofte fortsatt hadde valgte peaks langs baseline.
+- Laget diagnostikk for de `8` restfilene:
+  - `local_triage/full_t7_2026_05_14_remaining_baseline_diagnostics.tsv`
+  - `local_triage/full_t7_2026_05_14_remaining_baseline_lift_proto.tsv`
+- Funn:
+  - Flere valgte ankere hadde bare `30-120 RFU`, mens rene lokale apex-kandidater i samme nabolag lå rundt `900-5000 RFU`.
+  - Den eksisterende `repair_liz_weak_suffix_apex_sequence` stoppet noen tilfeller fordi lokale suffix-kandidater lå ca `150` scans unna, litt utenfor gammel radius.
+  - En bred/global kandidattilførsel er fortsatt for risikabel fordi `26OUM00877...` kan bli flyttet til en visuelt dårligere sekvens med høyere residual.
+- Beholdte endringer:
+  - suffix-apex local radius er utvidet smalt til `180` scans bare for `450/490/500`-området (`step >= 13`).
+  - la inn en weak/baseline-only LIZ anchor-grid sidebane som bare får vinne når den reduserer weak/baseline-score, holder `linear max <= 8`, `mean <= 3.6`, `R2 >= 0.9990`, og samtidig gir en materiell lineær gevinst.
+  - sidebanen trigges bare når weak/baseline-score er tydelig (`>=3`) eller current residual allerede er soft-/review-aktig.
+- Effekt på `38` lærbare all-53-rader etter material-win stramming:
+  - review-count `8 -> 5`, `0` errors.
+  - `PK_KDE__051224_C02_C990RI45.fsa`: review -> no-review, ca `7.85/2.94 -> 3.18/1.35`.
+  - `26OUM01145_Igk_27012026_A06_H9C0VCGO.fsa`: review -> no-review, suffix flyttet opp fra baseline til ren familie, ca `4.33/1.51 -> 3.70/1.63`.
+  - `24OUM13374_KDE__040924_C03_C920V42R.fsa`: review -> no-review, baseline `200/300/450` løftet til ekte peaks, ca `4.75/2.17 -> 2.78/1.41`.
+  - `26OUM00877...` står fortsatt i review, som ønsket.
+- OK-182 kontroll etter stramming: `182` rader, `1` kjent manglende råfil, `0` reviews, `1` soft-watch; `0` selection-delta når sammenliknet på `raw_path`.
+- Nytt lite HTML-panel med bare de `5` gjenværende review-filene:
+  - `local_triage/full_t7_2026_05_14_remaining_after_weak_anchor_grid_material_html/review_panel.html`
+  - `5/5` bilder etter fallback-copy for `26OUM00877...`.
+
+## 2026-05-14 - Remaining LIZ foot/baseline experiments
+- Bruker observerte at ca `4/5` gjenværende review-filer fortsatt hadde valgte ankere på fot/baseline rett ved ekte topper, og noen veldig sent i scan-tid.
+- Laget ny diagnostikk:
+  - `local_triage/full_t7_2026_05_14_remaining_foot_apex_diagnostics.tsv`
+- Funn:
+  - Feilmodusen er ekte: flere valgte ankere ligger på `~30-120 RFU`, mens nærliggende apex kan ligge `~900-5000+ RFU`.
+  - En final LIZ apex-pass etter repair-kjeden kunne løfte noen punkter, spesielt i `26OUM00877...`, men gjorde fila for treg i parallellbatch og ga worker-timeout rundt `60s`.
+  - En bredere LIZ local-grid candidate rescue for mid/tail ga også for tungt søk og ble rullet tilbake.
+- Beslutning:
+  - Ikke behold global fiks som bare ser visuelt lovende ut hvis den gir timeout eller flytter no-review-filer for bredt.
+  - Aktiv motor er derfor satt tilbake til siste trygge weak-anchor-grid motor med `5` gjenværende review-filer.
+- Neste tekniske retning:
+  - lage en egen, capped multi-step foot-to-apex repair som bruker svært små per-case candidate sets og fast beam-cap
+  - trigger kun når current review reason er `selected_weak_liz_ladder_peaks`/`selected_baseline_like_ladder_peaks`
+  - ikke kjør tung final apex over hele peak-poolen i parallellbatch.
+
+## 2026-05-14 - Capped LIZ foot-to-apex repair
+- Implementerte en smal `repair_liz_capped_foot_to_apex_sequence` i Rust:
+  - bare `LIZ500_250`, komplett 16-step fit, og current `linear max <= 10.5`
+  - aktiverer bare når minst to valgte ankere ser weak/fot-like ut
+  - velger maks fire lokale apex-kandidater per svakt steg og holder state-cap `96`
+  - aksepterer bare når weak-count faller minst `2`, sluttfit holder `linear max <= 8.0`, `mean <= 3.6`, `R2 >= 0.9990`, og residual-regresjon er begrenset
+- Effekt på `38` lærbare all-53-rader:
+  - `0` errors, `5` reviews fortsatt
+  - bare `26OUM00877_TCRg_A_22012026_H01_H9C0U3SF.fsa` flyttet
+  - den flyttet `50/250/300/400 bp` fra svak/fot-posisjon til sterkere lokale topper:
+    - selected `[1538,1612,...,2880,3180,...,3808,...]`
+    - til `[1538,1604,...,2900,3240,...,3879,...]`
+  - linear QC bedret ca `8.15/3.63 -> 7.82/3.49`; fila står fortsatt review, som ønsket
+- OK-182-regresjonskontroll:
+  - `182` rader, `1` kjent manglende råfil, `0` reviews, `1` soft-watch
+  - `0` selection-delta mot forrige trygge weak-anchor-grid motor
+- Laget oppdatert 5-case HTML-panel:
+  - `local_triage/full_t7_2026_05_14_after_capped_foot_apex_html/review_panel.html`
+  - `5/5` bilder; `26OUM00877...` fikk fallback-render med oppdatert valgt sekvens.
+- Testet en mer liberal delvis cleanup-variant som ikke krevde at weak-count gikk ned til `<=2` og som brukte større mid/tail radius. Den ga mange parallellbatch-errors/timeouts (`14/38`) uten rene nyttige deltas, og ble rullet tilbake.
+- Etter inspeksjon av Rust `ladder_peak_preview` for de fire gjenværende:
+  - sterke lokale topper finnes ofte i poolen, men naive bytter forverrer familie/rekkefølge-QC kraftig
+  - disse bør ikke løses med mer generell foot-to-apex-regel
+  - neste eventuelle angrep må være en egen family-rebase/review-only modell for bimodale 2024-LIZ-spor, ikke en enkel apex-cleanup.
+
+## 2026-05-14 - Bimodal LIZ full-family rebase attempt rejected
+- Testet en bounded DP-basert `repair_liz_bimodal_family_rebase_sequence` for LIZ-fits med minst to veldig sene ankere (`>5000` scans), med sterk straff for baseline/fot, sub-family outliers og ekstremt sene LIZ-valg.
+- Første varianter ga `review 5 -> 4`, men introduserte `2` worker-timeouts på `38` lærbare rader (`PK_IGK__050424_G09_C9R0HJTC.fsa` og `26OUM00877_TCRg_A_22012026_H01_H9C0U3SF.fsa`), så regelen ble tatt ut av aktiv selection-kjede.
+- Direkte enkeltfil-test viste at de to filene er tunge med dagens motor (`~47s` og `~64s`) og kan feile i parallellrunnerens `60s` timeout selv uten at rebase-kandidaten vinner.
+- Læring: full-family DP over hele LIZ-poolen er fortsatt for dyrt for produksjonskjeden. Neste forsøk bør ikke være en generell rebase, men et svært lite per-case/per-family kandidatsett for de faktiske bimodale `PK/NK 09.09`-filene, eller en tidligere pool-/score-guard som hindrer sene baseline-ankere før tung DP trengs.
+
+## 2026-05-14 - Relative weak-family LIZ repair
+- Ryddet bort en global `liz_strong_family_low_anchor_penalty` som ikke ga selection-delta på de fem restfilene, og lot den forkastede bimodal-rebase-funksjonen forbli ute av aktiv motor.
+- Testet en smalere hypotese: når en komplett LIZ-fit har mange ankere som er svake relativt til den sterke ladderfamilien, kan eksisterende `repair_liz_strong_median_family_sequence` få kjøre selv om lineær max ikke er over `10 bp`.
+- Implementerte triggeren med relative weak-count basert på øvre halvdel av valgt prominensfamilie.
+- Direkte 5-case test:
+  - `NK_IGK__090924_G09_C920V451.fsa`: review -> no-review, linear ca `4.95/2.21 -> 4.14/1.69`.
+  - `RK_IgK_26112025_A05_C92141SN.fsa`: review -> no-review, linear ca `6.07/1.96 -> 4.72/2.02`.
+  - `PK_IGK__090924...`, `RK_IGK__191224...` og `26OUM00877...` står fortsatt review.
+- Bred kontroll:
+  - `38` lærbare all-53-rader: `0` errors, review `5 -> 3`, bare de to gamle review-filene flyttet.
+  - OK-182: `182` rader, `1` kjent manglende råfil, `0` errors, `0` reviews, `0` selection-delta.
+- Laget nytt lite panel bare for de `3` gjenværende review-filene:
+  - `local_triage/full_t7_2026_05_14_remaining_after_relative_family_html/review_panel.html`
+
+## 2026-05-14 - Final 3 LIZ rest-case inspection
+- Inspiserte de tre gjenværende bildene etter relative-family-repair:
+  - `PK_IGK__090924_E09_C920V451.fsa`: bimodal 2024-LIZ med mange sene lave ankere; lokale bytter kan bare redusere weak-count `8 -> 6` og gir fortsatt svak lineær mean rundt `4.3-4.6`, så den skal foreløpig holdes review.
+  - `RK_IGK__191224_F09_C9H20ZYI.fsa`: visuelt nesten ferdig; eneste klare feil er svak `490 bp` ved siden av sterke `500/next` tail-peaks. En tail-neighbor prototype så numerisk plausibel ut (`weak 1 -> 0`, max fortsatt < `8`), men live Rust-repair flyttet ikke sekvensen. No-op-patch ble rullet tilbake.
+  - `26OUM00877_TCRg_A_22012026_H01_H9C0U3SF.fsa`: fortsatt to lave ankere (`139`, `340`) i ellers sterk familie, men lokale alternativer i live pool gir enten fortsatt weak-count eller residual over trygg grense. Hold review.
+- Verifisering etter opprydding:
+  - `cargo test -p fraggler-core repair_liz --quiet` ok
+  - `cargo build --release -p fraggler-cli` ok, `bin/fraggler-cli` synkronisert
+- Konklusjon: behold dagens trygge motor med `3` reelle review-caser. Neste forsøk bør enten være en eksplisitt tail-doublet side-lane for `RK_191224` med egen test, eller manuell review/annotering for de tre restfilene før flere globale regler.
+
+## 2026-05-14 - Quick rerun of non-operator full-T7 night errors
+- Bruker ba om rask status på alle "feil" fra nattkjøringen, men med operator/data/unclear ekskludert.
+- Brukte `local_triage/full_t7_2026_05_14_learning_non_operator_all53.tsv` som testsett (`38` rader: `29 minor`, `6 good`, `3 wrong`) og lot `local_triage/full_t7_2026_05_14_excluded_operator_unclear_all53.tsv` (`15` rader: `13 operator`, `2 unclear`) stå utenfor.
+- Kjørte alle `38` med dagens Rust-motor, `4` workers og `180s` timeout per fil.
+- Resultat lagret i:
+  - `local_triage/full_t7_2026_05_14_current_nonoperator_quicktest/live_summary.tsv`
+  - `local_triage/full_t7_2026_05_14_current_nonoperator_quicktest/summary.json`
+- Status: `38/38` analysert, `0` errors, `3` fortsatt review.
+- Gjenstående review:
+  - `26OUM00877_TCRg_A_22012026_H01_H9C0U3SF.fsa` (`minor`, `selected_weak_liz_ladder_peaks`, linear ca `7.82/3.49`)
+  - `RK_IGK__191224_F09_C9H20ZYI.fsa` (`minor`, `selected_weak_liz_ladder_peaks`, linear ca `7.69/3.26`)
+  - `PK_IGK__090924_E09_C920V451.fsa` (`wrong`, `selected_weak_liz_ladder_peaks`, linear ca `9.88/3.80`)
