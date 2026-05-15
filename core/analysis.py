@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from Bio import SeqIO
 from scipy import signal
 from scipy.interpolate import UnivariateSpline
 from sklearn.metrics import mean_squared_error, r2_score
@@ -78,6 +79,32 @@ GS500_FAMILY_STEPS = np.array(
     [35.0, 50.0, 75.0, 100.0, 139.0, 150.0, 160.0, 200.0, 250.0, 300.0, 340.0, 350.0, 400.0, 450.0, 490.0, 500.0],
     dtype=float,
 )
+
+
+def _abi_data_channels(fsa_path: Path) -> set[str]:
+    try:
+        tags = SeqIO.read(str(fsa_path), "abi").annotations.get("abif_raw", {})
+    except Exception:
+        return set()
+    return {str(key) for key in tags.keys() if str(key).startswith("DATA")}
+
+
+def _preferred_size_standard_channel_for_file(fsa_path: Path, ladder_name: str) -> str:
+    channels = _abi_data_channels(fsa_path)
+    ladder_upper = str(ladder_name or "").upper()
+
+    if "LIZ" in ladder_upper:
+        if "DATA105" in channels:
+            return "DATA105"
+        if "DATA5" in channels:
+            return "DATA5"
+        return "DATA105"
+
+    if "DATA4" in channels:
+        return "DATA4"
+    if "DATA105" in channels:
+        return "DATA105"
+    return "DATA4"
 ROX400HD_FAMILY_STEPS = np.array(
     [50.0, 60.0, 90.0, 100.0, 120.0, 150.0, 160.0, 180.0, 190.0, 200.0, 220.0, 240.0, 260.0, 280.0, 290.0, 300.0, 320.0, 340.0, 360.0, 380.0, 400.0],
     dtype=float,
@@ -168,9 +195,9 @@ LADDER_FIT_AUTO_ACCEPT_RULES: dict[str, dict[str, float]] = {
     },
     LADDER_FIT_PROFILE_FLT3_GS500ROX: {
         "r2_floor": 0.9985,
-        "mean_abs_error_bp": 1.8,
-        "max_abs_error_bp": 4.0,
-        "linear_trend_max_abs_error_bp": 5.0,
+        "mean_abs_error_bp": 3.0,
+        "max_abs_error_bp": 6.0,
+        "linear_trend_max_abs_error_bp": 6.0,
         "max_curvature": 0.5,
     },
 }
@@ -442,7 +469,9 @@ def _set_ladder_fit_metadata(fsa: FsaFile, strategy: str, note: str | None = Non
     _set_ladder_fit_profile(fsa, getattr(fsa, "ladder_fit_profile", None), analysis_id=str(getattr(fsa, "analysis_id", "") or ""))
     fsa.ladder_fit_strategy = strategy
     fsa.ladder_missing_expected_steps = _missing_expected_ladder_steps(fsa)
-    fsa.ladder_review_required = bool(fsa.ladder_missing_expected_steps)
+    fsa.ladder_review_required = bool(fsa.ladder_missing_expected_steps) or bool(
+        getattr(fsa, "rust_guardrail_review_required", False)
+    )
     fsa.ladder_expected_step_count = int(len(_get_expected_ladder_steps(fsa)))
     fsa.ladder_fitted_step_count = int(len(getattr(fsa, "ladder_steps", [])))
     if note is None:
@@ -460,7 +489,9 @@ def _finalize_auto_fit_metadata(fsa: FsaFile) -> FsaFile:
     if existing:
         if not hasattr(fsa, "ladder_missing_expected_steps"):
             fsa.ladder_missing_expected_steps = _missing_expected_ladder_steps(fsa)
-        fsa.ladder_review_required = bool(getattr(fsa, "ladder_missing_expected_steps", []))
+        fsa.ladder_review_required = bool(getattr(fsa, "ladder_missing_expected_steps", [])) or bool(
+            getattr(fsa, "rust_guardrail_review_required", False)
+        )
         fsa.ladder_expected_step_count = int(len(_get_expected_ladder_steps(fsa)))
         fsa.ladder_fitted_step_count = int(len(getattr(fsa, "ladder_steps", [])))
         if not getattr(fsa, "ladder_fit_note", None):
@@ -4003,18 +4034,7 @@ def analyse_fsa_liz(
         {"min_h": 50, "min_d": 10},
     ]
 
-    # Dynamic channel selection
-    channels = base_fsa.fsa.keys() if 'base_fsa' in locals() else []
-    # If base_fsa is not yet defined, we use fsa_path to check
-    from fraggler.fraggler import FsaFile as FsaRaw
-    raw_fsa = FsaRaw(str(fsa_path), ladder_name, sample_channel, 15, 100)
-    channels = raw_fsa.fsa.keys()
-    
-    ss_channel = "DATA4"
-    if "DATA105" in channels:
-        ss_channel = "DATA105"
-    elif "DATA5" in channels and "LIZ" in ladder_name:
-         ss_channel = "DATA5"
+    ss_channel = _preferred_size_standard_channel_for_file(fsa_path, ladder_name)
 
     base_fsa = FsaFile(
         file=str(fsa_path),
@@ -4340,8 +4360,14 @@ def analyse_fsa_rox(
         ladder_name=ladder_name,
     )
 
+    engine_label = (
+        "Rust-only ladder engine"
+        if ladder_fit_profile == LADDER_FIT_PROFILE_FLT3_GS500ROX
+        and str(ladder_name).upper() == "GS500ROX"
+        else "Rust-first/Python-compatible API"
+    )
     print_green(
-        f"=== Analysing {fsa_path} ({ladder_name}, sample {sample_channel}, Python API) ==="
+        f"=== Analysing {fsa_path} ({ladder_name}, sample {sample_channel}, {engine_label}) ==="
     )
 
     configs = [
@@ -4351,16 +4377,7 @@ def analyse_fsa_rox(
         {"min_h": 20, "min_d": 8},
     ]
 
-    # Dynamic channel selection
-    from fraggler.fraggler import FsaFile as FsaRaw
-    raw_fsa = FsaRaw(str(fsa_path), ladder_name, sample_channel, 15, 100)
-    channels = raw_fsa.fsa.keys()
-    
-    ss_channel = "DATA4"
-    if "DATA105" in channels:
-        ss_channel = "DATA105"
-    elif "DATA5" in channels and "LIZ" in ladder_name:
-         ss_channel = "DATA5"
+    ss_channel = _preferred_size_standard_channel_for_file(fsa_path, ladder_name)
 
     base_fsa = FsaFile(
         file=str(fsa_path),
@@ -4386,10 +4403,15 @@ def analyse_fsa_rox(
             if applied is not None:
                 return applied
             return hybrid_fsa
+        if str(getattr(base_fsa, "analysis_id", "") or "").lower() == "flt3" and str(ladder_name).upper() == "GS500ROX":
+            print_warning(
+                f"[ROX] FLT3 GS500ROX is Rust-only; Python ladder fitting fallback is disabled for {fsa_path.name}."
+            )
+            return None
         print_warning(f"[ROX] Rust Engine failed or returned None for {fsa_path.name}. Falling back to Python ladder fitting.")
 
     base_fsa = find_size_standard_peaks(base_fsa)
-    base_raw_rox = np.asarray(base_fsa.fsa["DATA4"], dtype=float)
+    base_raw_rox = np.asarray(base_fsa.fsa[ss_channel], dtype=float)
     base_found = np.asarray(getattr(base_fsa, "size_standard_peaks", []), dtype=float)
     base_supplemented = _supplement_rox_preferred_region_peaks(
         base_found,
@@ -4428,7 +4450,7 @@ def analyse_fsa_rox(
         )
         fsa.analysis_id = "flt3" if ladder_fit_profile == LADDER_FIT_PROFILE_FLT3_GS500ROX else "clonality"
         _set_ladder_fit_profile(fsa, ladder_fit_profile, analysis_id=str(getattr(fsa, "analysis_id", "") or ""))
-        rox_data = np.asarray(fsa.fsa["DATA4"]).astype(float)
+        rox_data = np.asarray(fsa.fsa[ss_channel]).astype(float)
         fsa = find_size_standard_peaks(fsa)
 
         all_found = getattr(fsa, "size_standard_peaks", None)

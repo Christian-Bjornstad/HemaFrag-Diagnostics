@@ -6461,6 +6461,167 @@ fn repair_gs500rox_start_anchor_sequence(
         let baseline_ok = baseline_ratio <= 0.55 || (baseline_ratio <= 0.68 && purity >= 0.36);
         peak.height >= 60.0 && peak.prominence >= 30.0 && baseline_ok && purity >= 0.22
     };
+    let mut best_trial: Option<CombinationScore> = None;
+
+    let third = best.indices[2];
+    let fourth = best.indices[3];
+    let gap_35_50 = second.saturating_sub(first);
+    let gap_50_75 = third.saturating_sub(second);
+    let start_alternative_before = peak_features.iter().any(|peak| {
+        peak.index >= first.saturating_sub(120) && peak.index < first && plausible_start_peak(peak)
+    });
+    let start_alternative_between = peak_features
+        .iter()
+        .any(|peak| peak.index > first && peak.index < second && plausible_start_peak(peak));
+    let suspect_both_start_family = first >= GS500ROX_ABSOLUTE_TIME_MIN as usize
+        && first <= GS500ROX_MAX_FIRST_ANCHOR as usize
+        && last >= 3900
+        && gap_35_50 <= 85
+        && gap_50_75 >= 180
+        && (start_alternative_before || start_alternative_between);
+    let suspect_35_start_family = first >= GS500ROX_ABSOLUTE_TIME_MIN as usize
+        && first <= GS500ROX_MAX_FIRST_ANCHOR as usize
+        && last >= 3900
+        && gap_35_50 >= 115
+        && gap_50_75 <= 165
+        && start_alternative_between;
+
+    if suspect_both_start_family || suspect_35_start_family {
+        let tail_sizes = ladder_sizes[4..].to_vec();
+        let tail_scans = best.indices[4..].to_vec();
+        if let Some((tail_intercept, tail_slope)) = linear_scan_model(&tail_sizes, &tail_scans) {
+            if tail_intercept.is_finite() && tail_slope.is_finite() && tail_slope > 0.0 {
+                let mut projected: Vec<Vec<&Peak>> = Vec::new();
+                for step_index in 0..4 {
+                    let predicted = tail_intercept + tail_slope * ladder_sizes[step_index];
+                    let radius = match step_index {
+                        0 => 190.0,
+                        1 => 190.0,
+                        2 => 220.0,
+                        _ => 240.0,
+                    };
+                    let mut candidates = peak_features
+                        .iter()
+                        .filter(|peak| {
+                            peak.index >= GS500ROX_ABSOLUTE_TIME_MIN as usize
+                                && peak.index + 18 < best.indices[4]
+                                && ((peak.index as f64) - predicted).abs() <= radius
+                                && plausible_start_peak(peak)
+                        })
+                        .collect::<Vec<_>>();
+                    candidates.sort_by(|left, right| {
+                        let left_distance = ((left.index as f64) - predicted).abs();
+                        let right_distance = ((right.index as f64) - predicted).abs();
+                        left_distance
+                            .partial_cmp(&right_distance)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| {
+                                right
+                                    .score
+                                    .partial_cmp(&left.score)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                    });
+                    candidates.truncate(9);
+                    if candidates.is_empty() {
+                        projected.clear();
+                        break;
+                    }
+                    projected.push(candidates);
+                }
+
+                if projected.len() == 4 {
+                    for p0 in &projected[0] {
+                        for p1 in &projected[1] {
+                            if p1.index <= p0.index || !(45..=210).contains(&(p1.index - p0.index))
+                            {
+                                continue;
+                            }
+                            for p2 in &projected[2] {
+                                if p2.index <= p1.index
+                                    || !(45..=260).contains(&(p2.index - p1.index))
+                                {
+                                    continue;
+                                }
+                                for p3 in &projected[3] {
+                                    if p3.index <= p2.index
+                                        || p3.index + 18 >= best.indices[4]
+                                        || !(70..=330).contains(&(p3.index - p2.index))
+                                    {
+                                        continue;
+                                    }
+
+                                    let mut trial = best.indices.clone();
+                                    trial[0] = p0.index;
+                                    trial[1] = p1.index;
+                                    trial[2] = p2.index;
+                                    trial[3] = p3.index;
+                                    if !trial.windows(2).all(|window| window[1] > window[0]) {
+                                        continue;
+                                    }
+                                    if suspect_35_start_family
+                                        && (trial[1] != second
+                                            || trial[2] != third
+                                            || trial[3] != fourth)
+                                    {
+                                        continue;
+                                    }
+
+                                    let trial_score = score_combination(
+                                        &trial,
+                                        ladder_sizes,
+                                        ladder,
+                                        peak_feature_by_index,
+                                        peak_features,
+                                    );
+                                    let material_win = trial_score.linear_max_abs_error_bp + 3.5
+                                        < best.linear_max_abs_error_bp
+                                        || trial_score.linear_mean_abs_error_bp + 1.0
+                                            < best.linear_mean_abs_error_bp;
+                                    let no_hard_regression = trial_score.linear_max_abs_error_bp
+                                        <= best.linear_max_abs_error_bp + 0.50
+                                        && trial_score.linear_mean_abs_error_bp
+                                            <= best.linear_mean_abs_error_bp + 0.60
+                                        && trial_score.linear_r2 + 0.0015 >= best.linear_r2;
+                                    let review_profile = trial_score.linear_max_abs_error_bp
+                                        <= 35.0
+                                        && trial_score.linear_mean_abs_error_bp <= 13.5
+                                        && trial_score.linear_r2 >= 0.9890;
+                                    if !(material_win && no_hard_regression && review_profile) {
+                                        continue;
+                                    }
+
+                                    let should_take =
+                                        if let Some(current_best) = best_trial.as_ref() {
+                                            (
+                                                trial_score.linear_mean_abs_error_bp,
+                                                trial_score.linear_max_abs_error_bp,
+                                                -trial_score.linear_r2,
+                                                trial_score.blended_score,
+                                            ) < (
+                                                current_best.linear_mean_abs_error_bp,
+                                                current_best.linear_max_abs_error_bp,
+                                                -current_best.linear_r2,
+                                                current_best.blended_score,
+                                            )
+                                        } else {
+                                            true
+                                        };
+                                    if should_take {
+                                        best_trial = Some(trial_score);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if best_trial.is_some() {
+        return best_trial;
+    }
 
     let start_candidates = peak_features
         .iter()
@@ -6471,8 +6632,6 @@ fn repair_gs500rox_start_anchor_sequence(
                 && plausible_start_peak(peak)
         })
         .collect::<Vec<_>>();
-    let mut best_trial: Option<CombinationScore> = None;
-
     for first_candidate in &start_candidates {
         for second_candidate in &start_candidates {
             if second_candidate.index <= first_candidate.index {

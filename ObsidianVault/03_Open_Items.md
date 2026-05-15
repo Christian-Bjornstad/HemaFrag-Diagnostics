@@ -1,12 +1,17 @@
 # HemaFrag Open Items
 
-- Verifisere om mer av `data/Euroclonality` skal inn i den rene prosjektmappen eller holdes utenfor
-- Kjor en full lokal GUI-smoke av `qt_app.py` ved neste manuelle app-test. Import-smoke av `qt_app`, Ladder Dialog og learning-skriptene passerte 2026-05-06.
-- Kjor eventuelt en ny PyInstaller-build fra den rene mappen
-- Vurdere om legacy Panel-GUI fortsatt skal beholdes langsiktig
-- Klonalitet ladder-plan:
-  - `25OUM08246_TRb_mixA...` er ikke lenger review/manual-case etter smal ROX nonlinear start-pair repair og quadratic complete-fit waiver. Behold regelen smal og valider visuelt pa ROX-delta-bildene for de 33 endrede startparene for eventuell videre stramming.
-  - Neste motorforskning bor ikke være global baseline/peak detection. Complete-QC-aware 3000-gate hadde `0` errors, `5` review, `6` soft og `2987` complete-QC-ok; aktivlisten er kjent bad/operator.
-  - Operator-/bad-ladder-saker er na sentralisert i `scripts/known_ladder_cases.py` og brukes av manifest/failure-refresh.
-  - LIZ soft-tail/490-500 cases er gjennomgått som complete-QC/non-regression-støy i gate-skriptene; ikke bruk dem som motortrigger uten ny visuell feil.
-  - Gjenværende curated P1-motorliste etter manifest-triage er primært LIZ blob/sequence: `25OUM03913`, `25OUM16586_tcrgB_F03`, `25OUM16288_tcrgB_B03`, `26OUM05318_IGK`, `26OUM06407_TCRg_B`, pluss ROX control-instability `25OUM16586_FR3`.
+## FLT3 First
+
+- Mark missing/weak ladder rows as data quality/fail, not motor training.
+- Review the 6 remaining FLT3 GS500ROX `REVIEW` rows from `local_triage/flt3_rox500_residual6_2000_2025_2026_2026-05-14`.
+- Do not broaden GS500ROX thresholds beyond the current residual-only cleanup without annotation support.
+- Compare any remaining true GS500ROX `35/50` start-family failures against visually good rows before implementing a family-aware repair.
+
+## Keep Parked
+
+- Clonality ladder/motor work is parked unless explicitly requested.
+- Do not pull old clonality learning back into active context by default.
+
+## Hygiene
+
+- Do not stage generated `artifacts/`, `local_triage/`, caches, raw data, build outputs, or scratch review bundles.

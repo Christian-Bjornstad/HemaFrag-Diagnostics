@@ -1,6 +1,6 @@
-# Third-Party Notices
+# HemaFrag Third-Party Notices
 
-Fraggler Diagnostics contains and builds on MIT-licensed code and concepts from the upstream
+HemaFrag contains and builds on MIT-licensed code and concepts from the upstream
 [`willros/fraggler`](https://github.com/willros/fraggler) project.
 
 ## Upstream project
@@ -26,9 +26,32 @@ foundations that preserve the upstream MIT notice:
   - Contains explicit references to upstream Fraggler logic and builds on the local `fraggler`
     runtime module
 
-These areas have been substantially modified and extended for the Fraggler Diagnostics application,
+These areas have been substantially modified and extended for the HemaFrag application,
 including clinical workflow, GUI, QC tracking, reporting, archive validation, and assay-specific
 logic that are not part of the upstream package.
+
+## Python dependency license review
+
+Local package metadata from the current Python environment was reviewed on 2026-05-15 against
+`requirements.txt`. Most scientific/runtime dependencies are permissive or weak-copyleft packages
+commonly used in internal clinical/research tooling:
+
+- BSD/MIT/Apache/PSF-style packages include NumPy, SciPy, pandas, scikit-learn, matplotlib,
+  openpyxl, requests, Plotly, Panel/Bokeh, pyqtgraph, PyYAML, Jinja2, tqdm, and related support
+  packages.
+- MPL-licensed packages are present (`certifi`; `tqdm` metadata also lists MPL/MIT). MPL is
+  file-level weak copyleft and is usually compatible with internal use, but keep bundled license
+  notices if distributing an application bundle.
+- `PyQt6` is the main item requiring explicit governance. The installed `PyQt6` wheel includes a
+  GPL-3.0 license file; `PyQt6-Qt6` metadata lists LGPLv3. For internal OUS diagnostic use this may
+  be acceptable if the legal/IT policy permits GPL components, but if HemaFrag is distributed as a
+  closed application outside the organization or to third parties, OUS should either obtain the
+  appropriate Riverbank commercial PyQt license or migrate the GUI binding to an LGPL alternative
+  such as PySide6, subject to technical validation.
+
+This is an engineering license inventory, not legal advice. Before clinical deployment or wider
+distribution, OUS should confirm the PyQt6 position and retain third-party license notices in any
+packaged build.
 
 ## Repository licensing status
 

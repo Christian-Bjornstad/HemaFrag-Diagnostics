@@ -62,10 +62,31 @@ FLT3_QC_TRENDS_FILENAME = "FLT3_QC_TRENDS.xlsx"
 FLT3_MANUAL_RATIO_VERSION = 2
 MANUAL_RATIO_ASSAYS = {"FLT3-ITD", "FLT3-D835"}
 FLT3_REVIEW_MAX_RESIDUAL_BP = 4.0
+FLT3_GS500ROX_REVIEW_MAX_RESIDUAL_BP = 6.0
+FLT3_GS500ROX_LINEAR_REVIEW_MAX_BP = 6.0
+FLT3_GS500ROX_LINEAR_REVIEW_MEAN_BP = 3.0
+FLT3_GS500ROX_LINEAR_REVIEW_MIN_R2 = 0.9985
+FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MAX_BP = 8.6
+FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MEAN_BP = 3.3
+FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MIN_R2 = 0.9993
 FLT3_LOW_SIGNAL_LADDER_PROMINENCE = 100.0
 FLT3_LOW_END_LADDER_PROMINENCE = 120.0
 FLT3_LATE_TEMPLATE_TOLERANCE = 950.0
 FLT3_LIZ_LADDER = "LIZ500_250"
+FLT3_ROX500_REPORT_LABEL = "ROX500"
+FLT3_ROX500_INTERNAL_LADDER = FLT3_ROX_LADDER
+FLT3_ROX500_SIZE_STANDARD_CHANNEL = "DATA4"
+FLT3_GS500ROX_SIZE_STANDARD_CHANNEL = "DATA4"
+GS500ROX_ABSOLUTE_TIME_MIN = 1300
+GS500ROX_MAX_FIRST_ANCHOR = 1700
+GS500ROX_START_PRIOR_MAX_50_SCAN = 1800
+GS500ROX_START_PRIOR_REVIEW_CODE = "gs500rox_start_family_prior_review"
+GS500ROX_START_PRIOR_SUGGESTION_CODE = "gs500rox_start_family_prior_suggestion"
+FLT3_LIZ500_SIZE_STANDARD_CHANNEL = "DATA105"
+FLT3_ROX500_SIZE_STANDARD_TOKENS = {"", "ROX", "ROX500", "ROX_500", "GS500ROX", "GS_500_ROX"}
+FLT3_LIZ_SIZE_STANDARD_TOKENS = {"LIZ", "LIZ500", "LIZ500_250", "LIZ500250"}
+FLT3_LADDER_ONLY_PEAK_QC_STATUS = "not_evaluated_ladder_only"
+FLT3_LEGACY_PYTHON_LADDER_RESCUE_ENV = "HEMAFRAG_FLT3_ENABLE_PYTHON_LADDER_RESCUE"
 
 
 def _flt3_requested_ladder() -> str:
@@ -75,13 +96,52 @@ def _flt3_requested_ladder() -> str:
         or ""
     )
     token = raw.strip().upper().replace("-", "_")
-    if token in {"LIZ", "LIZ500", "LIZ500_250", "LIZ500250"}:
+    if token in FLT3_LIZ_SIZE_STANDARD_TOKENS:
         return FLT3_LIZ_LADDER
+    if token in FLT3_ROX500_SIZE_STANDARD_TOKENS:
+        return FLT3_ROX500_INTERNAL_LADDER
     return FLT3_ROX_LADDER
 
 
 def _flt3_uses_liz_ladder() -> bool:
     return _flt3_requested_ladder() == FLT3_LIZ_LADDER
+
+
+def _flt3_ladder_only_qc_mode() -> bool:
+    return str(os.environ.get("HEMAFRAG_FLT3_LADDER_ONLY_QC", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _flt3_legacy_python_ladder_rescue_enabled() -> bool:
+    return str(os.environ.get(FLT3_LEGACY_PYTHON_LADDER_RESCUE_ENV, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _flt3_gs500rox_rust_only_ladder_mode() -> bool:
+    return not _flt3_uses_liz_ladder() and not _flt3_legacy_python_ladder_rescue_enabled()
+
+
+def flt3_size_standard_mode() -> dict[str, str | bool]:
+    """Return the public FLT3 size-standard mode and internal ladder contract."""
+    internal_ladder = _flt3_requested_ladder()
+    uses_liz_sizes = internal_ladder == FLT3_LIZ_LADDER
+    uses_gs500rox = internal_ladder == FLT3_ROX_LADDER
+    return {
+        "size_standard": FLT3_ROX500_REPORT_LABEL if uses_gs500rox else FLT3_LIZ_LADDER,
+        "internal_ladder": internal_ladder,
+        "size_standard_channel": (
+            FLT3_GS500ROX_SIZE_STANDARD_CHANNEL if uses_gs500rox else FLT3_LIZ500_SIZE_STANDARD_CHANNEL
+        ),
+        "uses_liz_sizes": uses_liz_sizes,
+    }
 
 FLT3_TEMPLATE_TIMES: dict[tuple[str, str], tuple[float, ...]] = {
     ("FLT3-ITD", "10x_diluted"): (
@@ -1000,6 +1060,7 @@ def _detect_peaks(
     mut_bp: float | None = None,
     analysis_type: str | None = None,
     corrected_channel_traces: dict[str, np.ndarray] | None = None,
+    fast_area: bool = False,
 ) -> pd.DataFrame:
     """Detect WT and mutant peaks and estimate their corrected AUC."""
     sample_data = getattr(fsa, "sample_data_with_basepairs", None)
@@ -1028,8 +1089,12 @@ def _detect_peaks(
     bp_win = bp_all[mask]
 
     peak_height_min = float(assay_cfg.get("peak_height_min", 200))
+    peak_prominence_min = assay_cfg.get("peak_prominence_min")
     peak_distance = int(assay_cfg.get("peak_distance", 20))
-    peak_idx, _ = find_peaks(y_win, height=peak_height_min, distance=peak_distance)
+    peak_kwargs = {"height": peak_height_min, "distance": peak_distance}
+    if peak_prominence_min is not None:
+        peak_kwargs["prominence"] = float(peak_prominence_min)
+    peak_idx, _ = find_peaks(y_win, **peak_kwargs)
 
     wt_tol = 4.0 if assay == "FLT3-ITD" else 2.0 if assay in {"FLT3-D835", "NPM1"} else 5.0
     itd_min_bp = float(ASSAY_CONFIG.get("FLT3-ITD", {}).get("itd_min_bp", wt_bp + 4.9)) if wt_bp else None
@@ -1053,8 +1118,9 @@ def _detect_peaks(
         elif _bp_in_ranges(p_bp, mut_ranges) or (mut_bp and abs(p_bp - mut_bp) < (wt_tol + 2)):
             label = "MUT"
 
+        area_fn = _calculate_peak_area_fast if fast_area else _calculate_peak_area
         channel_areas = {
-            ch: _calculate_peak_area(
+            ch: area_fn(
                 trace=corr_trace,
                 time_all=time_all,
                 bp_all=bp_all,
@@ -1064,7 +1130,7 @@ def _detect_peaks(
             )
             for ch, corr_trace in channel_traces.items()
         }
-        combined_area = _calculate_peak_area(
+        combined_area = area_fn(
             trace=trace,
             time_all=time_all,
             bp_all=bp_all,
@@ -1073,6 +1139,12 @@ def _detect_peaks(
             label=label,
         )
         p_area = _resolve_peak_area(assay=assay, combined_area=combined_area, channel_areas=channel_areas)
+        finite_channel_areas = {
+            ch: float(area)
+            for ch, area in channel_areas.items()
+            if np.isfinite(float(area)) and float(area) > 0.0
+        }
+        source_channel = max(finite_channel_areas, key=finite_channel_areas.get) if finite_channel_areas else None
 
         peak_info = {
             "basepairs": p_bp,
@@ -1080,6 +1152,7 @@ def _detect_peaks(
             "area": p_area,
             "label": label,
             "keep": True,
+            "source_channel": source_channel,
         }
         for ch, channel_area in channel_areas.items():
             peak_info[f"area_{ch}"] = channel_area
@@ -1088,6 +1161,41 @@ def _detect_peaks(
     if not peaks:
         return pd.DataFrame(columns=["basepairs", "peaks", "area", "keep", "label", "peak_id"])
     return _ensure_peak_ids(pd.DataFrame(peaks))
+
+
+def _merge_supplemental_flt3_peaks(
+    primary_peaks: pd.DataFrame,
+    supplemental_peaks: pd.DataFrame,
+    *,
+    assay: str,
+) -> pd.DataFrame:
+    if primary_peaks is None or primary_peaks.empty:
+        return _ensure_peak_ids(supplemental_peaks)
+    if supplemental_peaks is None or supplemental_peaks.empty:
+        return _ensure_peak_ids(primary_peaks)
+
+    merged = primary_peaks.copy()
+    if assay != "FLT3-ITD":
+        return _ensure_peak_ids(merged)
+
+    existing_bp = merged["basepairs"].astype(float).to_numpy() if "basepairs" in merged.columns else np.array([], dtype=float)
+    additions: list[pd.Series] = []
+    for _, row in supplemental_peaks.iterrows():
+        label = str(row.get("label") or "")
+        if label not in {"ITD", "MUT"}:
+            continue
+        bp = float(row.get("basepairs", np.nan))
+        if not np.isfinite(bp):
+            continue
+        if existing_bp.size and np.any(np.abs(existing_bp - bp) <= 1.0):
+            continue
+        additions.append(row)
+
+    if not additions:
+        return _ensure_peak_ids(merged)
+    merged = pd.concat([merged, pd.DataFrame(additions)], ignore_index=True)
+    merged = merged.sort_values(["basepairs", "peaks"], ascending=[True, False]).reset_index(drop=True)
+    return _ensure_peak_ids(merged)
 
 
 def _combine_peak_traces(
@@ -1402,35 +1510,41 @@ def _choose_template_trace_peak(
             return None
         return snapped
 
-    peak_times = pd.Series((peak_idx + lo).astype(float))
-    peak_heights = pd.Series(trace[(peak_idx + lo).astype(int)].astype(float), index=peak_times.index)
-    strong = peak_heights.astype(float) >= float(min_intensity)
-    if strong.any():
-        peak_times = peak_times[strong]
-        peak_heights = peak_heights[strong]
-    else:
+    peak_times = (peak_idx + lo).astype(float)
+    peak_heights = np.asarray(trace[(peak_idx + lo).astype(int)], dtype=float)
+    keep = np.isfinite(peak_times) & np.isfinite(peak_heights) & (peak_heights >= float(min_intensity))
+    if not keep.any():
         return None
+    peak_times = peak_times[keep]
+    peak_heights = peak_heights[keep]
     if previous_time is not None and target_gap is not None and target_gap > 0:
-        actual_gap = float(previous_time) - peak_times.astype(float)
-        keep = (
+        actual_gap = float(previous_time) - peak_times
+        gap_keep = (
             (actual_gap >= max(8.0, float(target_gap) * 0.35))
             & (actual_gap <= float(target_gap) * 1.85)
         )
-        peak_times = peak_times[keep]
-        peak_heights = peak_heights[keep]
-        if peak_times.empty:
+        if not gap_keep.any():
             return None
+        peak_times = peak_times[gap_keep]
+        peak_heights = peak_heights[gap_keep]
 
-    score = _score_flt3_template_peak_choice(
-        peak_times,
-        peak_heights,
-        target_time,
-        previous_time,
-        target_gap,
-        intensity_reference,
+    score = np.abs(peak_times - float(target_time))
+    if previous_time is not None and target_gap is not None and target_gap > 0:
+        gap_penalty = np.abs(float(previous_time) - peak_times - float(target_gap))
+        gap_weight = 1.5
+        if float(target_gap) < 90.0:
+            gap_weight = 2.0
+        elif float(target_gap) < 150.0:
+            gap_weight = 1.25
+        score = score + gap_penalty * gap_weight
+    score = (
+        score
+        + _flt3_ladder_intensity_penalty_array(peak_heights, intensity_reference)
+        - np.clip(peak_heights, 0.0, 2000.0) * 0.0015
     )
-    best_idx = score.idxmin()
-    return float(peak_times.loc[best_idx])
+    if score.size == 0:
+        return None
+    return float(peak_times[int(np.argmin(score))])
 
 
 def _late_trace_peak_candidates(
@@ -1736,6 +1850,37 @@ def _flt3_ladder_intensity_penalty(
     return 0.0
 
 
+def _flt3_ladder_intensity_penalty_array(
+    intensities: np.ndarray,
+    intensity_reference: float | None,
+) -> np.ndarray:
+    values = np.asarray(intensities, dtype=float)
+    penalty = np.zeros(values.shape, dtype=float)
+    penalty[~np.isfinite(values)] = 50.0
+    finite = np.isfinite(values)
+    if not finite.any():
+        return penalty
+
+    if intensity_reference is not None and np.isfinite(float(intensity_reference)) and float(intensity_reference) > 0.0:
+        ratio = np.maximum(values[finite] / float(intensity_reference), 0.05)
+        local = np.abs(np.log2(ratio)) * 4.0
+        low = ratio < 0.40
+        high = ratio > 2.40
+        local[low] += (0.40 - ratio[low]) * 45.0
+        local[high] += (ratio[high] - 2.40) * 60.0
+        penalty[finite] = local
+        return penalty
+
+    local_values = values[finite]
+    local = np.zeros(local_values.shape, dtype=float)
+    low = local_values < 300.0
+    high = local_values > 2000.0
+    local[low] = (300.0 - local_values[low]) * 0.08
+    local[high] = (local_values[high] - 2000.0) * 0.02
+    penalty[finite] = local
+    return penalty
+
+
 def _score_flt3_template_peak_choice(
     peak_times: pd.Series | np.ndarray,
     intensities: pd.Series | np.ndarray,
@@ -1757,8 +1902,9 @@ def _score_flt3_template_peak_choice(
             gap_weight = 1.25
         score = score + gap_penalty * gap_weight
 
-    intensity_penalty = heights.apply(
-        lambda value: _flt3_ladder_intensity_penalty(float(value), intensity_reference)
+    intensity_penalty = pd.Series(
+        _flt3_ladder_intensity_penalty_array(heights.to_numpy(dtype=float), intensity_reference),
+        index=heights.index,
     )
     score = score + intensity_penalty - heights.clip(lower=0.0, upper=2000.0) * 0.0015
     return score.astype(float)
@@ -2148,54 +2294,58 @@ def _choose_template_candidate_time(
     if candidate_df.empty:
         return None
 
-    candidates = candidate_df.copy()
-    candidates["time"] = candidates["time"].astype(float)
-    candidates["intensity"] = candidates["intensity"].astype(float)
+    times = candidate_df["time"].to_numpy(dtype=float, copy=False)
+    intensities = candidate_df["intensity"].to_numpy(dtype=float, copy=False)
+    valid = np.isfinite(times) & np.isfinite(intensities)
 
     lower_bound = float(target_time - 65.0)
     upper_bound = float(target_time + 55.0)
     if previous_time is not None:
         upper_bound = min(upper_bound, float(previous_time) - 8.0)
 
-    candidates = candidates[
-        (candidates["time"] >= lower_bound)
-        & (candidates["time"] <= upper_bound)
-    ].copy()
-    if candidates.empty:
+    valid &= (times >= lower_bound) & (times <= upper_bound)
+    if not valid.any():
         return None
-    candidates = candidates[
-        candidates["intensity"].astype(float) >= FLT3_MIN_LADDER_PEAK_INTENSITY
-    ].copy()
-    if candidates.empty:
+    valid &= intensities >= FLT3_MIN_LADDER_PEAK_INTENSITY
+    if not valid.any():
         return None
 
     if previous_time is not None and target_gap is not None and target_gap > 0:
-        actual_gap = float(previous_time) - candidates["time"].astype(float)
-        candidates = candidates[
-            (actual_gap >= max(10.0, float(target_gap) * 0.40))
-            & (actual_gap <= float(target_gap) * 1.75)
-        ].copy()
-        if candidates.empty:
+        actual_gap_all = float(previous_time) - times
+        valid &= (actual_gap_all >= max(10.0, float(target_gap) * 0.40)) & (
+            actual_gap_all <= float(target_gap) * 1.75
+        )
+        if not valid.any():
             return None
 
-    score = _score_flt3_template_peak_choice(
-        candidates["time"].astype(float),
-        candidates["intensity"].astype(float),
-        target_time,
-        previous_time,
-        target_gap,
-        intensity_reference,
+    candidate_times = times[valid]
+    candidate_intensities = intensities[valid]
+    score = np.abs(candidate_times - float(target_time))
+    if previous_time is not None and target_gap is not None and target_gap > 0:
+        gap_penalty = np.abs(float(previous_time) - candidate_times - float(target_gap))
+        gap_weight = 1.5
+        if float(target_gap) < 90.0:
+            gap_weight = 2.0
+        elif float(target_gap) < 150.0:
+            gap_weight = 1.25
+        score = score + gap_penalty * gap_weight
+    score = (
+        score
+        + _flt3_ladder_intensity_penalty_array(candidate_intensities, intensity_reference)
+        - np.clip(candidate_intensities, 0.0, 2000.0) * 0.0015
     )
-    best_idx = score.astype(float).idxmin()
+    if score.size == 0:
+        return None
+    best_pos = int(np.argmin(score))
     max_score = 95.0
     if target_gap is not None and target_gap > 0:
         if float(target_gap) < 90.0:
             max_score = 80.0
         elif float(target_gap) < 150.0:
             max_score = 70.0
-    if float(score.loc[best_idx]) > max_score:
+    if float(score[best_pos]) > max_score:
         return None
-    return float(candidates.loc[best_idx, "time"])
+    return float(candidate_times[best_pos])
 
 
 def _choose_flt3_forward_candidate_time(
@@ -3419,6 +3569,17 @@ def _should_attempt_flt3_template_rescue(
 ) -> bool:
     del assay, analysis_type
 
+    if _flt3_gs500rox_rust_only_ladder_mode():
+        return False
+
+    if str(os.environ.get("HEMAFRAG_FLT3_SKIP_TEMPLATE_RESCUE", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return False
+
     if bool(getattr(fsa, "ladder_review_required", False)):
         return True
 
@@ -3439,7 +3600,12 @@ def _should_attempt_flt3_template_rescue(
     max_abs_error_bp = float(metrics.get("max_abs_error_bp", float("inf")))
     if not np.isfinite(r2) or r2 < FLT3_LADDER_QC_THRESHOLD:
         return True
-    if not np.isfinite(max_abs_error_bp) or max_abs_error_bp > FLT3_REVIEW_MAX_RESIDUAL_BP:
+    residual_limit = (
+        FLT3_GS500ROX_REVIEW_MAX_RESIDUAL_BP
+        if str(getattr(fsa, "ladder", "") or "") == FLT3_ROX_LADDER
+        else FLT3_REVIEW_MAX_RESIDUAL_BP
+    )
+    if not np.isfinite(max_abs_error_bp) or max_abs_error_bp > residual_limit:
         return True
 
     expected_steps = _flt3_expected_ladder_steps(fsa)
@@ -3668,7 +3834,11 @@ def _analyse_fsa_candidate(
         if fsa is not None:
             fsa.analysis_id = "flt3"
             setattr(fsa, "_flt3_sizing_method", "rust_liz500_250")
-            setattr(fsa, "ladder_fit_note", "FLT3 test run fitted with LIZ500_250/DATA105 size standard override.")
+            setattr(
+                fsa,
+                "ladder_fit_note",
+                "Explicit FLT3 LIZ500 override fitted with LIZ500_250/DATA105 size-standard steps.",
+            )
         return fsa
 
     fsa = analyse_fsa_rox(
@@ -3683,7 +3853,7 @@ def _analyse_fsa_candidate(
             assay,
             analysis_type,
         )
-        if short_trace_missing_steps:
+        if short_trace_missing_steps and _flt3_legacy_python_ladder_rescue_enabled():
             rescued = _attempt_flt3_short_trace_partial_fit(
                 fsa,
                 assay,
@@ -3706,6 +3876,8 @@ def _analyse_fsa_candidate(
             setattr(fsa, "_flt3_template_rescue_skipped", True)
         setattr(fsa, "_flt3_sizing_method", _infer_sizing_method(fsa))
         return fsa
+    if _flt3_gs500rox_rust_only_ladder_mode():
+        return None
     return _attempt_lenient_rox_fit(
         fsa_path,
         sample_channel,
@@ -3714,7 +3886,697 @@ def _analyse_fsa_candidate(
     )
 
 
+def _gs500rox_start_family_review_reason(fsa: FsaFile) -> str:
+    if str(getattr(fsa, "ladder", "") or "").upper() != FLT3_ROX_LADDER:
+        return ""
+    selected = [int(round(float(value))) for value in getattr(fsa, "best_size_standard", [])]
+    if len(selected) < 3:
+        return ""
+    first, second, third = selected[:3]
+    last = selected[-1]
+    if not (GS500ROX_ABSOLUTE_TIME_MIN <= first <= GS500ROX_MAX_FIRST_ANCHOR):
+        return ""
+    if last < 3900:
+        return ""
+    gap_35_50 = second - first
+    gap_50_75 = third - second
+    candidate_indices: list[int] = []
+    for peak in getattr(fsa, "rust_ladder_peak_preview", []) or []:
+        if not isinstance(peak, dict):
+            continue
+        try:
+            candidate_indices.append(int(round(float(peak.get("index")))))
+        except (TypeError, ValueError):
+            continue
+    has_nearby_start_alternative = any(first - 120 <= idx < first for idx in candidate_indices)
+    has_between_start_alternative = any(first < idx < second for idx in candidate_indices)
+    alternative_count = int(has_nearby_start_alternative) + int(has_between_start_alternative)
+    if (
+        gap_35_50 <= 85
+        and gap_50_75 >= 180
+        and alternative_count
+    ):
+        return (
+            "suspect_gs500rox_35_50_start_family:"
+            f" gap35_50={gap_35_50} scans"
+            f" gap50_75={gap_50_75} scans"
+            f" alternatives_before_or_between={alternative_count}"
+        )
+    if (
+        gap_35_50 >= 115
+        and gap_50_75 <= 165
+        and has_between_start_alternative
+    ):
+        return (
+            "suspect_gs500rox_35_start_family:"
+            f" gap35_50={gap_35_50} scans"
+            f" gap50_75={gap_50_75} scans"
+            f" alternatives_between_35_50=1"
+        )
+    return ""
+
+
+def _linear_ladder_metrics(scans: list[int], ladder_steps: np.ndarray) -> tuple[float, float, float]:
+    if len(scans) != len(ladder_steps) or len(scans) < 3:
+        return float("nan"), float("nan"), float("nan")
+    x = np.asarray(scans, dtype=float)
+    y = np.asarray(ladder_steps, dtype=float)
+    coef = np.polyfit(x, y, deg=1)
+    predicted = np.polyval(coef, x)
+    residuals = np.abs(predicted - y)
+    ss_res = float(np.sum((y - predicted) ** 2))
+    ss_tot = float(np.sum((y - float(np.mean(y))) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    return float(np.max(residuals)), float(np.mean(residuals)), float(r2)
+
+
+def _poly_ladder_metrics(scans: list[int], ladder_steps: np.ndarray, degree: int) -> tuple[float, float, float]:
+    if len(scans) != len(ladder_steps) or len(scans) < degree + 1:
+        return float("inf"), float("inf"), float("nan")
+    x = np.asarray(scans, dtype=float)
+    y = np.asarray(ladder_steps, dtype=float)
+    try:
+        coef = np.polyfit(x, y, deg=degree)
+        predicted = np.polyval(coef, x)
+    except Exception:
+        return float("inf"), float("inf"), float("nan")
+    residuals = np.abs(predicted - y)
+    ss_res = float(np.sum((y - predicted) ** 2))
+    ss_tot = float(np.sum((y - float(np.mean(y))) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    return float(np.max(residuals)), float(np.mean(residuals)), float(r2)
+
+
+def _gs500rox_review_band(linear_max: float, linear_mean: float, linear_r2: float) -> bool:
+    return (
+        np.isfinite(linear_max)
+        and np.isfinite(linear_mean)
+        and np.isfinite(linear_r2)
+        and linear_max <= FLT3_GS500ROX_LINEAR_REVIEW_MAX_BP
+        and linear_mean <= FLT3_GS500ROX_LINEAR_REVIEW_MEAN_BP
+        and linear_r2 >= FLT3_GS500ROX_LINEAR_REVIEW_MIN_R2
+    )
+
+
+def _gs500rox_curved_review_band(
+    linear_max: float,
+    linear_mean: float,
+    linear_r2: float,
+    quadratic_max: float,
+    quadratic_mean: float,
+    quadratic_r2: float,
+) -> bool:
+    return (
+        np.isfinite(linear_max)
+        and np.isfinite(linear_mean)
+        and np.isfinite(linear_r2)
+        and np.isfinite(quadratic_max)
+        and np.isfinite(quadratic_mean)
+        and np.isfinite(quadratic_r2)
+        and linear_max <= 11.0
+        and linear_mean <= 5.2
+        and linear_r2 >= 0.9985
+        and quadratic_max <= 4.0
+        and quadratic_mean <= 2.0
+        and quadratic_r2 >= 0.9995
+    )
+
+
+def _gs500rox_start_prior_apply_band(mode: str, linear_max: float, linear_mean: float, linear_r2: float) -> bool:
+    if mode == "start_block_35_50_75_100_139":
+        return False
+    if _gs500rox_review_band(linear_max, linear_mean, linear_r2):
+        return True
+    if mode != "simple_shift":
+        return False
+    # These remaps are never allowed to pass automatically.  The wider band is
+    # used only to replace the visibly wrong 35/50 start family before review.
+    return (
+        np.isfinite(linear_max)
+        and np.isfinite(linear_mean)
+        and np.isfinite(linear_r2)
+        and linear_max <= FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MAX_BP
+        and linear_mean <= FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MEAN_BP
+        and linear_r2 >= FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MIN_R2
+    )
+
+
+def _gs500rox_peak_candidates(fsa: FsaFile) -> list[dict]:
+    candidates: dict[int, dict] = {}
+    for peak in getattr(fsa, "rust_ladder_peak_preview", []) or []:
+        if not isinstance(peak, dict):
+            continue
+        try:
+            scan = int(round(float(peak.get("index"))))
+        except (TypeError, ValueError):
+            continue
+        if scan < GS500ROX_ABSOLUTE_TIME_MIN:
+            continue
+        height = float(peak.get("height", 0.0) or 0.0)
+        prominence = float(peak.get("prominence", height) or height)
+        candidates[scan] = {
+            "scan": scan,
+            "height": height,
+            "prominence": prominence,
+            "source": "rust",
+        }
+    for scan in [int(round(float(value))) for value in getattr(fsa, "best_size_standard", [])]:
+        candidates.setdefault(
+            scan,
+            {
+                "scan": scan,
+                "height": 0.0,
+                "prominence": 0.0,
+                "source": "selected",
+            },
+        )
+    raw_traces = getattr(fsa, "fsa", {}) or {}
+    channel = str(
+        getattr(fsa, "rust_size_standard_channel", None)
+        or getattr(fsa, "size_standard_channel", None)
+        or FLT3_GS500ROX_SIZE_STANDARD_CHANNEL
+    )
+    raw_trace = None
+    if isinstance(raw_traces, dict):
+        if channel in raw_traces:
+            raw_trace = np.asarray(raw_traces[channel], dtype=float)
+        elif FLT3_GS500ROX_SIZE_STANDARD_CHANNEL in raw_traces:
+            raw_trace = np.asarray(raw_traces[FLT3_GS500ROX_SIZE_STANDARD_CHANNEL], dtype=float)
+    if raw_trace is not None and raw_trace.size:
+        baseline = estimate_running_baseline(raw_trace, bin_size=200, quantile=0.10)
+        corrected = np.maximum(raw_trace - baseline, 0.0)
+        for scan, peak in list(candidates.items()):
+            if 0 <= scan < corrected.size:
+                peak["corrected_height"] = float(corrected[scan])
+        start = max(2, GS500ROX_ABSOLUTE_TIME_MIN)
+        end = min(corrected.size - 3, 2500)
+        local: list[dict] = []
+        for scan in range(start, end + 1):
+            height = float(corrected[scan])
+            if height < 18.0:
+                continue
+            if (
+                height >= float(corrected[scan - 1])
+                and height > float(corrected[scan + 1])
+                and height >= float(corrected[scan - 2])
+                and height >= float(corrected[scan + 2])
+            ):
+                local.append(
+                    {
+                        "scan": scan,
+                        "height": height,
+                        "prominence": height,
+                        "corrected_height": height,
+                        "source": "local",
+                    }
+                )
+        local.sort(key=lambda peak: (-float(peak["height"]), int(peak["scan"])))
+        kept: list[dict] = []
+        for peak in local:
+            if any(abs(int(peak["scan"]) - int(existing["scan"])) <= 5 for existing in kept):
+                continue
+            kept.append(peak)
+            if len(kept) >= 80:
+                break
+        for peak in kept:
+            candidates.setdefault(int(peak["scan"]), peak)
+    return sorted(candidates.values(), key=lambda item: int(item["scan"]))
+
+
+def _gs500rox_ranked_peak(
+    candidates: list[dict],
+    start: int,
+    end: int,
+    expected: float,
+    *,
+    min_height: float = 8.0,
+    min_prominence: float = 4.0,
+) -> dict | None:
+    pool = [
+        peak
+        for peak in candidates
+        if start <= int(peak["scan"]) <= end
+        and float(peak.get("height", 0.0)) >= min_height
+        and float(peak.get("prominence", 0.0)) >= min_prominence
+    ]
+    if not pool:
+        return None
+
+    def score(peak: dict) -> tuple[float, int]:
+        scan = int(peak["scan"])
+        distance = abs(scan - expected)
+        return (
+            float(peak.get("corrected_height", peak.get("height", 0.0)))
+            + 0.35 * float(peak.get("prominence", 0.0))
+            - distance * 6.0,
+            -scan,
+        )
+
+    corrected_pool = [
+        peak
+        for peak in pool
+        if float(peak.get("corrected_height", peak.get("height", 0.0))) >= min_height
+    ]
+    if not corrected_pool:
+        return None
+    return max(corrected_pool, key=score)
+
+
+def _gs500rox_top_peak_scans(candidates: list[dict], start: int, end: int, *, limit: int = 10) -> list[int]:
+    pool = [peak for peak in candidates if start <= int(peak["scan"]) <= end]
+    pool.sort(
+        key=lambda peak: (
+            -float(peak.get("corrected_height", peak.get("height", 0.0))),
+            -float(peak.get("prominence", 0.0)),
+            int(peak["scan"]),
+        )
+    )
+    return sorted({int(peak["scan"]) for peak in pool[:limit]})
+
+
+def _gs500rox_start_block_trials(
+    selected: list[int],
+    candidates: list[dict],
+    ladder_steps: np.ndarray,
+) -> list[dict]:
+    if len(selected) < 6:
+        return []
+    first, second, third, fourth, fifth, sixth = selected[:6]
+    candidate_by_scan = {int(peak["scan"]): peak for peak in candidates}
+    early_limit = min(sixth - 8, 2450)
+    if early_limit <= GS500ROX_ABSOLUTE_TIME_MIN:
+        return []
+    pools = [
+        _gs500rox_top_peak_scans(candidates, max(GS500ROX_ABSOLUTE_TIME_MIN, first - 180), min(second + 45, 1800), limit=12),
+        _gs500rox_top_peak_scans(candidates, max(1320, first + 18), min(third - 10, 1950), limit=12),
+        _gs500rox_top_peak_scans(candidates, max(1360, second + 18), min(fourth + 90, 2150), limit=12),
+        _gs500rox_top_peak_scans(candidates, max(1400, third + 18), min(fifth + 140, 2300), limit=12),
+        _gs500rox_top_peak_scans(candidates, max(1450, fourth + 18), early_limit, limit=12),
+    ]
+    if any(not pool for pool in pools):
+        return []
+
+    def partial_score(prefix: list[int]) -> float:
+        filler = prefix + selected[len(prefix):]
+        linear_max, linear_mean, linear_r2 = _linear_ladder_metrics(filler, ladder_steps)
+        peak_bonus = 0.0
+        for scan in prefix:
+            peak = candidate_by_scan.get(scan, {})
+            peak_bonus += min(float(peak.get("height", 0.0)) / 1200.0, 2.0)
+        r2_penalty = max(0.0, 0.999 - linear_r2) * 1000.0 if np.isfinite(linear_r2) else 1000.0
+        return linear_max * 8.0 + linear_mean * 4.0 + r2_penalty - peak_bonus
+
+    def has_peak_support(prefix: list[int]) -> bool:
+        heights = [
+            float(
+                candidate_by_scan.get(scan, {}).get(
+                    "corrected_height",
+                    candidate_by_scan.get(scan, {}).get("height", 0.0),
+                )
+            )
+            for scan in prefix[:5]
+        ]
+        if len(heights) < 5:
+            return False
+        supported = sum(1 for height in heights if height >= 50.0)
+        # The downstream part of the start block must not be fit to baseline
+        # shoulders purely because the linear trend improves.
+        return supported >= 4 and min(heights[2:5]) >= 35.0
+
+    def has_plausible_start_block_gaps(prefix: list[int]) -> bool:
+        if len(prefix) < 5:
+            return False
+        gaps = [int(right) - int(left) for left, right in zip(prefix, prefix[1:5])]
+        gap_35_50, gap_50_75, gap_75_100, gap_100_139 = gaps
+        if not (55 <= gap_35_50 <= 160):
+            return False
+        if not (60 <= gap_50_75 <= 205):
+            return False
+        if not (75 <= gap_75_100 <= 250):
+            return False
+        if not (120 <= gap_100_139 <= 360):
+            return False
+        # Blob/shoulder failures often look like a compressed early cluster:
+        # two adjacent low-end labels sit on the same broad feature, while the
+        # residual fit still looks attractive enough to win.
+        if sum(1 for gap in gaps if gap < 65) >= 2:
+            return False
+        if gap_50_75 < 70 and gap_75_100 < 90:
+            return False
+        return True
+
+    beam: list[list[int]] = [[]]
+    for step, pool in enumerate(pools):
+        next_beam: list[list[int]] = []
+        for prefix in beam:
+            last = prefix[-1] if prefix else 0
+            for scan in pool:
+                if scan <= last + 8:
+                    continue
+                if step == 1 and prefix and not (45 <= scan - prefix[0] <= 140):
+                    continue
+                next_beam.append(prefix + [scan])
+        beam = sorted(next_beam, key=partial_score)[:80]
+        if not beam:
+            return []
+
+    trials: list[dict] = []
+    seen: set[tuple[int, ...]] = set()
+    for prefix in beam[:30]:
+        if not has_peak_support(prefix):
+            continue
+        if not has_plausible_start_block_gaps(prefix):
+            continue
+        proposed = prefix + selected[5:]
+        key = tuple(proposed)
+        if key in seen:
+            continue
+        seen.add(key)
+        if proposed[:5] == selected[:5]:
+            continue
+        if not all(right > left for left, right in zip(proposed, proposed[1:])):
+            continue
+        linear_max, linear_mean, linear_r2 = _linear_ladder_metrics(proposed, ladder_steps)
+        if not np.isfinite(linear_max) or not np.isfinite(linear_mean) or not np.isfinite(linear_r2):
+            continue
+        trials.append(
+            {
+                "mode": "start_block_35_50_75_100_139",
+                "selected": proposed,
+                "linear_max": linear_max,
+                "linear_mean": linear_mean,
+                "linear_r2": linear_r2,
+                "anchors": {
+                    "35": proposed[0],
+                    "50": proposed[1],
+                    "75": proposed[2],
+                    "100": proposed[3],
+                    "139": proposed[4],
+                },
+            }
+        )
+    return trials
+
+
+def _gs500rox_projection_peak_scans(
+    candidates: list[dict],
+    expected: float,
+    *,
+    radius: int,
+    limit: int = 10,
+    min_height: float = 18.0,
+) -> list[int]:
+    pool = [
+        peak
+        for peak in candidates
+        if abs(int(peak["scan"]) - expected) <= radius
+        and float(peak.get("corrected_height", peak.get("height", 0.0))) >= min_height
+    ]
+    if not pool:
+        return []
+
+    def score(peak: dict) -> tuple[float, int]:
+        scan = int(peak["scan"])
+        height = float(peak.get("corrected_height", peak.get("height", 0.0)))
+        prominence = float(peak.get("prominence", 0.0))
+        distance = abs(scan - expected)
+        return (height * 0.55 + prominence * 0.75 - distance * 8.0, -scan)
+
+    pool.sort(key=score, reverse=True)
+    return [int(peak["scan"]) for peak in pool[:limit]]
+
+
+def _gs500rox_reverse_projection_pair_trials(
+    selected: list[int],
+    candidates: list[dict],
+    ladder_steps: np.ndarray,
+) -> list[dict]:
+    if len(selected) != 16:
+        return []
+
+    methods = [
+        ("reverse_pair_tail_300_500", list(range(9, 16))),
+        ("reverse_pair_tail_200_500", list(range(7, 16))),
+        ("reverse_pair_anchor_340_350", [10, 11]),
+    ]
+    trials: list[dict] = []
+    seen: set[tuple[int, ...]] = set()
+    for mode, fit_indices in methods:
+        if max(fit_indices) >= len(selected):
+            continue
+        fit_bps = np.asarray([float(ladder_steps[idx]) for idx in fit_indices], dtype=float)
+        fit_scans = np.asarray([float(selected[idx]) for idx in fit_indices], dtype=float)
+        if len(fit_bps) < 2:
+            continue
+        coef = np.polyfit(fit_bps, fit_scans, deg=1)
+        expected_50 = float(np.polyval(coef, 50.0))
+        pool = _gs500rox_projection_peak_scans(candidates, expected_50, radius=95, limit=10, min_height=18.0)
+        if len(pool) < 2:
+            continue
+        for left in pool:
+            for right in pool:
+                if right <= left:
+                    continue
+                gap = right - left
+                if not (45 <= gap <= 100):
+                    continue
+                proposed = [left, right] + selected[2:]
+                key = tuple(proposed)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if not all(next_scan > scan for scan, next_scan in zip(proposed, proposed[1:])):
+                    continue
+                linear_max, linear_mean, linear_r2 = _linear_ladder_metrics(proposed, ladder_steps)
+                if not np.isfinite(linear_max) or not np.isfinite(linear_mean) or not np.isfinite(linear_r2):
+                    continue
+                trials.append(
+                    {
+                        "mode": mode,
+                        "selected": proposed,
+                        "linear_max": linear_max,
+                        "linear_mean": linear_mean,
+                        "linear_r2": linear_r2,
+                        "anchors": {"35": proposed[0], "50": proposed[1]},
+                    }
+                )
+    return trials
+
+
+def _gs500rox_start_prior_trials(fsa: FsaFile, ladder_steps: np.ndarray) -> list[dict]:
+    selected = [int(round(float(value))) for value in getattr(fsa, "best_size_standard", [])]
+    if str(getattr(fsa, "ladder", "") or "").upper() != FLT3_ROX_LADDER or len(selected) != len(ladder_steps):
+        return []
+    if len(selected) != 16:
+        return []
+    first, second, third = selected[:3]
+    last = selected[-1]
+    if not (GS500ROX_ABSOLUTE_TIME_MIN <= first <= GS500ROX_MAX_FIRST_ANCHOR) or last < 3900:
+        return []
+    candidates = _gs500rox_peak_candidates(fsa)
+    trials: list[dict] = []
+    gap_35_50 = second - first
+    gap_50_75 = third - second
+
+    simple_50 = None
+    # The simple shift is only for the compact-start family we annotated:
+    # current 50 is the true 35, and current 75 is far too late for the true
+    # 50.  When the current 35/50 gap is already wide, the visual failure mode
+    # is usually "35 earlier", not "shift everything right"; allowing
+    # simple_shift there can win on residual while putting 50 on the wrong peak.
+    if gap_35_50 <= 85 and gap_50_75 >= 175:
+        simple_50 = _gs500rox_ranked_peak(
+            candidates,
+            second + 60,
+            min(second + 90, third - 8),
+            second + 72,
+        )
+    if simple_50 is not None:
+        proposed = [second, int(simple_50["scan"])] + selected[2:]
+        if proposed[:2] != selected[:2]:
+            linear_max, linear_mean, linear_r2 = _linear_ladder_metrics(proposed, ladder_steps)
+            trials.append(
+                {
+                    "mode": "simple_shift",
+                    "selected": proposed,
+                    "linear_max": linear_max,
+                    "linear_mean": linear_mean,
+                    "linear_r2": linear_r2,
+                    "anchors": {"35": proposed[0], "50": proposed[1]},
+                }
+            )
+
+    true_50_candidates: list[int] = []
+    # Existing 50 becomes the true 50 only in the annotated 35-only family:
+    # selected 35/50 is too wide, and a better 35 exists between them.
+    if gap_35_50 >= 80 and gap_50_75 <= 170:
+        true_50_candidates.append(second)
+    # Some rows need the strong early blob after current 50 as true 50, then a
+    # separate earlier 35 before that.
+    early_50 = _gs500rox_ranked_peak(
+        candidates,
+        second + 24,
+        min(second + 55, third - 8),
+        second + 42,
+        min_height=18.0,
+        min_prominence=10.0,
+    )
+    early_overpowers_simple = (
+        early_50 is not None
+        and (
+            simple_50 is None
+            or float(early_50.get("height", 0.0)) >= float(simple_50.get("height", 0.0)) * 3.0
+        )
+    )
+    if early_overpowers_simple:
+        true_50_candidates.append(int(early_50["scan"]))
+
+    for true_50 in sorted(set(true_50_candidates)):
+        if true_50 > GS500ROX_START_PRIOR_MAX_50_SCAN:
+            continue
+        true_35 = _gs500rox_ranked_peak(
+            candidates,
+            max(GS500ROX_ABSOLUTE_TIME_MIN, true_50 - 95),
+            true_50 - 55,
+            true_50 - 72,
+            min_height=18.0,
+            min_prominence=10.0,
+        )
+        if true_35 is None:
+            continue
+        proposed = [int(true_35["scan"]), int(true_50)] + selected[2:]
+        if not all(right > left for left, right in zip(proposed, proposed[1:])):
+            continue
+        if proposed[:2] == selected[:2]:
+            continue
+        linear_max, linear_mean, linear_r2 = _linear_ladder_metrics(proposed, ladder_steps)
+        trials.append(
+            {
+                "mode": "35_earlier",
+                "selected": proposed,
+                "linear_max": linear_max,
+                "linear_mean": linear_mean,
+                "linear_r2": linear_r2,
+                "anchors": {"35": proposed[0], "50": proposed[1]},
+            }
+        )
+
+    # Hard cases left after simple_shift/35_earlier often need the whole early
+    # GS500ROX block to move coherently.  Keep this as proposal-only until
+    # visually reviewed; it must not auto-apply even when linear metrics are good.
+    current_linear_max, current_linear_mean, current_linear_r2 = _linear_ladder_metrics(selected, ladder_steps)
+    current_needs_review = (
+        not _gs500rox_review_band(current_linear_max, current_linear_mean, current_linear_r2)
+        or gap_35_50 <= 85
+        or gap_35_50 >= 115
+    )
+    if current_needs_review:
+        trials.extend(_gs500rox_reverse_projection_pair_trials(selected, candidates, ladder_steps))
+        trials.extend(_gs500rox_start_block_trials(selected, candidates, ladder_steps))
+
+    for trial in trials:
+        trial["review_band"] = _gs500rox_review_band(
+            float(trial["linear_max"]),
+            float(trial["linear_mean"]),
+            float(trial["linear_r2"]),
+        )
+        quadratic_max, quadratic_mean, quadratic_r2 = _poly_ladder_metrics(
+            list(map(int, trial["selected"])),
+            ladder_steps,
+            2,
+        )
+        cubic_max, cubic_mean, cubic_r2 = _poly_ladder_metrics(
+            list(map(int, trial["selected"])),
+            ladder_steps,
+            3,
+        )
+        trial["quadratic_max"] = quadratic_max
+        trial["quadratic_mean"] = quadratic_mean
+        trial["quadratic_r2"] = quadratic_r2
+        trial["cubic_max"] = cubic_max
+        trial["cubic_mean"] = cubic_mean
+        trial["cubic_r2"] = cubic_r2
+        trial["curved_review_band"] = _gs500rox_curved_review_band(
+            float(trial["linear_max"]),
+            float(trial["linear_mean"]),
+            float(trial["linear_r2"]),
+            quadratic_max,
+            quadratic_mean,
+            quadratic_r2,
+        )
+        trial["apply_band"] = _gs500rox_start_prior_apply_band(
+            str(trial["mode"]),
+            float(trial["linear_max"]),
+            float(trial["linear_mean"]),
+            float(trial["linear_r2"]),
+        )
+        trial["summary"] = (
+            f"{trial['mode']} 35={trial['anchors']['35']} 50={trial['anchors']['50']} "
+            f"linear={float(trial['linear_max']):.3f}/"
+            f"{float(trial['linear_mean']):.3f}/"
+            f"{float(trial['linear_r2']):.6f}"
+            f" quadratic={float(quadratic_max):.3f}/"
+            f"{float(quadratic_mean):.3f}/"
+            f"{float(quadratic_r2):.6f}"
+            f" cubic={float(cubic_max):.3f}/"
+            f"{float(cubic_mean):.3f}/"
+            f"{float(cubic_r2):.6f}"
+        )
+    trials.sort(
+        key=lambda trial: (
+            not bool(trial["apply_band"]),
+            not bool(trial["review_band"]),
+            not bool(trial["curved_review_band"]),
+            float(trial["linear_max"]),
+            float(trial["linear_mean"]),
+            -float(trial["linear_r2"]),
+        )
+    )
+    return trials
+
+
+def _apply_gs500rox_start_family_prior_if_review_band(fsa: FsaFile) -> FsaFile:
+    ladder_steps = _flt3_expected_ladder_steps(fsa)
+    trials = _gs500rox_start_prior_trials(fsa, ladder_steps)
+    if not trials:
+        return fsa
+    best = trials[0]
+    setattr(fsa, "gs500rox_start_family_prior_proposal", best)
+    setattr(fsa, "gs500rox_start_family_prior_trials", trials)
+    if not bool(best.get("apply_band")):
+        return fsa
+    try:
+        remapped = apply_manual_ladder_mapping(
+            copy.deepcopy(fsa),
+            {
+                "mapping": {},
+                "mapping_times": {
+                    idx: float(value)
+                    for idx, value in enumerate(best["selected"])
+                },
+                "manual_candidates": [float(value) for value in best["selected"][:4]],
+            },
+        )
+    except Exception:
+        return fsa
+
+    setattr(remapped, "ladder_fit_strategy", "gs500rox_start_family_prior")
+    setattr(remapped, "ladder_fit_note", f"GS500ROX start-family prior applied: {best['summary']}")
+    setattr(remapped, "ladder_review_required", True)
+    setattr(remapped, "gs500rox_start_family_prior_proposal", best)
+    setattr(remapped, "gs500rox_start_family_prior_trials", trials)
+    existing_codes = list(getattr(remapped, "rust_review_reason_codes", []) or [])
+    if GS500ROX_START_PRIOR_REVIEW_CODE not in existing_codes:
+        existing_codes.append(GS500ROX_START_PRIOR_REVIEW_CODE)
+    setattr(remapped, "rust_review_reason_codes", existing_codes)
+    setattr(remapped, "rust_review_primary_reason", f"{GS500ROX_START_PRIOR_REVIEW_CODE}: {best['summary']}")
+    setattr(remapped, "rust_review_summary", f"{GS500ROX_START_PRIOR_REVIEW_CODE}: {best['summary']}")
+    return remapped
+
+
 def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
+    size_standard_mode = flt3_size_standard_mode()
+    ladder_only_qc = _flt3_ladder_only_qc_mode()
     fsa = _analyse_fsa_candidate(
         fsa_path,
         meta["primary_peak_channel"],
@@ -3731,40 +4593,86 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         peak_channels=peak_channels,
         primary_channel=meta["primary_peak_channel"],
     )
-    peaks = _build_peaks_from_rust_flt3_preview(
-        fsa=fsa,
-        assay=meta["assay"],
-        primary_channel=meta["primary_peak_channel"],
-        trace=raw_combined_trace,
-    )
-    if peaks is not None:
-        corrected_channel_traces: dict[str, np.ndarray] | None = {}
+    if ladder_only_qc:
         combined_trace = raw_combined_trace
+        peaks = _ensure_peak_ids(
+            pd.DataFrame(
+                columns=[
+                    "basepairs",
+                    "peaks",
+                    "area",
+                    "label",
+                    "keep",
+                    "source_channel",
+                ]
+            )
+        )
     else:
-        corrected_channel_traces = _correct_peak_channel_traces(
-            fsa,
-            peak_channels,
-        )
-        combined_trace = _combine_peak_traces(
-            fsa=fsa,
-            peak_channels=peak_channels,
-            primary_channel=meta["primary_peak_channel"],
-            corrected_channel_traces=corrected_channel_traces,
-        )
-        peaks = _detect_peaks(
+        peaks = _build_peaks_from_rust_flt3_preview(
             fsa=fsa,
             assay=meta["assay"],
-            wt_bp=meta["wt_bp"],
-            trace=combined_trace,
-            mut_bp=meta.get("mut_bp"),
-            analysis_type=meta.get("analysis_type"),
-            corrected_channel_traces=corrected_channel_traces,
+            primary_channel=meta["primary_peak_channel"],
+            trace=raw_combined_trace,
         )
+        if peaks is not None:
+            corrected_channel_traces = _correct_peak_channel_traces(
+                fsa,
+                peak_channels,
+            )
+            combined_trace = raw_combined_trace
+            if meta["assay"] == "FLT3-ITD" and corrected_channel_traces:
+                corrected_combined_trace = _combine_peak_traces(
+                    fsa=fsa,
+                    peak_channels=peak_channels,
+                    primary_channel=meta["primary_peak_channel"],
+                    corrected_channel_traces=corrected_channel_traces,
+                )
+                supplemental_peaks = _detect_peaks(
+                    fsa=fsa,
+                    assay=meta["assay"],
+                    wt_bp=meta["wt_bp"],
+                    trace=corrected_combined_trace,
+                    mut_bp=meta.get("mut_bp"),
+                    analysis_type=meta.get("analysis_type"),
+                    corrected_channel_traces=corrected_channel_traces,
+                    fast_area=True,
+                )
+                peaks = _merge_supplemental_flt3_peaks(
+                    peaks,
+                    supplemental_peaks,
+                    assay=meta["assay"],
+                )
+        else:
+            corrected_channel_traces = _correct_peak_channel_traces(
+                fsa,
+                peak_channels,
+            )
+            combined_trace = _combine_peak_traces(
+                fsa=fsa,
+                peak_channels=peak_channels,
+                primary_channel=meta["primary_peak_channel"],
+                corrected_channel_traces=corrected_channel_traces,
+            )
+            peaks = _detect_peaks(
+                fsa=fsa,
+                assay=meta["assay"],
+                wt_bp=meta["wt_bp"],
+                trace=combined_trace,
+                mut_bp=meta.get("mut_bp"),
+                analysis_type=meta.get("analysis_type"),
+                corrected_channel_traces=corrected_channel_traces,
+                fast_area=meta.get("group") == "negative_control",
+            )
 
-    metrics = compute_ladder_qc_metrics(fsa)
     rust_flt3_preview = getattr(fsa, "rust_flt3_preview", None)
     rust_wt_peak = rust_flt3_preview.get("wt_peak") if isinstance(rust_flt3_preview, dict) else None
     rust_mutant_peaks = list(rust_flt3_preview.get("mutant_peaks") or []) if isinstance(rust_flt3_preview, dict) else []
+    expected_ladder_steps = list(
+        map(float, getattr(fsa, "expected_ladder_steps", getattr(fsa, "ladder_steps", [])))
+    )
+    fsa = _apply_gs500rox_start_family_prior_if_review_band(fsa)
+    metrics = compute_ladder_qc_metrics(fsa)
+    gs500rox_start_prior_proposal = getattr(fsa, "gs500rox_start_family_prior_proposal", None)
     expected_ladder_steps = list(
         map(float, getattr(fsa, "expected_ladder_steps", getattr(fsa, "ladder_steps", [])))
     )
@@ -3781,9 +4689,97 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         )
     )
     ladder_max_residual_bp = float(metrics.get("max_abs_error_bp", float("inf")))
+    ladder_linear_max_bp = float(metrics.get("linear_trend_max_abs_error_bp", float("inf")))
+    ladder_linear_mean_bp = float(metrics.get("linear_trend_mean_abs_error_bp", float("inf")))
+    ladder_linear_r2 = float(metrics.get("linear_trend_r2", float("-inf")))
+    poor_gs500rox_linear_fit = (
+        str(size_standard_mode["internal_ladder"]) == FLT3_ROX_LADDER
+        and (
+            not np.isfinite(ladder_linear_max_bp)
+            or not np.isfinite(ladder_linear_mean_bp)
+            or not np.isfinite(ladder_linear_r2)
+            or ladder_linear_max_bp > FLT3_GS500ROX_LINEAR_REVIEW_MAX_BP
+            or ladder_linear_mean_bp > FLT3_GS500ROX_LINEAR_REVIEW_MEAN_BP
+            or ladder_linear_r2 < FLT3_GS500ROX_LINEAR_REVIEW_MIN_R2
+        )
+    )
+    ladder_review_reason = str(getattr(fsa, "rust_review_primary_reason", "") or "")
+    ladder_review_reason_codes = list(getattr(fsa, "rust_review_reason_codes", []) or [])
+    ladder_review_summary = str(getattr(fsa, "rust_review_summary", "") or "")
+    gs500rox_start_reason = _gs500rox_start_family_review_reason(fsa)
+    gs500rox_start_prior_reason = ""
+    if (
+        isinstance(gs500rox_start_prior_proposal, dict)
+        and gs500rox_start_prior_proposal.get("mode")
+        and not bool(gs500rox_start_prior_proposal.get("apply_band", False))
+    ):
+        gs500rox_start_prior_reason = (
+            f"{GS500ROX_START_PRIOR_SUGGESTION_CODE}:"
+            f" {gs500rox_start_prior_proposal.get('summary', '')}"
+        )
+    if gs500rox_start_reason:
+        if not ladder_review_reason or ladder_review_reason == "Rust ladder fit looks internally consistent.":
+            ladder_review_reason = gs500rox_start_reason
+        elif gs500rox_start_reason.split(":", 1)[0] not in ladder_review_reason:
+            ladder_review_reason = f"{gs500rox_start_reason}; {ladder_review_reason}"
+        gs500rox_start_reason_code = gs500rox_start_reason.split(":", 1)[0]
+        if gs500rox_start_reason_code and gs500rox_start_reason_code not in ladder_review_reason_codes:
+            ladder_review_reason_codes.append(gs500rox_start_reason_code)
+        ladder_review_summary = (
+            f"{ladder_review_summary}; {gs500rox_start_reason}" if ladder_review_summary else gs500rox_start_reason
+        )
+    if gs500rox_start_prior_reason:
+        if not ladder_review_reason or ladder_review_reason == "Rust ladder fit looks internally consistent.":
+            ladder_review_reason = gs500rox_start_prior_reason
+        elif GS500ROX_START_PRIOR_SUGGESTION_CODE not in ladder_review_reason:
+            ladder_review_reason = f"{gs500rox_start_prior_reason}; {ladder_review_reason}"
+        if GS500ROX_START_PRIOR_SUGGESTION_CODE not in ladder_review_reason_codes:
+            ladder_review_reason_codes.append(GS500ROX_START_PRIOR_SUGGESTION_CODE)
+        ladder_review_summary = (
+            f"{ladder_review_summary}; {gs500rox_start_prior_reason}"
+            if ladder_review_summary
+            else gs500rox_start_prior_reason
+        )
+    if poor_gs500rox_linear_fit:
+        linear_reason = (
+            "poor_gs500rox_linear_fit:"
+            f" max={ladder_linear_max_bp:.3f}bp"
+            f" mean={ladder_linear_mean_bp:.3f}bp"
+            f" r2={ladder_linear_r2:.6f}"
+        )
+        if not ladder_review_reason:
+            ladder_review_reason = linear_reason
+        if "poor_gs500rox_linear_fit" not in ladder_review_reason_codes:
+            ladder_review_reason_codes.append("poor_gs500rox_linear_fit")
+        ladder_review_summary = (
+            f"{ladder_review_summary}; {linear_reason}" if ladder_review_summary else linear_reason
+        )
+    if (
+        str(size_standard_mode["internal_ladder"]) == FLT3_ROX_LADDER
+        and np.isfinite(ladder_max_residual_bp)
+        and ladder_max_residual_bp > FLT3_GS500ROX_REVIEW_MAX_RESIDUAL_BP
+    ):
+        residual_reason = f"high_gs500rox_residual: max={ladder_max_residual_bp:.3f}bp"
+        if not ladder_review_reason or ladder_review_reason == "Rust ladder fit looks internally consistent.":
+            ladder_review_reason = residual_reason
+        if "high_gs500rox_residual" not in ladder_review_reason_codes:
+            ladder_review_reason_codes.append("high_gs500rox_residual")
+        ladder_review_summary = (
+            f"{ladder_review_summary}; {residual_reason}" if ladder_review_summary else residual_reason
+        )
     ladder_review_required = bool(
         getattr(fsa, "ladder_review_required", bool(ladder_missing_expected_steps))
-        or ladder_max_residual_bp > FLT3_REVIEW_MAX_RESIDUAL_BP
+        or bool(gs500rox_start_reason)
+        or bool(gs500rox_start_prior_reason)
+        or (
+            ladder_max_residual_bp
+            > (
+                FLT3_GS500ROX_REVIEW_MAX_RESIDUAL_BP
+                if str(size_standard_mode["internal_ladder"]) == FLT3_ROX_LADDER
+                else FLT3_REVIEW_MAX_RESIDUAL_BP
+            )
+        )
+        or poor_gs500rox_linear_fit
     )
     if ladder_fit_strategy == "manual_adjustment":
         ladder_qc_status = "manual_adjustment"
@@ -3793,7 +4789,10 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         ladder_qc_status = "ok"
     else:
         ladder_qc_status = "ladder_qc_failed"
-    peak_qc_pass, peak_qc_reason = _peak_qc_status(peaks, meta.get("group", "sample"))
+    if ladder_only_qc:
+        peak_qc_pass, peak_qc_reason = True, FLT3_LADDER_ONLY_PEAK_QC_STATUS
+    else:
+        peak_qc_pass, peak_qc_reason = _peak_qc_status(peaks, meta.get("group", "sample"))
 
     return {
         "fsa": fsa,
@@ -3809,6 +4808,13 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         "selection_key": meta.get("selection_key"),
         "group": meta["group"],
         "ladder": fsa.ladder,
+        "size_standard": str(size_standard_mode["size_standard"]),
+        "internal_ladder": str(size_standard_mode["internal_ladder"]),
+        "size_standard_channel": str(
+            getattr(fsa, "rust_size_standard_channel", None)
+            or getattr(fsa, "size_standard_channel", None)
+            or size_standard_mode["size_standard_channel"]
+        ),
         "bp_min": meta["bp_min"],
         "bp_max": meta["bp_max"],
         "dit": extract_dit_from_name(fsa.file_name),
@@ -3820,9 +4826,49 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         "ladder_missing_expected_steps": ladder_missing_expected_steps,
         "ladder_fit_note": ladder_fit_note,
         "ladder_review_required": ladder_review_required,
-        "ladder_review_reason": str(getattr(fsa, "rust_review_primary_reason", "") or ""),
-        "ladder_review_reason_codes": list(getattr(fsa, "rust_review_reason_codes", []) or []),
-        "ladder_review_summary": str(getattr(fsa, "rust_review_summary", "") or ""),
+        "ladder_review_reason": ladder_review_reason,
+        "ladder_review_reason_codes": ladder_review_reason_codes,
+        "ladder_review_summary": ladder_review_summary,
+        "gs500rox_start_prior_mode": (
+            str(gs500rox_start_prior_proposal.get("mode", ""))
+            if isinstance(gs500rox_start_prior_proposal, dict)
+            else ""
+        ),
+        "gs500rox_start_prior_review_band": (
+            bool(gs500rox_start_prior_proposal.get("apply_band", False))
+            if isinstance(gs500rox_start_prior_proposal, dict)
+            else False
+        ),
+        "gs500rox_start_prior_curved_review_band": (
+            bool(gs500rox_start_prior_proposal.get("curved_review_band", False))
+            if isinstance(gs500rox_start_prior_proposal, dict)
+            else False
+        ),
+        "gs500rox_start_prior_quadratic_max_bp": (
+            float(gs500rox_start_prior_proposal.get("quadratic_max", np.nan))
+            if isinstance(gs500rox_start_prior_proposal, dict)
+            else np.nan
+        ),
+        "gs500rox_start_prior_quadratic_mean_bp": (
+            float(gs500rox_start_prior_proposal.get("quadratic_mean", np.nan))
+            if isinstance(gs500rox_start_prior_proposal, dict)
+            else np.nan
+        ),
+        "gs500rox_start_prior_quadratic_r2": (
+            float(gs500rox_start_prior_proposal.get("quadratic_r2", np.nan))
+            if isinstance(gs500rox_start_prior_proposal, dict)
+            else np.nan
+        ),
+        "gs500rox_start_prior_selected": (
+            list(map(int, gs500rox_start_prior_proposal.get("selected", [])))
+            if isinstance(gs500rox_start_prior_proposal, dict)
+            else []
+        ),
+        "gs500rox_start_prior_summary": (
+            str(gs500rox_start_prior_proposal.get("summary", ""))
+            if isinstance(gs500rox_start_prior_proposal, dict)
+            else ""
+        ),
         "ladder_expected_step_count": len(expected_ladder_steps),
         "ladder_fitted_step_count": len(fitted_ladder_steps),
         "rust_preview_positive_call": bool(rust_flt3_preview.get("positive_call", False)) if isinstance(rust_flt3_preview, dict) else False,
@@ -4167,6 +5213,9 @@ def generate_flt3_peak_report(entries: list[dict], outdir: Path) -> None:
                 "PreferredInjection": f"{int(entry.get('preferred_injection_time', 0) or 0)}s" if entry.get("preferred_injection_time") else "",
                 "SelectionReason": entry.get("selection_reason") or "",
                 "SourceRunDir": entry.get("source_run_dir") or "",
+                "SizeStandard": entry.get("size_standard") or entry.get("ladder") or "",
+                "InternalLadder": entry.get("internal_ladder") or entry.get("ladder") or "",
+                "SizeStandardChannel": entry.get("size_standard_channel") or "",
                 "AlternateInjections": entry.get("alternate_injections_summary") or "",
                 "SizingMethod": entry.get("sizing_method") or "",
                 "RatioMode": peak_summary.get("ratio_mode", "auto"),

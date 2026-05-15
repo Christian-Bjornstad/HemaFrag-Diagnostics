@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +39,10 @@ ROX_MIN_HARD_WINDOW_FRACTION = 0.75
 
 GS500ROX_PREFERRED_TIME_MIN = 1400.0
 GS500ROX_PREFERRED_TIME_MAX = 4200.0
+GS500ROX_ABSOLUTE_TIME_MIN = 1300.0
 GS500ROX_HARD_TIME_MIN = 1180.0
 GS500ROX_HARD_TIME_MAX = 4550.0
+GS500ROX_ABSOLUTE_TIME_MAX = 6000.0
 GS500ROX_MAX_FIRST_ANCHOR = 1700.0
 GS500ROX_MIN_SPAN = 2500.0
 GS500ROX_MIN_MEDIAN_GAP = 36.0
@@ -299,6 +302,7 @@ class _RustPrimitiveWorker:
             fd = self._proc.stdout.fileno()
             ready, _, _ = select.select([fd], [], [], max(timeout_seconds, 1))
             if not ready:
+                self.close()
                 return {"error": f"worker timeout after {timeout_seconds}s"}
 
             line = self._proc.stdout.readline()
@@ -344,6 +348,7 @@ class _RustPrimitiveWorker:
             fd = self._proc.stdout.fileno()
             ready, _, _ = select.select([fd], [], [], max(timeout_seconds, 1))
             if not ready:
+                self.close()
                 return {"error": f"worker timeout after {timeout_seconds}s"}
 
             line = self._proc.stdout.readline()
@@ -672,6 +677,10 @@ def _validate_rust_anchor_selection(
     is_gs500rox = _is_gs500rox_ladder(fsa, expected_bps)
     is_rox = _is_rox_ladder(fsa, expected_bps)
     if is_gs500rox:
+        if scans[0] < GS500ROX_ABSOLUTE_TIME_MIN:
+            return False, f"GS500ROX first anchor before absolute scan limit ({scans[0]:.0f})"
+        if scans[-1] > GS500ROX_ABSOLUTE_TIME_MAX:
+            return False, f"GS500ROX last anchor beyond absolute scan limit ({scans[-1]:.0f})"
         in_hard = np.logical_and(scans >= GS500ROX_HARD_TIME_MIN, scans <= GS500ROX_HARD_TIME_MAX)
         hard_fraction = float(np.mean(in_hard)) if scans.size else 0.0
         if hard_fraction < GS500ROX_MIN_HARD_WINDOW_FRACTION:
@@ -780,6 +789,61 @@ def _allow_guardrail_review_hydration(
     if not bool(qc_metrics.get("monotonic_on_ladder", False)):
         return False
 
+    if _is_gs500rox_ladder(fsa, expected_bps):
+        linear_max = float(qc_metrics.get("linear_trend_max_abs_error_bp", float("inf")))
+        linear_mean = float(qc_metrics.get("linear_trend_mean_abs_error_bp", float("inf")))
+        linear_r2 = float(qc_metrics.get("linear_trend_r2", float("-inf")))
+        max_abs_error_bp = float(qc_metrics.get("max_abs_error_bp", float("inf")))
+
+        if not (
+            np.isfinite(linear_max)
+            and np.isfinite(linear_mean)
+            and np.isfinite(linear_r2)
+            and np.isfinite(max_abs_error_bp)
+        ):
+            return False
+        if len(scan_indices) != len(expected_bps) or len(scan_indices) < 16:
+            return False
+
+        first_anchor = float(scan_indices[0]) if scan_indices else float("inf")
+        last_anchor = float(scan_indices[-1]) if scan_indices else float("-inf")
+        if last_anchor > GS500ROX_ABSOLUTE_TIME_MAX:
+            return False
+        span = last_anchor - first_anchor
+        lower_reason = reason.lower()
+        acceptable_linear = (
+            linear_max <= 6.0
+            and linear_mean <= 3.0
+            and linear_r2 >= 0.9985
+            and max_abs_error_bp <= 1.0
+        )
+        strict_span = span >= GS500ROX_MIN_SPAN and last_anchor >= 4500.0
+        compact_3730_span = (
+            span >= GS500ROX_MIN_SPAN
+            and last_anchor >= 4400.0
+            and first_anchor <= 2000.0
+        )
+        acceptable_span = strict_span or compact_3730_span
+        acceptable_guardrail_reason = (
+            "first anchor too late" in lower_reason
+            or "anchor span too small" in lower_reason
+            or "blob" in lower_reason
+            or "weak_start_region" in lower_reason
+        )
+        if not (
+            acceptable_linear
+            and acceptable_span
+            and acceptable_guardrail_reason
+            and first_anchor <= 2000.0
+        ):
+            return False
+
+        log(
+            f"[RUST REVIEW] Accepting guarded GS500ROX fit for {fsa.file_name} despite anchor warning: {reason}. "
+            "The fit remains Rust-owned and avoids Python fallback blob/tail remapping."
+        )
+        return True
+
     if _is_rox_ladder(fsa, expected_bps):
         linear_max = float(qc_metrics.get("linear_trend_max_abs_error_bp", float("inf")))
         linear_mean = float(qc_metrics.get("linear_trend_mean_abs_error_bp", float("inf")))
@@ -815,33 +879,7 @@ def _allow_guardrail_review_hydration(
         )
         return True
 
-    if not _is_gs500rox_ladder(fsa, expected_bps):
-        return False
-
-    reason_codes = {str(code) for code in (review_assessment.get("reason_codes") or [])}
-    if not reason_codes or not reason_codes.issubset({"blob_dominated_start", "weak_start_region"}):
-        return False
-
-    if len(scan_indices) != len(expected_bps) or len(scan_indices) < 16:
-        return False
-
-    max_abs_error_bp = float(qc_metrics.get("max_abs_error_bp", float("inf")))
-    if not np.isfinite(max_abs_error_bp) or max_abs_error_bp > 1.0:
-        return False
-
-    first_anchor = float(scan_indices[0]) if scan_indices else float("inf")
-    last_anchor = float(scan_indices[-1]) if scan_indices else float("-inf")
-    span = last_anchor - first_anchor
-    if first_anchor > GS500ROX_MAX_FIRST_ANCHOR + 120.0:
-        return False
-    if span < max(GS500ROX_MIN_SPAN, 3800.0):
-        return False
-
-    log(
-        f"[RUST REVIEW] Accepting guarded GS500ROX fit for {fsa.file_name} despite anchor warning: {reason}. "
-        "The fit remains Rust-owned and may still be marked for review downstream."
-    )
-    return True
+    return False
 
 
 def run_ladder_fit_hybrid(fsa: FsaFile, analysis_kind: str) -> FsaFile | None:
@@ -857,19 +895,24 @@ def run_ladder_fit_hybrid(fsa: FsaFile, analysis_kind: str) -> FsaFile | None:
 
     fsa_path = Path(fsa.file)
     timeout_seconds = max(_rust_timeout_seconds(analysis_kind), 1)
+    started = time.monotonic()
     cached = _pop_cached_rust_result(fsa_path, analysis_kind)
     if isinstance(cached, dict):
-        log(f"[RUST] Using prewarmed worker result for {fsa.file_name}")
+        elapsed = time.monotonic() - started
+        log(f"[RUST] Using prewarmed worker result for {fsa.file_name} after {elapsed:.1f}s")
         return _apply_rust_result_to_fsa(fsa, cached)
 
     worker = _get_rust_worker()
     if worker is not None:
         worker_response = worker.request(fsa_path, analysis_kind, timeout_seconds)
         if worker_response and worker_response.get("ok") and worker_response.get("result"):
+            elapsed = time.monotonic() - started
+            log(f"[RUST] Worker finished in {elapsed:.1f}s for {fsa.file_name}")
             res = worker_response["result"]
         else:
             if worker_response and worker_response.get("error"):
-                log(f"[RUST ERROR] Worker failed for {fsa.file_name}: {worker_response['error']}")
+                elapsed = time.monotonic() - started
+                log(f"[RUST ERROR] Worker failed after {elapsed:.1f}s for {fsa.file_name}: {worker_response['error']}")
             _invalidate_rust_worker()
             res = None
     else:
@@ -978,6 +1021,9 @@ def _apply_rust_result_to_fsa(fsa: FsaFile, res: dict[str, Any]) -> FsaFile | No
     flt3_preview = res.get("flt3_preview")
     if isinstance(flt3_preview, dict):
         fsa.rust_flt3_preview = flt3_preview
+    ladder_peak_preview = res.get("ladder_peak_preview")
+    if isinstance(ladder_peak_preview, list):
+        fsa.rust_ladder_peak_preview = ladder_peak_preview
     clonality_preview = res.get("clonality_preview")
     if isinstance(clonality_preview, dict):
         fsa.rust_clonality_preview = clonality_preview
@@ -1027,6 +1073,19 @@ def _apply_rust_result_to_fsa(fsa: FsaFile, res: dict[str, Any]) -> FsaFile | No
                 "Returning control to the runtime without Python rescue."
             )
             return None
+        fsa.rust_guardrail_review_required = True
+        fsa.ladder_review_required = True
+        fsa.rust_review_primary_reason = reason
+        reason_codes = list(getattr(fsa, "rust_review_reason_codes", []) or [])
+        if "guarded_gs500rox_anchor_family" not in reason_codes:
+            reason_codes.append("guarded_gs500rox_anchor_family")
+        fsa.rust_review_reason_codes = reason_codes
+        existing_summary = str(getattr(fsa, "rust_review_summary", "") or "")
+        fsa.rust_review_summary = (
+            f"{existing_summary}; Guardrail accepted for manual review: {reason}"
+            if existing_summary
+            else f"Guardrail accepted for manual review: {reason}"
+        )
 
     fsa.best_size_standard = np.array(scan_indices, dtype=float)
     fsa.ladder_steps = np.array(expected_bps, dtype=float)

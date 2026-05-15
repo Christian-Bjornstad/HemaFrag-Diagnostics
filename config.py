@@ -144,7 +144,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "dit_only": False,
                 "timeout_seconds": 45,
                 "checkpoint_every": 100,
-                "require_run_name_contains": "3730DNA",
+                "require_run_name_contains": "",
                 "last_run_dir": "",
             },
             "pipeline": {

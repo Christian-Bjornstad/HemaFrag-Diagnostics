@@ -5,6 +5,10 @@ def test_water_file_prefix_v_token_is_filtered():
     assert is_water_file("v_IgK_19012026_E10_H9C0U3IH.fsa")
     assert is_water_file("v_TCRb_C_03022026_C12_H9C0VCGF.fsa")
     assert is_water_file("00001_abcd1234_v_TCRg_A_010126_A01_RUN.fsa")
+    assert is_water_file("MQ_H11_H9C0VC69.fsa")
+    assert is_water_file("011__MQ_H11_H9C0VC69.fsa")
+    assert is_water_file("MilliQ_FLT3_A01_RUN.fsa")
+    assert is_water_file("milli-q_FLT3_A01_RUN.fsa")
 
 
 def test_water_filter_does_not_match_patient_ids_with_v_inside_token():

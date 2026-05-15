@@ -34,6 +34,7 @@ bin/fraggler-cli
 
 # Generated analysis outputs and review scratch
 artifacts/
+local_triage/
 tmp/
 tmp_*/
 review_bundle*/
