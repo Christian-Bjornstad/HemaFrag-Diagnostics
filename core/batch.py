@@ -23,6 +23,27 @@ from core.runner import run_pipeline_job, run_pipeline_job_collect, run_qc_job, 
 
 # Lazy load fraggler modules to prevent global Panel state pollution on import
 
+KNOWN_CLONALITY_BACKFILL_SKIP_FILES = {
+    # User-requested overnight guardrail: this historical KDE file repeatedly
+    # entered an unbounded fallback path during the 2026-05-18 T7 backfill.
+    "26OUM01277_KDE_06022026_A08_H9C0VCG7.fsa",
+    "25OUM02663_TRG_mixB__190225_E03_C9U078YZ.fsa",
+    "24OUM02878_tcrgA__200224_H02_C9R0HJZA.fsa",
+    "24OUM02880_IGK__200224_B07_C9R0HJZA.fsa",
+    "24OUM02881_tcrgB__200224_A06_C9R0HJZA.fsa",
+    "24OUM03702_TCRg_mixB_070324_E04_C9R0HJPD.fsa",
+    "24OUM03767_KDE_070324_E12_C9R0HJPD.fsa",
+    "24OUM03995_TCRg_mixA_070324_A05_C9R0HJPD.fsa",
+    "24OUM03999_TCRg_mixA_070324_B05_C9R0HJPD.fsa",
+    "25OUM06253_IGK__220425_B05_H9C0ZIYX.fsa",
+    "25OUM06278_tcrgA__220425_B02_H9C0ZIYX.fsa",
+    "25OUM06278_tcrgB__220425_B04_H9C0ZIYX.fsa",
+    "25OUM06153_tcrgB__220425_C04_H9C0ZIYX.fsa",
+    "25OUM06289_KDE__220425_D07_H9C0ZIYX.fsa",
+    "25OUM15319_TCRgB_08102025_A07_H9C0VCFS.fsa",
+    "25OUM15320_TCRgA_08102025_B05_H9C0VCFS.fsa",
+}
+
 
 # ============================================================
 # SCANNING UTILITIES
@@ -93,6 +114,9 @@ def _scan_folder_fsa_files(path: Path, folder_files: Dict[Path, List[Path]]) -> 
 
         def _is_usable_fsa(candidate: Path) -> bool:
             if candidate.suffix.lower() != ".fsa" or is_water_file(candidate.name):
+                return False
+            if candidate.name in KNOWN_CLONALITY_BACKFILL_SKIP_FILES:
+                log(f"[WARN] Skipping known clonality backfill hang file: {candidate.name}")
                 return False
             try:
                 if candidate.stat().st_size <= 0:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fnmatch
 import io
 import json
 import os
@@ -42,6 +43,11 @@ from core.analyses.flt3.pipeline import (
     _scan_files,
     _summarize_detected_peaks,
     flt3_size_standard_mode,
+)
+from core.analyses.flt3.rox500_exclusions import (
+    FLT3_ROX500_REVIEW_EXCLUSIONS,
+    FLT3_ROX500_USER_GOOD_OVERRIDES,
+    FLT3_ROX500_USER_REVIEW_OVERRIDES,
 )
 from core.utils import is_water_file
 
@@ -79,6 +85,7 @@ QC_OUTPUT_COLUMNS = [
     "GS500ROXStartPriorMode",
     "GS500ROXStartPriorReviewBand",
     "GS500ROXStartPriorCurvedReviewBand",
+    "GS500ROXStartPriorLearnedApplyBand",
     "GS500ROXStartPriorQuadraticMaxBp",
     "GS500ROXStartPriorQuadraticMeanBp",
     "GS500ROXStartPriorQuadraticR2",
@@ -318,6 +325,7 @@ def _entry_row(path: Path, meta: dict, entry: dict | None, error: str = "") -> d
             "GS500ROXStartPriorMode": "",
             "GS500ROXStartPriorReviewBand": "",
             "GS500ROXStartPriorCurvedReviewBand": "",
+            "GS500ROXStartPriorLearnedApplyBand": "",
             "GS500ROXStartPriorQuadraticMaxBp": "",
             "GS500ROXStartPriorQuadraticMeanBp": "",
             "GS500ROXStartPriorQuadraticR2": "",
@@ -391,6 +399,11 @@ def _entry_row(path: Path, meta: dict, entry: dict | None, error: str = "") -> d
             if not entry.get("gs500rox_start_prior_mode")
             else bool(entry.get("gs500rox_start_prior_curved_review_band", False))
         ),
+        "GS500ROXStartPriorLearnedApplyBand": (
+            ""
+            if not entry.get("gs500rox_start_prior_mode")
+            else bool(entry.get("gs500rox_start_prior_learned_apply_band", False))
+        ),
         "GS500ROXStartPriorQuadraticMaxBp": _fmt_float(
             entry.get("gs500rox_start_prior_quadratic_max_bp"),
             3,
@@ -431,6 +444,7 @@ def _raw_metadata_rows(
     *,
     years: list[str] | None = None,
     require_run_name_contains: str = "",
+    exclude_run_name_contains: str = "",
     limit: int = 0,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -439,6 +453,7 @@ def _raw_metadata_rows(
         root,
         years=years,
         require_run_name_contains=require_run_name_contains,
+        exclude_run_name_contains=exclude_run_name_contains,
         limit=limit,
     )
     for path in paths:
@@ -489,21 +504,113 @@ def _path_matches_run_filter(path: Path, required_text: str) -> bool:
     return False
 
 
+def _run_filter_tokens(text: str) -> list[str]:
+    return [token.strip() for token in str(text or "").replace(";", ",").split(",") if token.strip()]
+
+
+def _matches_review_exclusion(path: Path) -> bool:
+    source_run_dir = path.parent.name
+    file_name = path.name
+    for run_pattern, file_pattern, _reason in FLT3_ROX500_REVIEW_EXCLUSIONS:
+        run_pattern = str(run_pattern or "*")
+        file_pattern = str(file_pattern or "*")
+        if fnmatch.fnmatchcase(source_run_dir, run_pattern) and fnmatch.fnmatchcase(file_name, file_pattern):
+            return True
+    return False
+
+
+def _matches_user_good_override(path: Path) -> str:
+    source_run_dir = path.parent.name
+    file_name = path.name
+    for run_pattern, file_pattern, reason in FLT3_ROX500_USER_GOOD_OVERRIDES:
+        run_pattern = str(run_pattern or "*")
+        file_pattern = str(file_pattern or "*")
+        if fnmatch.fnmatchcase(source_run_dir, run_pattern) and fnmatch.fnmatchcase(file_name, file_pattern):
+            return str(reason or "user_good_review")
+    return ""
+
+
+def _matches_user_review_override(path: Path) -> str:
+    source_run_dir = path.parent.name
+    file_name = path.name
+    for run_pattern, file_pattern, reason in FLT3_ROX500_USER_REVIEW_OVERRIDES:
+        run_pattern = str(run_pattern or "*")
+        file_pattern = str(file_pattern or "*")
+        if fnmatch.fnmatchcase(source_run_dir, run_pattern) and fnmatch.fnmatchcase(file_name, file_pattern):
+            return str(reason or "user_minor_review")
+    return ""
+
+
+def _apply_user_good_override(row: dict[str, Any], reason: str) -> dict[str, Any]:
+    if not reason:
+        return row
+    row = dict(row)
+    row["QCStatus"] = "PASS"
+    row["QCReason"] = reason
+    if row.get("LadderQC") in {"", "analysis_failed", "review_required"}:
+        row["LadderQC"] = "ok"
+    row["ReviewReason"] = ""
+    return row
+
+
+def _apply_user_review_override(row: dict[str, Any], reason: str) -> dict[str, Any]:
+    if not reason:
+        return row
+    row = dict(row)
+    row["QCStatus"] = "REVIEW"
+    row["QCReason"] = reason
+    if row.get("LadderQC") in {"", "analysis_failed"}:
+        row["LadderQC"] = "review_required"
+    row["ReviewReason"] = reason
+    return row
+
+
+def _is_operator_error_flt3_file(path: Path) -> bool:
+    if _matches_review_exclusion(path):
+        return True
+    # User-reviewed FLT3 FAIL panel showed MP1_* rows are human/operator plate
+    # errors, not ladder fitting cases. Exclude these before QC so they do not
+    # inflate future REVIEW/FAIL validation workbooks.
+    if path.name.upper().startswith("MP1_"):
+        return True
+    # User-confirmed 2026-05-18 FLT3 ROX500 FAIL panels: these have missing or
+    # too-short ladders and should be skipped rather than counted as pipeline
+    # validation failures.
+    known_missing_ladder = {
+        "25OUM04778_p1_RATIO__250324_A04_H9C0VADZ.fsa",
+        "25OUM04778_p2_RATIO__250324_F04_H9C0VADZ.fsa",
+        "25OUM04792_p1_RATIO__250324_B04_H9C0VADZ.fsa",
+        "25OUM04792_p2_RATIO__250324_G04_H9C0VADZ.fsa",
+        "25OUM04888_p1_RATIO__250324_C04_H9C0VADZ.fsa",
+        "25OUM04888_p2_RATIO__250324_H04_H9C0VADZ.fsa",
+        "NTC_RATIO__250324_E04_H9C0VADZ.fsa",
+        "IVS-0000_RATIO__250324_D04_H9C0VADZ.fsa",
+        "IVS-0000_ITD__0300725_C01_H9C0ZJ88.fsa",
+        "25OUM11534_p2_TKD-kutting__240725_B05_H9C0VC6E.fsa",
+    }
+    return path.name in known_missing_ladder
+
+
 def _filter_candidate_files(
     paths: list[Path],
     root: Path,
     *,
     years: list[str] | None = None,
     require_run_name_contains: str = "",
+    exclude_run_name_contains: str = "",
     limit: int = 0,
 ) -> list[Path]:
     year_set = {str(year).strip() for year in (years or []) if str(year).strip()}
     max_rows = int(limit or 0)
     filtered: list[Path] = []
     for path in paths:
+        if _is_operator_error_flt3_file(path):
+            continue
         if not _path_matches_years(path, root, year_set):
             continue
         if not _path_matches_run_filter(path, require_run_name_contains):
+            continue
+        if any(_path_matches_run_filter(path, token) for token in _run_filter_tokens(exclude_run_name_contains)):
             continue
         filtered.append(path)
         if max_rows > 0 and len(filtered) >= max_rows:
@@ -580,6 +687,8 @@ def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool])
             except Exception as exc:
                 elapsed = time.monotonic() - started
                 row = _entry_row(path, meta, None, f"{type(exc).__name__}: {exc}")
+                row = _apply_user_review_override(row, _matches_user_review_override(path))
+                row = _apply_user_good_override(row, _matches_user_good_override(path))
                 return {
                     "idx": idx,
                     "total": total,
@@ -597,6 +706,8 @@ def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool])
             if entry is None:
                 elapsed = time.monotonic() - started
                 row = _entry_row(path, meta, None, "analysis_failed")
+                row = _apply_user_review_override(row, _matches_user_review_override(path))
+                row = _apply_user_good_override(row, _matches_user_good_override(path))
                 return {
                     "idx": idx,
                     "total": total,
@@ -617,6 +728,8 @@ def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool])
             if entry.get("peak_qc_status") != FLT3_LADDER_ONLY_PEAK_QC_STATUS:
                 _calculate_ratios([entry])
             row = _entry_row(path, meta, entry)
+            row = _apply_user_review_override(row, _matches_user_review_override(path))
+            row = _apply_user_good_override(row, _matches_user_good_override(path))
         elapsed = time.monotonic() - started
         status = row.get("QCStatus", "")
         status_reason = row.get("QCReason", "")
@@ -661,6 +774,7 @@ def run_qc(
     *,
     years: list[str] | None = None,
     require_run_name_contains: str = "",
+    exclude_run_name_contains: str = "",
     limit: int = 0,
     workers: int = 1,
     progress_callback=None,
@@ -673,6 +787,7 @@ def run_qc(
             outdir,
             years=years,
             require_run_name_contains=require_run_name_contains,
+            exclude_run_name_contains=exclude_run_name_contains,
             limit=limit,
             workers=workers,
             progress_callback=progress_callback,
@@ -687,6 +802,7 @@ def _run_qc_impl(
     *,
     years: list[str] | None = None,
     require_run_name_contains: str = "",
+    exclude_run_name_contains: str = "",
     limit: int = 0,
     workers: int = 1,
     progress_callback=None,
@@ -699,6 +815,7 @@ def _run_qc_impl(
         fsa_dir,
         years=years,
         require_run_name_contains=require_run_name_contains,
+        exclude_run_name_contains=exclude_run_name_contains,
         limit=limit,
     )
     classified: list[tuple[Path, dict]] = []
@@ -803,6 +920,7 @@ def _run_qc_impl(
             fsa_dir,
             years=years,
             require_run_name_contains=require_run_name_contains,
+            exclude_run_name_contains=exclude_run_name_contains,
             limit=limit,
         )
         ,
@@ -861,6 +979,7 @@ def _run_qc_impl(
         else {},
         "years": list(years or []),
         "require_run_name_contains": require_run_name_contains,
+        "exclude_run_name_contains": exclude_run_name_contains,
         "limit": int(limit or 0),
         "raw_fsa_count": int(len(raw_meta_df)),
         "analyzed_fsa_count": int(len(qc_df)),
@@ -901,6 +1020,7 @@ def main() -> None:
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--year", dest="years", action="append", default=[])
     parser.add_argument("--require-run-name-contains", default="")
+    parser.add_argument("--exclude-run-name-contains", default="")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
@@ -910,6 +1030,7 @@ def main() -> None:
         args.outdir.expanduser(),
         years=args.years,
         require_run_name_contains=args.require_run_name_contains,
+        exclude_run_name_contains=args.exclude_run_name_contains,
         limit=args.limit,
         workers=args.workers,
     )

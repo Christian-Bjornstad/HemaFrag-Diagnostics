@@ -79,9 +79,13 @@ FLT3_ROX500_SIZE_STANDARD_CHANNEL = "DATA4"
 FLT3_GS500ROX_SIZE_STANDARD_CHANNEL = "DATA4"
 GS500ROX_ABSOLUTE_TIME_MIN = 1300
 GS500ROX_MAX_FIRST_ANCHOR = 1700
+GS500ROX_EXPECTED_BP = (35, 50, 75, 100, 139, 150, 160, 200, 250, 300, 340, 350, 400, 450, 490, 500)
 GS500ROX_START_PRIOR_MAX_50_SCAN = 1800
 GS500ROX_START_PRIOR_REVIEW_CODE = "gs500rox_start_family_prior_review"
 GS500ROX_START_PRIOR_SUGGESTION_CODE = "gs500rox_start_family_prior_suggestion"
+GS500ROX_SUPPORTED_35_NEAR_FIXED50_MODE = "supported_35_near_fixed50_probe_v3"
+GS500ROX_LATE_FIRST_35_RIGHT_SHIFT_MODE = "late_first_35_right_shift"
+GS500ROX_RIGHT_SHIFTED_35_50_75_MODE = "right_shifted_35_50_75_review"
 FLT3_LIZ500_SIZE_STANDARD_CHANNEL = "DATA105"
 FLT3_ROX500_SIZE_STANDARD_TOKENS = {"", "ROX", "ROX500", "ROX_500", "GS500ROX", "GS_500_ROX"}
 FLT3_LIZ_SIZE_STANDARD_TOKENS = {"LIZ", "LIZ500", "LIZ500_250", "LIZ500250"}
@@ -4002,15 +4006,141 @@ def _gs500rox_curved_review_band(
     )
 
 
+def _gs500rox_learned_right_shift_apply_band(
+    mode: str,
+    linear_max: float,
+    linear_mean: float,
+    linear_r2: float,
+    quadratic_max: float,
+    quadratic_mean: float,
+    quadratic_r2: float,
+    cubic_max: float,
+    cubic_mean: float,
+    cubic_r2: float,
+) -> bool:
+    if mode not in {"late_50_after_current_50", "right_shifted_start_review"}:
+        return False
+    return (
+        np.isfinite(linear_max)
+        and np.isfinite(linear_mean)
+        and np.isfinite(linear_r2)
+        and np.isfinite(quadratic_max)
+        and np.isfinite(quadratic_mean)
+        and np.isfinite(quadratic_r2)
+        and np.isfinite(cubic_max)
+        and np.isfinite(cubic_mean)
+        and np.isfinite(cubic_r2)
+        and linear_max <= 6.8
+        and linear_mean <= 2.65
+        and linear_r2 >= 0.99955
+        and quadratic_max <= 4.35
+        and quadratic_mean <= 1.95
+        and quadratic_r2 >= 0.99975
+        and cubic_max <= 2.45
+        and cubic_mean <= 0.85
+        and cubic_r2 >= 0.99994
+    )
+
+
+def _gs500rox_simple_shift_curved_apply_band(
+    linear_max: float,
+    linear_mean: float,
+    linear_r2: float,
+    quadratic_max: float,
+    quadratic_mean: float,
+    quadratic_r2: float,
+    cubic_max: float,
+    cubic_mean: float,
+    cubic_r2: float,
+) -> bool:
+    return (
+        np.isfinite(linear_max)
+        and np.isfinite(linear_mean)
+        and np.isfinite(linear_r2)
+        and np.isfinite(quadratic_max)
+        and np.isfinite(quadratic_mean)
+        and np.isfinite(quadratic_r2)
+        and np.isfinite(cubic_max)
+        and np.isfinite(cubic_mean)
+        and np.isfinite(cubic_r2)
+        and linear_max <= 10.2
+        and linear_mean <= 4.3
+        and linear_r2 >= 0.9989
+        and quadratic_max <= 4.9
+        and quadratic_mean <= 2.6
+        and quadratic_r2 >= 0.9996
+        and cubic_max <= 2.1
+        and cubic_mean <= 0.75
+        and cubic_r2 >= 0.99994
+    )
+
+
+def _gs500rox_learned_start_gap_family(
+    mode: str,
+    gap_35_50: int,
+    gap_50_75: int,
+    gap_75_100: int,
+    gap_100_139: int,
+    current_linear_max: float,
+    current_linear_mean: float,
+) -> bool:
+    if mode == "late_50_after_current_50":
+        return (
+            85 <= gap_35_50 <= 110
+            and 175 <= gap_50_75 <= 245
+            and 125 <= gap_75_100 <= 160
+            and 220 <= gap_100_139 <= 260
+            and np.isfinite(current_linear_max)
+            and np.isfinite(current_linear_mean)
+            and current_linear_max >= 4.2
+            and current_linear_mean >= 1.3
+        )
+    if mode == "right_shifted_start_review":
+        return (
+            (
+                115 <= gap_35_50 <= 135
+                and 135 <= gap_50_75 <= 155
+                and 135 <= gap_75_100 <= 150
+                and 225 <= gap_100_139 <= 240
+            )
+            or (
+                85 <= gap_35_50 <= 100
+                and 185 <= gap_50_75 <= 210
+                and 140 <= gap_75_100 <= 155
+                and 235 <= gap_100_139 <= 250
+            )
+        ) and (
+            np.isfinite(current_linear_max)
+            and np.isfinite(current_linear_mean)
+            and current_linear_max >= 4.2
+            and current_linear_mean >= 1.3
+        )
+    return False
+
+
+def _gs500rox_supported_35_near_fixed50_gap_family(
+    gap_35_50: int,
+    gap_50_75: int,
+    gap_75_100: int,
+    gap_100_139: int,
+) -> bool:
+    return (
+        65 <= gap_35_50 <= 115
+        and 160 <= gap_50_75 <= 245
+        and 120 <= gap_75_100 <= 170
+        and 195 <= gap_100_139 <= 275
+    )
+
+
 def _gs500rox_start_prior_apply_band(mode: str, linear_max: float, linear_mean: float, linear_r2: float) -> bool:
     if mode == "start_block_35_50_75_100_139":
+        return False
+    if str(mode).startswith("reverse_pair_"):
         return False
     if _gs500rox_review_band(linear_max, linear_mean, linear_r2):
         return True
     if mode != "simple_shift":
         return False
-    # These remaps are never allowed to pass automatically.  The wider band is
-    # used only to replace the visibly wrong 35/50 start family before review.
     return (
         np.isfinite(linear_max)
         and np.isfinite(linear_mean)
@@ -4018,6 +4148,206 @@ def _gs500rox_start_prior_apply_band(mode: str, linear_max: float, linear_mean: 
         and linear_max <= FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MAX_BP
         and linear_mean <= FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MEAN_BP
         and linear_r2 >= FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MIN_R2
+    )
+
+
+def _gs500rox_start_prior_requires_review(trial: dict | None) -> bool:
+    if not isinstance(trial, dict) or not bool(trial.get("apply_band", False)):
+        return False
+    mode = str(trial.get("mode") or "")
+    if mode.startswith("reverse_pair_"):
+        return False
+    # User-reviewed DATA4 samples showed these start-family corrections are
+    # clean when inside strict linear/curved apply bands. Reverse-pair and
+    # start-block modes were repeatedly current-correct in review panels, so
+    # they should not create review noise by themselves.
+    return mode not in {
+        "35_earlier",
+        "simple_shift",
+        "late_50_after_current_50",
+        "right_shifted_start_review",
+        GS500ROX_LATE_FIRST_35_RIGHT_SHIFT_MODE,
+        GS500ROX_RIGHT_SHIFTED_35_50_75_MODE,
+        GS500ROX_SUPPORTED_35_NEAR_FIXED50_MODE,
+        "start_block_35_50_75_100_139",
+    }
+
+
+def _gs500rox_start_cleanup_reason(reason: str) -> bool:
+    text = str(reason or "").strip().lower()
+    return (
+        text.startswith("blob_dominated_start")
+        or text.startswith("suspect_gs500rox_35_start_family")
+        or text.startswith("suspect_gs500rox_35_50_start_family")
+        or text.startswith(GS500ROX_START_PRIOR_REVIEW_CODE)
+        or text.startswith(GS500ROX_START_PRIOR_SUGGESTION_CODE)
+        or "blob-like peaks dominate the start region" in text
+        or "gs500rox first anchor too late" in text
+    )
+
+
+def _gs500rox_current_start_is_stable(
+    gap_35_50: int,
+    gap_50_75: int,
+    gap_75_100: int,
+    gap_100_139: int,
+    linear_max: float,
+    linear_mean: float,
+    linear_r2: float,
+) -> bool:
+    # User review showed a recurring false-positive family: current 35/50 was
+    # already visually correct, but a residual-ranked start_block/reverse_pair
+    # moved 35 left onto an earlier feature. Keep hard start proposals out when
+    # the current early geometry is coherent and the fit is already strong.
+    return (
+        68 <= gap_35_50 <= 76
+        and 132 <= gap_50_75 <= 150
+        and 128 <= gap_75_100 <= 145
+        and 205 <= gap_100_139 <= 230
+        and np.isfinite(linear_max)
+        and np.isfinite(linear_mean)
+        and np.isfinite(linear_r2)
+        and linear_max <= 3.8
+        and linear_mean <= 1.75
+        and linear_r2 >= 0.99983
+    )
+
+
+def _gs500rox_current_start_is_preferred(
+    gap_35_50: int,
+    gap_50_75: int,
+    gap_75_100: int,
+    gap_100_139: int,
+    linear_max: float,
+    linear_mean: float,
+    linear_r2: float,
+) -> bool:
+    # A broader user-reviewed "current is best" band. These rows can have
+    # slightly worse linear residuals than a proposal, but visually keep 35/50
+    # on the right peak family. Use this to suppress proposal noise, not as a
+    # general PASS rule.
+    return (
+        67 <= gap_35_50 <= 76
+        and 128 <= gap_50_75 <= 152
+        and 128 <= gap_75_100 <= 152
+        and 205 <= gap_100_139 <= 235
+        and np.isfinite(linear_max)
+        and np.isfinite(linear_mean)
+        and np.isfinite(linear_r2)
+        and linear_max <= 4.9
+        and linear_mean <= 1.9
+        and linear_r2 >= 0.99978
+    )
+
+
+def _gs500rox_current_start_suppresses_start_block(
+    gap_35_50: int,
+    gap_50_75: int,
+    gap_75_100: int,
+    gap_100_139: int,
+    linear_max: float,
+    linear_mean: float,
+    linear_r2: float,
+) -> bool:
+    # The 2026-05-18 full-review panel showed the remaining start_block
+    # proposals were almost entirely current-correct when current already sat
+    # inside the normal GS500ROX linear review band and only had a mildly broad
+    # early spacing pattern.  Avoid surfacing that as REVIEW noise.
+    return (
+        68 <= gap_35_50 <= 85
+        and 136 <= gap_50_75 <= 165
+        and 133 <= gap_75_100 <= 155
+        and 214 <= gap_100_139 <= 250
+        and np.isfinite(linear_max)
+        and np.isfinite(linear_mean)
+        and np.isfinite(linear_r2)
+        and linear_max <= 5.1
+        and linear_mean <= 2.0
+        and linear_r2 >= 0.99975
+    )
+
+
+def _gs500rox_current_suppresses_35_earlier_noise(
+    current_linear_max: float,
+    current_linear_mean: float,
+    current_linear_r2: float,
+    trial_linear_max: float,
+    trial_linear_mean: float,
+    trial_linear_r2: float,
+    trial_curved_review_band: bool,
+) -> bool:
+    # User review on 2026-05-18 showed occasional 35_earlier proposals that
+    # moved a visually good current start into review.  Suppress those only
+    # when the current ladder is already well inside review-band and the
+    # proposal is neither a good curved candidate nor an improvement.
+    current_fit_can_suppress = _gs500rox_review_band(current_linear_max, current_linear_mean, current_linear_r2) or (
+        np.isfinite(current_linear_max)
+        and np.isfinite(current_linear_mean)
+        and np.isfinite(current_linear_r2)
+        and current_linear_max <= 8.0
+        and current_linear_mean <= 2.2
+        and current_linear_r2 >= 0.9997
+    )
+    if not current_fit_can_suppress:
+        return False
+    if bool(trial_curved_review_band):
+        return False
+    if not (
+        np.isfinite(trial_linear_max)
+        and np.isfinite(trial_linear_mean)
+        and np.isfinite(trial_linear_r2)
+    ):
+        return False
+    return (
+        trial_linear_max > current_linear_max + 1.0
+        or trial_linear_mean > current_linear_mean + 0.5
+        or trial_linear_r2 < current_linear_r2 - 0.0002
+    )
+
+
+def _gs500rox_late_first_anchor_guardrail_can_pass(
+    fsa,
+    *,
+    linear_max: float,
+    linear_mean: float,
+    linear_r2: float,
+    max_residual: float,
+) -> bool:
+    reason = str(getattr(fsa, "rust_review_primary_reason", "") or "").lower()
+    if "gs500rox first anchor too late" not in reason:
+        return False
+    selected_raw = getattr(fsa, "best_size_standard", [])
+    if selected_raw is None:
+        selected_raw = []
+    selected = np.asarray(selected_raw, dtype=float)
+    if selected.size != len(GS500ROX_EXPECTED_BP):
+        return False
+    if not np.all(np.isfinite(selected)) or np.any(np.diff(selected) <= 0):
+        return False
+    first_anchor = float(selected[0])
+    last_anchor = float(selected[-1])
+    span = last_anchor - first_anchor
+    early_gaps = np.diff(selected[:5])
+    if not (1600.0 <= first_anchor <= 1725.0):
+        return False
+    if not (last_anchor >= 4200.0 and span >= 2500.0):
+        return False
+    if not (
+        50.0 <= float(early_gaps[0]) <= 90.0
+        and 120.0 <= float(early_gaps[1]) <= 170.0
+        and 120.0 <= float(early_gaps[2]) <= 170.0
+        and 190.0 <= float(early_gaps[3]) <= 260.0
+    ):
+        return False
+    return (
+        np.isfinite(linear_max)
+        and np.isfinite(linear_mean)
+        and np.isfinite(linear_r2)
+        and np.isfinite(max_residual)
+        and linear_max <= 4.8
+        and linear_mean <= 1.8
+        and linear_r2 >= 0.99975
+        and max_residual <= 1.0
     )
 
 
@@ -4140,6 +4470,35 @@ def _gs500rox_ranked_peak(
     if not corrected_pool:
         return None
     return max(corrected_pool, key=score)
+
+
+def _gs500rox_expected_peak(
+    candidates: list[dict],
+    start: int,
+    end: int,
+    expected: float,
+    *,
+    min_height: float = 18.0,
+    min_prominence: float = 8.0,
+) -> dict | None:
+    pool = [
+        peak
+        for peak in candidates
+        if start <= int(peak["scan"]) <= end
+        and float(peak.get("corrected_height", peak.get("height", 0.0))) >= min_height
+        and float(peak.get("prominence", 0.0)) >= min_prominence
+    ]
+    if not pool:
+        return None
+
+    def score(peak: dict) -> tuple[float, float, int]:
+        scan = int(peak["scan"])
+        height = float(peak.get("corrected_height", peak.get("height", 0.0)))
+        prominence = float(peak.get("prominence", 0.0))
+        distance = abs(scan - expected)
+        return (-distance, min(height, 500.0) + 0.2 * prominence, scan)
+
+    return max(pool, key=score)
 
 
 def _gs500rox_top_peak_scans(candidates: list[dict], start: int, end: int, *, limit: int = 10) -> list[int]:
@@ -4278,6 +4637,304 @@ def _gs500rox_start_block_trials(
     return trials
 
 
+def _gs500rox_right_shifted_start_trials(
+    selected: list[int],
+    candidates: list[dict],
+    ladder_steps: np.ndarray,
+) -> list[dict]:
+    if len(selected) < 5:
+        return []
+    first, second, third = selected[:3]
+    gap_35_50 = second - first
+    gap_50_75 = third - second
+    proposals: list[list[int]] = []
+
+    # User review on 2026-05-18 showed a repeated "proposal_close" pattern:
+    # start_block found the right neighborhood, but 35 was still one peak too
+    # far left.  When current 50 is plausible, try the expected 35 peak just
+    # before it as a review-only candidate.
+    if gap_35_50 >= 115 and gap_50_75 <= 170:
+        peak_35 = _gs500rox_expected_peak(
+            candidates,
+            max(GS500ROX_ABSOLUTE_TIME_MIN, second - 95),
+            second - 55,
+            second - 72,
+            min_height=18.0,
+            min_prominence=8.0,
+        )
+        if peak_35 is not None:
+            proposals.append([int(peak_35["scan"]), second] + selected[2:])
+
+    # Harder variant: both 35 and 50 need to move slightly right from the
+    # current/proposed start family. Keep this as review evidence only.
+    if 70 <= gap_35_50 <= 110 and 175 <= gap_50_75 <= 210:
+        peak_50 = _gs500rox_expected_peak(
+            candidates,
+            second + 25,
+            min(third - 75, second + 90),
+            second + 45,
+            min_height=18.0,
+            min_prominence=8.0,
+        )
+        peak_35 = None
+        if peak_50 is not None:
+            true_50_scan = int(peak_50["scan"])
+            peak_35 = _gs500rox_expected_peak(
+                candidates,
+                max(first + 8, true_50_scan - 95),
+                true_50_scan - 55,
+                true_50_scan - 72,
+                min_height=18.0,
+                min_prominence=8.0,
+            )
+        if peak_35 is not None and peak_50 is not None:
+            proposals.append([int(peak_35["scan"]), int(peak_50["scan"])] + selected[2:])
+
+    trials: list[dict] = []
+    seen: set[tuple[int, ...]] = set()
+    for proposed in proposals:
+        key = tuple(proposed)
+        if key in seen or proposed[:2] == selected[:2]:
+            continue
+        seen.add(key)
+        if not all(right > left for left, right in zip(proposed, proposed[1:])):
+            continue
+        linear_max, linear_mean, linear_r2 = _linear_ladder_metrics(proposed, ladder_steps)
+        if not np.isfinite(linear_max) or not np.isfinite(linear_mean) or not np.isfinite(linear_r2):
+            continue
+        trials.append(
+            {
+                "mode": "right_shifted_start_review",
+                "selected": proposed,
+                "linear_max": linear_max,
+                "linear_mean": linear_mean,
+                "linear_r2": linear_r2,
+                "anchors": {"35": proposed[0], "50": proposed[1]},
+            }
+        )
+    return trials
+
+
+def _gs500rox_late_first_35_right_shift_trials(
+    fsa: FsaFile,
+    selected: list[int],
+    candidates: list[dict],
+    ladder_steps: np.ndarray,
+) -> list[dict]:
+    if len(selected) < 5:
+        return []
+    reason = str(getattr(fsa, "rust_review_primary_reason", "") or "").lower()
+    if "gs500rox first anchor too late" not in reason:
+        return []
+    first, second, third, fourth, fifth = selected[:5]
+    gap_35_50 = second - first
+    gap_50_75 = third - second
+    gap_75_100 = fourth - third
+    gap_100_139 = fifth - fourth
+    if not (
+        95 <= gap_35_50 <= 120
+        and 145 <= gap_50_75 <= 175
+        and 145 <= gap_75_100 <= 170
+        and 230 <= gap_100_139 <= 265
+    ):
+        return []
+
+    candidate_by_scan = {int(peak["scan"]): peak for peak in candidates}
+    current_peak = candidate_by_scan.get(first)
+    current_height = _gs500rox_peak_signal_height(current_peak)
+    peak_35 = _gs500rox_ranked_peak(
+        candidates,
+        first + 8,
+        second - 55,
+        second - 74,
+        min_height=18.0,
+        min_prominence=8.0,
+    )
+    if peak_35 is None:
+        return []
+    true_35_scan = int(peak_35["scan"])
+    true_height = _gs500rox_peak_signal_height(peak_35)
+    if not (
+        true_35_scan > first + 12
+        and 65 <= second - true_35_scan <= 90
+        and true_height >= 80.0
+        and (true_height >= max(current_height * 2.0, 80.0) or current_height <= 80.0)
+    ):
+        return []
+
+    proposed = [true_35_scan] + selected[1:]
+    linear_max, linear_mean, linear_r2 = _linear_ladder_metrics(proposed, ladder_steps)
+    if not np.isfinite(linear_max) or not np.isfinite(linear_mean) or not np.isfinite(linear_r2):
+        return []
+    return [
+        {
+            "mode": GS500ROX_LATE_FIRST_35_RIGHT_SHIFT_MODE,
+            "selected": proposed,
+            "linear_max": linear_max,
+            "linear_mean": linear_mean,
+            "linear_r2": linear_r2,
+            "anchors": {"35": proposed[0], "50": proposed[1]},
+        }
+    ]
+
+
+def _gs500rox_right_shifted_35_50_75_trials(
+    selected: list[int],
+    candidates: list[dict],
+    ladder_steps: np.ndarray,
+) -> list[dict]:
+    if len(selected) < 5:
+        return []
+    first, second, third, fourth, fifth = selected[:5]
+    gap_35_50 = second - first
+    gap_50_75 = third - second
+    gap_75_100 = fourth - third
+    gap_100_139 = fifth - fourth
+    if not (
+        110 <= gap_35_50 <= 130
+        and 165 <= gap_50_75 <= 190
+        and 170 <= gap_75_100 <= 200
+        and 220 <= gap_100_139 <= 250
+    ):
+        return []
+
+    peak_75 = _gs500rox_ranked_peak(
+        candidates,
+        third + 18,
+        min(fourth - 90, third + 58),
+        third + 42,
+        min_height=18.0,
+        min_prominence=8.0,
+    )
+    if peak_75 is None:
+        return []
+    true_75_scan = int(peak_75["scan"])
+    peak_50 = _gs500rox_ranked_peak(
+        candidates,
+        second + 20,
+        true_75_scan - 115,
+        true_75_scan - 148,
+        min_height=18.0,
+        min_prominence=8.0,
+    )
+    if peak_50 is None:
+        return []
+    true_50_scan = int(peak_50["scan"])
+    peak_35 = _gs500rox_ranked_peak(
+        candidates,
+        max(first + 20, true_50_scan - 95),
+        true_50_scan - 55,
+        true_50_scan - 72,
+        min_height=18.0,
+        min_prominence=8.0,
+    )
+    if peak_35 is None:
+        return []
+    true_35_scan = int(peak_35["scan"])
+    if not (
+        true_35_scan > first + 70
+        and true_50_scan > second + 45
+        and true_75_scan > third + 25
+        and 65 <= true_50_scan - true_35_scan <= 95
+        and 120 <= true_75_scan - true_50_scan <= 170
+        and 120 <= fourth - true_75_scan <= 170
+    ):
+        return []
+    if min(
+        _gs500rox_peak_signal_height(peak_35),
+        _gs500rox_peak_signal_height(peak_50),
+        _gs500rox_peak_signal_height(peak_75),
+    ) < 75.0:
+        return []
+
+    proposed = [true_35_scan, true_50_scan, true_75_scan] + selected[3:]
+    if not all(right > left for left, right in zip(proposed, proposed[1:])):
+        return []
+    linear_max, linear_mean, linear_r2 = _linear_ladder_metrics(proposed, ladder_steps)
+    if not np.isfinite(linear_max) or not np.isfinite(linear_mean) or not np.isfinite(linear_r2):
+        return []
+    return [
+        {
+            "mode": GS500ROX_RIGHT_SHIFTED_35_50_75_MODE,
+            "selected": proposed,
+            "linear_max": linear_max,
+            "linear_mean": linear_mean,
+            "linear_r2": linear_r2,
+            "anchors": {"35": proposed[0], "50": proposed[1], "75": proposed[2]},
+        }
+    ]
+
+
+def _gs500rox_supported_35_near_fixed50_trials(
+    selected: list[int],
+    candidates: list[dict],
+    ladder_steps: np.ndarray,
+) -> list[dict]:
+    if len(selected) < 5:
+        return []
+    first, second, third, fourth, fifth = selected[:5]
+    gap_35_50 = second - first
+    gap_50_75 = third - second
+    gap_75_100 = fourth - third
+    gap_100_139 = fifth - fourth
+    if not _gs500rox_supported_35_near_fixed50_gap_family(
+        gap_35_50,
+        gap_50_75,
+        gap_75_100,
+        gap_100_139,
+    ):
+        return []
+
+    peak_50 = _gs500rox_expected_peak(
+        candidates,
+        second + 24,
+        min(third - 55, second + 92),
+        second + 38,
+        min_height=35.0,
+        min_prominence=25.0,
+    )
+    if peak_50 is None:
+        return []
+    true_50_scan = int(peak_50["scan"])
+    peak_35 = _gs500rox_expected_peak(
+        candidates,
+        max(first + 8, true_50_scan - 95),
+        true_50_scan - 55,
+        true_50_scan - 74,
+        min_height=35.0,
+        min_prominence=25.0,
+    )
+    if peak_35 is None:
+        return []
+    true_35_scan = int(peak_35["scan"])
+    if not (
+        true_35_scan > first + 12
+        and true_35_scan < second - 8
+        and true_50_scan > second + 20
+        and 65 <= true_50_scan - true_35_scan <= 85
+    ):
+        return []
+
+    proposed = [true_35_scan, true_50_scan] + selected[2:]
+    if proposed[:2] == selected[:2]:
+        return []
+    if not all(right > left for left, right in zip(proposed, proposed[1:])):
+        return []
+    linear_max, linear_mean, linear_r2 = _linear_ladder_metrics(proposed, ladder_steps)
+    if not np.isfinite(linear_max) or not np.isfinite(linear_mean) or not np.isfinite(linear_r2):
+        return []
+    return [
+        {
+            "mode": GS500ROX_SUPPORTED_35_NEAR_FIXED50_MODE,
+            "selected": proposed,
+            "linear_max": linear_max,
+            "linear_mean": linear_mean,
+            "linear_r2": linear_r2,
+            "anchors": {"35": proposed[0], "50": proposed[1]},
+        }
+    ]
+
+
 def _gs500rox_projection_peak_scans(
     candidates: list[dict],
     expected: float,
@@ -4306,6 +4963,33 @@ def _gs500rox_projection_peak_scans(
     return [int(peak["scan"]) for peak in pool[:limit]]
 
 
+def _gs500rox_peak_signal_height(peak: dict | None) -> float:
+    if not isinstance(peak, dict):
+        return 0.0
+    return float(peak.get("corrected_height", peak.get("height", 0.0)) or 0.0)
+
+
+def _gs500rox_reverse_pair_has_peak_support(left_peak: dict | None, right_peak: dict | None) -> bool:
+    left_height = _gs500rox_peak_signal_height(left_peak)
+    right_height = _gs500rox_peak_signal_height(right_peak)
+    left_prominence = float((left_peak or {}).get("prominence", 0.0) or 0.0)
+    right_prominence = float((right_peak or {}).get("prominence", 0.0) or 0.0)
+    if min(left_height, right_height) < 45.0:
+        return False
+    if min(left_prominence, right_prominence) < 25.0:
+        return False
+
+    taller = max(left_height, right_height)
+    shorter = max(min(left_height, right_height), 1.0)
+    # Annotated reverse-pair failures were often residual-good fits that put one
+    # low-end anchor on the first massive dye blob and the other on a small
+    # baseline feature.  Keep the pair only when both anchors are real peaks on a
+    # comparable local scale.
+    if taller >= 12000.0 and taller / shorter > 8.0:
+        return False
+    return True
+
+
 def _gs500rox_reverse_projection_pair_trials(
     selected: list[int],
     candidates: list[dict],
@@ -4321,6 +5005,7 @@ def _gs500rox_reverse_projection_pair_trials(
     ]
     trials: list[dict] = []
     seen: set[tuple[int, ...]] = set()
+    candidate_by_scan = {int(peak["scan"]): peak for peak in candidates}
     for mode, fit_indices in methods:
         if max(fit_indices) >= len(selected):
             continue
@@ -4330,7 +5015,7 @@ def _gs500rox_reverse_projection_pair_trials(
             continue
         coef = np.polyfit(fit_bps, fit_scans, deg=1)
         expected_50 = float(np.polyval(coef, 50.0))
-        pool = _gs500rox_projection_peak_scans(candidates, expected_50, radius=95, limit=10, min_height=18.0)
+        pool = _gs500rox_projection_peak_scans(candidates, expected_50, radius=95, limit=12, min_height=35.0)
         if len(pool) < 2:
             continue
         for left in pool:
@@ -4338,7 +5023,12 @@ def _gs500rox_reverse_projection_pair_trials(
                 if right <= left:
                     continue
                 gap = right - left
-                if not (45 <= gap <= 100):
+                if not (60 <= gap <= 95):
+                    continue
+                if not _gs500rox_reverse_pair_has_peak_support(
+                    candidate_by_scan.get(left),
+                    candidate_by_scan.get(right),
+                ):
                     continue
                 proposed = [left, right] + selected[2:]
                 key = tuple(proposed)
@@ -4369,14 +5059,48 @@ def _gs500rox_start_prior_trials(fsa: FsaFile, ladder_steps: np.ndarray) -> list
         return []
     if len(selected) != 16:
         return []
-    first, second, third = selected[:3]
+    first, second, third, fourth, fifth = selected[:5]
     last = selected[-1]
-    if not (GS500ROX_ABSOLUTE_TIME_MIN <= first <= GS500ROX_MAX_FIRST_ANCHOR) or last < 3900:
+    current_rust_reason = str(getattr(fsa, "rust_review_primary_reason", "") or "")
+    late_first_anchor_reason = "gs500rox first anchor too late" in current_rust_reason.lower()
+    max_first_anchor = 1750 if late_first_anchor_reason else GS500ROX_MAX_FIRST_ANCHOR
+    if not (GS500ROX_ABSOLUTE_TIME_MIN <= first <= max_first_anchor) or last < 3900:
         return []
     candidates = _gs500rox_peak_candidates(fsa)
     trials: list[dict] = []
     gap_35_50 = second - first
     gap_50_75 = third - second
+    gap_75_100 = fourth - third
+    gap_100_139 = fifth - fourth
+    current_linear_max, current_linear_mean, current_linear_r2 = _linear_ladder_metrics(selected, ladder_steps)
+    current_review_band = _gs500rox_review_band(current_linear_max, current_linear_mean, current_linear_r2)
+    current_start_reason = _gs500rox_start_family_review_reason(fsa)
+    current_had_review_signal = (
+        bool(getattr(fsa, "ladder_review_required", False))
+        or bool(current_start_reason)
+        or _gs500rox_start_cleanup_reason(current_rust_reason)
+        or not current_review_band
+    )
+    current_start_preferred = _gs500rox_current_start_is_preferred(
+        gap_35_50,
+        gap_50_75,
+        gap_75_100,
+        gap_100_139,
+        current_linear_max,
+        current_linear_mean,
+        current_linear_r2,
+    )
+    current_suppresses_start_block = _gs500rox_current_start_suppresses_start_block(
+        gap_35_50,
+        gap_50_75,
+        gap_75_100,
+        gap_100_139,
+        current_linear_max,
+        current_linear_mean,
+        current_linear_r2,
+    )
+
+    trials.extend(_gs500rox_late_first_35_right_shift_trials(fsa, selected, candidates, ladder_steps))
 
     simple_50 = None
     # The simple shift is only for the compact-start family we annotated:
@@ -4406,6 +5130,36 @@ def _gs500rox_start_prior_trials(fsa: FsaFile, ladder_steps: np.ndarray) -> list
                 }
             )
 
+    if not current_start_preferred and not current_suppresses_start_block:
+        trials.extend(_gs500rox_supported_35_near_fixed50_trials(selected, candidates, ladder_steps))
+
+    # Harder annotated variant: current 50 is visually the true 35, but the true
+    # 50 is a nearby later peak rather than the wider simple_shift target. Keep
+    # this review-only until we have broader validation.
+    if gap_35_50 <= 110 and gap_50_75 >= 175:
+        late_50 = _gs500rox_ranked_peak(
+            candidates,
+            second + 24,
+            min(second + 95, third - 8),
+            second + 72,
+            min_height=18.0,
+            min_prominence=10.0,
+        )
+        if late_50 is not None:
+            proposed = [second, int(late_50["scan"])] + selected[2:]
+            if proposed[:2] != selected[:2] and all(right > left for left, right in zip(proposed, proposed[1:])):
+                linear_max, linear_mean, linear_r2 = _linear_ladder_metrics(proposed, ladder_steps)
+                trials.append(
+                    {
+                        "mode": "late_50_after_current_50",
+                        "selected": proposed,
+                        "linear_max": linear_max,
+                        "linear_mean": linear_mean,
+                        "linear_r2": linear_r2,
+                        "anchors": {"35": proposed[0], "50": proposed[1]},
+                    }
+                )
+
     true_50_candidates: list[int] = []
     # Existing 50 becomes the true 50 only in the annotated 35-only family:
     # selected 35/50 is too wide, and a better 35 exists between them.
@@ -4429,7 +5183,10 @@ def _gs500rox_start_prior_trials(fsa: FsaFile, ladder_steps: np.ndarray) -> list
         )
     )
     if early_overpowers_simple:
-        true_50_candidates.append(int(early_50["scan"]))
+        # When the 50->75 gap is very large, user review showed this candidate
+        # can still be too far left; prefer the wider late-50 proposal instead.
+        if gap_50_75 < 210:
+            true_50_candidates.append(int(early_50["scan"]))
 
     for true_50 in sorted(set(true_50_candidates)):
         if true_50 > GS500ROX_START_PRIOR_MAX_50_SCAN:
@@ -4450,6 +5207,15 @@ def _gs500rox_start_prior_trials(fsa: FsaFile, ladder_steps: np.ndarray) -> list
         if proposed[:2] == selected[:2]:
             continue
         linear_max, linear_mean, linear_r2 = _linear_ladder_metrics(proposed, ladder_steps)
+        if (
+            (
+                current_start_preferred
+                or current_suppresses_start_block
+            )
+            and linear_max > current_linear_max + 1.0
+            and linear_mean > current_linear_mean + 0.35
+        ):
+            continue
         trials.append(
             {
                 "mode": "35_earlier",
@@ -4464,13 +5230,27 @@ def _gs500rox_start_prior_trials(fsa: FsaFile, ladder_steps: np.ndarray) -> list
     # Hard cases left after simple_shift/35_earlier often need the whole early
     # GS500ROX block to move coherently.  Keep this as proposal-only until
     # visually reviewed; it must not auto-apply even when linear metrics are good.
-    current_linear_max, current_linear_mean, current_linear_r2 = _linear_ladder_metrics(selected, ladder_steps)
     current_needs_review = (
-        not _gs500rox_review_band(current_linear_max, current_linear_mean, current_linear_r2)
+        not current_review_band
         or gap_35_50 <= 85
+        or gap_50_75 >= 170
         or gap_35_50 >= 115
     )
+    if _gs500rox_current_start_is_stable(
+        gap_35_50,
+        gap_50_75,
+        gap_75_100,
+        gap_100_139,
+        current_linear_max,
+        current_linear_mean,
+        current_linear_r2,
+    ):
+        current_needs_review = False
+    if current_start_preferred or current_suppresses_start_block:
+        current_needs_review = False
     if current_needs_review:
+        trials.extend(_gs500rox_right_shifted_start_trials(selected, candidates, ladder_steps))
+        trials.extend(_gs500rox_right_shifted_35_50_75_trials(selected, candidates, ladder_steps))
         trials.extend(_gs500rox_reverse_projection_pair_trials(selected, candidates, ladder_steps))
         trials.extend(_gs500rox_start_block_trials(selected, candidates, ladder_steps))
 
@@ -4504,12 +5284,114 @@ def _gs500rox_start_prior_trials(fsa: FsaFile, ladder_steps: np.ndarray) -> list
             quadratic_mean,
             quadratic_r2,
         )
+        trial["learned_apply_band"] = _gs500rox_learned_right_shift_apply_band(
+            str(trial["mode"]),
+            float(trial["linear_max"]),
+            float(trial["linear_mean"]),
+            float(trial["linear_r2"]),
+            quadratic_max,
+            quadratic_mean,
+            quadratic_r2,
+            cubic_max,
+            cubic_mean,
+            cubic_r2,
+        )
+        if str(trial["mode"]) == "simple_shift":
+            trial["learned_apply_band"] = bool(
+                gap_35_50 <= 85
+                and gap_50_75 >= 205
+                and _gs500rox_simple_shift_curved_apply_band(
+                    float(trial["linear_max"]),
+                    float(trial["linear_mean"]),
+                    float(trial["linear_r2"]),
+                    quadratic_max,
+                    quadratic_mean,
+                    quadratic_r2,
+                    cubic_max,
+                    cubic_mean,
+                    cubic_r2,
+                )
+            )
+        if str(trial["mode"]) == GS500ROX_LATE_FIRST_35_RIGHT_SHIFT_MODE:
+            trial["learned_apply_band"] = bool(trial["review_band"])
+        if str(trial["mode"]) == GS500ROX_RIGHT_SHIFTED_35_50_75_MODE:
+            trial["learned_apply_band"] = bool(
+                current_had_review_signal
+                and bool(trial["curved_review_band"])
+                and np.isfinite(cubic_max)
+                and np.isfinite(cubic_mean)
+                and np.isfinite(cubic_r2)
+                and cubic_max <= 1.8
+                and cubic_mean <= 0.75
+                and cubic_r2 >= 0.99995
+            )
+        if str(trial["mode"]) == GS500ROX_SUPPORTED_35_NEAR_FIXED50_MODE:
+            selected_trial = list(map(int, trial.get("selected", [])))
+            trial_gap_35_50 = selected_trial[1] - selected_trial[0] if len(selected_trial) >= 2 else 0
+            supported_curved_band = (
+                (
+                    bool(trial["curved_review_band"])
+                    or (
+                        90 <= gap_35_50 <= 115
+                        and gap_50_75 <= 181
+                        and np.isfinite(float(trial.get("linear_max", float("nan"))))
+                        and np.isfinite(float(trial.get("linear_mean", float("nan"))))
+                        and np.isfinite(float(trial.get("linear_r2", float("nan"))))
+                        and float(trial.get("linear_max", float("inf"))) <= 7.8
+                        and float(trial.get("linear_mean", float("inf"))) <= 2.9
+                        and float(trial.get("linear_r2", 0.0)) >= 0.99945
+                        and np.isfinite(quadratic_max)
+                        and np.isfinite(quadratic_mean)
+                        and np.isfinite(quadratic_r2)
+                        and quadratic_max <= 4.7
+                        and quadratic_mean <= 2.2
+                        and quadratic_r2 >= 0.9997
+                    )
+                )
+                and np.isfinite(cubic_max)
+                and np.isfinite(cubic_mean)
+                and np.isfinite(cubic_r2)
+                and cubic_max <= 1.8
+                and cubic_mean <= 0.75
+                and cubic_r2 >= 0.9999
+            )
+            trial["learned_apply_band"] = bool(
+                _gs500rox_supported_35_near_fixed50_gap_family(
+                    gap_35_50,
+                    gap_50_75,
+                    gap_75_100,
+                    gap_100_139,
+                )
+                and 65 <= trial_gap_35_50 <= 85
+                and (bool(trial["review_band"]) or supported_curved_band)
+            )
         trial["apply_band"] = _gs500rox_start_prior_apply_band(
             str(trial["mode"]),
             float(trial["linear_max"]),
             float(trial["linear_mean"]),
             float(trial["linear_r2"]),
         )
+        if str(trial["mode"]) == GS500ROX_SUPPORTED_35_NEAR_FIXED50_MODE:
+            trial["apply_band"] = bool(trial["learned_apply_band"])
+        if str(trial["mode"]) in {
+            "simple_shift",
+            GS500ROX_LATE_FIRST_35_RIGHT_SHIFT_MODE,
+            GS500ROX_RIGHT_SHIFTED_35_50_75_MODE,
+        }:
+            trial["apply_band"] = bool(trial["apply_band"] or trial["learned_apply_band"])
+        if bool(trial["learned_apply_band"]) and str(trial["mode"]) != GS500ROX_SUPPORTED_35_NEAR_FIXED50_MODE:
+            trial["apply_band"] = bool(
+                current_had_review_signal
+                or _gs500rox_learned_start_gap_family(
+                    str(trial["mode"]),
+                    gap_35_50,
+                    gap_50_75,
+                    gap_75_100,
+                    gap_100_139,
+                    current_linear_max,
+                    current_linear_mean,
+                )
+            )
         trial["summary"] = (
             f"{trial['mode']} 35={trial['anchors']['35']} 50={trial['anchors']['50']} "
             f"linear={float(trial['linear_max']):.3f}/"
@@ -4522,9 +5404,40 @@ def _gs500rox_start_prior_trials(fsa: FsaFile, ladder_steps: np.ndarray) -> list
             f"{float(cubic_mean):.3f}/"
             f"{float(cubic_r2):.6f}"
         )
+    trials = [
+        trial
+        for trial in trials
+        if not (
+            str(trial.get("mode") or "") == "35_earlier"
+            and current_review_band
+            and not bool(trial.get("apply_band", False))
+        )
+        and not (
+            str(trial.get("mode") or "") == "35_earlier"
+            and _gs500rox_current_suppresses_35_earlier_noise(
+                current_linear_max,
+                current_linear_mean,
+                current_linear_r2,
+                float(trial.get("linear_max", float("inf"))),
+                float(trial.get("linear_mean", float("inf"))),
+                float(trial.get("linear_r2", float("nan"))),
+                bool(trial.get("curved_review_band", False)),
+            )
+        )
+    ]
+    mode_rank = {
+        "simple_shift": 0,
+        GS500ROX_LATE_FIRST_35_RIGHT_SHIFT_MODE: 1,
+        GS500ROX_RIGHT_SHIFTED_35_50_75_MODE: 2,
+        GS500ROX_SUPPORTED_35_NEAR_FIXED50_MODE: 3,
+        "right_shifted_start_review": 4,
+        "late_50_after_current_50": 5,
+        "35_earlier": 6,
+    }
     trials.sort(
         key=lambda trial: (
             not bool(trial["apply_band"]),
+            mode_rank.get(str(trial["mode"]), 10),
             not bool(trial["review_band"]),
             not bool(trial["curved_review_band"]),
             float(trial["linear_max"]),
@@ -4562,15 +5475,50 @@ def _apply_gs500rox_start_family_prior_if_review_band(fsa: FsaFile) -> FsaFile:
 
     setattr(remapped, "ladder_fit_strategy", "gs500rox_start_family_prior")
     setattr(remapped, "ladder_fit_note", f"GS500ROX start-family prior applied: {best['summary']}")
-    setattr(remapped, "ladder_review_required", True)
+    prior_requires_review = _gs500rox_start_prior_requires_review(best)
+    setattr(remapped, "ladder_review_required", prior_requires_review)
     setattr(remapped, "gs500rox_start_family_prior_proposal", best)
     setattr(remapped, "gs500rox_start_family_prior_trials", trials)
-    existing_codes = list(getattr(remapped, "rust_review_reason_codes", []) or [])
-    if GS500ROX_START_PRIOR_REVIEW_CODE not in existing_codes:
-        existing_codes.append(GS500ROX_START_PRIOR_REVIEW_CODE)
-    setattr(remapped, "rust_review_reason_codes", existing_codes)
-    setattr(remapped, "rust_review_primary_reason", f"{GS500ROX_START_PRIOR_REVIEW_CODE}: {best['summary']}")
-    setattr(remapped, "rust_review_summary", f"{GS500ROX_START_PRIOR_REVIEW_CODE}: {best['summary']}")
+    if prior_requires_review:
+        existing_codes = list(getattr(remapped, "rust_review_reason_codes", []) or [])
+        if GS500ROX_START_PRIOR_REVIEW_CODE not in existing_codes:
+            existing_codes.append(GS500ROX_START_PRIOR_REVIEW_CODE)
+        setattr(remapped, "rust_review_reason_codes", existing_codes)
+        setattr(remapped, "rust_review_primary_reason", f"{GS500ROX_START_PRIOR_REVIEW_CODE}: {best['summary']}")
+        setattr(remapped, "rust_review_summary", f"{GS500ROX_START_PRIOR_REVIEW_CODE}: {best['summary']}")
+    else:
+        existing_codes = [
+            code
+            for code in list(getattr(remapped, "rust_review_reason_codes", []) or [])
+            if code != GS500ROX_START_PRIOR_REVIEW_CODE
+        ]
+        start_cleanup_modes = {
+            "simple_shift",
+            "late_50_after_current_50",
+            "right_shifted_start_review",
+            GS500ROX_LATE_FIRST_35_RIGHT_SHIFT_MODE,
+            GS500ROX_RIGHT_SHIFTED_35_50_75_MODE,
+            GS500ROX_SUPPORTED_35_NEAR_FIXED50_MODE,
+        }
+        if str(best.get("mode") or "") in start_cleanup_modes:
+            existing_codes = [
+                code
+                for code in existing_codes
+                if code
+                not in {
+                    "blob_dominated_start",
+                    "suspect_gs500rox_35_start_family",
+                    "suspect_gs500rox_35_50_start_family",
+                    GS500ROX_START_PRIOR_SUGGESTION_CODE,
+                }
+            ]
+        setattr(remapped, "rust_review_reason_codes", existing_codes)
+        primary = str(getattr(remapped, "rust_review_primary_reason", "") or "")
+        summary = str(getattr(remapped, "rust_review_summary", "") or "")
+        if str(best.get("mode") or "") in start_cleanup_modes and _gs500rox_start_cleanup_reason(primary):
+            setattr(remapped, "rust_review_primary_reason", "")
+        if str(best.get("mode") or "") in start_cleanup_modes and _gs500rox_start_cleanup_reason(summary):
+            setattr(remapped, "rust_review_summary", "")
     return remapped
 
 
@@ -4692,26 +5640,90 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
     ladder_linear_max_bp = float(metrics.get("linear_trend_max_abs_error_bp", float("inf")))
     ladder_linear_mean_bp = float(metrics.get("linear_trend_mean_abs_error_bp", float("inf")))
     ladder_linear_r2 = float(metrics.get("linear_trend_r2", float("-inf")))
+    gs500rox_simple_shift_applied = (
+        isinstance(gs500rox_start_prior_proposal, dict)
+        and str(gs500rox_start_prior_proposal.get("mode") or "") == "simple_shift"
+        and bool(gs500rox_start_prior_proposal.get("apply_band", False))
+    )
+    gs500rox_review_learned_prior_applied = (
+        isinstance(gs500rox_start_prior_proposal, dict)
+        and str(gs500rox_start_prior_proposal.get("mode") or "")
+        in {
+            "simple_shift",
+            "late_50_after_current_50",
+            "right_shifted_start_review",
+            GS500ROX_LATE_FIRST_35_RIGHT_SHIFT_MODE,
+            GS500ROX_RIGHT_SHIFTED_35_50_75_MODE,
+            GS500ROX_SUPPORTED_35_NEAR_FIXED50_MODE,
+        }
+        and bool(gs500rox_start_prior_proposal.get("apply_band", False))
+        and bool(gs500rox_start_prior_proposal.get("learned_apply_band", False))
+    )
     poor_gs500rox_linear_fit = (
         str(size_standard_mode["internal_ladder"]) == FLT3_ROX_LADDER
         and (
             not np.isfinite(ladder_linear_max_bp)
             or not np.isfinite(ladder_linear_mean_bp)
             or not np.isfinite(ladder_linear_r2)
-            or ladder_linear_max_bp > FLT3_GS500ROX_LINEAR_REVIEW_MAX_BP
-            or ladder_linear_mean_bp > FLT3_GS500ROX_LINEAR_REVIEW_MEAN_BP
-            or ladder_linear_r2 < FLT3_GS500ROX_LINEAR_REVIEW_MIN_R2
+            or (
+                not gs500rox_simple_shift_applied
+                and not gs500rox_review_learned_prior_applied
+                and (
+                    ladder_linear_max_bp > FLT3_GS500ROX_LINEAR_REVIEW_MAX_BP
+                    or ladder_linear_mean_bp > FLT3_GS500ROX_LINEAR_REVIEW_MEAN_BP
+                    or ladder_linear_r2 < FLT3_GS500ROX_LINEAR_REVIEW_MIN_R2
+                )
+            )
+            or (
+                gs500rox_simple_shift_applied
+                and not gs500rox_review_learned_prior_applied
+                and (
+                    ladder_linear_max_bp > FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MAX_BP
+                    or ladder_linear_mean_bp > FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MEAN_BP
+                    or ladder_linear_r2 < FLT3_GS500ROX_SIMPLE_SHIFT_APPLY_MIN_R2
+                )
+            )
         )
     )
     ladder_review_reason = str(getattr(fsa, "rust_review_primary_reason", "") or "")
     ladder_review_reason_codes = list(getattr(fsa, "rust_review_reason_codes", []) or [])
     ladder_review_summary = str(getattr(fsa, "rust_review_summary", "") or "")
+    guarded_late_first_anchor_pass = _gs500rox_late_first_anchor_guardrail_can_pass(
+        fsa,
+        linear_max=ladder_linear_max_bp,
+        linear_mean=ladder_linear_mean_bp,
+        linear_r2=ladder_linear_r2,
+        max_residual=ladder_max_residual_bp,
+    )
+    if guarded_late_first_anchor_pass:
+        ladder_review_reason = ""
+        ladder_review_summary = ""
+        ladder_review_reason_codes = [
+            code for code in ladder_review_reason_codes if code != "guarded_gs500rox_anchor_family"
+        ]
+    if gs500rox_review_learned_prior_applied:
+        learned_cleanup_codes = {
+            "blob_dominated_start",
+            "suspect_gs500rox_35_start_family",
+            "suspect_gs500rox_35_50_start_family",
+            GS500ROX_START_PRIOR_SUGGESTION_CODE,
+            GS500ROX_START_PRIOR_REVIEW_CODE,
+        }
+        ladder_review_reason_codes = [
+            code for code in ladder_review_reason_codes if code not in learned_cleanup_codes
+        ]
+        if _gs500rox_start_cleanup_reason(ladder_review_reason):
+            ladder_review_reason = ""
+        if _gs500rox_start_cleanup_reason(ladder_review_summary):
+            ladder_review_summary = ""
     gs500rox_start_reason = _gs500rox_start_family_review_reason(fsa)
     gs500rox_start_prior_reason = ""
     if (
         isinstance(gs500rox_start_prior_proposal, dict)
         and gs500rox_start_prior_proposal.get("mode")
         and not bool(gs500rox_start_prior_proposal.get("apply_band", False))
+        and str(gs500rox_start_prior_proposal.get("mode") or "") != "start_block_35_50_75_100_139"
+        and not str(gs500rox_start_prior_proposal.get("mode") or "").startswith("reverse_pair_")
     ):
         gs500rox_start_prior_reason = (
             f"{GS500ROX_START_PRIOR_SUGGESTION_CODE}:"
@@ -4768,7 +5780,10 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
             f"{ladder_review_summary}; {residual_reason}" if ladder_review_summary else residual_reason
         )
     ladder_review_required = bool(
-        getattr(fsa, "ladder_review_required", bool(ladder_missing_expected_steps))
+        (
+            getattr(fsa, "ladder_review_required", bool(ladder_missing_expected_steps))
+            and not guarded_late_first_anchor_pass
+        )
         or bool(gs500rox_start_reason)
         or bool(gs500rox_start_prior_reason)
         or (
@@ -4841,6 +5856,11 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         ),
         "gs500rox_start_prior_curved_review_band": (
             bool(gs500rox_start_prior_proposal.get("curved_review_band", False))
+            if isinstance(gs500rox_start_prior_proposal, dict)
+            else False
+        ),
+        "gs500rox_start_prior_learned_apply_band": (
+            bool(gs500rox_start_prior_proposal.get("learned_apply_band", False))
             if isinstance(gs500rox_start_prior_proposal, dict)
             else False
         ),

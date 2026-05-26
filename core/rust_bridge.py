@@ -819,9 +819,9 @@ def _allow_guardrail_review_hydration(
         )
         strict_span = span >= GS500ROX_MIN_SPAN and last_anchor >= 4500.0
         compact_3730_span = (
-            span >= GS500ROX_MIN_SPAN
-            and last_anchor >= 4400.0
-            and first_anchor <= 2000.0
+            span >= 2480.0
+            and last_anchor >= 3900.0
+            and first_anchor <= 1600.0
         )
         acceptable_span = strict_span or compact_3730_span
         acceptable_guardrail_reason = (

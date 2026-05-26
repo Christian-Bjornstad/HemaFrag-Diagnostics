@@ -218,6 +218,13 @@ Verification:
 - Added unit tests for simple-shift and 35-earlier prior trial selection.
 - Smoke-tested the 45 annotated start-family rows through the actual QC worker:
   - prior modes: `simple_shift=28`, `35_earlier=14`, blank `3`;
+
+## 2026-05-26 - FLT3 Full-Review Annotation Cleanup
+
+- Latest FLT3 review annotations were read from `Downloads/flt3_rox500_review_annotations (2).json`; `operator_data=115`, `minor=44`, `good=32`, `wrong_35_50=21`.
+- Generated 080825 raw DATA4 plot at `local_triage/flt3_080825_followup_2026-05-26/080825_H9C0ZIZ2_A01_DATA4_1500_4500.png`; H9C0ZIZ2 trace ends at scan `3533` and has no peaks after `3500`, while C990WO69 same date has tail peaks.
+- Added source-tracked FLT3 ROX500 exclusions in `core/analyses/flt3/rox500_exclusions.py` and tightened proposal-only review noise; focused annotation rerun after exclusions/noise cleanup: `PASS=30`, `REVIEW=37`, `FAIL=3` across 70 non-excluded annotated rows.
+- Second 40-row annotation pass added two more operator exclusions and six user-confirmed good overrides; focused control now gives `SKIPPED=2`, `PASS=6`, `REVIEW=31`, `FAIL=1`.
   - review-band prior applied: `17/45`;
   - false applied versus annotation-derived review-band truth: `0`;
   - annotated review-band remaps applied: `17/20`;
@@ -491,3 +498,454 @@ Verification:
   - `python3 -m py_compile` on modified core/gui/scripts modules: ok;
   - `python3 -m unittest tests/test_water_filter.py tests/test_flt3_gs500rox_start_family_review.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py`: ok;
   - `cargo test -p fraggler-core repair_gs500rox --quiet`: ok.
+
+## 2026-05-15 - T7 Overnight FLT3 And Clonality Run
+
+- User requested a new evening/night run from `/Volumes/T7 Shield/DATA` for both clonality and FLT3, with separate Excel trackers for validation.
+- Added `--exclude-run-name-contains` to the FLT3 ROX500 all-injections runner so the run can require `3730` while excluding `LIZ`.
+- FLT3 candidate check for `/Volumes/T7 Shield/DATA/flt3`: `7846` ROX500/3730 non-LIZ candidates (`2024=311`, `2025=5563`, `2026=1972`, `liz_included=0`).
+- Started detached screen `hemafrag_flt3_20260515_2153`.
+  - Script: `local_triage/overnight_t7_2026-05-15/run_flt3_rox500_3730.sh`
+  - Output workbook target: `local_triage/overnight_t7_2026-05-15/flt3_rox500_3730_only/FLT3_ROX500_QC_All_Injections.xlsx`
+  - Log: `local_triage/overnight_t7_2026-05-15/flt3_rox500_3730.log`
+- Started detached screen `hemafrag_clonality_20260515_2158`.
+  - Script: `local_triage/overnight_t7_2026-05-15/run_clonality_all.sh`
+  - Input roots run sequentially: `2024_DATA`, `2025_data`, `2026`.
+  - Output workbook target: `local_triage/overnight_t7_2026-05-15/clonality/Clonality_Tracking.xlsx`
+  - Log: `local_triage/overnight_t7_2026-05-15/clonality.log`
+- Initial validation: clonality processed the first folder and updated `Clonality_Tracking.xlsx`; FLT3 process was active in metadata filtering.
+
+## 2026-05-16 - T7 Overnight Morning Status
+
+- FLT3 ROX500/3730 non-LIZ run completed at `2026-05-15T22:49:56`.
+  - Workbook: `local_triage/overnight_t7_2026-05-15/flt3_rox500_3730_only/FLT3_ROX500_QC_All_Injections.xlsx`.
+  - Summary: `7846` analyzed, `PASS=67`, `REVIEW=7506`, `FAIL=273`, `skipped=0`.
+  - Channel split: `DATA4=7686`, `DATA105=160`; `DATA105` rows came from five `FLT3_Leukostrat` 3730 run folders without `LIZ` in folder/run name, so the non-LIZ filter was not sufficient for a pure DATA4 validation workbook.
+- Clonality run is still active in screen `hemafrag_clonality_20260515_2158`.
+  - Current workbook: `local_triage/overnight_t7_2026-05-15/clonality/Clonality_Tracking.xlsx`.
+  - Workbook currently has `Runs=951` data rows and `PK_Peaks=190` data rows.
+  - State for `2024_DATA`: `done=15`, `failed=1`, `running=1`, `pending=212`.
+  - The active blocker is `2024_01_25_igkkde_pr_C9U02GP2_2024-01-25_1123`, stuck on `00004_392f3aea_PK_KDE__250124_D07_C9U02GP2.fsa` for over 9 hours.
+
+## 2026-05-16 - Stopped Hung Clonality Run
+
+- User asked to stop the clonality job after the morning status showed it was hung.
+- Stopped screen `hemafrag_clonality_20260515_2158` and manually terminated remaining child processes from that run.
+- Confirmed no `clonality_backfill`, `run_clonality_all`, or `fraggler-cli serve-primitives` processes remained afterward.
+- Preserved partial workbook and state:
+  - `local_triage/overnight_t7_2026-05-15/clonality/Clonality_Tracking.xlsx`
+  - `local_triage/overnight_t7_2026-05-15/clonality/state_2024_DATA.json`
+- Last state still records `done=15`, `failed=1`, `running=1`, `pending=212`; the interrupted running folder is `2024_01_25_igkkde_pr_C9U02GP2_2024-01-25_1123` on `00004_392f3aea_PK_KDE__250124_D07_C9U02GP2.fsa`.
+
+## 2026-05-16 - FLT3 Leukostrat Exclusion
+
+- User confirmed all `FLT3_Leukostrat` files should be ignored for ROX500 validation because they are LIZ500 files.
+- This explains the `160` `DATA105` rows in the overnight FLT3 3730/non-LIZ workbook.
+- Wrote a filtered workbook excluding `SourceRunDir` containing `Leukostrat`:
+  - `local_triage/overnight_t7_2026-05-15/flt3_rox500_3730_no_leukostrat/FLT3_ROX500_QC_All_Injections_no_Leukostrat.xlsx`
+- Filtered summary: `7686` analyzed rows, all `DATA4`; `PASS=62`, `REVIEW=7351`, `FAIL=273`, `review_row_count=7624`.
+- User annotated the first 4-example panel: three DATA4 review rows were `good`; the one DATA105/Leukostrat row was `wrong_35_50` with note that `50` is on baseline and `35 bp` is slightly wrong.
+
+## 2026-05-16 - FLT3 DATA4 Review Sampling
+
+- User annotated a 49-row DATA4/non-Leukostrat review sample.
+- Label split: `good=21`, `wrong_35_50=17`, `minor=6`, `operator_data=3`, blank-note-only `2`.
+- Key pattern:
+  - `35_earlier` prior looked mostly good: `18 good`, `2 minor`, `1 wrong_35_50`.
+  - Reverse-pair priors were much riskier: `reverse_pair_tail_200_500` had `9 wrong_35_50` in the sample; `reverse_pair_tail_300_500`/`anchor_340_350` also had multiple wrong/operator rows.
+  - Residual metrics alone do not separate good from wrong; wrong 35/50 rows can have low linear residuals.
+- Whole no-Leukostrat run impact:
+  - `35_earlier` review rows: `4646`, of which `4581` are review-band true and inside normal linear QC.
+  - If promoted, a conservative `35_earlier` auto-pass rule could reduce review rows from `7351` to about `2770`, but reverse-pair modes should stay review for now.
+
+## 2026-05-16 - FLT3 35-Earlier Auto-Pass Cleanup
+
+- Implemented the first review-noise cleanup from user annotations:
+  - Applied `GS500ROX` start-prior mode `35_earlier` no longer forces `ladder_review_required=True` when it is inside strict apply/review band.
+  - `simple_shift`, `reverse_pair_*`, and `start_block_35_50_75_100_139` remain review-only.
+- Added unit coverage for the new prior review policy.
+- Verification passed:
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py`
+  - `python3 -m unittest tests/test_flt3_gs500rox_start_family_review.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py`
+- Wrote an updated no-Leukostrat workbook using the same policy on the overnight CSV:
+  - `local_triage/overnight_t7_2026-05-15/flt3_rox500_3730_no_leukostrat_post_35earlier_autopass/FLT3_ROX500_QC_All_Injections_no_Leukostrat_post_35earlier_autopass.xlsx`
+  - Converted `4581` rows from `REVIEW` to `PASS`.
+  - New status: `PASS=4643`, `REVIEW=2770`, `FAIL=273`.
+- Rendered remaining review sample for next annotation:
+  - `local_triage/overnight_t7_2026-05-15/flt3_remaining_review_after_35earlier_autopass_40_html/review_panel.html`
+
+## 2026-05-16 - FLT3 Reverse-Pair Safety Tightening
+
+- User asked to continue fixing `35/50` errors and cases where `35` should move slightly later/right.
+- Compared annotated bad/minor rows against original Rust selected starts and prior proposals.
+- Finding: reverse-pair modes often create visually wrong `35/50` placements even when linear residuals are excellent; some rows need per-anchor right-shift/nudge rather than a residual-winning pair projection.
+- Tightened production behavior:
+  - `reverse_pair_*` start-prior trials now have `apply_band=False`.
+  - They remain review/proposal signals, but no longer modify the fitted ladder as if applied.
+  - Tests updated and passed.
+- Rendered a candidate panel for remaining review rows to learn per-anchor choices for `35/50/75/100/139`:
+  - `local_triage/overnight_t7_2026-05-15/flt3_remaining_reverse_projection_candidates_after_reverse_unapply/review_panel.html`
+
+## 2026-05-16 - FLT3 Reverse-Pair Peak-Support Guard
+
+- User clarified not to repeat the same manual review and to use the previous learning: avoid `35/50` candidates on baseline or on top of the first large dye blob.
+- Implemented production guardrails for GS500ROX `reverse_pair_*` proposals:
+  - Candidate pool now requires stronger low-end signal (`min_height=35`) before pair search.
+  - Proposed `35->50` gap is constrained to `60-95` scans.
+  - Both anchors must have real peak height/prominence support.
+  - Pairs with a massive first blob plus a tiny partner are rejected even if residuals are good.
+- Added unit coverage for rejecting a baseline/first-blob reverse-pair case while preserving a learned good reverse-pair proposal.
+- Verification passed:
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py tests/test_flt3_gs500rox_start_family_review.py`
+  - `python3 -m unittest tests/test_flt3_gs500rox_start_family_review.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py`
+
+## 2026-05-16 - FLT3 Guardrail 1000-File Smoke
+
+- User asked to test with more files after reverse-pair guardrails.
+- First 1000-file smoke excluded `Leukostrat` but not `LIZ`; result showed `DATA4=952`, `DATA105=48`, so the runner needed multiple exclude tokens.
+- Updated `--exclude-run-name-contains` to accept comma/semicolon-separated tokens such as `LIZ,Leukostrat`.
+- Clean 1000-file ROX500/3730 smoke command:
+  - `python3 scripts/run_flt3_rox500_qc_all_injections.py --fsa-dir "/Volumes/T7 Shield/DATA/flt3" --outdir local_triage/overnight_t7_2026-05-15/flt3_guardrail_smoke_1000_data4 --year 2024 --year 2025 --year 2026 --require-run-name-contains 3730 --exclude-run-name-contains "LIZ,Leukostrat" --limit 1000 --workers 6`
+- Clean smoke result:
+  - Output workbook: `local_triage/overnight_t7_2026-05-15/flt3_guardrail_smoke_1000_data4/FLT3_ROX500_QC_All_Injections.xlsx`
+  - Channel split: `DATA4=1000`.
+  - Status: `PASS=459`, `REVIEW=414`, `FAIL=127`.
+  - Ladder QC: `ok=456`, `review_required=414`, `analysis_failed=127`, `manual_adjustment=3`.
+  - Prior modes: `35_earlier=454`, `start_block_35_50_75_100_139=401`, `simple_shift=5`, `reverse_pair_tail_200_500=5`.
+  - `35_earlier` auto-passed `453/454`; all `reverse_pair_tail_200_500` remained `REVIEW`.
+- Verification after runner/filter update passed:
+  - `python3 -m py_compile scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py`
+  - `python3 -m unittest tests/test_flt3_gs500rox_start_family_review.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py`
+
+## 2026-05-16 - FLT3 GS500ROX Annotation Learning
+
+- User annotated `/Users/christian/Downloads/flt3_gs500rox_start_proposal_annotations (1).json` from the 29-row check panel.
+- Annotation split:
+  - `proposal_correct=11`, `current_correct=17`, `proposal_close=1`.
+  - `35_earlier`: `6` proposal-correct, `1` close.
+  - `simple_shift`: `5` proposal-correct.
+  - `reverse_pair_tail_200_500`: `5` current-correct.
+  - `start_block_35_50_75_100_139`: `12` current-correct.
+- Durable learning:
+  - `35_earlier` remains good for auto-pass inside strict band.
+  - `simple_shift` is promising, but stays review-only until tested on more data.
+  - `reverse_pair_*` and `start_block` created false-positive reviews when the current early GS500ROX geometry was already coherent; better residuals alone should not move `35` left.
+- Implemented stable-current suppression for hard GS500ROX start proposals:
+  - Suppress `reverse_pair_*`/`start_block` proposal generation when current gaps match the visually stable pattern (`35->50` `68-76`, `50->75` `132-150`, `75->100` `128-145`, `100->139` `205-230`) and current linear fit is already strong (`max<=3.8`, `mean<=1.75`, `R2>=0.99983`).
+  - Left `simple_shift` and remaining hard `start_block` rows as review-only.
+- Verification:
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py`: ok.
+  - `python3 -m unittest tests/test_flt3_gs500rox_start_family_review.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py`: ok.
+- Reran clean 1000-file DATA4 smoke:
+  - Output workbook: `local_triage/overnight_t7_2026-05-15/flt3_guardrail_smoke_1000_data4_after_annotation_learning/FLT3_ROX500_QC_All_Injections.xlsx`
+  - Channel split: `DATA4=1000`.
+  - Status improved from prior smoke `PASS=459`, `REVIEW=414`, `FAIL=127` to `PASS=616`, `REVIEW=257`, `FAIL=127`.
+  - Review reduction: `157` fewer review rows without changing fail count.
+  - Prior modes after learning: `35_earlier=463`, `start_block_35_50_75_100_139=240`, `simple_shift=5`, no remaining `reverse_pair_tail_200_500` mode in the 1000-file summary.
+
+## 2026-05-16 - FLT3 Remaining Prior Overlay Panel
+
+- Added `scripts/render_flt3_gs500rox_prior_overlay_html.py` to render current Rust selected anchors versus workbook start-prior proposals on the same trace.
+  - Red X = current Rust anchors.
+  - Blue circle = prior proposal anchors.
+  - Export labels: proposal-correct, current-correct, close/minor, weak/bad ladder, unclear.
+- Rendered a 40-row panel from the post-annotation-learning 1000-file smoke:
+  - `local_triage/overnight_t7_2026-05-15/flt3_prior_overlay_remaining_after_annotation_learning_40/review_panel.html`
+  - Composition: `35_earlier=10`, `simple_shift=5`, `start_block_35_50_75_100_139=25`.
+- Quick metric sanity check:
+  - `35_earlier` remnants: current median linear max `3.4115`, proposal median `7.708`; these are not auto-pass candidates and need visual review.
+  - `simple_shift`: current median max `5.632`, proposal median `6.348`; user previously marked these 5 proposals correct, but keep review-only until more validation.
+  - `start_block`: current median max `4.471`, proposal median `3.148`; residual improvement alone remains insufficient, so the overlay panel is the right next annotation unit.
+- Verification:
+  - `python3 -m py_compile scripts/render_flt3_gs500rox_prior_overlay_html.py`: ok.
+
+## 2026-05-16 - FLT3 Current-Best Overlay Learning
+
+- User annotated `/Users/christian/Downloads/flt3_gs500rox_prior_overlay_annotations.json` from the 40-row current-vs-proposal overlay.
+- Annotation split:
+  - Overall: `current_correct=34`, `proposal_correct=5`, `proposal_close=1`.
+  - `35_earlier`: `current_correct=9`, `proposal_close=1`.
+  - `simple_shift`: `proposal_correct=5`.
+  - `start_block_35_50_75_100_139`: `current_correct=25`.
+- Implemented a broader preferred-current GS500ROX guard:
+  - Suppresses bad `35_earlier` proposals when the proposed residuals are materially worse than the already coherent current ladder.
+  - Suppresses hard `reverse_pair_*`/`start_block` proposal generation when current early geometry is broadly coherent (`35->50` `67-76`, `50->75` `128-152`, `75->100` `128-152`, `100->139` `205-235`) and current fit is strong enough (`max<=4.9`, `mean<=1.9`, `R2>=0.99978`).
+  - Keeps `simple_shift` review-only despite repeated proposal-correct samples because validation is still narrow.
+- Reran clean 1000-file DATA4 smoke:
+  - Output workbook: `local_triage/overnight_t7_2026-05-15/flt3_guardrail_smoke_1000_data4_after_current_best_learning/FLT3_ROX500_QC_All_Injections.xlsx`
+  - Channel split: `DATA4=1000`.
+  - Status improved from previous smoke `PASS=616`, `REVIEW=257`, `FAIL=127` to `PASS=723`, `REVIEW=150`, `FAIL=127`.
+  - Remaining review prior modes: `start_block_35_50_75_100_139=141`, `simple_shift=5`, `35_earlier=1`, plus `3` non-prior late-anchor review rows.
+- Verification:
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py scripts/render_flt3_gs500rox_prior_overlay_html.py`: ok.
+  - `python3 -m unittest tests/test_flt3_gs500rox_start_family_review.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py`: ok (`8` tests).
+
+## 2026-05-18 - FLT3 Follow-Up Review Panel
+
+- User asked to look at more files after current-best learning.
+- Rendered a 50-row current-vs-proposal overlay panel from the latest 1000-file DATA4 smoke review rows:
+  - `local_triage/overnight_t7_2026-05-18/flt3_remaining_after_current_best_overlay_50/review_panel.html`
+  - Composition from renderer output: `35_earlier=1`, `simple_shift=5`, `start_block_35_50_75_100_139=44`.
+- Browser automation could not programmatically navigate to the local `file://` URL because the in-app browser policy blocked that URL form; panel file was still written successfully.
+- User reported the panel was blank. Root cause: `/Volumes/T7 Shield/DATA/flt3` was not mounted, so raw `.fsa` files could not be re-read; the renderer had logged filenames but skipped all rows and wrote an empty HTML.
+- Updated `scripts/render_flt3_gs500rox_prior_overlay_html.py` to print explicit skip reasons and include `skipped_missing`, `skipped_bad_proposal`, and `skipped_bad_analysis` counts in `summary.json`, preventing silent empty panels.
+- User mounted T7 again and reported review buttons did not work in the in-app browser.
+- Hardened the panel JavaScript for `file://` browser behavior:
+  - `localStorage` access is wrapped in try/catch with in-memory fallback.
+  - Each clicked label now shows a visible `Valgt: ...` status on the card.
+  - Export now writes JSON into a visible textarea as fallback, while still attempting normal JSON download.
+- Regenerated both panels successfully with T7 mounted:
+  - Existing open panel: `local_triage/overnight_t7_2026-05-15/flt3_prior_overlay_remaining_after_annotation_learning_40/review_panel.html`, `rows=40`, no skipped rows.
+  - New current-best panel: `local_triage/overnight_t7_2026-05-18/flt3_remaining_after_current_best_overlay_50/review_panel.html`, `rows=50`, no skipped rows.
+
+## 2026-05-18 - FLT3 Simple-Shift Learning And Late-50 Review Mode
+
+- User annotated the regenerated 40-row prior overlay panel. Split:
+  - Overall: `current_correct=34`, `proposal_correct=5`, `proposal_close=1`.
+  - `35_earlier`: `9` current-correct and `1` proposal-close where current `50 bp` appears to be true `35 bp`, with correct `50 bp` later.
+  - `simple_shift`: `5/5` proposal-correct again.
+  - `start_block_35_50_75_100_139`: `25/25` current-correct.
+- Implemented production changes:
+  - `simple_shift` no longer requires manual review when it is inside the strict apply band.
+  - Added review-only `late_50_after_current_50` proposal mode for the hard case where current `50` should become `35`, and a later peak should become `50`.
+  - Kept `reverse_pair_*`, `start_block_35_50_75_100_139`, and `late_50_after_current_50` review-only.
+  - Relaxed compact GS500ROX guardrail hydration enough to allow known 3730 compact examples while still rejecting bad late-first-anchor tails.
+- Verification:
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py core/rust_bridge.py scripts/render_flt3_gs500rox_prior_overlay_html.py`: ok.
+  - `python3 -m pytest tests/test_flt3_gs500rox_start_family_review.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py -q`: ok, `31` passed.
+- Reran clean 1000-file DATA4 smoke after simple-shift learning:
+  - Output workbook: `local_triage/overnight_t7_2026-05-18/flt3_guardrail_smoke_1000_after_simple_shift_learning/FLT3_ROX500_QC_All_Injections.xlsx`
+  - Channel split: `DATA4=1000`.
+  - Status changed from prior current-best smoke `PASS=723`, `REVIEW=150`, `FAIL=127` to `PASS=725`, `REVIEW=148`, `FAIL=127`.
+  - Remaining review prior modes: `start_block_35_50_75_100_139=141`, `simple_shift=3`, `35_earlier=1`, plus `3` non-prior review rows.
+  - Multiprocessing was blocked by the sandbox, so the runner fell back to sequential processing and completed successfully.
+
+## 2026-05-18 - FLT3 Review/Fail HTML Panels
+
+- User asked for separate HTML panels to review remaining `REVIEW` and `FAIL` rows.
+- Rendered all proposal-backed `REVIEW` rows from the latest 1000-file smoke:
+  - `local_triage/overnight_t7_2026-05-18/flt3_review_rows_overlay_all_html/review_panel.html`
+  - Rows rendered: `145`; skipped: `0`.
+  - Modes included: `35_earlier`, `simple_shift`, `start_block_35_50_75_100_139`, `late_50_after_current_50`.
+- Rendered all `FAIL` rows as trace-only review cards:
+  - `local_triage/overnight_t7_2026-05-18/flt3_fail_rows_trace_all_html/review_panel.html`
+  - Rows rendered: `127`; skipped: `0`.
+  - All current fail rows are `analysis_failed`, so the panel shows full DATA4 corrected trace plus low-end ladder region rather than current/proposal anchors.
+
+## 2026-05-18 - FLT3 Full Review Annotation Learning
+
+- User annotated all `145` proposal-backed REVIEW rows and reported that most were `current_correct`.
+- Annotation summary from the JSON:
+  - `simple_shift`: `3/3` proposal-correct, confirming it should not remain in manual review when inside apply band.
+  - `35_earlier`: `1` proposal-close where current `50 bp` is likely true `35 bp`, and correct `50 bp` should be later.
+  - `start_block_35_50_75_100_139`: overwhelmingly current-correct; a few proposal-close notes say `50 bp` is right but `35 bp` should be slightly later.
+- Implemented cleanup:
+  - Applied simple-shift rows now clear old `blob_dominated_start` review codes and use the simple-shift linear apply band instead of the stricter generic GS500ROX linear review max.
+  - Added a broad current-correct hard-start suppression band for rows already inside normal GS500ROX review band with mild early geometry (`35->50` `69-85`, `50->75` `136-165`, `75->100` `133-155`, `100->139` `214-250`).
+  - Suppression now blocks both `reverse_pair_*` and `start_block_35_50_75_100_139` proposals for that band; the first attempt only blocked `start_block`, which simply allowed the same rows to reappear as reverse-pair proposals.
+- Verification:
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py tests/test_flt3_gs500rox_start_family_review.py`: ok.
+  - `python3 -m pytest tests/test_flt3_gs500rox_start_family_review.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py -q`: ok, `33` passed.
+- Intermediate 1000-file smoke after the simple-shift cleanup but before final reverse-pair suppression:
+  - Output workbook: `local_triage/overnight_t7_2026-05-18/flt3_guardrail_smoke_1000_after_review_annotation_learning/FLT3_ROX500_QC_All_Injections.xlsx`
+  - Channel split: `DATA4=1000`.
+  - Status: `PASS=728`, `REVIEW=145`, `FAIL=127`.
+  - `simple_shift` rows all moved to `PASS`; remaining proposal review rows shifted to `reverse_pair_*`, proving the hard-start suppression needed to cover both reverse-pair and start-block modes.
+
+## 2026-05-18 - FLT3 MP1 Operator-Error Exclusion
+
+- User reviewed the full FAIL trace panel and confirmed all current FAIL rows are real human/operator errors that can be discarded from future analysis.
+- Pattern was clean in the 1000-file smoke: `127/127` FAIL rows were `MP1_*.fsa`, all from the 2024-11-27 HDD/C990RI16 `0278`/`0279` FLT3 runs.
+- Implemented a pre-QC candidate filter in `scripts/run_flt3_liz500_qc_all_injections.py` so `MP1_*.fsa` files are excluded before year/run filters and before `--limit`; the compatibility `run_flt3_rox500_qc_all_injections.py` wrapper inherits this.
+- Added focused runner-filter tests in `tests/test_flt3_rox500_runner_filters.py`.
+- Verification:
+  - `python3 -m pytest tests/test_flt3_rox500_runner_filters.py tests/test_flt3_gs500rox_start_family_review.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py -q`: ok, `35` passed.
+
+## 2026-05-18 - FLT3 Review Cleanup After MP1 Filter
+
+- Ran a 250-file 3730/DATA4 smoke after MP1 exclusion and review-family cleanup:
+  - Initial state: `PASS=246`, `REVIEW=4`, `FAIL=0`.
+  - Two good compact late-first-anchor rows were visually acceptable and had strong linear fits; one NTC late-first-anchor row had a suspicious tiny/late `35 bp` start and stayed review.
+  - One `_r___G01_C990RI16.fsa` `35_earlier` proposal was proposal noise; current was better.
+- Implemented:
+  - Narrow `GS500ROX first anchor too late` auto-pass guardrail for good compact 16-anchor ladders only.
+  - Extra suppression for bad `35_earlier` proposals when current is already in the reviewed current-correct hard-start band and proposal fit is worse.
+- Verification:
+  - `python3 -m pytest tests/test_flt3_gs500rox_start_family_review.py tests/test_flt3_rox500_runner_filters.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py -q`: ok, `37` passed.
+  - Final 250-file smoke: `PASS=249`, `REVIEW=1`, `FAIL=0`, all `DATA4`.
+  - Final workbook: `local_triage/overnight_t7_2026-05-18/flt3_guardrail_smoke_250_after_review_cleanup_v3/FLT3_ROX500_QC_All_Injections.xlsx`.
+  - Final review panel: `local_triage/overnight_t7_2026-05-18/flt3_review_current_trace_after_review_cleanup_v3_html/review_panel.html`.
+- User annotated the remaining review row `NTC_ITD_1-10__100125_H01_C990RHLW.fsa` as `minor`: `35 bp` is along baseline and should move later/right/up to the true peak. Keep this row and this pattern in manual review rather than relaxing the late-first-anchor auto-pass guardrail.
+
+## 2026-05-18 - FLT3 Right-Shift Start Proposal Learning
+
+- User annotated the next 5 proposal-backed review rows:
+  - All were `proposal_close`.
+  - `25OUM03774_p1_ITD_ufort__070325_C01_C9U07BJX.fsa`: current `50 bp` should be true `35 bp`, but proposed `50 bp` was still too early; move `50` farther right.
+  - Four start-block rows: proposed `35 bp` was still slightly too early; one H9C0VADZ row needed both `35` and `50` slightly farther right.
+- User also confirmed the 8 FAIL rows in the H9C0VADZ ratio set are true missing-ladder/human-error failures.
+- Implemented a review-only learning probe:
+  - Expanded `late_50_after_current_50` search window to allow later true-50 peaks.
+  - Added `right_shifted_start_review` proposals for the "proposal close but too far left" class.
+  - Updated the overlay renderer to include `late_50_after_current_50` and `right_shifted_start_review`.
+  - Kept both proposal modes review-only; they do not auto-apply.
+- Verification:
+  - `python3 -m pytest tests/test_flt3_gs500rox_start_family_review.py tests/test_flt3_rox500_runner_filters.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py -q`: ok, `39` passed.
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py scripts/render_flt3_gs500rox_prior_overlay_html.py`: ok.
+- Rendered focused probe panel:
+  - `local_triage/overnight_t7_2026-05-18/flt3_right_shift_learning_probe_v1_overlay_html/review_panel.html`.
+- User annotated the probe panel:
+  - All 5 rows were marked `proposal_correct`.
+  - The H9C0VADZ row still noted that `50 bp` was correct but `35 bp` should move slightly farther right than the v1 proposal.
+- Refined `right_shifted_start_review` for the both-anchors-moving case:
+  - Select the new `50 bp` first.
+  - Then choose `35 bp` from the expected window relative to that new `50 bp`.
+  - For `25OUM04778_p1_ITD_ufort__250324_A01_H9C0VADZ.fsa`, the focused probe now proposes `35/50 = 1602/1679`.
+- Rendered v2 probe panel:
+  - `local_triage/overnight_t7_2026-05-18/flt3_right_shift_learning_probe_v2_overlay_html/review_panel.html`.
+
+## 2026-05-18 - FLT3 Learned Right-Shift Auto-Apply
+
+- User annotated `flt3_right_shift_learning_probe_v2_overlay_html`:
+  - All 5 rows were `proposal_correct`.
+  - Confirmed `late_50_after_current_50` for the current-50-as-35 case (`1658/1734` start).
+  - Confirmed `right_shifted_start_review` for the broad start-review family, including the H9C0VADZ both-anchor move (`1602/1679`).
+- Implemented learned auto-apply for these two modes in `core/analyses/flt3/pipeline.py`:
+  - Applies only under strict linear/quadratic/cubic residual thresholds plus confirmed current-gap family checks or an existing review signal.
+  - Clears the start-family review reasons when the learned prior is applied successfully.
+  - Keeps baseline/tiny-start cases out of the learned band, so `NTC_ITD_1-10__100125_H01_C990RHLW.fsa` remains `REVIEW`.
+- Export updates:
+  - Added `GS500ROXStartPriorLearnedApplyBand` to FLT3 ROX500 runner CSV/XLSX output.
+- Verification:
+  - Focused checks: all 5 user-confirmed rows now return `PASS` with the learned prior applied; the NTC baseline-35 row remains `REVIEW`.
+  - `python3 -m pytest tests/test_flt3_gs500rox_start_family_review.py tests/test_flt3_rox500_runner_filters.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py -q`: ok, `40` passed.
+  - `python3 -m py_compile core/analyses/flt3/pipeline.py scripts/run_flt3_liz500_qc_all_injections.py scripts/run_flt3_rox500_qc_all_injections.py scripts/render_flt3_gs500rox_prior_overlay_html.py`: ok.
+  - 1000-file 3730/DATA4 smoke after learning: `PASS=991`, `REVIEW=1`, `FAIL=8`.
+  - The single review is `NTC_ITD_1-10__100125_H01_C990RHLW.fsa`; the 8 fails are the user-confirmed H9C0VADZ ratio/missing-ladder files.
+  - Workbook: `local_triage/overnight_t7_2026-05-18/flt3_guardrail_smoke_1000_after_right_shift_learning_v4/FLT3_ROX500_QC_All_Injections.xlsx`.
+- Broader 2500-file 3730/DATA4 smoke:
+  - Result: `PASS=2485`, `REVIEW=5`, `FAIL=10`.
+  - New reviews beyond the known NTC baseline case include `IVS-0000_D835_KUTT__300525_E05_H9C0ZJ3G.fsa`, `25OUM08837_p1_RATIO__300525_C04_H9C0ZJ3G.fsa`, `25OUM08172_p2_ITD_ufort__220525_E02_H9C0ZJ3R.fsa`, and `NTC_RATIO__110625_H02_H9U0BDEO.fsa`.
+  - New fails beyond the known H9C0VADZ ratio/missing-ladder group are `IVS-0000_ITD__0300725_C01_H9C0ZJ88.fsa` and `25OUM11534_p2_TKD-kutting__240725_B05_H9C0VC6E.fsa`; inspect before classifying as durable exclusions.
+  - Review trace panel: `local_triage/overnight_t7_2026-05-18/flt3_2500_review_trace_all_html/review_panel.html`.
+  - Review overlay panel for rows with start-prior proposals: `local_triage/overnight_t7_2026-05-18/flt3_2500_review_overlay_html/review_panel.html`.
+  - Fail trace panel: `local_triage/overnight_t7_2026-05-18/flt3_2500_fail_trace_html/review_panel.html`.
+
+## 2026-05-18 - FLT3 2500 Review/Fail Cleanup
+
+- User reviewed the 2500-file smoke panels:
+  - The 5 review rows split into true minor/hard review (`NTC_ITD_1-10__100125_H01_C990RHLW.fsa`, `25OUM08172_p2_ITD_ufort__220525_E02_H9C0ZJ3R.fsa`, `25OUM08837_p1_RATIO__300525_C04_H9C0ZJ3G.fsa`) and current-correct/good rows (`IVS-0000_D835_KUTT__300525_E05_H9C0ZJ3G.fsa`, `NTC_RATIO__110625_H02_H9U0BDEO.fsa`).
+  - The 10 fail rows were confirmed as human/operator/data-quality cases: missing ladder or too-short ladder. Added exact known filenames to the runner exclusion list.
+- Implemented:
+  - Suppression for bad `35_earlier` proposal noise when current is already good and the proposal fit is clearly worse.
+  - Broadened the current-correct start-block suppression to include the `68`-scan 35/50 gap case.
+  - Removed `start_block_35_50_75_100_139` as a review-creating suggestion; it remains visible proposal evidence but should not create review noise by itself.
+- Verification:
+  - `python3 -m pytest tests/test_flt3_gs500rox_start_family_review.py tests/test_flt3_rox500_runner_filters.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py -q`: ok, `42` passed.
+  - Focused 5-row reanalysis: `PASS=2`, `REVIEW=3`, `FAIL=0`, matching user annotation.
+  - Focused 78-row review cleanup batch: `PASS=70`, `REVIEW=8`, `FAIL=0`.
+  - Full 2500-file 3730/DATA4 smoke after cleanup: `PASS=2492`, `REVIEW=8`, `FAIL=0`.
+- Latest outputs:
+  - Workbook: `local_triage/overnight_t7_2026-05-18/flt3_guardrail_smoke_2500_after_startblock_cleanup_v3/FLT3_ROX500_QC_All_Injections.xlsx`.
+  - Review trace panel: `local_triage/overnight_t7_2026-05-18/flt3_2500_review8_after_startblock_cleanup_trace_html/review_panel.html`.
+  - Review overlay panel: `local_triage/overnight_t7_2026-05-18/flt3_2500_review8_after_startblock_cleanup_overlay_html/review_panel.html`.
+
+## 2026-05-18 - Overnight T7 FLT3 and Clonality Full Run Started
+
+- User requested a new T7 overnight run for both clonality and FLT3, with clonality prioritized and Excel tracking output for patient/DIT runs plus QC/PK peaks.
+- Started output root: `local_triage/overnight_t7_2026-05-18_full_night/`.
+- Clonality:
+  - Started resumable backfill first, before FLT3.
+  - Year roots are processed sequentially into one workbook to avoid concurrent Excel-write conflicts:
+    - `/Volumes/T7 Shield/DATA/2026`
+    - `/Volumes/T7 Shield/DATA/2025_data`
+    - `/Volumes/T7 Shield/DATA/2024_DATA`
+  - Tracking workbook: `local_triage/overnight_t7_2026-05-18_full_night/clonality/Clonality_Tracking_All_T7.xlsx`.
+  - State files: `local_triage/overnight_t7_2026-05-18_full_night/states/clonality_<year>_state.json`.
+  - Logs: `local_triage/overnight_t7_2026-05-18_full_night/logs/clonality_<year>.log`.
+  - Run options: `max_workers=4`, `folder_workers=1`, `skip_html_reports`, deferred workbook refresh with spill files.
+- FLT3:
+  - Started ROX500 all-injections QC with lower priority (`workers=3`).
+  - Input: `/Volumes/T7 Shield/DATA/flt3`.
+  - Filters: years `2024/2025/2026`, require `3730`, exclude `LIZ,Leukostrat`.
+  - Output dir: `local_triage/overnight_t7_2026-05-18_full_night/flt3_rox500/all_3730_rox500/`.
+  - Log: `local_triage/overnight_t7_2026-05-18_full_night/logs/flt3_rox500.log`.
+- Both commands are wrapped with `caffeinate -dimsu` to prevent sleep during the night. Clonality uses resumable state/spill files; FLT3 writes one final QC workbook/CSV set at completion.
+- Runtime intervention:
+  - Clonality hit a true long-running fallback on `26OUM01277_KDE_06022026_A08_H9C0VCG7.fsa` after >20 minutes.
+  - Added this exact file to `KNOWN_CLONALITY_BACKFILL_SKIP_FILES` in `core/batch.py`.
+  - Terminated and resumed the clonality backfill from the same state/workbook so completed folders are preserved and the night run can continue.
+  - Clonality later hit the same unbounded fallback pattern on `25OUM02663_TRG_mixB__190225_E03_C9U078YZ.fsa`.
+  - Added this exact file to the same skip list, terminated the stale 2025 worker, and resumed again from the shared state/workbook.
+  - During 2024, the run stalled in `2024_02_20_tcrg_igkkde_pr_C9R0HJZA_2024-02-21_1171` with multiple parallel jobs stuck since 04:18.
+  - Added the exact stuck files `24OUM02878_tcrgA__200224_H02_C9R0HJZA.fsa`, `24OUM02880_IGK__200224_B07_C9R0HJZA.fsa`, and `24OUM02881_tcrgB__200224_A06_C9R0HJZA.fsa` to the same guardrail list, then resumed from state/workbook.
+  - A later 2024 folder (`2024_03_08_TCRg_IGKKDE_ef_C9R0HJPD_2024-03-08_1196`) also froze with stale job progress.
+  - Added exact stale files from that folder to the guardrail list: `24OUM03702_TCRg_mixB_070324_E04_C9R0HJPD.fsa`, `24OUM03767_KDE_070324_E12_C9R0HJPD.fsa`, `24OUM03995_TCRg_mixA_070324_A05_C9R0HJPD.fsa`, and `24OUM03999_TCRg_mixA_070324_B05_C9R0HJPD.fsa`.
+
+## 2026-05-19 - Clonality Review Panel Button Fix
+
+- Built clonality ladder annotation panel for `47` `review_required` rows plus `1` `missing_ladder` row from `local_triage/overnight_t7_2026-05-18_full_night/clonality/Clonality_Tracking_All_T7.xlsx`.
+- Output: `local_triage/overnight_t7_2026-05-18_full_night/clonality_review_required_plus_missing_html/review_panel.html`.
+- Fixed `scripts/render_clonality_review_html.py` so JSON embedded in `<script type="application/json">` is not HTML-escaped as `&quot;`; the escaped JSON caused `JSON.parse` to fail and prevented annotation buttons from registering click handlers.
+- Regenerated the existing panel HTML from `review_rows.tsv` without re-rendering all trace images.
+- Saved user annotations for the `48`-row clonality review panel:
+  - `local_triage/overnight_t7_2026-05-18_full_night/clonality_review_required_plus_missing_html_v2/clonality_ladder_review_required_or_missing_annotations_2026-05-19.json`
+  - `local_triage/overnight_t7_2026-05-18_full_night/clonality_review_required_plus_missing_html_v2/clonality_review_annotations_2026-05-19.tsv`
+  - `local_triage/overnight_t7_2026-05-18_full_night/clonality_review_required_plus_missing_html_v2/clonality_review_annotation_summary_2026-05-19.json`
+- Annotation distribution: `20` good, `24` operator/data, `3` minor, `1` unclear; `22` LIZ500_250 and `26` ROX400HD. The 2025-03-18/19 rows were mixed (`12` operator/data, `9` good), consistent with low signal/user-input quality rather than a general ladder-selection regression.
+
+## 2026-05-19 - Compact Logging Policy
+
+- User requested reduced logging/token load. Updated `AGENTS.md` and `ObsidianVault/01_Project_Memory.md` to keep future logs to durable decisions, output paths, and unresolved next steps only.
+
+## 2026-05-19 - Fedora Transfer Bundle
+
+- Built HemaFrag Linux offline bundle in Docker with Rust built inside the Linux container; added Docker context hygiene and Linux Rust toolchain setup so macOS binaries are not reused.
+- Transfer folder on T7: `/Volumes/T7 Shield/HemaFrag_Fedora_Transfer_2026-05-19/`.
+- Outputs: `HemaFrag_Linux_offline.zip`, `HemaFrag_Source_2026-05-19.zip`, and `README_Fedora.txt`.
+
+## 2026-05-19 - FLT3 Full Night Review Panels
+
+- Built separate full-night FLT3 annotation panels: `local_triage/overnight_t7_2026-05-18_full_night/flt3_review_only_html/review_panel.html` and `local_triage/overnight_t7_2026-05-18_full_night/flt3_fail_only_html/review_panel.html`.
+- Counts from full-night FLT3 QC: `PASS=7114`, `REVIEW=291`, `FAIL=137`; both panels rendered all images and passed embedded JSON/export button smoke checks.
+- User annotated all `291` review rows. Durable takeaway: most remaining review is real `wrong_35_50` or minor baseline-35 placement, while some rows are visually `good`/operator and need narrower proposal-noise suppression rather than broad auto-apply.
+
+## 2026-05-19 - FLT3 Supported Start-Pair Probe
+
+- Built a 100-row `supported_start_pair_probe_v1` overlay panel to test a peak-support scorer for the remaining 35/50 issue.
+- Probe compares current anchors against a proposed supported 35/50 pair chosen by real peak height/prominence plus local fit, not residual alone.
+- Output: `local_triage/overnight_t7_2026-05-18_full_night/flt3_supported_start_pair_probe_v1_html/review_panel.html`.
+- Next step: user annotation should decide whether this becomes a guarded pipeline proposal mode.
+- Full 291-row feature pass found a stricter v2 rule (`d50 >= 15`, proposal linear max `<=4.8 bp`, mean `<=2.2 bp`) that matched `204/223` user-labeled `wrong_35_50` rows and `0` good/minor/operator rows in this annotation set.
+- v2 output: `local_triage/overnight_t7_2026-05-18_full_night/flt3_supported_start_pair_probe_v2_html/review_panel.html`; keep it proposal-only until visual confirmation.
+- User feedback on v2: `50 bp` improved substantially, but `35 bp` was still often wrong.
+- Built v3 35-specific probe: lock the v2 fixed `50 bp`, then choose a real supported `35 bp` peak near the fixed 50 (`~70-80` scans before it), avoiding the earlier overly-wide 35/50 gap. Output: `local_triage/overnight_t7_2026-05-18_full_night/flt3_supported_start_pair_probe_v3_35_near50_html/review_panel.html`.
+
+## 2026-05-20 - FLT3 Supported 35 Near Fixed 50 Promoted
+
+- Promoted visually confirmed `supported_35_near_fixed50_probe_v3` into the GS500ROX start-prior pipeline as a guarded auto-apply mode that can clear start-family review when peak support, current-gap family, proposed `35->50` gap, and fit bands match.
+- Verification: `python3 -m pytest tests/test_flt3_gs500rox_start_family_review.py tests/test_gs500rox_guardrail.py tests/test_flt3_size_standard_contract.py tests/test_ladder_review_gate.py tests/test_flt3_rox500_runner_filters.py -q` passed (`43` tests); py_compile passed for FLT3 pipeline and runner scripts.
+- 2000-file 3730/DATA4 smoke output: `local_triage/flt3_rox500_supported35_near50_2000_2025_2026_2026-05-20_070059`; result `PASS=1997`, `REVIEW=3`, `FAIL=0`; review panel at `review_html/review_panel.html`.
+
+## 2026-05-20 - FLT3 Final GS500ROX Start Cleanup
+
+- Promoted two narrow fixes for the last annotated review rows: `late_first_35_right_shift` for baseline/shoulder `35 bp` rows, and `right_shifted_35_50_75_review` for the narrow curved case where `35/50/75` all shift right.
+- Verification: focused FLT3 pytest set passed (`45` tests) and py_compile passed for FLT3 pipeline/runner scripts.
+- 2000-file 3730/DATA4 smoke output: `local_triage/flt3_rox500_final_startfix_2000_2025_2026_2026-05-20_080133`; result `PASS=2000`, `REVIEW=0`, `FAIL=0`.
+
+## 2026-05-25 - Overnight T7 FLT3 Then Clonality Started
+
+- Started detached `caffeinate` supervisor: `local_triage/overnight_t7_2026-05-25_full_night/scripts/run_flt3_then_clonality.sh`; PID recorded in `local_triage/overnight_t7_2026-05-25_full_night/overnight.pid`.
+- Order: full FLT3 ROX500 3730 first (`2024/2025/2026`, exclude `LIZ,Leukostrat`, workers `6`), then clonality backfill for `2026`, `2025_data`, `2024_DATA` into `Clonality_Tracking_All_T7.xlsx` with per-year state files and retry wrapper.
+- Logs/output root: `local_triage/overnight_t7_2026-05-25_full_night/`; half-hour heartbeat monitor created for this thread.
+- Runtime intervention: 2025_data stalled in `2025_10_08_TCRb_IgK_Kde_tmt_H9C0VCFS_2025-10-08_0219`; added exact skip files `25OUM15319_TCRgB_08102025_A07_H9C0VCFS.fsa` and `25OUM15320_TCRgA_08102025_B05_H9C0VCFS.fsa`, then supervisor resumed attempt 3 from state.
+- User requested stop on 2026-05-26; terminated the screen/caffeinate supervisor and active 2024_DATA clonality worker, deleted the heartbeat monitor, and preserved state at `local_triage/overnight_t7_2026-05-25_full_night/states/clonality_2024_DATA_state.json` (`85` done, `1` failed, `1` running, `142` pending at stop).
+
+## 2026-05-26 - FLT3 40-Row Review Cleanup
+
+- Learned from the re-annotated 40-row FLT3 panel that `reverse_pair_*` proposals were still review noise when non-applied; they now stay metadata/proposal evidence and no longer force REVIEW.
+- Focused 40-row control after exclusions/good overrides and reverse-pair suppression: `SKIPPED=2`, `PASS=18`, `REVIEW=19`, `FAIL=1`.
+- New residual panel for the true remaining 20 rows: `local_triage/flt3_after_reversepair_suppression_2026-05-26/review_html/review_panel.html`.
+- Follow-up 20-row annotation added one exact minor-review override for `26OUM06102_D835__200426_A05_H9H1DIAK.fsa` and one exact good override for `26OUM05975_NPM1_B04_H9H1DIB3.fsa`; focused control is now `PASS=19`, `REVIEW=19`, `FAIL=0`, with panel at `local_triage/flt3_after_user20_review_overrides_2026-05-26/review_html/review_panel.html`.
+- The 19-row follow-up labels are current-ladder labels, not proposal validation. Built a 17-row current-vs-proposal overlay for rows with start-prior proposals at `local_triage/flt3_after_user20_review_overrides_2026-05-26/proposal_overlay_html/review_panel.html`; two rows have no usable start-prior proposal yet.
+- Proposal-overlay annotation promoted only confirmed `proposal_correct` start fixes: focused 19-row control is now `PASS=3`, `REVIEW=16`, `FAIL=0`. New residual panel: `local_triage/flt3_after_overlay_learning_2026-05-26/review_html/review_panel.html`.

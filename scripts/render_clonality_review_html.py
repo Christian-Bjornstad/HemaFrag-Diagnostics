@@ -177,7 +177,14 @@ def html_doc(rows: pd.DataFrame, out_dir: Path, review_class: str, title: str) -
     for row in rows.itertuples(index=False):
         row_dict = row._asdict()
         image = str(row_dict.get("image") or "")
-        rel_image = Path(image).relative_to(out_dir).as_posix() if image and Path(image).is_absolute() else image
+        if image and Path(image).is_absolute():
+            image_path = Path(image)
+            try:
+                rel_image = image_path.relative_to(out_dir).as_posix()
+            except ValueError:
+                rel_image = image_path.as_uri()
+        else:
+            rel_image = image
         ident = safe_name(f"{row_dict.get('ordinal')}_{row_dict.get('file')}")
         metrics = (
             f"{row_dict.get('ladder')} | linear "
@@ -242,6 +249,7 @@ def html_doc(rows: pd.DataFrame, out_dir: Path, review_class: str, title: str) -
             for row in rows.itertuples(index=False)
         ],
     }
+    case_data_json = json.dumps(payload).replace("</", "<\\/")
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -267,6 +275,9 @@ textarea {{ width: 100%; min-height: 68px; margin-top: 10px; box-sizing: border-
 button {{ border: 1px solid #9ca3af; background: #fff; border-radius: 6px; padding: 6px 9px; cursor: pointer; margin-left: 5px; }}
 button.active {{ background: #111827; color: white; border-color: #111827; }}
 #export {{ background: #0f766e; color: white; border-color: #0f766e; }}
+#script-status {{ font-size: 12px; color: #166534; margin-left: 10px; }}
+#export-box {{ display: none; margin: 16px; padding: 12px; background: #ecfeff; border: 1px solid #67e8f9; border-radius: 8px; }}
+#export-box textarea {{ min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }}
 </style>
 </head>
 <body>
@@ -275,16 +286,38 @@ button.active {{ background: #111827; color: white; border-color: #111827; }}
     <h1>{html.escape(title)}</h1>
     <div class="sub">{len(rows)} cases. Annotations are stored in this browser and can be exported as JSON.</div>
   </div>
-  <button id="export" type="button">Export annotations</button>
+  <div>
+    <button id="export" type="button">Export annotations</button>
+    <span id="script-status">Loading controls...</span>
+  </div>
 </header>
+<section id="export-box">
+  <strong>Export JSON</strong>
+  <div class="sub">Download may be blocked for file pages. If so, the full annotation JSON is here.</div>
+  <textarea id="export-text" spellcheck="false"></textarea>
+</section>
 <main>
 {''.join(cards)}
 </main>
-<script id="case-data" type="application/json">{html.escape(json.dumps(payload))}</script>
+<script id="case-data" type="application/json">{case_data_json}</script>
 <script>
 const storageKey = "hemafrag_annotations:" + location.pathname;
-const state = JSON.parse(localStorage.getItem(storageKey) || "{{}}");
-function save() {{ localStorage.setItem(storageKey, JSON.stringify(state)); }}
+function loadState() {{
+  try {{
+    return JSON.parse(window.localStorage.getItem(storageKey) || "{{}}");
+  }} catch (error) {{
+    console.warn("Annotation storage unavailable; keeping annotations in memory only.", error);
+    return {{}};
+  }}
+}}
+const state = loadState();
+function save() {{
+  try {{
+    window.localStorage.setItem(storageKey, JSON.stringify(state));
+  }} catch (error) {{
+    console.warn("Annotation storage save failed; current page state is still active.", error);
+  }}
+}}
 for (const card of document.querySelectorAll(".case")) {{
   const key = card.dataset.key;
   state[key] = state[key] || {{}};
@@ -293,25 +326,46 @@ for (const card of document.querySelectorAll(".case")) {{
   textarea.addEventListener("input", () => {{ state[key].note = textarea.value; save(); }});
   for (const button of card.querySelectorAll(".buttons button")) {{
     if (state[key].label === button.dataset.value) button.classList.add("active");
-    button.addEventListener("click", () => {{
-      state[key].label = button.dataset.value;
-      for (const peer of card.querySelectorAll(".buttons button")) peer.classList.remove("active");
-      button.classList.add("active");
-      save();
-    }});
   }}
 }}
+document.addEventListener("click", event => {{
+  const button = event.target.closest(".buttons button");
+  if (!button) return;
+  const card = button.closest(".case");
+  if (!card) return;
+  const key = card.dataset.key;
+  state[key] = state[key] || {{}};
+  state[key].label = button.dataset.value;
+  for (const peer of card.querySelectorAll(".buttons button")) peer.classList.remove("active");
+  button.classList.add("active");
+  save();
+}});
 document.getElementById("export").addEventListener("click", () => {{
   const payload = JSON.parse(document.getElementById("case-data").textContent);
   const rows = payload.rows.map(row => ({{...row, ...(state[row.raw_path] || {{}})}}));
-  const blob = new Blob([JSON.stringify({{review_class: payload.review_class, rows}}, null, 2)], {{type: "application/json"}});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = payload.review_class + "_annotations.json";
-  a.click();
-  URL.revokeObjectURL(url);
+  const exportPayload = {{review_class: payload.review_class, exported_at: new Date().toISOString(), rows}};
+  const exportText = JSON.stringify(exportPayload, null, 2);
+  const exportBox = document.getElementById("export-box");
+  const exportTextarea = document.getElementById("export-text");
+  exportBox.style.display = "block";
+  exportTextarea.value = exportText;
+  exportTextarea.focus();
+  exportTextarea.select();
+  try {{
+    const blob = new Blob([exportText], {{type: "application/json"}});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = payload.review_class + "_annotations.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }} catch (error) {{
+    console.warn("Download export failed; JSON is available in the export text box.", error);
+  }}
 }});
+document.getElementById("script-status").textContent = "Controls ready";
 </script>
 </body>
 </html>
