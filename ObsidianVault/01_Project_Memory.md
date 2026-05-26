@@ -131,3 +131,6 @@ HemaFrag is now focused on FLT3 work. Clonality is considered parked for a while
 
 - Keep generated outputs, `artifacts/`, `local_triage/`, caches, raw `.fsa`, build outputs, and scratch review bundles out of clean source commits.
 - Keep HemaFrag as the canonical project name.
+- Normal clonality batch output should produce max two Excel workbooks: one local run workbook in `reports_<date>/Clonality_Tracking.xlsx` and one global dashboard workbook at `/Volumes/T7 Shield/HemaFrag_Clonality_All_Runs.xlsx`. Patient, control/QC, and PK peak tracking belong in `Clonality_Tracking.xlsx`; do not recreate separate `HemaFrag_QC_Trends.xlsx` for aggregated clonality batch runs.
+- Normal FLT3 output should produce max two Excel workbooks: one local run workbook (`FLT3_Tracking.xlsx` for normal pipeline or `FLT3_ROX500_QC_All_Injections.xlsx` for ROX500 QC validation) and one global workbook at `/Volumes/T7 Shield/HemaFrag_FLT3_All_Runs.xlsx`. Do not recreate separate `FLT3_QC_TRENDS.xlsx`/`FLT3_NPM1_QC_TRACKER.xlsx` pairs for normal FLT3 tracking.
+- Clonality/FLT3 batch input defaults to `Latest run date`: when a broad parent folder is selected, HemaFrag parses direct run-folder dates (`YYYY_MM_DD` preferred, `YYYY-MM-DD` fallback), scans only folders from the newest date, and builds QC jobs from that same selected run set.

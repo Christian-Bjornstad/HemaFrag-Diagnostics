@@ -94,6 +94,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
+                "global_tracking_excel_path": "/Volumes/T7 Shield/HemaFrag_Clonality_All_Runs.xlsx",
+                "run_date_filter": "latest",
                 "aggregate_by_patient": True,
                 "patient_id_regex": r"\d{2}OUM\d{5}",
                 "aggregate_dit_reports": True,
@@ -129,6 +131,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
+                "global_tracking_excel_path": "/Volumes/T7 Shield/HemaFrag_FLT3_All_Runs.xlsx",
+                "run_date_filter": "latest",
                 "aggregate_by_patient": True,
                 "patient_id_regex": r"\d{2}OUM\d{5}",
                 "aggregate_dit_reports": True,
@@ -157,6 +161,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
+                "run_date_filter": "all",
                 "aggregate_by_patient": False,
                 "patient_id_regex": r"\d{2}OUM\d{5}",
                 "aggregate_dit_reports": False,
@@ -454,6 +459,10 @@ def _validate_settings(settings: Dict[str, Any]) -> None:
             profile_batch["output_base"] = defaults["batch"]["output_base"]
         if not isinstance(profile_batch.get("tracking_excel_path"), str):
             profile_batch["tracking_excel_path"] = defaults["batch"].get("tracking_excel_path", "")
+        if not isinstance(profile_batch.get("global_tracking_excel_path"), str):
+            profile_batch["global_tracking_excel_path"] = defaults["batch"].get("global_tracking_excel_path", "")
+        if profile_batch.get("run_date_filter") not in {"all", "latest"}:
+            profile_batch["run_date_filter"] = defaults["batch"].get("run_date_filter", "all")
         if not isinstance(profile_batch.get("patient_id_regex"), str):
             profile_batch["patient_id_regex"] = defaults["batch"]["patient_id_regex"]
         if not isinstance(profile_batch.get("aggregate_by_patient"), bool):

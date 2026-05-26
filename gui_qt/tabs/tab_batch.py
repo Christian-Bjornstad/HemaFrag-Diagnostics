@@ -289,10 +289,23 @@ class TabBatch(QWidget):
         row2.addWidget(self.output_label)
         row2.addWidget(self.output_base, stretch=1)
         row2.addWidget(btn_browse_out)
+
+        row3 = QHBoxLayout()
+        row3.setSpacing(10)
+        self.input_scope_label = QLabel("Input scope:")
+        self.input_scope_combo = QComboBox()
+        self.input_scope_combo.addItem("Latest run date", "latest")
+        self.input_scope_combo.addItem("All folders", "all")
+        self.input_scope_combo.setMinimumContentsLength(16)
+        self.input_scope_combo.currentIndexChanged.connect(self._on_input_scope_changed)
+        row3.addWidget(self.input_scope_label)
+        row3.addWidget(self.input_scope_combo)
+        row3.addStretch()
         
         f_layout.addWidget(l_ftitle)
         f_layout.addLayout(row1)
         f_layout.addLayout(row2)
+        f_layout.addLayout(row3)
         
         self.btn_scan = QPushButton("Find Jobs")
         self.btn_run = QPushButton("Run Batch")
@@ -862,6 +875,8 @@ class TabBatch(QWidget):
         self.subtitle_lbl.setVisible(False)
         is_general = self._is_general_analysis()
         self.general_card.setVisible(is_general)
+        self.input_scope_label.setVisible(not is_general)
+        self.input_scope_combo.setVisible(not is_general)
         self.btn_add_files.setVisible(is_general)
         self.input_label.setText("Files / Folders:" if is_general else "Samples:")
         self._set_workflow_status(
@@ -886,6 +901,14 @@ class TabBatch(QWidget):
             self.folder_list.clear()
         if default_dir and self.folder_list.count() == 0:
             self.folder_list.addItem(default_dir)
+
+        run_date_filter = str(batch_settings.get("run_date_filter", "all") or "all")
+        idx = self.input_scope_combo.findData(run_date_filter)
+        if idx < 0:
+            idx = self.input_scope_combo.findData("all")
+        scope_blocker = QSignalBlocker(self.input_scope_combo)
+        self.input_scope_combo.setCurrentIndex(max(idx, 0))
+        del scope_blocker
 
         if self._is_general_analysis():
             self._load_general_runtime_controls(pipeline_settings)
@@ -989,6 +1012,15 @@ class TabBatch(QWidget):
         preferred = self.general_primary_combo.currentData() or self.general_primary_combo.currentText()
         self._refresh_general_primary_combo(preferred=str(preferred) if preferred else None)
         self._persist_general_runtime_settings()
+
+    def _on_input_scope_changed(self, *_args) -> None:
+        if self._is_general_analysis():
+            return
+        profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(self._current_analysis_id, {})
+        batch_settings = profile.setdefault("batch", {})
+        batch_settings["run_date_filter"] = self.input_scope_combo.currentData() or "all"
+        save_settings(APP_SETTINGS)
+        self._reset_queue_state("Ready", "ready")
 
     def _add_folders(self):
         dialog = QFileDialog(self, "Add Folders", str(Path.home()))
@@ -1125,6 +1157,7 @@ class TabBatch(QWidget):
         batch_settings = self._profile_for().get("batch", {})
         agg_pat = bool(batch_settings.get("aggregate_by_patient", True))
         regex = batch_settings.get("patient_id_regex", r"\d{2}OUM\d{5}")
+        run_date_filter = str(batch_settings.get("run_date_filter", "all") or "all")
         self._scan_request_counter += 1
         scan_request_id = self._scan_request_counter
         self._active_scan_request_id = scan_request_id
@@ -1133,7 +1166,8 @@ class TabBatch(QWidget):
             generate_jobs,
             input_paths=paths,
             aggregate_patients=agg_pat,
-            patient_regex=regex
+            patient_regex=regex,
+            run_date_filter=run_date_filter,
         )
         worker.signals.result.connect(
             lambda jobs, request_id=scan_request_id: self._on_scan_result(jobs, request_id)
@@ -1161,7 +1195,21 @@ class TabBatch(QWidget):
                 "warning",
             )
         else:
-            self._set_workflow_status(f"Found {len(jobs)} jobs — ready to run.", "success")
+            scan_summary = jobs[0].get("_scan_summary") if isinstance(jobs[0], dict) else {}
+            if isinstance(scan_summary, dict) and scan_summary.get("filter_applied"):
+                selected_date = scan_summary.get("selected_run_date", "")
+                folder_count = int(scan_summary.get("selected_folder_count", 0) or 0)
+                self._set_workflow_status(
+                    f"Latest run date: {selected_date} ({folder_count} run folder{'s' if folder_count != 1 else ''}) — found {len(jobs)} jobs.",
+                    "success",
+                )
+            elif isinstance(scan_summary, dict) and scan_summary.get("warning"):
+                self._set_workflow_status(
+                    f"{scan_summary.get('warning')} Found {len(jobs)} jobs.",
+                    "warning",
+                )
+            else:
+                self._set_workflow_status(f"Found {len(jobs)} jobs — ready to run.", "success")
             self.btn_run.setEnabled(True)
             
         self._rebuild_table()
@@ -1413,6 +1461,7 @@ class TabBatch(QWidget):
             from core.html_reports import build_dit_html_reports
             from core.analyses.clonality.tracking_excel import (
                 CLONALITY_TRACKING_FILENAME,
+                update_global_clonality_tracking_workbook,
                 update_clonality_tracking_workbook,
             )
 
@@ -1427,6 +1476,10 @@ class TabBatch(QWidget):
                 ),
                 combined_entries,
             )
+            try:
+                update_global_clonality_tracking_workbook(combined_entries)
+            except Exception:
+                pass
             final_reports_built = True
 
         return {

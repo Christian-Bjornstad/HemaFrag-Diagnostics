@@ -332,9 +332,6 @@ def run_pipeline_job_collect(
     if not effective_files:
         return []
 
-    assay_outdir = base_outdir / out_folder_name
-    assay_outdir.mkdir(parents=True, exist_ok=True)
-
     # Original Python logic
     effective_mode = "all"
     if scope == "controls":
@@ -495,6 +492,7 @@ def run_qc_job(
     *,
     tracking_excel_path: Path | None = None,
     update_tracking_workbook: bool = True,
+    update_qc_trends: bool = True,
     return_entries: bool = False,
     skip_html_reports: bool = False,
     progress_callback=None,
@@ -550,8 +548,9 @@ def run_qc_job(
             raise RuntimeError("No QC entries found (check file names or skipped unreadable files).")
         if not skip_html_reports:
             build_qc_html(entries, out_html, rules, excel_path)
-        run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        update_excel_trends(excel_path, entries, rules, run_ts)
+        if update_qc_trends:
+            run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            update_excel_trends(excel_path, entries, rules, run_ts)
 
         if return_entries:
             return out_html, entries

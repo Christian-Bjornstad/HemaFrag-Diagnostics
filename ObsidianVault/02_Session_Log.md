@@ -949,3 +949,27 @@ Verification:
 - Follow-up 20-row annotation added one exact minor-review override for `26OUM06102_D835__200426_A05_H9H1DIAK.fsa` and one exact good override for `26OUM05975_NPM1_B04_H9H1DIB3.fsa`; focused control is now `PASS=19`, `REVIEW=19`, `FAIL=0`, with panel at `local_triage/flt3_after_user20_review_overrides_2026-05-26/review_html/review_panel.html`.
 - The 19-row follow-up labels are current-ladder labels, not proposal validation. Built a 17-row current-vs-proposal overlay for rows with start-prior proposals at `local_triage/flt3_after_user20_review_overrides_2026-05-26/proposal_overlay_html/review_panel.html`; two rows have no usable start-prior proposal yet.
 - Proposal-overlay annotation promoted only confirmed `proposal_correct` start fixes: focused 19-row control is now `PASS=3`, `REVIEW=16`, `FAIL=0`. New residual panel: `local_triage/flt3_after_overlay_learning_2026-05-26/review_html/review_panel.html`.
+
+## 2026-05-26 - Clonality Output Cleanup
+
+- Implemented normal clonality output contract: aggregated batch writes patient/control/PK tracking into local `reports_<date>/Clonality_Tracking.xlsx`, updates global `/Volumes/T7 Shield/HemaFrag_Clonality_All_Runs.xlsx`, and no longer creates `HemaFrag_QC_Trends.xlsx` or empty `ASSAY_REPORTS` in aggregate collect mode.
+- Cleaned `/Volumes/T7 Shield/22_05`: merged local run/global-ready workbook has `Runs=154`, `Patient_Runs=97`, `Control_Runs=57`, `PK_Peaks=82`; obsolete root Excel files were moved/backed up under `/Volumes/T7 Shield/HemaFrag_Output_Backups/22_05_cleanup_20260526_154841/`.
+- Verification: `python3 -m pytest tests -q` passed (`52` tests).
+
+## 2026-05-26 - FLT3 Output Cleanup
+
+- Implemented FLT3 max-two-workbook contract: normal pipeline writes local `FLT3_Tracking.xlsx` plus global `/Volumes/T7 Shield/HemaFrag_FLT3_All_Runs.xlsx`; ROX500 QC validation keeps one local `FLT3_ROX500_QC_All_Injections.xlsx` and appends all-injections QC sheets to the same global workbook.
+- Cleaned old T7 FLT3 test output: converted `/Volumes/T7 Shield/flt3_test/HemaFrag_FLT3_LIZ500_2026-05-06/FLT3_NPM1_QC_TRACKER.xlsx` to `FLT3_Tracking.xlsx`, moved the old tracker to `/Volumes/T7 Shield/HemaFrag_Output_Backups/flt3_cleanup_20260526_162114/`, and removed one empty `plotly_figures/figures` directory.
+- Verification: `python3 -m pytest tests -q` passed (`55` tests).
+
+## 2026-05-26 - Smart Latest Run-Date Input Filter
+
+- Added `Latest run date` input scope for clonality/FLT3 batch: broad parent-folder scans now select only direct run folders with the newest parsed `YYYY_MM_DD`/`YYYY-MM-DD` date before patient/QC grouping.
+- GUI Run/Batch tab exposes `Input scope` (`Latest run date` or `All folders`), defaults clonality/FLT3 to latest, and reports the selected date/folder count or warning fallback.
+- Verification: `python3 -m py_compile core/batch.py gui_qt/tabs/tab_batch.py config.py tests/test_batch_latest_run_filter.py` and `python3 -m pytest tests -q` passed (`58` tests).
+
+## 2026-05-26 - Release Builds After Output Cleanup
+
+- Built Linux offline bundle with Docker: `dist/HemaFrag_Linux` and `dist/releases/HemaFrag_Linux_offline.zip`.
+- Built native macOS app with existing macOS 3.10 venv: `dist/HemaFrag.app` and `dist/releases/HemaFrag_macOS.zip`.
+- Verification before build: `python3 -m pytest tests -q` passed (`58` tests).

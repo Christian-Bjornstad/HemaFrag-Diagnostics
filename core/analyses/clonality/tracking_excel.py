@@ -29,6 +29,7 @@ from core.utils import strip_stage_prefix
 import threading
 
 CLONALITY_TRACKING_FILENAME = "Clonality_Tracking.xlsx"
+GLOBAL_CLONALITY_TRACKING_PATH = Path("/Volumes/T7 Shield/HemaFrag_Clonality_All_Runs.xlsx")
 _clonality_excel_lock = threading.Lock()
 CONTROL_IDS = {"PK", "PK1", "PK2", "NK", "RK"}
 TRACKING_IDENTITY_SALT_ENV = "FRAGGLER_TRACKING_IDENTITY_SALT"
@@ -205,8 +206,12 @@ def update_clonality_tracking_workbook(
         if excel_path.exists():
             writer_kwargs.update({"mode": "a", "if_sheet_exists": "replace"})
 
+        patient_runs, control_runs = _split_run_frames(all_runs)
+
         with pd.ExcelWriter(excel_path, **writer_kwargs) as writer:
             all_runs.to_excel(writer, sheet_name="Runs", index=False)
+            patient_runs.to_excel(writer, sheet_name="Patient_Runs", index=False)
+            control_runs.to_excel(writer, sheet_name="Control_Runs", index=False)
             all_peaks.to_excel(writer, sheet_name="PK_Peaks", index=False)
         _apply_reference_tracking_headers(excel_path)
         if refresh_dashboard:
@@ -499,8 +504,12 @@ def sanitize_clonality_tracking_workbook(excel_path: Path, *, refresh_dashboard:
         peaks = _reindex_columns(peaks, PEAK_SHEET_COLUMNS)
 
         writer_kwargs = {"engine": "openpyxl", "mode": "a", "if_sheet_exists": "replace"}
+        patient_runs, control_runs = _split_run_frames(runs)
+
         with pd.ExcelWriter(excel_path, **writer_kwargs) as writer:
             runs.to_excel(writer, sheet_name="Runs", index=False)
+            patient_runs.to_excel(writer, sheet_name="Patient_Runs", index=False)
+            control_runs.to_excel(writer, sheet_name="Control_Runs", index=False)
             peaks.to_excel(writer, sheet_name="PK_Peaks", index=False)
         _apply_reference_tracking_headers(excel_path)
 
@@ -540,6 +549,38 @@ def _normalize_run_frame(df: pd.DataFrame) -> pd.DataFrame:
     normalized["IdentityKey"] = normalized_identity
     normalized["SourceRunDir"] = source_run_dir
     return _reindex_columns(normalized, RUN_SHEET_COLUMNS)
+
+
+def _split_run_frames(runs: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    runs = _normalize_run_frame(runs)
+    if runs.empty:
+        return (
+            pd.DataFrame(columns=RUN_SHEET_COLUMNS),
+            pd.DataFrame(columns=RUN_SHEET_COLUMNS),
+        )
+
+    sample_kind = runs.get("SampleKind", pd.Series("", index=runs.index)).fillna("").astype(str).str.lower()
+    control = runs.get("Control", pd.Series("", index=runs.index)).fillna("").astype(str)
+    is_control = sample_kind.eq("control") | control.isin(CONTROL_IDS)
+    patient_runs = _reindex_columns(runs.loc[~is_control].copy(), RUN_SHEET_COLUMNS)
+    control_runs = _reindex_columns(runs.loc[is_control].copy(), RUN_SHEET_COLUMNS)
+    return patient_runs, control_runs
+
+
+def resolve_global_clonality_tracking_path() -> Path:
+    batch_settings = APP_SETTINGS.get("analyses", {}).get("clonality", {}).get("batch", {})
+    configured = str(batch_settings.get("global_tracking_excel_path") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return GLOBAL_CLONALITY_TRACKING_PATH
+
+
+def update_global_clonality_tracking_workbook(entries: list[dict]) -> Path | None:
+    if not entries:
+        return None
+    path = resolve_global_clonality_tracking_path()
+    update_clonality_tracking_workbook(path, entries)
+    return path
 
 
 def _build_patient_identity_key(source_run_dir: str, file_name: str) -> str:
@@ -608,5 +649,14 @@ def _apply_reference_tracking_headers(excel_path: Path) -> None:
     if "Runs" in wb.sheetnames:
         ws = wb["Runs"]
         for col, header in enumerate(RUN_SHEET_COLUMNS, start=1):
+            ws.cell(1, col).value = header
+    for sheet_name in ("Patient_Runs", "Control_Runs"):
+        if sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            for col, header in enumerate(RUN_SHEET_COLUMNS, start=1):
+                ws.cell(1, col).value = header
+    if "PK_Peaks" in wb.sheetnames:
+        ws = wb["PK_Peaks"]
+        for col, header in enumerate(PEAK_SHEET_COLUMNS, start=1):
             ws.cell(1, col).value = header
     wb.save(excel_path)

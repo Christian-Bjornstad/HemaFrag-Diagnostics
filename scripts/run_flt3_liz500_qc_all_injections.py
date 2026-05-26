@@ -44,6 +44,7 @@ from core.analyses.flt3.pipeline import (
     _summarize_detected_peaks,
     flt3_size_standard_mode,
 )
+from core.analyses.flt3.qc_tracker import resolve_global_flt3_tracking_path
 from core.analyses.flt3.rox500_exclusions import (
     FLT3_ROX500_REVIEW_EXCLUSIONS,
     FLT3_ROX500_USER_GOOD_OVERRIDES,
@@ -674,6 +675,79 @@ def _write_html(out_path: Path, summary: dict[str, Any], qc_df: pd.DataFrame, su
     out_path.write_text(html, encoding="utf-8")
 
 
+def _read_workbook_sheet(path: Path, sheet_name: str, columns: list[str]) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=columns)
+    try:
+        with pd.ExcelFile(path, engine="openpyxl") as xls:
+            if sheet_name not in xls.sheet_names:
+                return pd.DataFrame(columns=columns)
+        df = pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
+    except Exception:
+        return pd.DataFrame(columns=columns)
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    return df.reindex(columns=columns)
+
+
+def _concat_dedupe(old_df: pd.DataFrame, new_df: pd.DataFrame, columns: list[str], subset: list[str]) -> pd.DataFrame:
+    frames = [df for df in (old_df, new_df) if df is not None and not df.empty]
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    combined = pd.concat([df.reindex(columns=columns) for df in frames], ignore_index=True)
+    usable_subset = [column for column in subset if column in combined.columns]
+    if usable_subset:
+        combined = combined.drop_duplicates(subset=usable_subset, keep="last")
+    return combined.reindex(columns=columns)
+
+
+def _update_global_rox500_workbook(
+    global_path: Path,
+    *,
+    qc_df: pd.DataFrame,
+    raw_meta_df: pd.DataFrame,
+    skipped: list[dict],
+) -> None:
+    global_path.parent.mkdir(parents=True, exist_ok=True)
+    old_qc = _read_workbook_sheet(global_path, "All_Analyzed_QC", QC_OUTPUT_COLUMNS)
+    old_raw = _read_workbook_sheet(global_path, "Raw_Metadata_All_FSA", RAW_METADATA_COLUMNS)
+
+    skipped_df = pd.DataFrame(skipped)
+    skipped_columns = list(skipped_df.columns)
+    old_skipped = _read_workbook_sheet(global_path, "Skipped", skipped_columns) if skipped_columns else pd.DataFrame()
+
+    all_qc = _concat_dedupe(old_qc, qc_df, QC_OUTPUT_COLUMNS, ["SourceRunDir", "File", "InjectionTimeSeconds"])
+    all_raw = _concat_dedupe(old_raw, raw_meta_df, RAW_METADATA_COLUMNS, ["RunName", "File", "InjectionTimeSeconds"])
+    all_review = (
+        all_qc[all_qc["QCStatus"].astype(str) != "PASS"].copy()
+        if "QCStatus" in all_qc.columns
+        else pd.DataFrame(columns=QC_OUTPUT_COLUMNS)
+    )
+    all_summary = (
+        all_qc.groupby(["InjectionTimeSeconds", "Assay", "ControlPrefix", "QCStatus", "LadderQC", "PeakQC"], dropna=False)
+        .size()
+        .reset_index(name="Count")
+        if not all_qc.empty
+        else pd.DataFrame(columns=SUMMARY_COLUMNS)
+    )
+    all_skipped = (
+        _concat_dedupe(old_skipped, skipped_df, skipped_columns, ["file", "reason"])
+        if skipped_columns
+        else pd.DataFrame()
+    )
+
+    writer_kwargs: dict[str, Any] = {"engine": "openpyxl"}
+    if global_path.exists():
+        writer_kwargs.update({"mode": "a", "if_sheet_exists": "replace"})
+    with pd.ExcelWriter(global_path, **writer_kwargs) as writer:
+        all_qc.to_excel(writer, sheet_name="All_Analyzed_QC", index=False)
+        all_review.to_excel(writer, sheet_name="Review_Rows", index=False)
+        all_summary.to_excel(writer, sheet_name="Summary_By_Injection", index=False)
+        all_raw.to_excel(writer, sheet_name="Raw_Metadata_All_FSA", index=False)
+        if not all_skipped.empty:
+            all_skipped.to_excel(writer, sheet_name="Skipped", index=False)
+
+
 def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool]) -> dict[str, Any]:
     idx, total, path_text, meta, quiet = payload
     path = Path(path_text)
@@ -958,6 +1032,13 @@ def _run_qc_impl(
         raw_meta_df.to_excel(writer, sheet_name="Raw_Metadata_All_FSA", index=False)
         if skipped:
             pd.DataFrame(skipped).to_excel(writer, sheet_name="Skipped", index=False)
+    global_workbook_path = resolve_global_flt3_tracking_path()
+    _update_global_rox500_workbook(
+        global_workbook_path,
+        qc_df=qc_df,
+        raw_meta_df=raw_meta_df,
+        skipped=skipped,
+    )
 
     summary = {
         "input_dir": str(fsa_dir),
@@ -1003,6 +1084,7 @@ def _run_qc_impl(
         "run_dir": str(outdir),
         "summary_json": str(json_path),
         "workbook_path": str(xlsx_path),
+        "global_workbook_path": str(global_workbook_path),
         "qc_csv": str(qc_csv),
         "review_csv": str(review_csv),
         "summary": summary,

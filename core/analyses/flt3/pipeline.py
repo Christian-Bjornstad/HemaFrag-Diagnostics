@@ -42,13 +42,14 @@ from core.analyses.flt3.config import (
     ROX_LADDER as FLT3_ROX_LADDER,
 )
 from core.analyses.flt3.qc_tracker import (
+    FLT3_TRACKING_FILENAME,
     RUN_SHEET_COLUMNS,
-    FLT3_NPM1_QC_TRACKER_FILENAME,
     PEAK_SHEET_COLUMNS,
     build_tracking_base_row,
     control_code_for_entry,
     is_tracking_control_entry,
     marker_specs_for_entry,
+    update_global_flt3_tracking_workbook,
     update_flt3_npm1_qc_tracker,
 )
 from core.analyses.shared_pipeline import finalize_pipeline_run, normalize_pipeline_paths, scan_fsa_files
@@ -58,7 +59,7 @@ from core.area import compute_peak_area_gaussian
 
 FLT3_LADDER_QC_THRESHOLD = 0.99
 RELEVANT_PEAK_LABELS = {"WT", "MUT", "ITD"}
-FLT3_QC_TRENDS_FILENAME = "FLT3_QC_TRENDS.xlsx"
+FLT3_QC_TRENDS_FILENAME = FLT3_TRACKING_FILENAME
 FLT3_MANUAL_RATIO_VERSION = 2
 MANUAL_RATIO_ASSAYS = {"FLT3-ITD", "FLT3-D835"}
 FLT3_REVIEW_MAX_RESIDUAL_BP = 4.0
@@ -6827,13 +6828,12 @@ def run_pipeline(
         assay_dir,
         FLT3_QC_TRENDS_FILENAME,
     )
-    resolved_tracker_excel_path = resolved_tracking_excel_path.parent / FLT3_NPM1_QC_TRACKER_FILENAME
     if update_tracking_workbook:
-        update_flt3_qc_trends(resolved_tracking_excel_path, entries)
         update_flt3_npm1_qc_tracker_workbook(
-            resolved_tracker_excel_path,
+            resolved_tracking_excel_path,
             entries,
         )
+        update_global_flt3_tracking_workbook(entries)
 
     return finalize_pipeline_run(
         entries,

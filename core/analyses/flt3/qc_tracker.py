@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from config import APP_SETTINGS
 from fraggler.fraggler import print_green
 from core.analyses.clonality.tracking_dashboard import refresh_clonality_tracking_dashboard
 from core.qc.qc_markers import (
@@ -16,7 +17,9 @@ from core.qc.qc_markers import (
 )
 
 
-FLT3_NPM1_QC_TRACKER_FILENAME = "FLT3_NPM1_QC_TRACKER.xlsx"
+FLT3_TRACKING_FILENAME = "FLT3_Tracking.xlsx"
+FLT3_NPM1_QC_TRACKER_FILENAME = FLT3_TRACKING_FILENAME
+GLOBAL_FLT3_TRACKING_PATH = Path("/Volumes/T7 Shield/HemaFrag_FLT3_All_Runs.xlsx")
 
 RUN_SHEET_COLUMNS = [
     "Month",
@@ -302,8 +305,15 @@ def update_flt3_npm1_qc_tracker(
         all_runs = _concat_frames(old_runs, runs_df).drop_duplicates(subset=["IdentityKey"], keep="last")
         all_peaks = _concat_frames(old_peaks, peaks_df).drop_duplicates(subset=["IdentityKey", "MarkerName"], keep="last")
 
-        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        patient_runs, control_runs = _split_run_frames(all_runs)
+
+        writer_kwargs: dict[str, object] = {"engine": "openpyxl"}
+        if excel_path.exists():
+            writer_kwargs.update({"mode": "a", "if_sheet_exists": "replace"})
+        with pd.ExcelWriter(excel_path, **writer_kwargs) as writer:
             all_runs.to_excel(writer, sheet_name="Runs", index=False)
+            patient_runs.to_excel(writer, sheet_name="Patient_Runs", index=False)
+            control_runs.to_excel(writer, sheet_name="Control_Runs", index=False)
             all_peaks.to_excel(writer, sheet_name="PK_Peaks", index=False)
 
         refresh_clonality_tracking_dashboard(
@@ -312,6 +322,52 @@ def update_flt3_npm1_qc_tracker(
         )
 
     print_green(f"FLT3/NPM1 QC tracker updated in {excel_path}")
+
+
+def update_flt3_npm1_qc_tracker_workbook(
+    excel_path: Path,
+    entries: list[dict],
+) -> None:
+    runs_df, peaks_df = build_flt3_npm1_tracker_frames(entries)
+    update_flt3_npm1_qc_tracker(excel_path, runs_df, peaks_df)
+
+
+def resolve_global_flt3_tracking_path() -> Path:
+    batch_settings = APP_SETTINGS.get("analyses", {}).get("flt3", {}).get("batch", {})
+    configured = str(batch_settings.get("global_tracking_excel_path") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return GLOBAL_FLT3_TRACKING_PATH
+
+
+def update_global_flt3_tracking_workbook(entries: list[dict]) -> Path | None:
+    if not entries:
+        return None
+    path = resolve_global_flt3_tracking_path()
+    update_flt3_npm1_qc_tracker_workbook(path, entries)
+    return path
+
+
+def build_flt3_npm1_tracker_frames(entries: list[dict]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    from core.analyses.flt3.pipeline import _build_flt3_npm1_tracker_frames
+
+    return _build_flt3_npm1_tracker_frames(entries)
+
+
+def _split_run_frames(runs: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    runs = _reindex_columns(runs, RUN_SHEET_COLUMNS)
+    if runs.empty:
+        return (
+            pd.DataFrame(columns=RUN_SHEET_COLUMNS),
+            pd.DataFrame(columns=RUN_SHEET_COLUMNS),
+        )
+
+    sample_kind = runs.get("SampleKind", pd.Series("", index=runs.index)).fillna("").astype(str).str.lower()
+    control = runs.get("Control", pd.Series("", index=runs.index)).fillna("").astype(str)
+    is_control = sample_kind.eq("control") | control.ne("")
+    patient_runs = _reindex_columns(runs.loc[~is_control].copy(), RUN_SHEET_COLUMNS)
+    control_runs = _reindex_columns(runs.loc[is_control].copy(), RUN_SHEET_COLUMNS)
+    return patient_runs, control_runs
 
 
 def _reindex_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:

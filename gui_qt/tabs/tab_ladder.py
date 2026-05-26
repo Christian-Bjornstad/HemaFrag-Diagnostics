@@ -1155,6 +1155,7 @@ class TabLadder(QWidget):
                 from core.html_reports import build_dit_html_reports
                 from core.analyses.clonality.tracking_excel import (
                     CLONALITY_TRACKING_FILENAME,
+                    update_global_clonality_tracking_workbook,
                     update_clonality_tracking_workbook,
                 )
                 from config import resolve_analysis_excel_output_path
@@ -1170,6 +1171,10 @@ class TabLadder(QWidget):
                     ),
                     combined_entries,
                 )
+                try:
+                    update_global_clonality_tracking_workbook(combined_entries)
+                except Exception:
+                    pass
                 result["final_session_reports_built"] = True
                 result["final_session_entry_count"] = len(combined_entries)
                 final_session_reports_built = True
