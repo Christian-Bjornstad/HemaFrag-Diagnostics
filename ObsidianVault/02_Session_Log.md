@@ -1057,3 +1057,9 @@ Verification:
 - User reviewed 10 examples from the overnight FLT3 `FAIL` set and confirmed they should be excluded from future ROX500 validation.
 - Added whole-run exclusions for the four C99174FF/C99174FA `25OUMXXX` runs and exact exclusions for the two reviewed singleton D835 files.
 - Corrected singleton handling after user follow-up: `26OUM07981_D835__210526_A05_H9H1DHU1.fsa` is good/not excluded, while `26OUM07484_D835__120526_A05_C99174J5.fsa` should be retained as `REVIEW`, not skipped, for both `0772` and duplicate injection `0773`.
+
+## 2026-05-29 - Strict Rust Ladder Mode
+
+- Added opt-in strict Rust ladder mode via `HEMAFRAG_STRICT_RUST_LADDER=1` / `HEMAFRAG_RUST_ONLY=1` / `engine.strict_rust_ladder`; when enabled, LIZ/ROX ladder fitting stops instead of falling back to Python fitting.
+- Strict mode disables clonality multiprocessing so per-file timeout/prewarm flow stays deterministic, and disables FLT3 template/lenient Python ladder rescue.
+- Verification: `python3 -m pytest tests/test_strict_rust_ladder_mode.py tests/test_clonality_file_timeout.py tests/test_flt3_rox500_runner_filters.py -q` passed.

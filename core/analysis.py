@@ -37,6 +37,7 @@ from fraggler.fraggler import (
     print_warning,
 )
 
+from core.engine_flags import strict_rust_ladder_enabled
 from core.assay_config import (
     DEFAULT_LIZ_LADDER,
     DEFAULT_ROX_LADDER,
@@ -4060,6 +4061,11 @@ def analyse_fsa_liz(
             if applied is not None:
                 return applied
             return hybrid_fsa
+        if strict_rust_ladder_enabled():
+            print_warning(
+                f"[LIZ] Strict Rust ladder mode is enabled; Python ladder fitting fallback is disabled for {fsa_path.name}."
+            )
+            return None
         print_warning(f"[LIZ] Rust Engine failed or returned None for {fsa_path.name}. Falling back to Python ladder fitting.")
 
     base_fsa = find_size_standard_peaks(base_fsa)
@@ -4406,6 +4412,11 @@ def analyse_fsa_rox(
         if str(getattr(base_fsa, "analysis_id", "") or "").lower() == "flt3" and str(ladder_name).upper() == "GS500ROX":
             print_warning(
                 f"[ROX] FLT3 GS500ROX is Rust-only; Python ladder fitting fallback is disabled for {fsa_path.name}."
+            )
+            return None
+        if strict_rust_ladder_enabled():
+            print_warning(
+                f"[ROX] Strict Rust ladder mode is enabled; Python ladder fitting fallback is disabled for {fsa_path.name}."
             )
             return None
         print_warning(f"[ROX] Rust Engine failed or returned None for {fsa_path.name}. Falling back to Python ladder fitting.")

@@ -34,6 +34,7 @@ from core.analysis import (
     estimate_running_baseline,
     get_ladder_candidates,
 )
+from core.engine_flags import strict_rust_ladder_enabled
 from core.analyses.flt3.classification import classify_fsa
 from core.analyses.flt3.config import (
     ASSAY_CONFIG,
@@ -3574,6 +3575,9 @@ def _should_attempt_flt3_template_rescue(
 ) -> bool:
     del assay, analysis_type
 
+    if strict_rust_ladder_enabled():
+        return False
+
     if _flt3_gs500rox_rust_only_ladder_mode():
         return False
 
@@ -3881,6 +3885,8 @@ def _analyse_fsa_candidate(
             setattr(fsa, "_flt3_template_rescue_skipped", True)
         setattr(fsa, "_flt3_sizing_method", _infer_sizing_method(fsa))
         return fsa
+    if strict_rust_ladder_enabled():
+        return None
     if _flt3_gs500rox_rust_only_ladder_mode():
         return None
     return _attempt_lenient_rox_fit(

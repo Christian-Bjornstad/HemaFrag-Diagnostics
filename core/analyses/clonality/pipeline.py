@@ -54,6 +54,7 @@ from core.plotting_mpl import compute_zoom_ymax
 from core.html_reports import (
     extract_dit_from_name,
 )
+from core.engine_flags import strict_rust_ladder_enabled
 from core.analyses.shared_pipeline import (
     finalize_pipeline_run,
     normalize_pipeline_paths,
@@ -102,6 +103,8 @@ def _emit_progress(
 
 
 def _should_use_multiprocessing() -> bool:
+    if strict_rust_ladder_enabled():
+        return False
     disabled = os.environ.get("FRAGGLER_DISABLE_MULTIPROCESSING", "").strip().lower()
     if disabled in {"1", "true", "yes", "on"}:
         return False

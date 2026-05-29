@@ -24,6 +24,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from core.engine_flags import strict_rust_ladder_enabled
 from core.log import log
 from fraggler.fraggler import FsaFile, baseline_arPLS, fit_size_standard_to_ladder
 
@@ -1146,6 +1147,13 @@ def _apply_rust_result_to_fsa(fsa: FsaFile, res: dict[str, Any]) -> FsaFile | No
     hydrated = _apply_rust_sizing_model_to_fsa(fsa, scan_indices, expected_bps, model_preview)
     if hydrated is not None:
         return hydrated
+
+    if strict_rust_ladder_enabled():
+        log(
+            f"[STRICT RUST] Rust sizing model could not hydrate {fsa.file_name}; "
+            "Python ladder fallback is disabled."
+        )
+        return None
 
     try:
         fsa = fit_size_standard_to_ladder(fsa)
