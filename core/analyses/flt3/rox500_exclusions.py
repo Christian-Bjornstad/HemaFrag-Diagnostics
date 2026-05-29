@@ -33,6 +33,10 @@ FLT3_ROX500_REVIEW_EXCLUSIONS: tuple[tuple[str, str, str], ...] = (
     ("2025_09_29_FLT3_ef_H9C0VCLS_2025-09-29_0186", "25OUM14617_p2_RATIO__260925_F04_H9C0VCLS.fsa", "operator_data_review_2026-05-26"),
     ("2026_04_23_FLT3_JO_H9H1DIAH_2026-04-24_0720", "*", "operator_data_review_2026-05-26"),
     ("2026_04_23_FLT3_JO_H9H1DIAH_2026-04-24_0721", "*", "operator_data_review_2026-05-26"),
+    ("2026_04_28_FLT3_JO_C99174FF_2026-04-28_0727", "*", "operator_data_review_2026-05-29"),
+    ("2026_04_28_FLT3_JO_C99174FF_2026-04-28_0728", "*", "operator_data_review_2026-05-29"),
+    ("2026_04_30_FLT3_JO_C99174FA_2026-04-30_0735", "*", "operator_data_review_2026-05-29"),
+    ("2026_04_30_FLT3_JO_C99174FA_2026-04-30_0736", "*", "operator_data_review_2026-05-29"),
 )
 
 
@@ -49,4 +53,6 @@ FLT3_ROX500_USER_GOOD_OVERRIDES: tuple[tuple[str, str, str], ...] = (
 
 FLT3_ROX500_USER_REVIEW_OVERRIDES: tuple[tuple[str, str, str], ...] = (
     ("2026_04_22_FLT3_PR_H9H1DIAK_2026-04-22_0710", "26OUM06102_D835__200426_A05_H9H1DIAK.fsa", "user_minor_review_2026-05-26"),
+    ("2026_05_12_FLT3_PR_C99174J5_2026-05-13_0772", "26OUM07484_D835__120526_A05_C99174J5.fsa", "user_minor_review_2026-05-29"),
+    ("2026_05_12_FLT3_PR_C99174J5_2026-05-13_0773", "26OUM07484_D835__120526_A05_C99174J5.fsa", "user_minor_review_2026-05-29"),
 )

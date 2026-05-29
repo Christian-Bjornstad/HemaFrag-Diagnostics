@@ -22,6 +22,18 @@ def test_mp1_operator_error_files_are_excluded_from_rox500_qc():
         Path("/data/flt3/2026/2026_04_23_FLT3_JO_H9H1DIAH_2026-04-24_0720/25OUMXXX_A07_H9H1DIAH.fsa")
     )
     assert _is_operator_error_flt3_file(
+        Path("/data/flt3/2026/2026_04_28_FLT3_JO_C99174FF_2026-04-28_0727/25OUMXXX_A06_C99174FF.fsa")
+    )
+    assert _is_operator_error_flt3_file(
+        Path("/data/flt3/2026/2026_04_30_FLT3_JO_C99174FA_2026-04-30_0736/25OUMXXX_A08_C99174FA.fsa")
+    )
+    assert not _is_operator_error_flt3_file(
+        Path("/data/flt3/2026/2026_05_12_FLT3_PR_C99174J5_2026-05-13_0772/26OUM07484_D835__120526_A05_C99174J5.fsa")
+    )
+    assert not _is_operator_error_flt3_file(
+        Path("/data/flt3/2026/2026_05_22_FLT3_PR_H9H1DHU1_2026-05-22_0800/26OUM07981_D835__210526_A05_H9H1DHU1.fsa")
+    )
+    assert _is_operator_error_flt3_file(
         Path("/data/flt3/2025/2025_08_01_FLT3_ef_H9C0ZIZJ_2025-08-01_0039/25OUM11314_p2_RATIO__310725_F04_H9C0ZIZJ.fsa")
     )
     assert _is_operator_error_flt3_file(
@@ -92,3 +104,25 @@ def test_user_review_overrides_convert_analysis_failed_to_review():
     assert row["QCReason"] == "user_minor_review_2026-05-26"
     assert row["LadderQC"] == "review_required"
     assert row["ReviewReason"] == "user_minor_review_2026-05-26"
+
+
+def test_user_review_override_for_26oum07484_keeps_file_in_review():
+    path = Path(
+        "/data/flt3/2026/2026_05_12_FLT3_PR_C99174J5_2026-05-13_0772/26OUM07484_D835__120526_A05_C99174J5.fsa"
+    )
+    assert not _is_operator_error_flt3_file(path)
+    assert _matches_user_review_override(path) == "user_minor_review_2026-05-29"
+
+    duplicate_injection = Path(
+        "/data/flt3/2026/2026_05_12_FLT3_PR_C99174J5_2026-05-13_0773/26OUM07484_D835__120526_A05_C99174J5.fsa"
+    )
+    assert not _is_operator_error_flt3_file(duplicate_injection)
+    assert _matches_user_review_override(duplicate_injection) == "user_minor_review_2026-05-29"
+
+
+def test_26oum07981_is_not_excluded_after_manual_review():
+    path = Path(
+        "/data/flt3/2026/2026_05_22_FLT3_PR_H9H1DHU1_2026-05-22_0800/26OUM07981_D835__210526_A05_H9H1DHU1.fsa"
+    )
+    assert not _is_operator_error_flt3_file(path)
+    assert _matches_user_review_override(path) == ""

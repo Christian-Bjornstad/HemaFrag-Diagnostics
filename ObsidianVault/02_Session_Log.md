@@ -1051,3 +1051,9 @@ Verification:
 
 - Added a repeatable clean source-transfer packer at `scripts/package_for_windows.py` and Windows transfer note at `packaging/WINDOWS_TRANSFER_README.md`.
 - Target archive for Windows transfer: `/Volumes/T7 Shield/HemaFrag/Windows/HemaFrag_Windows_Transfer.zip`; latest source changes are pushed to GitHub from the Mac.
+
+## 2026-05-29 - FLT3 Fail Exclusion Follow-Up
+
+- User reviewed 10 examples from the overnight FLT3 `FAIL` set and confirmed they should be excluded from future ROX500 validation.
+- Added whole-run exclusions for the four C99174FF/C99174FA `25OUMXXX` runs and exact exclusions for the two reviewed singleton D835 files.
+- Corrected singleton handling after user follow-up: `26OUM07981_D835__210526_A05_H9H1DHU1.fsa` is good/not excluded, while `26OUM07484_D835__120526_A05_C99174J5.fsa` should be retained as `REVIEW`, not skipped, for both `0772` and duplicate injection `0773`.
