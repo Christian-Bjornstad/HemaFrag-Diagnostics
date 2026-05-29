@@ -118,6 +118,69 @@ def _should_use_multiprocessing() -> bool:
     return True
 
 
+def _build_peaks_from_rust_clonality_preview(fsa, assay: str, primary_peak_channel: str) -> dict[str, pd.DataFrame]:
+    preview = getattr(fsa, "rust_clonality_preview", None)
+    if not isinstance(preview, dict):
+        return {}
+
+    ranked_assays = preview.get("ranked_assays") or []
+    if not isinstance(ranked_assays, list):
+        return {}
+
+    assay_key = str(assay or "").strip().lower()
+    selected = None
+    for candidate in ranked_assays:
+        if not isinstance(candidate, dict):
+            continue
+        if str(candidate.get("assay_name") or "").strip().lower() == assay_key:
+            selected = candidate
+            break
+    if selected is None:
+        for candidate in ranked_assays:
+            if isinstance(candidate, dict) and candidate.get("matched_by_filename"):
+                selected = candidate
+                break
+    if selected is None and ranked_assays and isinstance(ranked_assays[0], dict):
+        selected = ranked_assays[0]
+    if not isinstance(selected, dict):
+        return {}
+
+    rows = []
+    for group in selected.get("matched_groups") or []:
+        if not isinstance(group, dict):
+            continue
+        bp = group.get("dominant_peak_basepair")
+        height = group.get("dominant_peak_intensity")
+        try:
+            bp_f = float(bp)
+            height_f = float(height)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(bp_f) or not np.isfinite(height_f):
+            continue
+        rows.append(
+            {
+                "basepairs": bp_f,
+                "peaks": height_f,
+                "keep": bool(group.get("clonal_candidate", True)),
+                "rust_preview": True,
+                "rust_group_id": int(group.get("group_id", 0) or 0),
+                "rust_dominant_ratio": float(group.get("dominant_ratio_vs_second"))
+                if group.get("dominant_ratio_vs_second") is not None
+                else np.nan,
+            }
+        )
+
+    if not rows:
+        return {}
+    df = (
+        pd.DataFrame(rows)
+        .sort_values(["basepairs", "peaks"], ascending=[True, False])
+        .reset_index(drop=True)
+    )
+    return {primary_peak_channel: df}
+
+
 def _analyze_single_file(fsa_path: Path) -> dict | None:
     """Analyze a single FSA file. Returns an entry dict or None if skipped.
 
@@ -179,6 +242,9 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
     else:
         for ch in peak_channels:
             peaks_by_channel[ch] = pd.DataFrame(columns=["basepairs", "peaks", "keep"])
+        rust_peaks = _build_peaks_from_rust_clonality_preview(fsa, assay, primary_peak_channel)
+        if rust_peaks:
+            peaks_by_channel.update(rust_peaks)
 
     ymax = compute_zoom_ymax(fsa, bp_min, bp_max, trace_channels, assay_name=assay)
 
