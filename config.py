@@ -124,6 +124,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
             "pipeline": {
                 "mode": "all",
                 "assay_filter_substring": "",
+                "file_timeout_seconds": 240,
             },
         },
         "flt3": {

@@ -258,6 +258,12 @@ Verification:
 - User reported the corrected start-prior review HTML still did not look as good as expected, and export/download did not work.
 - Could not recover new annotations from Codex browser localStorage: the current `html_all` path was absent from the readable LevelDB storage, so no durable labels were saved there.
 - Tightened `simple_shift` so it only runs on compact 35/50 plus expanded 50/75 patterns (`gap35_50 <= 85`, `gap50_75 >= 175`). This prevents broad-start cases from choosing visually wrong right-shift fits just because residuals are slightly better.
+
+## 2026-05-27 - FLT3 Area Validation Panel
+
+- Reviewed upstream Fraggler area logic: peak widths at `rel_height=0.95`, raw padded peak windows, and lmfit model `amplitude` as area/ratio input.
+- Built local validation panel from manually fixed HemaFrag reports: `outputs/flt3_area_validation_panel_2026-05-27/flt3_area_validation_panel.html`; support CSVs include per-case ratios and per-peak method areas.
+- Current panel compares HemaFrag current area, straight-baseline trapezoid, raw padded sum, and Fraggler-like Gaussian/Voigt/Lorentzian amplitudes on report trace data; next step is manual review against GeneMapper-style area behavior.
 - Added a guard that prevents 35/50 start-prior auto-application when proposed 50 bp is later than scan `1800`; this removed the clear bad applied row where 50 was being moved into the old 75-family.
 - Updated `scripts/render_flt3_review_html.py` so Export also writes JSON into a visible backup textarea, making annotations recoverable even if browser download is blocked.
 - Rerun result on the 57 review rows: still `57 REVIEW`, `0 PASS`, `0 FAIL`; start-prior modes now `simple_shift=35`, `35_earlier=12`, no prior `10`; applied review-band remaps now `12` instead of `13`.
@@ -973,3 +979,75 @@ Verification:
 - Built Linux offline bundle with Docker: `dist/HemaFrag_Linux` and `dist/releases/HemaFrag_Linux_offline.zip`.
 - Built native macOS app with existing macOS 3.10 venv: `dist/HemaFrag.app` and `dist/releases/HemaFrag_macOS.zip`.
 - Verification before build: `python3 -m pytest tests -q` passed (`58` tests).
+
+## 2026-05-27 - FLT3 Legacy Excel Ratio Extract
+
+- Extracted calculated ITD/D835 ratio rows from `/Volumes/T7 Shield/flt3_excel`: `127` workbooks read, `38` ratio rows, `13` unique DIT numbers, no read errors.
+- Output files: `outputs/flt3_excel_ratio_extract_2026-05-27/flt3_dit_itd_d835_summary.csv`, `flt3_positive_ratio_parallel_details.csv`, and `flt3_dit_itd_d835_summary.md`.
+- Interpretation used: a DIT is positive for an assay when a numeric calculated ITD-ratio or D835/TKD-ratio row exists in the corresponding calculation sheet; the counterpart assay is marked negative when no calculated ratio row exists for that DIT.
+- Follow-up full-status extract includes all DITs found in `FLT3` sheets: `276` unique DITs, `263` both-negative, `11` ITD-positive, `7` D835-positive, `5` both-positive. Output: `outputs/flt3_excel_ratio_extract_2026-05-27/flt3_all_dit_itd_d835_status_summary.csv`.
+- Compared four same-day manually edited HemaFrag HTML reports from Downloads against legacy Excel ratios; output: `outputs/flt3_report_manual_ratio_compare_2026-05-27/hemafrag_report_vs_legacy_ratio_comparison.csv`.
+
+## 2026-05-27 - FLT3 Area Method Report Panel
+
+- Generated normal FLT3 DIT HTML reports for `13/13` requested DITs across seven area methods; output root: `/Volumes/T7 Shield/HemaFrag_FLT3_Arealmetode_Rapporter_2026-05-27/`.
+- Methods include current HemaFrag percentile-sum, linear-baseline trapezoid, arPLS-sum, and Fraggler-like raw/Gaussian/Voigt/Lorentzian variants; verified `91` real patient HTML reports (`7 x 13`, excluding macOS `._` sidefiles).
+- Companion files: `selected_fsa_manifest.csv`, `area_method_run_summary.csv`, and local builder script `outputs/flt3_area_method_reports_2026-05-27/build_area_method_reports.py`.
+- Compared user's manual review of methods 1-4 against legacy Excel ratios; output: `outputs/flt3_area_manual_review_compare_2026-05-27/`. Current HemaFrag percentile-sum is marginally best on the small common scored set, with baseline-trapezoid/arPLS effectively tied and Fraggler raw padded slightly worse.
+- Re-ran comparison with Downloads copy including methods 5-7. Apparent Voigt/Lorentzian win is sample-selection bias (`8` scored rows only); on the common `8` rows across all seven methods, methods 1/2/3/5/6/7 tie and raw padded remains slightly worse. No evidence yet that model-amplitude methods improve ratio agreement.
+
+## 2026-05-28 - Preparing for Windows Transfer
+
+- Prepared a clean project and Desktop backup to transfer the codebase and related resources to a Windows PC via T7 Shield USB drive.
+- Excluded bulky Mac-specific directories to optimize transfer size and speed (~1-2 GB total instead of 14+ GB):
+  - `HemaFrag/fraggler-v2/target/` (Mac Rust build artifacts)
+  - `HemaFrag/dist/` and `HemaFrag/build/` (Mac compiled Python/Qt executable files)
+  - `HemaFrag/local_triage/` and `HemaFrag/artifacts/` (temporary test runs and AI logs)
+- Packed files: `HemaFrag/` (with source, tests, configs, Rust engine source, `.git` repository), `Fraggler/` (legacy), `Excel_Fraggler/`, `Rapport_HemaFrag/`, and Desktop Excel sheets (`Klonaltitet_2024.xlsx`, `Klonaltitet_2024_2025.xlsx`).
+- Target output archive: `/Volumes/T7 Shield/HemaFrag_Windows_Overforing.zip`.
+
+## 2026-05-28 - Windows App Bundle To T7
+
+- Built Windows x64 bundle with Docker/Wine/PyInstaller after updating `packaging/Dockerfile.windows` to cross-compile and include `fraggler-cli.exe`.
+- Output copied to `/Volumes/T7 Shield/HemaFrag/Windows/HemaFrag_Windows.zip`; Windows setup guide at `/Volumes/T7 Shield/HemaFrag/Windows/HemaFrag_Windows_PC_Guide.md`.
+- Verification: `python3 -m zipfile -t` passed on the copied T7 zip; SHA256 `0c0e3e35105520fc7a3dfdffe37afa3780addf03e9fdb7554e13cdd71804bb6d`.
+
+## 2026-05-28 - Windows Stdout/Stderr Hotfix
+
+- Fixed Windows `--windowed` startup/runtime crash: `sys.stdout`/`sys.stderr` can be `None`, causing legacy `sys.stdout.isatty()` to fail.
+- Rebuilt and replaced `/Volumes/T7 Shield/HemaFrag/Windows/HemaFrag_Windows.zip`; updated guide notes the `isatty` fix.
+- Verification: py_compile and simulated `sys.stdout=None` imports passed; copied T7 zip passed `python3 -m zipfile -t`; SHA256 `db2a60ad51845d7fc226cb87afa7789da61e28bd0101ecbf79844ff3bd086305`.
+
+## 2026-05-28 - Windows Rust CLI Resolver Hotfix
+
+- Fixed Windows frozen runtime lookup for the bundled Rust engine: `core/rust_bridge.py` now searches for `fraggler-cli.exe` in `_MEIPASS`, beside `HemaFrag.exe`, and in `_internal`.
+- Rebuilt and replaced `/Volumes/T7 Shield/HemaFrag/Windows/HemaFrag_Windows.zip`; updated the Windows guide with the `fraggler-cli` fix note.
+- Verification: py_compile and simulated frozen Windows CLI resolution passed; local and copied T7 zips passed `python3 -m zipfile -t`; SHA256 `63ea871417d74f8a7adae48ff239f230595a453534d9e260834df2120094a980`.
+
+## 2026-05-28 - Windows Rust Workerpool Hotfix
+
+- Disabled persistent Rust worker/prewarm on Windows packaged runtime to avoid `WinError 10038` from `select()` on subprocess pipes; one-shot Rust CLI calls still run and are hidden with Windows no-console subprocess flags.
+- Built local replacement zip at `dist/releases/HemaFrag_Windows.zip`; T7 Shield was not mounted at copy time, so external copy is still pending.
+- Verification: py_compile, simulated frozen Windows worker/prewarm behavior, and local zip integrity passed; SHA256 `a06947091753527eebeab9f678541071c3b57695c26446b8151b6c98acbf2d94`.
+
+## 2026-05-28 - Windows Release Runbook
+
+- User confirmed the Windows workerpool hotfix package worked.
+- Added repeatable notes for future Windows builds at `packaging/WINDOWS_RELEASE_RUNBOOK.md`, including Rust CLI bundling, stdout/stderr, disabled Windows prewarm, and T7 copy steps.
+
+## 2026-05-28 - Clonality 2024 Backfill Hang Guardrail
+
+- Investigated repeated 2024 clonality overnight stalls: logs showed Rust prewarm failures followed by Python fallback hangs on individual historical `.fsa` files.
+- Added source/runtime per-file clonality timeout (`analyses.clonality.pipeline.file_timeout_seconds`, default `240s`) that terminates and skips a hung file instead of blocking the folder/year; expanded known skip list with the prior 2024 blocker files.
+- Verification: py_compile passed; focused tests passed (`tests/test_clonality_file_timeout.py`, `tests/test_batch_latest_run_filter.py`, `tests/test_water_filter.py`).
+
+## 2026-05-28 - T7 Full Night Run Started
+
+- Started detached screen `hemafrag_overnight_20260528` with output root `/Volumes/T7 Shield/HemaFrag/NightRuns/overnight_all_2026-05-28_214248`; run order is FLT3 ROX500 3730 first, then clonality `2026`, `2025_data`, `2024_DATA`.
+- Clonality run exports `HEMAFRAG_CLONALITY_FILE_TIMEOUT_SECONDS=240` and `FRAGGLER_DISABLE_MULTIPROCESSING=1`; tracking workbook target is `/Volumes/T7 Shield/HemaFrag/NightRuns/overnight_all_2026-05-28_214248/clonality/Clonality_Tracking_All_T7.xlsx`.
+- Created 30-minute heartbeat automation `hemafrag-nattkj-ring-monitor` to check process/log health in this thread.
+
+## 2026-05-29 - Windows Source Transfer And Git Push
+
+- Added a repeatable clean source-transfer packer at `scripts/package_for_windows.py` and Windows transfer note at `packaging/WINDOWS_TRANSFER_README.md`.
+- Target archive for Windows transfer: `/Volumes/T7 Shield/HemaFrag/Windows/HemaFrag_Windows_Transfer.zip`; latest source changes are pushed to GitHub from the Mac.

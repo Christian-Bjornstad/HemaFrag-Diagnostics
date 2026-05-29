@@ -319,6 +319,77 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
     }
 
 
+def _run_analyze_single_file_child(fsa_path: Path, queue) -> None:
+    try:
+        queue.put(("ok", _analyze_single_file(fsa_path)))
+    except BaseException as exc:
+        queue.put(("error", f"{type(exc).__name__}: {exc}"))
+
+
+def _clonality_file_timeout_seconds() -> int:
+    env_value = os.environ.get("HEMAFRAG_CLONALITY_FILE_TIMEOUT_SECONDS", "").strip()
+    if env_value:
+        try:
+            return max(0, int(float(env_value)))
+        except ValueError:
+            pass
+
+    try:
+        from config import APP_SETTINGS
+
+        value = (
+            APP_SETTINGS.get("analyses", {})
+            .get("clonality", {})
+            .get("pipeline", {})
+            .get("file_timeout_seconds", 0)
+        )
+        return max(0, int(float(value or 0)))
+    except Exception:
+        return 0
+
+
+def _can_use_isolated_file_timeout() -> bool:
+    if os.name != "posix":
+        return False
+    if getattr(sys, "frozen", False):
+        return False
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    return True
+
+
+def _analyze_single_file_with_timeout(fsa_path: Path, timeout_seconds: int) -> tuple[dict | None, str]:
+    if timeout_seconds <= 0 or not _can_use_isolated_file_timeout():
+        return _analyze_single_file(fsa_path), ""
+
+    import multiprocessing as mp
+    import queue as queue_mod
+
+    ctx = mp.get_context("fork")
+    result_queue = ctx.Queue(maxsize=1)
+    proc = ctx.Process(target=_run_analyze_single_file_child, args=(fsa_path, result_queue))
+    proc.start()
+    proc.join(timeout_seconds)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(5)
+        return None, f"timeout_after_{timeout_seconds}s"
+
+    try:
+        status, payload = result_queue.get_nowait()
+    except queue_mod.Empty:
+        if proc.exitcode and proc.exitcode != 0:
+            return None, f"child_exit_{proc.exitcode}"
+        return None, "child_returned_no_result"
+
+    if status == "ok":
+        return payload, ""
+    return None, str(payload or "child_error")
+
+
 def _analyze_files(
     fsa_files: list[Path],
     *,
@@ -349,6 +420,7 @@ def _analyze_files(
                 print_warning(f"[RUST] Failed to prewarm clonality worker cache ({ex}).")
 
         results = []
+        file_timeout_seconds = _clonality_file_timeout_seconds()
         for index, path in enumerate(fsa_files, start=1):
             _emit_progress(
                 progress_callback,
@@ -382,7 +454,18 @@ def _analyze_files(
             heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
             heartbeat_thread.start()
             try:
-                results.append(_analyze_single_file(path))
+                result, skip_reason = _analyze_single_file_with_timeout(path, file_timeout_seconds)
+                if skip_reason:
+                    print_warning(f"[ANALYZE] Skipping {path.name}: {skip_reason}.")
+                    _emit_progress(
+                        progress_callback,
+                        phase="analyze",
+                        file_name=path.name,
+                        files_done=index - 1,
+                        files_total=total_files,
+                        note=skip_reason,
+                    )
+                results.append(result)
             finally:
                 stop_event.set()
                 heartbeat_thread.join(timeout=0.1)

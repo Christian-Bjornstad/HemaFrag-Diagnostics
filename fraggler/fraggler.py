@@ -25,9 +25,10 @@ def print_tty(func):
         prefix = kwargs.get(
             "prefix", func.__defaults__[0] if func.__defaults__ else "[INFO]"
         )
-        if sys.stdout.isatty():
+        stdout = getattr(sys, "stdout", None)
+        if stdout is not None and stdout.isatty():
             func(*args, prefix=prefix)
-        else:
+        elif stdout is not None:
             print(f"{prefix}: {args[0]}")
 
     return wrapper
@@ -213,7 +214,8 @@ ASCII_ART = f"""
 
 
 def print_ascii_art(text):
-    if sys.stdout.isatty():
+    stdout = getattr(sys, "stdout", None)
+    if stdout is not None and stdout.isatty():
         print(f"{bcolors.OKBLUE}{text}{bcolors.ENDC}")
     else:
         return

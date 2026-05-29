@@ -64,6 +64,33 @@ _RUST_RESULT_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 _RUST_RESULT_CACHE_LOCK = threading.Lock()
 
 
+def _windows_subprocess_kwargs() -> dict[str, Any]:
+    if sys.platform != "win32":
+        return {}
+
+    kwargs: dict[str, Any] = {}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if creationflags:
+        kwargs["creationflags"] = creationflags
+
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    sw_hide = getattr(subprocess, "SW_HIDE", 0)
+    if startupinfo_cls is not None:
+        startupinfo = startupinfo_cls()
+        startupinfo.dwFlags |= startf_use_showwindow
+        startupinfo.wShowWindow = sw_hide
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
+def _persistent_rust_worker_supported() -> bool:
+    if sys.platform == "win32":
+        return False
+    return True
+
+
 class _RustSizingModel:
     def __init__(
         self,
@@ -228,21 +255,33 @@ def _resolve_cli_bin() -> Path | None:
     if _CLI_BIN_CACHE is not None and _CLI_BIN_CACHE.exists():
         return _CLI_BIN_CACHE
 
+    cli_names = ["fraggler-cli.exe", "fraggler-cli"] if sys.platform == "win32" else ["fraggler-cli"]
     root = Path(__file__).resolve().parent.parent
     if getattr(sys, 'frozen', False):
-        cli_bin = Path(sys._MEIPASS) / "fraggler-cli"
-        if not cli_bin.exists():
-            cli_bin = Path(sys.executable).parent / "fraggler-cli"
-        if cli_bin.exists():
-            _CLI_BIN_CACHE = cli_bin
-            return cli_bin
+        bundle_dirs = [
+            Path(getattr(sys, "_MEIPASS", "")),
+            Path(sys.executable).parent,
+            Path(sys.executable).parent / "_internal",
+        ]
+        for base_dir in bundle_dirs:
+            if not base_dir:
+                continue
+            for cli_name in cli_names:
+                cli_bin = base_dir / cli_name
+                if cli_bin.exists():
+                    _CLI_BIN_CACHE = cli_bin
+                    return cli_bin
         return None
 
-    preferred_paths = [
-        root / "fraggler-v2" / "target" / "release" / "fraggler-cli",
-        root / "fraggler-v2" / "target" / "debug" / "fraggler-cli",
-        root / "bin" / "fraggler-cli",
-    ]
+    preferred_paths = []
+    for cli_name in cli_names:
+        preferred_paths.extend(
+            [
+                root / "fraggler-v2" / "target" / "release" / cli_name,
+                root / "fraggler-v2" / "target" / "debug" / cli_name,
+                root / "bin" / cli_name,
+            ]
+        )
     cli_bin = next((p for p in preferred_paths if p.exists()), None)
     if cli_bin is not None:
         _CLI_BIN_CACHE = cli_bin
@@ -259,6 +298,7 @@ class _RustPrimitiveWorker:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            **_windows_subprocess_kwargs(),
         )
         self._lock = threading.Lock()
 
@@ -369,6 +409,8 @@ class _RustPrimitiveWorker:
 
 def _get_rust_worker() -> _RustPrimitiveWorker | None:
     global _RUST_WORKER
+    if not _persistent_rust_worker_supported():
+        return None
     with _RUST_WORKER_LOCK:
         if _RUST_WORKER is not None and _RUST_WORKER._proc.poll() is None:
             return _RUST_WORKER
@@ -444,6 +486,8 @@ def _invalidate_rust_worker_pool() -> None:
 
 def _get_rust_worker_pool(worker_count: int) -> list[_RustPrimitiveWorker]:
     global _RUST_PREWARM_WORKERS
+    if not _persistent_rust_worker_supported():
+        return []
     with _RUST_PREWARM_WORKERS_LOCK:
         alive = [worker for worker in _RUST_PREWARM_WORKERS if worker._proc.poll() is None]
         if len(alive) == worker_count:
@@ -490,6 +534,9 @@ def prime_rust_worker_results(
     fsa_paths: list[Path],
     analysis_kind: str,
 ) -> int:
+    if not _persistent_rust_worker_supported():
+        return 0
+
     cli_bin = _resolve_cli_bin()
     if not cli_bin or not cli_bin.exists():
         return 0
@@ -974,6 +1021,7 @@ def _run_cli_once(cli_bin: Path, fsa_path: Path, analysis_kind: str, file_name: 
                 check=True,
                 timeout=timeout_seconds,
                 stdin=subprocess.DEVNULL,
+                **_windows_subprocess_kwargs(),
             )
             elapsed = time.monotonic() - start_time
             log(f"[RUST] Engine finished in {elapsed:.1f}s for {file_name}")

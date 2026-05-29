@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import param
 import logging
+import sys
 from datetime import datetime
 
 logger = logging.getLogger()
@@ -33,6 +34,7 @@ def log(msg: str) -> None:
     """Append a timestamped message to the log buffer and stdout."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
-    print(line)
+    if sys.stdout is not None:
+        print(line)
     log_buffer.write(line)
     logger.info(msg)

@@ -1,7 +1,22 @@
+FROM rust:1.95-bookworm AS rust-builder
+
+RUN apt-get -o Acquire::Check-Date=false update \
+    && apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 \
+    && rm -rf /var/lib/apt/lists/*
+RUN rustup target add x86_64-pc-windows-gnu
+
+WORKDIR /src
+COPY fraggler-v2 fraggler-v2
+RUN cargo build --release -p fraggler-cli \
+    --manifest-path fraggler-v2/Cargo.toml \
+    --target x86_64-pc-windows-gnu
+
 FROM tobix/pywine:3.10
 
 # Wine pip needs build dependencies before running PyInstaller
-RUN apt-get update && apt-get install -y --no-install-recommends zip && rm -rf /var/lib/apt/lists/*
+RUN apt-get -o Acquire::Check-Date=false update \
+    && apt-get install -y --no-install-recommends zip \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
@@ -11,6 +26,9 @@ RUN wine python -m pip install --no-cache-dir -r requirements.txt
 
 # Copy source
 COPY . .
+COPY --from=rust-builder \
+    /src/fraggler-v2/target/x86_64-pc-windows-gnu/release/fraggler-cli.exe \
+    /app/fraggler-v2/target/release/fraggler-cli.exe
 
 # Run Build script using Wine execution
 CMD ["wine", "python", "build_qt.py"]
