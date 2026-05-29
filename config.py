@@ -69,6 +69,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "engine": {
         "use_rust": True,
         "strict_rust_ladder": False,
+        "inline_plotly_reports": False,
         "rust_timeout_seconds": 60,
         "rust_timeout_seconds_rox": 120,
         "rust_timeout_seconds_liz": 60,
