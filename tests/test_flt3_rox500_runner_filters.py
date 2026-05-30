@@ -1,10 +1,13 @@
 from pathlib import Path
 
 from scripts.run_flt3_liz500_qc_all_injections import (
+    _attach_rust_engine_stats,
     _apply_user_good_override,
     _apply_user_review_override,
     _filter_candidate_files,
+    _format_rust_engine_stats,
     _is_operator_error_flt3_file,
+    _merge_rust_engine_stats,
     _matches_user_good_override,
     _matches_user_review_override,
 )
@@ -126,3 +129,23 @@ def test_26oum07981_is_not_excluded_after_manual_review():
     )
     assert not _is_operator_error_flt3_file(path)
     assert _matches_user_review_override(path) == ""
+
+
+def test_rust_engine_stats_are_attached_and_mergeable():
+    first = {"cache_hits": 2, "worker_hits": 1, "cli_hits": 0, "failures": 0, "prewarm_cached": 0}
+    second = {"cache_hits": 3, "worker_hits": 0, "cli_hits": 4, "failures": 1, "prewarm_cached": 5}
+    total = {}
+
+    _merge_rust_engine_stats(total, first)
+    _merge_rust_engine_stats(total, second)
+
+    assert total == {
+        "cache_hits": 5,
+        "worker_hits": 1,
+        "cli_hits": 4,
+        "failures": 1,
+        "prewarm_cached": 5,
+    }
+    assert "cache=5" in _format_rust_engine_stats(total)
+    assert "cli=4" in _format_rust_engine_stats(total)
+    assert "rust_engine_stats_delta" in _attach_rust_engine_stats({"kind": "DONE"})

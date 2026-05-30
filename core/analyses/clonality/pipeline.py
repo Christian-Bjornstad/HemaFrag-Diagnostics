@@ -105,6 +105,15 @@ def _emit_progress(
 def _should_use_multiprocessing() -> bool:
     if strict_rust_ladder_enabled():
         return False
+    try:
+        from config import APP_SETTINGS
+
+        if APP_SETTINGS.get("engine", {}).get("use_rust", False):
+            allow_pool = os.environ.get("HEMAFRAG_CLONALITY_ALLOW_PYTHON_POOL_WITH_RUST", "").strip().lower()
+            if allow_pool not in {"1", "true", "yes", "on"} and _rust_worker_batch_mode_available():
+                return False
+    except Exception:
+        pass
     disabled = os.environ.get("FRAGGLER_DISABLE_MULTIPROCESSING", "").strip().lower()
     if disabled in {"1", "true", "yes", "on"}:
         return False
@@ -116,6 +125,16 @@ def _should_use_multiprocessing() -> bool:
     if not Path(main_file).exists():
         return False
     return True
+
+
+def _rust_worker_batch_mode_available() -> bool:
+    try:
+        from core.rust_bridge import _persistent_rust_worker_supported, _resolve_cli_bin
+
+        cli_bin = _resolve_cli_bin()
+        return bool(_persistent_rust_worker_supported() and cli_bin is not None and cli_bin.exists())
+    except Exception:
+        return False
 
 
 def _build_peaks_from_rust_clonality_preview(fsa, assay: str, primary_peak_channel: str) -> dict[str, pd.DataFrame]:
@@ -145,12 +164,66 @@ def _build_peaks_from_rust_clonality_preview(fsa, assay: str, primary_peak_chann
     if not isinstance(selected, dict):
         return {}
 
+    channel_peak_previews = preview.get("channel_peak_previews")
+    channel_rows: dict[str, list[dict]] = {}
+    if isinstance(channel_peak_previews, dict):
+        selected_channels = selected.get("channels")
+        allowed_channels = {str(channel) for channel in selected_channels} if isinstance(selected_channels, list) else set()
+        assay_min = selected.get("assay_bp_min")
+        assay_max = selected.get("assay_bp_max")
+        try:
+            assay_min_f = float(assay_min) if assay_min is not None else np.nan
+            assay_max_f = float(assay_max) if assay_max is not None else np.nan
+        except (TypeError, ValueError):
+            assay_min_f = np.nan
+            assay_max_f = np.nan
+        for channel, peaks in channel_peak_previews.items():
+            channel_name = str(channel)
+            if allowed_channels and channel_name not in allowed_channels:
+                continue
+            if not isinstance(peaks, list):
+                continue
+            for index, peak in enumerate(peaks):
+                if not isinstance(peak, dict):
+                    continue
+                try:
+                    bp_f = float(peak.get("basepair"))
+                    height_f = float(peak.get("intensity"))
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(bp_f) or not np.isfinite(height_f):
+                    continue
+                if np.isfinite(assay_min_f) and bp_f < assay_min_f:
+                    continue
+                if np.isfinite(assay_max_f) and bp_f > assay_max_f:
+                    continue
+                channel_rows.setdefault(channel_name, []).append(
+                    {
+                        "basepairs": bp_f,
+                        "peaks": height_f,
+                        "area": float(peak.get("area")) if peak.get("area") is not None else np.nan,
+                        "keep": True,
+                        "rust_preview": True,
+                        "rust_group_id": index + 1,
+                        "rust_dominant_ratio": np.nan,
+                    }
+                )
+    if channel_rows:
+        return {
+            channel: pd.DataFrame(rows)
+            .sort_values(["basepairs", "peaks"], ascending=[True, False])
+            .reset_index(drop=True)
+            for channel, rows in channel_rows.items()
+            if rows
+        }
+
     rows = []
     for group in selected.get("matched_groups") or []:
         if not isinstance(group, dict):
             continue
         bp = group.get("dominant_peak_basepair")
         height = group.get("dominant_peak_intensity")
+        area = group.get("dominant_peak_area")
         try:
             bp_f = float(bp)
             height_f = float(height)
@@ -162,6 +235,7 @@ def _build_peaks_from_rust_clonality_preview(fsa, assay: str, primary_peak_chann
             {
                 "basepairs": bp_f,
                 "peaks": height_f,
+                "area": float(area) if area is not None else np.nan,
                 "keep": bool(group.get("clonal_candidate", True)),
                 "rust_preview": True,
                 "rust_group_id": int(group.get("group_id", 0) or 0),
@@ -179,6 +253,270 @@ def _build_peaks_from_rust_clonality_preview(fsa, assay: str, primary_peak_chann
         .reset_index(drop=True)
     )
     return {primary_peak_channel: df}
+
+
+def _select_rust_marker_candidate(
+    preview: dict,
+    *,
+    channel: str,
+    target_bp: float,
+    window_bp: float,
+) -> dict:
+    channel_previews = preview.get("channel_peak_previews")
+    if not isinstance(channel_previews, dict):
+        return {"ok": False, "reason": "rust_channel_peak_previews_missing"}
+    peaks = channel_previews.get(str(channel))
+    if not isinstance(peaks, list):
+        return {"ok": False, "reason": "rust_marker_channel_missing"}
+
+    candidates = []
+    for peak in peaks:
+        if not isinstance(peak, dict):
+            continue
+        try:
+            found_bp = float(peak.get("basepair"))
+            height = float(peak.get("intensity"))
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(found_bp) or not np.isfinite(height):
+            continue
+        delta = found_bp - float(target_bp)
+        if abs(delta) <= float(window_bp):
+            candidates.append(
+                {
+                    "ok": True,
+                    "found_bp": found_bp,
+                    "height": height,
+                    "area": float(peak.get("area")) if peak.get("area") is not None else np.nan,
+                    "delta_bp": delta,
+                    "search_mode": "rust_channel_preview",
+                    "search_window_bp": float(window_bp),
+                    "reason": "",
+                }
+            )
+
+    if not candidates:
+        return {
+            "ok": False,
+            "reason": "rust_marker_peak_not_found",
+            "search_mode": "rust_channel_preview",
+            "search_window_bp": float(window_bp),
+        }
+    return min(candidates, key=lambda candidate: (abs(float(candidate["delta_bp"])), -float(candidate["height"])))
+
+
+def _build_rust_tracking_marker_candidates(
+    fsa,
+    markers: list[dict],
+    *,
+    primary_peak_channel: str,
+    sample_fallback_window_bp: float,
+) -> tuple[dict[str, dict], dict[str, int]]:
+    preview = getattr(fsa, "rust_clonality_preview", None)
+    stats = {
+        "sample_markers": 0,
+        "sample_hits": 0,
+        "sample_misses": 0,
+        "ladder_markers": 0,
+        "ladder_hits": 0,
+        "ladder_misses": 0,
+        "hits": 0,
+        "misses": 0,
+    }
+
+    results: dict[str, dict] = {}
+    for marker in markers:
+        marker_kind = marker.get("kind")
+        if marker_kind == "ladder":
+            stats["ladder_markers"] += 1
+            result = _select_rust_ladder_marker_candidate(
+                fsa,
+                target_bp=float(marker["expected_bp"]),
+                window_bp=float(marker["window_bp"]),
+            )
+            results[str(marker["name"])] = result
+            if result.get("ok"):
+                stats["ladder_hits"] += 1
+                stats["hits"] += 1
+            else:
+                stats["ladder_misses"] += 1
+                stats["misses"] += 1
+            continue
+        if marker_kind != "sample":
+            continue
+        if not isinstance(preview, dict):
+            result = {"ok": False, "reason": "rust_clonality_preview_missing"}
+            results[str(marker["name"])] = result
+            stats["sample_markers"] += 1
+            stats["sample_misses"] += 1
+            stats["misses"] += 1
+            continue
+        stats["sample_markers"] += 1
+        channel = primary_peak_channel if marker.get("channel") == "primary" else str(marker.get("channel"))
+        window_bp = max(float(marker.get("window_bp", 0.0) or 0.0), float(sample_fallback_window_bp))
+        result = _select_rust_marker_candidate(
+            preview,
+            channel=channel,
+            target_bp=float(marker["expected_bp"]),
+            window_bp=window_bp,
+        )
+        results[str(marker["name"])] = result
+        if result.get("ok"):
+            stats["sample_hits"] += 1
+            stats["hits"] += 1
+        else:
+            stats["sample_misses"] += 1
+            stats["misses"] += 1
+    return results, stats
+
+
+def _select_rust_ladder_marker_candidate(
+    fsa,
+    *,
+    target_bp: float,
+    window_bp: float,
+) -> dict:
+    ladder_steps = np.asarray(getattr(fsa, "ladder_steps", []), dtype=float)
+    peak_times = np.asarray(getattr(fsa, "best_size_standard", []), dtype=float)
+    if ladder_steps.size == 0 or peak_times.size == 0 or ladder_steps.size != peak_times.size:
+        return {"ok": False, "reason": "rust_ladder_anchor_map_missing"}
+
+    matches = np.where(np.isclose(ladder_steps, float(target_bp), atol=1e-6))[0]
+    if not matches.size:
+        return {"ok": False, "reason": "rust_ladder_anchor_not_found"}
+
+    match_index = int(matches[0])
+    datapoint = float(peak_times[match_index])
+    size_standard = np.asarray(getattr(fsa, "size_standard", []), dtype=float)
+    peak_idx = int(round(datapoint))
+    height = np.nan
+    area = np.nan
+    if 0 <= peak_idx < size_standard.size:
+        height = float(size_standard[peak_idx])
+        lo = max(0, peak_idx - 3)
+        hi = min(size_standard.size, peak_idx + 4)
+        area = float(np.nansum(size_standard[lo:hi]))
+
+    return {
+        "ok": True,
+        "found_bp": float(target_bp),
+        "height": height,
+        "area": area,
+        "delta_bp": 0.0,
+        "search_mode": "rust_ladder_anchor",
+        "search_window_bp": float(window_bp),
+        "reason": "",
+    }
+
+
+def _compare_rust_tracking_marker_candidates(
+    python_results: dict[str, dict],
+    rust_results: dict[str, dict],
+    *,
+    tolerance_bp: float = 0.75,
+) -> dict[str, int]:
+    stats = {"compared": 0, "matches": 0, "mismatches": 0, "python_only": 0, "rust_only": 0}
+    for name, rust_result in rust_results.items():
+        python_result = python_results.get(name)
+        if not python_result:
+            stats["rust_only"] += 1
+            continue
+        python_ok = bool(python_result.get("ok", False))
+        rust_ok = bool(rust_result.get("ok", False))
+        if python_ok and rust_ok:
+            stats["compared"] += 1
+            try:
+                delta = abs(float(python_result["found_bp"]) - float(rust_result["found_bp"]))
+            except (TypeError, ValueError):
+                stats["mismatches"] += 1
+                continue
+            if delta <= float(tolerance_bp):
+                stats["matches"] += 1
+            else:
+                stats["mismatches"] += 1
+        elif python_ok:
+            stats["python_only"] += 1
+        elif rust_ok:
+            stats["rust_only"] += 1
+    return stats
+
+
+def _rust_tracking_markers_enabled() -> bool:
+    disabled = os.environ.get("HEMAFRAG_DISABLE_RUST_TRACKING_MARKERS", "").strip().lower()
+    return disabled not in {"1", "true", "yes", "on"}
+
+
+def _python_tracking_marker_result(
+    *,
+    fsa,
+    marker: dict,
+    channel: str,
+    evaluate_peak_near_bp_with_fallback,
+) -> dict:
+    res = evaluate_peak_near_bp_with_fallback(
+        fsa=fsa,
+        channel=channel,
+        target_bp=float(marker["expected_bp"]),
+        window_bp=float(marker["window_bp"]),
+        baseline_correct=True,
+        name=marker.get("name"),
+    )
+    selected = dict(res["selected"])
+    selected.setdefault("source", "python")
+    return selected
+
+
+def _build_tracking_marker_results(
+    *,
+    fsa,
+    markers: list[dict],
+    primary_peak_channel: str,
+    sample_fallback_window_bp: float,
+    evaluate_peak_near_bp_with_fallback,
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, int]]:
+    rust_candidates, rust_stats = _build_rust_tracking_marker_candidates(
+        fsa,
+        markers,
+        primary_peak_channel=primary_peak_channel,
+        sample_fallback_window_bp=sample_fallback_window_bp,
+    )
+    stats = {
+        "markers": 0,
+        "rust_used": 0,
+        "python_fallback": 0,
+        "rust_sample_candidates": int(rust_stats.get("sample_markers", 0)),
+        "rust_sample_hits": int(rust_stats.get("sample_hits", 0)),
+        "rust_sample_misses": int(rust_stats.get("sample_misses", 0)),
+        "rust_ladder_candidates": int(rust_stats.get("ladder_markers", 0)),
+        "rust_ladder_hits": int(rust_stats.get("ladder_hits", 0)),
+        "rust_ladder_misses": int(rust_stats.get("ladder_misses", 0)),
+    }
+    use_rust = _rust_tracking_markers_enabled()
+    results: dict[str, dict] = {}
+
+    for marker in markers:
+        stats["markers"] += 1
+        name = str(marker["name"])
+        channel = primary_peak_channel if marker.get("channel") == "primary" else str(marker.get("channel"))
+        rust_result = rust_candidates.get(name)
+        if use_rust and marker.get("kind") in {"sample", "ladder"} and rust_result and rust_result.get("ok"):
+            selected = dict(rust_result)
+            selected["source"] = (
+                "rust_ladder_anchor" if marker.get("kind") == "ladder" else "rust_channel_preview"
+            )
+            results[name] = selected
+            stats["rust_used"] += 1
+            continue
+
+        results[name] = _python_tracking_marker_result(
+            fsa=fsa,
+            marker=marker,
+            channel=channel,
+            evaluate_peak_near_bp_with_fallback=evaluate_peak_near_bp_with_fallback,
+        )
+        stats["python_fallback"] += 1
+
+    return results, rust_candidates, stats
 
 
 def _analyze_single_file(fsa_path: Path) -> dict | None:
@@ -315,19 +653,18 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
     from core.qc.qc_markers import markers_for_entry, evaluate_peak_near_bp_with_fallback
     
     rules = QCRules() # Default rules for tracking
-    tracking_marker_results = {}
     markers = markers_for_entry({"fsa": fsa, "assay": assay, "ladder": ladder}, rules)
-    for marker in markers:
-        channel = primary_peak_channel if marker["channel"] == "primary" else str(marker["channel"])
-        res = evaluate_peak_near_bp_with_fallback(
-            fsa=fsa,
-            channel=channel,
-            target_bp=float(marker["expected_bp"]),
-            window_bp=float(marker["window_bp"]),
-            baseline_correct=True,
-            name=marker.get("name"),
-        )
-        tracking_marker_results[marker["name"]] = res["selected"]
+    tracking_marker_results, rust_tracking_marker_candidates, rust_tracking_marker_stats = _build_tracking_marker_results(
+        fsa=fsa,
+        markers=markers,
+        primary_peak_channel=primary_peak_channel,
+        sample_fallback_window_bp=float(getattr(rules, "sample_peak_window_bp_fallback", 0.0) or 0.0),
+        evaluate_peak_near_bp_with_fallback=evaluate_peak_near_bp_with_fallback,
+    )
+    rust_tracking_marker_comparison = _compare_rust_tracking_marker_candidates(
+        tracking_marker_results,
+        rust_tracking_marker_candidates,
+    )
 
     rust_clonality_preview = getattr(fsa, "rust_clonality_preview", None)
     top_rust_assay = {}
@@ -345,6 +682,9 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
         "source_run_dir": resolve_source_run_dir({"fsa": fsa}),
         "peaks_by_channel": peaks_by_channel,
         "tracking_marker_results": tracking_marker_results,
+        "rust_tracking_marker_candidates": rust_tracking_marker_candidates,
+        "rust_tracking_marker_stats": rust_tracking_marker_stats,
+        "rust_tracking_marker_comparison": rust_tracking_marker_comparison,
         "trace_channels": trace_channels,
         "primary_peak_channel": primary_peak_channel,
         "ymax": ymax,
@@ -389,10 +729,23 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
 
 
 def _run_analyze_single_file_child(fsa_path: Path, queue) -> None:
+    previous_worker_setting = os.environ.get("HEMAFRAG_DISABLE_PERSISTENT_RUST_WORKER")
+    os.environ["HEMAFRAG_DISABLE_PERSISTENT_RUST_WORKER"] = "1"
     try:
-        queue.put(("ok", _analyze_single_file(fsa_path)))
+        from core.rust_bridge import reset_rust_engine_stats, rust_engine_stats_snapshot
+
+        reset_rust_engine_stats()
+        result = _analyze_single_file(fsa_path)
+        if isinstance(result, dict):
+            result["_rust_engine_stats_delta"] = rust_engine_stats_snapshot()
+        queue.put(("ok", result))
     except BaseException as exc:
         queue.put(("error", f"{type(exc).__name__}: {exc}"))
+    finally:
+        if previous_worker_setting is None:
+            os.environ.pop("HEMAFRAG_DISABLE_PERSISTENT_RUST_WORKER", None)
+        else:
+            os.environ["HEMAFRAG_DISABLE_PERSISTENT_RUST_WORKER"] = previous_worker_setting
 
 
 def _clonality_file_timeout_seconds() -> int:
@@ -438,8 +791,10 @@ def _analyze_single_file_with_timeout(fsa_path: Path, timeout_seconds: int) -> t
     result_queue = ctx.Queue(maxsize=1)
     proc = ctx.Process(target=_run_analyze_single_file_child, args=(fsa_path, result_queue))
     proc.start()
-    proc.join(timeout_seconds)
-    if proc.is_alive():
+
+    try:
+        status, payload = result_queue.get(timeout=timeout_seconds)
+    except queue_mod.Empty:
         proc.terminate()
         proc.join(5)
         if proc.is_alive():
@@ -447,16 +802,62 @@ def _analyze_single_file_with_timeout(fsa_path: Path, timeout_seconds: int) -> t
             proc.join(5)
         return None, f"timeout_after_{timeout_seconds}s"
 
-    try:
-        status, payload = result_queue.get_nowait()
-    except queue_mod.Empty:
-        if proc.exitcode and proc.exitcode != 0:
-            return None, f"child_exit_{proc.exitcode}"
-        return None, "child_returned_no_result"
+    proc.join(5)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(5)
+        return None, "child_did_not_exit_after_result"
+
+    if proc.exitcode and proc.exitcode != 0:
+        return None, f"child_exit_{proc.exitcode}"
 
     if status == "ok":
+        if isinstance(payload, dict):
+            rust_stats_delta = payload.pop("_rust_engine_stats_delta", None)
+            if isinstance(rust_stats_delta, dict):
+                try:
+                    from core.rust_bridge import merge_rust_engine_stats
+
+                    merge_rust_engine_stats(rust_stats_delta)
+                except Exception:
+                    pass
         return payload, ""
     return None, str(payload or "child_error")
+
+
+def _format_rust_tracking_summary(entries: list[dict]) -> str:
+    totals: dict[str, int] = {}
+    source_counts: dict[str, int] = {}
+    for entry in entries:
+        for key, value in (entry.get("rust_tracking_marker_stats") or {}).items():
+            try:
+                totals[key] = int(totals.get(key, 0)) + int(value or 0)
+            except Exception:
+                continue
+        for result in (entry.get("tracking_marker_results") or {}).values():
+            source = str(result.get("source") or "unknown")
+            source_counts[source] = int(source_counts.get(source, 0)) + 1
+
+    if not totals and not source_counts:
+        return "not available"
+    return (
+        "markers={markers} rust_used={rust_used} python_fallback={python_fallback} "
+        "sample={rust_sample_hits}/{rust_sample_candidates} "
+        "ladder={rust_ladder_hits}/{rust_ladder_candidates} "
+        "sources={sources}"
+    ).format(
+        markers=int(totals.get("markers", 0)),
+        rust_used=int(totals.get("rust_used", 0)),
+        python_fallback=int(totals.get("python_fallback", 0)),
+        rust_sample_hits=int(totals.get("rust_sample_hits", 0)),
+        rust_sample_candidates=int(totals.get("rust_sample_candidates", 0)),
+        rust_ladder_hits=int(totals.get("rust_ladder_hits", 0)),
+        rust_ladder_candidates=int(totals.get("rust_ladder_candidates", 0)),
+        sources=", ".join(f"{key}:{source_counts[key]}" for key in sorted(source_counts)) or "-",
+    )
 
 
 def _analyze_files(
@@ -480,8 +881,9 @@ def _analyze_files(
 
         if APP_SETTINGS.get("engine", {}).get("use_rust", False) and fsa_files:
             try:
-                from core.rust_bridge import prime_rust_worker_results
+                from core.rust_bridge import prime_rust_worker_results, reset_rust_engine_stats
 
+                reset_rust_engine_stats()
                 primed = prime_rust_worker_results(fsa_files, "clonality")
                 if primed:
                     print_green(f"[RUST] Primed {primed} clonality files through persistent worker.")
@@ -534,6 +936,15 @@ def _analyze_files(
                         files_total=total_files,
                         note=skip_reason,
                     )
+                if isinstance(result, dict):
+                    rust_stats_delta = result.pop("_rust_engine_stats_delta", None)
+                    if isinstance(rust_stats_delta, dict):
+                        try:
+                            from core.rust_bridge import merge_rust_engine_stats
+
+                            merge_rust_engine_stats(rust_stats_delta)
+                        except Exception:
+                            pass
                 results.append(result)
             finally:
                 stop_event.set()
@@ -562,6 +973,14 @@ def _analyze_files(
 
     entries = [r for r in results if r is not None]
     skipped = len(fsa_files) - len(entries)
+
+    try:
+        from core.rust_bridge import format_rust_engine_stats
+
+        print_green(f"[RUST] Engine usage: {format_rust_engine_stats()}")
+    except Exception:
+        pass
+    print_green(f"[RUST] Tracking markers: {_format_rust_tracking_summary(entries)}")
 
     print_green(f"[MASTER] Totalt {len(entries)} filer analysert. {skipped} skippet.")
     return entries, skipped

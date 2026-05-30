@@ -132,6 +132,7 @@ const ROX_BROAD_GAP_MEDIAN: [f64; 20] = [
 ];
 const SAMPLE_ASSAY_GROUP_DISTANCE_BP: f64 = 12.0;
 const SAMPLE_ASSAY_MIN_RATIO: f64 = 0.40;
+const SAMPLE_PEAK_PREVIEW_LIMIT: usize = 32;
 const CLONAL_MAX_LABELLED_PEAKS: usize = 3;
 const CLONAL_DOMINANCE_RATIO: f64 = 1.7;
 
@@ -191,6 +192,7 @@ pub struct SamplePeakPreview {
     pub time: usize,
     pub intensity: f64,
     pub basepair: f64,
+    pub area: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -202,6 +204,7 @@ pub struct SamplePeakGroupPreview {
     pub max_intensity: f64,
     pub dominant_peak_basepair: f64,
     pub dominant_peak_intensity: f64,
+    pub dominant_peak_area: f64,
     pub dominant_ratio_vs_second: Option<f64>,
     pub kept_peak_count: usize,
     pub clonal_candidate: bool,
@@ -258,11 +261,15 @@ pub struct PrimitiveAnalysisResult {
 pub struct ClonalityPreview {
     pub sample_channel: String,
     pub ranked_assays: Vec<ClonalityAssayMatch>,
+    pub channel_peak_previews: BTreeMap<String, Vec<SamplePeakPreview>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClonalityAssayMatch {
     pub assay_name: String,
+    pub channels: Vec<String>,
+    pub assay_bp_min: f64,
+    pub assay_bp_max: f64,
     pub matched_by_filename: bool,
     pub compatible_channel: bool,
     pub score: f64,
@@ -280,6 +287,7 @@ pub struct ClonalityGroupMatch {
     pub cluster_width_bp: f64,
     pub dominant_peak_basepair: f64,
     pub dominant_peak_intensity: f64,
+    pub dominant_peak_area: f64,
     pub dominant_ratio_vs_second: Option<f64>,
     pub clonal_candidate: bool,
 }
@@ -439,10 +447,18 @@ pub fn analyze_fsa_primitives(
                 .as_ref()
                 .and_then(|model| model.sample_mapping.as_ref())
                 .map(|mapping| {
+                    let channel_peak_previews = build_channel_peak_previews(
+                        &record,
+                        &data_channels,
+                        &size_standard_channel,
+                        ladder,
+                        preview,
+                    );
                     build_clonality_preview(
                         &file_name,
                         &sample_channel,
                         &mapping.assay_group_preview,
+                        channel_peak_previews,
                     )
                 })
         })
@@ -18580,6 +18596,7 @@ fn build_sample_peak_preview(
                     time: peak.index,
                     intensity: round2(peak.height),
                     basepair: point.basepair,
+                    area: round2(peak.prominence * peak.width),
                 })
         })
         .collect::<Vec<_>>();
@@ -18595,8 +18612,8 @@ fn build_sample_peak_preview(
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
     });
-    if preview.len() > 12 {
-        preview.truncate(12);
+    if preview.len() > SAMPLE_PEAK_PREVIEW_LIMIT {
+        preview.truncate(SAMPLE_PEAK_PREVIEW_LIMIT);
     }
     preview.sort_by(|left, right| {
         left.basepair
@@ -18604,6 +18621,68 @@ fn build_sample_peak_preview(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     preview
+}
+
+fn build_channel_peak_previews(
+    record: &AbifRecord,
+    data_channels: &[String],
+    size_standard_channel: &str,
+    ladder: LadderKind,
+    preview: &LadderFitPreview,
+) -> BTreeMap<String, Vec<SamplePeakPreview>> {
+    let Some(model) = preview.sizing_model.as_ref() else {
+        return BTreeMap::new();
+    };
+    let scan_indices = preview
+        .refinement
+        .as_ref()
+        .filter(|refinement| !refinement.refined_scan_indices.is_empty())
+        .map(|refinement| refinement.refined_scan_indices.as_slice())
+        .unwrap_or(preview.best_scan_indices.as_slice());
+    if scan_indices.len() != ladder.sizes().len() {
+        return BTreeMap::new();
+    }
+    let x = scan_indices
+        .iter()
+        .map(|value| *value as f64)
+        .collect::<Vec<_>>();
+    let mut channels = BTreeMap::new();
+    for channel in data_channels {
+        if channel == size_standard_channel {
+            continue;
+        }
+        let Some(trace) = record.channel_values(channel) else {
+            continue;
+        };
+        if trace.is_empty() {
+            continue;
+        }
+        let predicted = (0..trace.len())
+            .map(|time| predict_basepair_from_sizing_model(model, &x, ladder.sizes(), time as f64))
+            .collect::<Vec<_>>();
+        if let Some(mapping) = build_sample_mapping_preview(&trace, &predicted) {
+            channels.insert(channel.clone(), mapping.sample_peak_preview);
+        }
+    }
+    channels
+}
+
+fn predict_basepair_from_sizing_model(
+    model: &SizingModelPreview,
+    scan_indices: &[f64],
+    ladder_sizes: &[f64],
+    time: f64,
+) -> f64 {
+    if model.strategy == "willros_monotone_spline"
+        && scan_indices.len() == ladder_sizes.len()
+        && model.coefficients.len() == ladder_sizes.len()
+    {
+        return eval_monotone_cubic_spline(scan_indices, ladder_sizes, &model.coefficients, time);
+    }
+    if model.strategy == "polynomial_fallback" && !model.coefficients.is_empty() {
+        return eval_polynomial(&model.coefficients, time);
+    }
+    f64::NAN
 }
 
 fn estimate_sample_peak_min_height(sample_trace: &[f64]) -> f64 {
@@ -18704,6 +18783,7 @@ fn build_assay_group_preview(peaks: &[SamplePeakPreview]) -> Vec<SamplePeakGroup
                 max_intensity: round2(max_intensity),
                 dominant_peak_basepair: round2(dominant_peak.basepair),
                 dominant_peak_intensity: round2(dominant_peak.intensity),
+                dominant_peak_area: round2(dominant_peak.area),
                 dominant_ratio_vs_second: dominant_ratio_vs_second.map(round2),
                 kept_peak_count: kept.len(),
                 clonal_candidate,
@@ -18852,6 +18932,7 @@ fn build_clonality_preview(
     file_name: &str,
     sample_channel: &str,
     assay_groups: &[SamplePeakGroupPreview],
+    channel_peak_previews: BTreeMap<String, Vec<SamplePeakPreview>>,
 ) -> ClonalityPreview {
     let normalized_file_name = normalize_assay_token(file_name);
     let mut ranked_assays = CLONALITY_ASSAYS
@@ -18879,6 +18960,7 @@ fn build_clonality_preview(
                         cluster_width_bp: group.cluster_width_bp,
                         dominant_peak_basepair: group.dominant_peak_basepair,
                         dominant_peak_intensity: group.dominant_peak_intensity,
+                        dominant_peak_area: group.dominant_peak_area,
                         dominant_ratio_vs_second: group.dominant_ratio_vs_second,
                         clonal_candidate: group.clonal_candidate,
                     })
@@ -18917,6 +18999,13 @@ fn build_clonality_preview(
 
             Some(ClonalityAssayMatch {
                 assay_name: assay.name.to_owned(),
+                channels: assay
+                    .channels
+                    .iter()
+                    .map(|channel| channel.to_string())
+                    .collect(),
+                assay_bp_min: assay.bp_min,
+                assay_bp_max: assay.bp_max,
                 matched_by_filename,
                 compatible_channel,
                 score: round2(score),
@@ -18939,6 +19028,7 @@ fn build_clonality_preview(
     ClonalityPreview {
         sample_channel: sample_channel.to_owned(),
         ranked_assays,
+        channel_peak_previews,
     }
 }
 
@@ -23140,21 +23230,25 @@ mod tests {
                 time: 10,
                 intensity: 100.0,
                 basepair: 100.0,
+                area: 0.0,
             },
             SamplePeakPreview {
                 time: 12,
                 intensity: 20.0,
                 basepair: 104.0,
+                area: 0.0,
             },
             SamplePeakPreview {
                 time: 20,
                 intensity: 50.0,
                 basepair: 130.0,
+                area: 0.0,
             },
             SamplePeakPreview {
                 time: 22,
                 intensity: 30.0,
                 basepair: 138.0,
+                area: 0.0,
             },
         ];
         let groups = build_assay_group_preview(&peaks);
@@ -23177,6 +23271,7 @@ mod tests {
             max_intensity: 3000.0,
             dominant_peak_basepair: 140.0,
             dominant_peak_intensity: 3000.0,
+            dominant_peak_area: 0.0,
             dominant_ratio_vs_second: Some(2.2),
             kept_peak_count: 1,
             clonal_candidate: true,
@@ -23184,10 +23279,15 @@ mod tests {
                 time: 100,
                 intensity: 3000.0,
                 basepair: 140.0,
+                area: 0.0,
             }],
         }];
-        let preview =
-            build_clonality_preview("26OUM04817_IGK_270326_B05_H9H1DI2F.fsa", "DATA1", &groups);
+        let preview = build_clonality_preview(
+            "26OUM04817_IGK_270326_B05_H9H1DI2F.fsa",
+            "DATA1",
+            &groups,
+            BTreeMap::new(),
+        );
         assert!(!preview.ranked_assays.is_empty());
         assert_eq!(preview.ranked_assays[0].assay_name, "IGK");
         assert!(preview.ranked_assays[0].matched_by_filename);
@@ -23247,16 +23347,19 @@ mod tests {
                 time: 100,
                 intensity: 10000.0,
                 basepair: 330.2,
+                area: 0.0,
             },
             SamplePeakPreview {
                 time: 120,
                 intensity: 850.0,
                 basepair: 351.0,
+                area: 0.0,
             },
             SamplePeakPreview {
                 time: 140,
                 intensity: 410.0,
                 basepair: 371.2,
+                area: 0.0,
             },
         ];
 

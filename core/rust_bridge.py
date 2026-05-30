@@ -8,6 +8,7 @@ and QC log tracking.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 import json
@@ -59,10 +60,21 @@ LIZ_MIN_HARD_WINDOW_FRACTION = 0.80
 _CLI_BIN_CACHE: Path | None = None
 _RUST_WORKER: "_RustPrimitiveWorker | None" = None
 _RUST_WORKER_LOCK = threading.Lock()
+_RUST_WORKER_OWNER_PID: int | None = None
 _RUST_PREWARM_WORKERS: list["_RustPrimitiveWorker"] = []
 _RUST_PREWARM_WORKERS_LOCK = threading.Lock()
-_RUST_RESULT_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+_RUST_PREWARM_WORKERS_OWNER_PID: int | None = None
+_RUST_RESULT_CACHE_MAX = 2048
+_RUST_RESULT_CACHE: "OrderedDict[tuple[str, str, int, int], dict[str, Any]]" = OrderedDict()
 _RUST_RESULT_CACHE_LOCK = threading.Lock()
+_RUST_ENGINE_STATS_LOCK = threading.Lock()
+_RUST_ENGINE_STATS: dict[str, int] = {
+    "cache_hits": 0,
+    "worker_hits": 0,
+    "cli_hits": 0,
+    "failures": 0,
+    "prewarm_cached": 0,
+}
 
 
 def _windows_subprocess_kwargs() -> dict[str, Any]:
@@ -87,6 +99,9 @@ def _windows_subprocess_kwargs() -> dict[str, Any]:
 
 
 def _persistent_rust_worker_supported() -> bool:
+    disabled = os.environ.get("HEMAFRAG_DISABLE_PERSISTENT_RUST_WORKER", "").strip().lower()
+    if disabled in {"1", "true", "yes", "on"}:
+        return False
     if sys.platform == "win32":
         return False
     return True
@@ -409,25 +424,37 @@ class _RustPrimitiveWorker:
 
 
 def _get_rust_worker() -> _RustPrimitiveWorker | None:
-    global _RUST_WORKER
+    global _RUST_WORKER, _RUST_WORKER_OWNER_PID
     if not _persistent_rust_worker_supported():
         return None
     with _RUST_WORKER_LOCK:
-        if _RUST_WORKER is not None and _RUST_WORKER._proc.poll() is None:
+        current_pid = os.getpid()
+        if (
+            _RUST_WORKER is not None
+            and _RUST_WORKER_OWNER_PID == current_pid
+            and _RUST_WORKER._proc.poll() is None
+        ):
             return _RUST_WORKER
+        if _RUST_WORKER is not None and _RUST_WORKER_OWNER_PID == current_pid:
+            try:
+                _RUST_WORKER.close()
+            except Exception:
+                pass
         cli_bin = _resolve_cli_bin()
         if cli_bin is None or not cli_bin.exists():
             return None
         _RUST_WORKER = _RustPrimitiveWorker(cli_bin)
+        _RUST_WORKER_OWNER_PID = current_pid
         return _RUST_WORKER
 
 
 def _invalidate_rust_worker() -> None:
-    global _RUST_WORKER
+    global _RUST_WORKER, _RUST_WORKER_OWNER_PID
     with _RUST_WORKER_LOCK:
         if _RUST_WORKER is not None:
             _RUST_WORKER.close()
             _RUST_WORKER = None
+        _RUST_WORKER_OWNER_PID = None
 
 
 def _rust_prewarm_worker_count() -> int:
@@ -475,7 +502,7 @@ def _cpu_topology() -> tuple[int, int]:
 
 
 def _invalidate_rust_worker_pool() -> None:
-    global _RUST_PREWARM_WORKERS
+    global _RUST_PREWARM_WORKERS, _RUST_PREWARM_WORKERS_OWNER_PID
     with _RUST_PREWARM_WORKERS_LOCK:
         for worker in _RUST_PREWARM_WORKERS:
             try:
@@ -483,13 +510,17 @@ def _invalidate_rust_worker_pool() -> None:
             except Exception:
                 pass
         _RUST_PREWARM_WORKERS = []
+        _RUST_PREWARM_WORKERS_OWNER_PID = None
 
 
 def _get_rust_worker_pool(worker_count: int) -> list[_RustPrimitiveWorker]:
-    global _RUST_PREWARM_WORKERS
+    global _RUST_PREWARM_WORKERS, _RUST_PREWARM_WORKERS_OWNER_PID
     if not _persistent_rust_worker_supported():
         return []
     with _RUST_PREWARM_WORKERS_LOCK:
+        current_pid = os.getpid()
+        if _RUST_PREWARM_WORKERS and _RUST_PREWARM_WORKERS_OWNER_PID != current_pid:
+            _RUST_PREWARM_WORKERS = []
         alive = [worker for worker in _RUST_PREWARM_WORKERS if worker._proc.poll() is None]
         if len(alive) == worker_count:
             _RUST_PREWARM_WORKERS = alive
@@ -514,21 +545,74 @@ def _get_rust_worker_pool(worker_count: int) -> list[_RustPrimitiveWorker]:
         if cli_bin is None or not cli_bin.exists():
             return []
         _RUST_PREWARM_WORKERS = [_RustPrimitiveWorker(cli_bin) for _ in range(worker_count)]
+        _RUST_PREWARM_WORKERS_OWNER_PID = current_pid
         return list(_RUST_PREWARM_WORKERS)
 
 
-def _cache_key(fsa_path: Path, analysis_kind: str) -> tuple[str, str]:
-    return (str(Path(fsa_path).resolve()), str(analysis_kind or "").lower())
+def _cache_key(fsa_path: Path, analysis_kind: str) -> tuple[str, str, int, int]:
+    resolved = Path(fsa_path).resolve()
+    try:
+        stat = resolved.stat()
+        size = int(stat.st_size)
+        mtime_ns = int(stat.st_mtime_ns)
+    except OSError:
+        size = -1
+        mtime_ns = -1
+    return (str(resolved), str(analysis_kind or "").lower(), size, mtime_ns)
 
 
 def _store_cached_rust_result(fsa_path: Path, analysis_kind: str, result: dict[str, Any]) -> None:
     with _RUST_RESULT_CACHE_LOCK:
-        _RUST_RESULT_CACHE[_cache_key(fsa_path, analysis_kind)] = result
+        key = _cache_key(fsa_path, analysis_kind)
+        _RUST_RESULT_CACHE[key] = result
+        _RUST_RESULT_CACHE.move_to_end(key)
+        while len(_RUST_RESULT_CACHE) > _RUST_RESULT_CACHE_MAX:
+            _RUST_RESULT_CACHE.popitem(last=False)
 
 
-def _pop_cached_rust_result(fsa_path: Path, analysis_kind: str) -> dict[str, Any] | None:
+def _increment_rust_engine_stat(name: str, amount: int = 1) -> None:
+    with _RUST_ENGINE_STATS_LOCK:
+        _RUST_ENGINE_STATS[name] = int(_RUST_ENGINE_STATS.get(name, 0)) + int(amount)
+
+
+def reset_rust_engine_stats() -> None:
+    with _RUST_ENGINE_STATS_LOCK:
+        for key in list(_RUST_ENGINE_STATS):
+            _RUST_ENGINE_STATS[key] = 0
+
+
+def merge_rust_engine_stats(stats: dict[str, int]) -> None:
+    with _RUST_ENGINE_STATS_LOCK:
+        for key, value in (stats or {}).items():
+            _RUST_ENGINE_STATS[key] = int(_RUST_ENGINE_STATS.get(key, 0)) + int(value or 0)
+
+
+def rust_engine_stats_snapshot() -> dict[str, int]:
+    with _RUST_ENGINE_STATS_LOCK:
+        return dict(_RUST_ENGINE_STATS)
+
+
+def format_rust_engine_stats(stats: dict[str, int] | None = None) -> str:
+    stats = rust_engine_stats_snapshot() if stats is None else dict(stats)
+    return (
+        "cache={cache_hits} worker={worker_hits} cli={cli_hits} "
+        "failures={failures} prewarm_cached={prewarm_cached}"
+    ).format(
+        cache_hits=int(stats.get("cache_hits", 0)),
+        worker_hits=int(stats.get("worker_hits", 0)),
+        cli_hits=int(stats.get("cli_hits", 0)),
+        failures=int(stats.get("failures", 0)),
+        prewarm_cached=int(stats.get("prewarm_cached", 0)),
+    )
+
+
+def _get_cached_rust_result(fsa_path: Path, analysis_kind: str) -> dict[str, Any] | None:
     with _RUST_RESULT_CACHE_LOCK:
-        return _RUST_RESULT_CACHE.pop(_cache_key(fsa_path, analysis_kind), None)
+        key = _cache_key(fsa_path, analysis_kind)
+        result = _RUST_RESULT_CACHE.get(key)
+        if result is not None:
+            _RUST_RESULT_CACHE.move_to_end(key)
+        return result
 
 
 def prime_rust_worker_results(
@@ -581,6 +665,7 @@ def prime_rust_worker_results(
                 if not isinstance(result, dict):
                     continue
                 _store_cached_rust_result(path, analysis_kind, result)
+                _increment_rust_engine_stat("prewarm_cached")
                 cached += 1
         return cached
 
@@ -633,6 +718,7 @@ def prime_rust_worker_results(
         shard_paths, results = shard_payload
         for path, result in zip(shard_paths, results):
             _store_cached_rust_result(path, analysis_kind, result)
+            _increment_rust_engine_stat("prewarm_cached")
             cached += 1
     return cached
 
@@ -944,9 +1030,10 @@ def run_ladder_fit_hybrid(fsa: FsaFile, analysis_kind: str) -> FsaFile | None:
     fsa_path = Path(fsa.file)
     timeout_seconds = max(_rust_timeout_seconds(analysis_kind), 1)
     started = time.monotonic()
-    cached = _pop_cached_rust_result(fsa_path, analysis_kind)
+    cached = _get_cached_rust_result(fsa_path, analysis_kind)
     if isinstance(cached, dict):
         elapsed = time.monotonic() - started
+        _increment_rust_engine_stat("cache_hits")
         log(f"[RUST] Using prewarmed worker result for {fsa.file_name} after {elapsed:.1f}s")
         return _apply_rust_result_to_fsa(fsa, cached)
 
@@ -955,6 +1042,7 @@ def run_ladder_fit_hybrid(fsa: FsaFile, analysis_kind: str) -> FsaFile | None:
         worker_response = worker.request(fsa_path, analysis_kind, timeout_seconds)
         if worker_response and worker_response.get("ok") and worker_response.get("result"):
             elapsed = time.monotonic() - started
+            _increment_rust_engine_stat("worker_hits")
             log(f"[RUST] Worker finished in {elapsed:.1f}s for {fsa.file_name}")
             res = worker_response["result"]
         else:
@@ -969,7 +1057,9 @@ def run_ladder_fit_hybrid(fsa: FsaFile, analysis_kind: str) -> FsaFile | None:
     if res is None:
         res = _run_cli_once(cli_bin, fsa_path, analysis_kind, fsa.file_name)
         if res is None:
+            _increment_rust_engine_stat("failures")
             return None
+        _increment_rust_engine_stat("cli_hits")
 
     return _apply_rust_result_to_fsa(fsa, res)
 

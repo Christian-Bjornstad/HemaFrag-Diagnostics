@@ -675,6 +675,48 @@ def _write_html(out_path: Path, summary: dict[str, Any], qc_df: pd.DataFrame, su
     out_path.write_text(html, encoding="utf-8")
 
 
+def _reset_rust_engine_stats() -> None:
+    try:
+        from core.rust_bridge import reset_rust_engine_stats
+
+        reset_rust_engine_stats()
+    except Exception:
+        pass
+
+
+def _rust_engine_stats_snapshot() -> dict[str, int]:
+    try:
+        from core.rust_bridge import rust_engine_stats_snapshot
+
+        return rust_engine_stats_snapshot()
+    except Exception:
+        return {}
+
+
+def _format_rust_engine_stats(stats: dict[str, int]) -> str:
+    try:
+        from core.rust_bridge import format_rust_engine_stats
+
+        return format_rust_engine_stats(stats)
+    except Exception:
+        keys = ["cache_hits", "worker_hits", "cli_hits", "failures", "prewarm_cached"]
+        return " ".join(f"{key}={int((stats or {}).get(key, 0))}" for key in keys)
+
+
+def _merge_rust_engine_stats(total: dict[str, int], delta: dict[str, Any] | None) -> None:
+    for key, value in (delta or {}).items():
+        try:
+            amount = int(value or 0)
+        except Exception:
+            continue
+        total[key] = int(total.get(key, 0)) + amount
+
+
+def _attach_rust_engine_stats(result: dict[str, Any]) -> dict[str, Any]:
+    result["rust_engine_stats_delta"] = _rust_engine_stats_snapshot()
+    return result
+
+
 def _read_workbook_sheet(path: Path, sheet_name: str, columns: list[str]) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(columns=columns)
@@ -752,6 +794,7 @@ def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool])
     idx, total, path_text, meta, quiet = payload
     path = Path(path_text)
     started = time.monotonic()
+    _reset_rust_engine_stats()
     stdout_cm = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
     stderr_cm = contextlib.redirect_stderr(io.StringIO()) if quiet else contextlib.nullcontext()
     with _temporary_rox500_env():
@@ -763,7 +806,7 @@ def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool])
                 row = _entry_row(path, meta, None, f"{type(exc).__name__}: {exc}")
                 row = _apply_user_review_override(row, _matches_user_review_override(path))
                 row = _apply_user_good_override(row, _matches_user_good_override(path))
-                return {
+                return _attach_rust_engine_stats({
                     "idx": idx,
                     "total": total,
                     "file": path.name,
@@ -775,14 +818,14 @@ def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool])
                     "status_reason": row.get("QCReason", ""),
                     "ladder_qc": row.get("LadderQC", ""),
                     "peak_qc": row.get("PeakQC", ""),
-                }
+                })
 
             if entry is None:
                 elapsed = time.monotonic() - started
                 row = _entry_row(path, meta, None, "analysis_failed")
                 row = _apply_user_review_override(row, _matches_user_review_override(path))
                 row = _apply_user_good_override(row, _matches_user_good_override(path))
-                return {
+                return _attach_rust_engine_stats({
                     "idx": idx,
                     "total": total,
                     "file": path.name,
@@ -794,7 +837,7 @@ def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool])
                     "status_reason": row.get("QCReason", ""),
                     "ladder_qc": row.get("LadderQC", ""),
                     "peak_qc": row.get("PeakQC", ""),
-                }
+                })
 
             entry["selection_reason"] = "QC-only all-injections run; no injection selection applied"
             entry["alternate_injections"] = []
@@ -807,7 +850,7 @@ def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool])
         elapsed = time.monotonic() - started
         status = row.get("QCStatus", "")
         status_reason = row.get("QCReason", "")
-        return {
+        return _attach_rust_engine_stats({
             "idx": idx,
             "total": total,
             "file": path.name,
@@ -819,7 +862,7 @@ def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool])
             "status_reason": status_reason,
             "ladder_qc": row.get("LadderQC", ""),
             "peak_qc": row.get("PeakQC", ""),
-        }
+        })
 
 
 def _print_qc_result(result: dict[str, Any]) -> None:
@@ -902,6 +945,7 @@ def _run_qc_impl(
         classified.append((path, meta))
 
     rows: list[dict[str, Any]] = []
+    rust_engine_stats: dict[str, int] = {}
     total = len(classified)
     if progress_max_callback is not None:
         progress_max_callback(total)
@@ -945,6 +989,7 @@ def _run_qc_impl(
                             "ladder_qc": row.get("LadderQC", ""),
                             "peak_qc": row.get("PeakQC", ""),
                         }
+                    _merge_rust_engine_stats(rust_engine_stats, result.get("rust_engine_stats_delta"))
                     rows.append(result["row"])
                     completed += 1
                     _print_qc_result(result)
@@ -968,6 +1013,7 @@ def _run_qc_impl(
                 if status_callback is not None:
                     status_callback(message)
                 result = _analyze_qc_file_worker(payload)
+                _merge_rust_engine_stats(rust_engine_stats, result.get("rust_engine_stats_delta"))
                 rows.append(result["row"])
                 _print_qc_result(result)
                 if progress_callback is not None:
@@ -980,6 +1026,7 @@ def _run_qc_impl(
             if status_callback is not None:
                 status_callback(message)
             result = _analyze_qc_file_worker(payload)
+            _merge_rust_engine_stats(rust_engine_stats, result.get("rust_engine_stats_delta"))
             rows.append(result["row"])
             _print_qc_result(result)
             if progress_callback is not None:
@@ -1075,8 +1122,10 @@ def _run_qc_impl(
         "qc_status_counts": dict(Counter(qc_df["QCStatus"].astype(str))) if "QCStatus" in qc_df.columns else {},
         "ladder_qc_counts": dict(Counter(qc_df["LadderQC"].astype(str))) if "LadderQC" in qc_df.columns else {},
         "peak_qc_counts": dict(Counter(qc_df["PeakQC"].astype(str))) if "PeakQC" in qc_df.columns else {},
+        "rust_engine_stats": dict(rust_engine_stats),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
+    print(f"[RUST] Engine usage: {_format_rust_engine_stats(rust_engine_stats)}", flush=True)
     json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     _write_html(html_path, summary, qc_df, summary_df)
 

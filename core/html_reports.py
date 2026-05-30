@@ -11,6 +11,7 @@ import json
 import time
 from pathlib import Path
 from collections import defaultdict
+from dataclasses import asdict, is_dataclass
 from html import escape
 from datetime import datetime
 import pandas as pd
@@ -784,12 +785,27 @@ def _build_report_plot_fragment(
 ) -> str:
     started = time.perf_counter()
     try:
+        cache = None
+        cache_key = None
+        if qc_rules is not None:
+            cache = entry.setdefault("_html_report_fragment_cache", {})
+            if is_dataclass(qc_rules):
+                cache_key = ("qc", tuple(sorted(asdict(qc_rules).items())))
+            else:
+                cache_key = ("qc", id(qc_rules))
+            cached = cache.get(cache_key) if isinstance(cache, dict) else None
+            if isinstance(cached, str):
+                return cached
+
         fragment = (
             build_interactive_peak_plot_for_entry_qc(entry, qc_rules)
             if qc_rules is not None
             else build_interactive_peak_plot_for_entry(entry)
         )
-        return fragment or "<p class='small'><em>Ingen data å vise.</em></p>"
+        fragment = fragment or "<p class='small'><em>Ingen data å vise.</em></p>"
+        if cache_key is not None and isinstance(cache, dict):
+            cache[cache_key] = fragment
+        return fragment
     except Exception as ex:
         if report_metrics is not None:
             report_metrics["plot_errors"] = int(report_metrics.get("plot_errors", 0)) + 1
@@ -829,7 +845,7 @@ def _create_html_header(
     html_lines.append(REPORT_STYLE)
     html_lines.append('<script id="peak-data" type="application/json">{}</script>')
     html_lines.append('<script id="plot-state" type="application/json">{}</script>')
-    html_lines.append("""
+    html_lines.append(r"""
 <script>
 // Toggle comment boxes
 function toggleComment(btn) {
