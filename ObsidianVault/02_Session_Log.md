@@ -1,5 +1,40 @@
 # HemaFrag Session Log
 
+## 2026-06-04 - Assay-Specific Clonality Interpretation Dispatch
+
+- Refactored `interpret_entry` in `core/analyses/clonality/interpretation.py` to dispatch patient samples to assay-specific helpers via `_ASSAY_DISPATCH` map.
+- Assay-specific overrides from annotator feedback: DHJH_D/TCRbA/TCRbC 0-peak→polyklonal; DHJH_E 0-peak→usikker_review; IGK relaxed polyklonal share ≤0.48 when ≥5 peaks.
+- 7 new regression tests added to `tests/test_clonality_interpretation_v1.py`; all 15 tests pass.
+
+## 2026-06-04 - Clonality Annotation Panel Generation
+
+- Rendered annotation HTML panel for clonality interpretation schema `clonality_interpretation_v1` using limit 200 and sample offset 200 from `/Volumes/T7 Shield/DATA/2026`.
+- Output directory: `local_triage/clonality_interpretation_annotation_200_offset200_refonly_2026-06-04/` containing `review_panel.html` with 194 rendered rows (6 skipped).
+
+## 2026-06-04 - Clonality SL Quality Features
+
+- Added percent-based SL DNA-quality features to clonality interpretation v1: 100/200/300/400/600 percentages, `SLFragmentedPercent` (100+200 bp), quality class, and phrase.
+- Annotation HTML/CSV and quick trainer now preserve those SL fields; tracking output includes them only when interpretation assistance is enabled.
+- Verification: py_compile passed for touched clonality interpretation/panel/training/tracking files; `tests/test_clonality_interpretation_v1.py`, `tests/test_clonality_tracking_output.py`, and `tests/test_clonality_rust_preview_peaks.py` passed.
+
+## 2026-06-04 - FLT3 Area Baseline Split
+
+- Changed FLT3 area quantitation so ladder/peak detection can keep corrected traces, while DATA1/DATA2/DATA3 peak areas integrate raw channel traces with a mild local endpoint baseline.
+- Added `tests/test_flt3_area_baseline.py` to guard against small peak area shrinkage from overcorrected detection traces.
+- Verification: targeted FLT3/GS500ROX unittest set passed; py_compile passed; T7 10-file ROX500 QC smoke passed; direct 6-file T7 D835 pipeline smoke produced positive peak areas in `local_triage/flt3_area_pipeline_smoke_output_2026-06-04/FLT3_area_baseline_smoke/`.
+
+## 2026-06-05 - FLT3 Rust-Preview Area Path Fix
+
+- Confirmed standard FLT3 app path often uses Rust preview peaks, so earlier fallback-only area-trace split could show little visible app difference.
+- Updated Rust-preview WT/MUT/ITD area calculation to use raw per-channel DATA1-3 traces with local sideband baseline; DATA4/DATA105 ladder-fit paths remain separate.
+- Verification: `tests/test_flt3_area_baseline.py`, `tests/test_flt3_size_standard_contract.py`, and `tests/test_gs500rox_guardrail.py` passed; py_compile passed. T7 was not mounted for real-file smoke.
+
+## 2026-06-04 - Clonality Interpretation Annotation v1
+
+- Added default-off clonality interpretation assistance scaffolding: HTML annotation panel script, quick offline `scikit-learn` trainer, passive settings toggle, and conditional tracking columns.
+- Annotation schema: `clonality_interpretation_v1`; panel output defaults to `local_triage/clonality_interpretation_annotation_<timestamp>/` and samples patient files plus PK/RK/NK controls.
+- Verification: py_compile passed; `tests/test_clonality_interpretation_v1.py`, `tests/test_clonality_tracking_output.py`, and `tests/test_clonality_rust_preview_peaks.py` passed.
+
 ## 2026-05-14 - Context Reset Toward FLT3
 
 - User confirmed clonality is parked for now.
@@ -1063,3 +1098,33 @@ Verification:
 - Added opt-in strict Rust ladder mode via `HEMAFRAG_STRICT_RUST_LADDER=1` / `HEMAFRAG_RUST_ONLY=1` / `engine.strict_rust_ladder`; when enabled, LIZ/ROX ladder fitting stops instead of falling back to Python fitting.
 - Strict mode disables clonality multiprocessing so per-file timeout/prewarm flow stays deterministic, and disables FLT3 template/lenient Python ladder rescue.
 - Verification: `python3 -m pytest tests/test_strict_rust_ladder_mode.py tests/test_clonality_file_timeout.py tests/test_flt3_rox500_runner_filters.py -q` passed.
+
+## 2026-06-04 - Clonality Interpretation Annotation Panel v1
+
+- Added `uspesifikke_topper`, assay interpretation ranges, in/out-of-range peak features, same-patient parallel links, and tighter assay-range zoom while preserving the normal ladder/baseline fit before plotting.
+- Rendered a new balanced 200-file annotation panel: `local_triage/clonality_interpretation_annotation_200_balanced_2026-06-04/review_panel.html` (`160` patient, `16` PK/PK1/PK2, `12` RK, `12` NK; `200` images).
+- Verification: `python3 -m unittest tests/test_clonality_interpretation_v1.py` passed; panel integrity check confirmed `uspesifikke_topper`, `Paralleller`, and 200 rendered rows/images.
+
+## 2026-06-04 - Clonality Reference-Only Interpretation Tightening
+
+- Tightened v1 rules so `uspesifikke_topper` only fires for configured `NONSPECIFIC_PEAKS`, while clonality ratio/share uses only peaks inside `ASSAY_REFERENCE_RANGES` after excluding known nonspecific peaks.
+- Improved annotation panel zoom with multi-reference ranges, minimum plot span, nonspecific-peak metadata, and non-squeezed plot display via horizontal scroll.
+- Verification: py_compile passed for interpretation/render/train scripts; `python3 -m unittest tests/test_clonality_interpretation_v1.py` passed (`8` tests).
+
+## 2026-06-05 - Clonality Annotation Learning Round 1
+
+- Ingested `/Users/christian/Downloads/clonality_interpretation_annotations (1).json` (`191/200` labeled) and trained a research baseline from panel feature rows at `local_triage/clonality_learning_2026-06-05/quick_model_panel_features/`; accuracy `0.6875`, weighted F1 `0.694`, macro F1 `0.406`.
+- Added trace-feature extraction via `scripts/build_clonality_trace_feature_rows.py` plus dynamic `trace_*` trainer support; raw extraction was blocked because `/Volumes/T7 Shield` was not mounted.
+- Summary artifacts: `local_triage/clonality_learning_2026-06-05/learning_summary.md` and `.json`.
+
+## 2026-06-05 - Clonality Per-Channel Trace Learning
+
+- Extended trace learning to summarize DATA1/DATA2/DATA3 separately in reference windows and add patient+assay replicate concordance features (`matched`, `discordant`, bp delta).
+- With T7 mounted, generated `local_triage/clonality_learning_2026-06-05/trace_feature_rows.csv` (`200/200 ok`). Row split was optimistic (`accuracy 0.9167`); preferred patient/group split output is `quick_model_trace_features_group_split/` (`accuracy 0.676`, weighted F1 `0.683`, macro F1 `0.352`).
+- Still research-only: rare classes (`irregulaer`, `usikker_review`, `uspesifikke_topper`) need more labels before app integration.
+
+## 2026-06-05 - Clonality Learning Mode And Nonspecific Exclusion
+
+- Removed `uspesifikke_topper` as an annotation/model class; known nonspecific peaks from `NONSPECIFIC_PEAKS` are now exclusion metadata/evidence only and are masked from trace-learning windows.
+- Added clonality learning export settings and app-run JSON/CSV annotation seed writer for later model training.
+- Rebuilt masked trace model at `local_triage/clonality_learning_2026-06-05/quick_model_trace_features_nonspecific_masked_group_split/model.joblib`; group split accuracy `0.676`, weighted F1 `0.683`, macro F1 `0.422`.

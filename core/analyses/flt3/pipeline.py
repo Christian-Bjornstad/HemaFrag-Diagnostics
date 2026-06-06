@@ -55,7 +55,6 @@ from core.analyses.flt3.qc_tracker import (
 )
 from core.analyses.shared_pipeline import finalize_pipeline_run, normalize_pipeline_paths, scan_fsa_files
 from core.html_reports import extract_dit_from_name
-from core.area import compute_peak_area_gaussian
 
 
 FLT3_LADDER_QC_THRESHOLD = 0.99
@@ -871,7 +870,52 @@ def _calculate_peak_area(
     label: str,
 ) -> float:
     half_width_bp = _peak_area_half_width_bp(assay, label, center_bp)
-    return compute_peak_area_gaussian(trace, time_all, bp_all, center_bp, half_width_bp)
+    return _calculate_peak_area_local_baseline(trace, time_all, bp_all, center_bp, half_width_bp)
+
+
+def _calculate_peak_area_local_baseline(
+    trace: np.ndarray,
+    time_all: np.ndarray,
+    bp_all: np.ndarray,
+    center_bp: float,
+    half_width_bp: float,
+) -> float:
+    """Integrate a peak over a local sideband baseline without global trace correction."""
+    if trace.size == 0 or time_all.size == 0 or bp_all.size == 0:
+        return 0.0
+
+    local_mask = (bp_all >= center_bp - half_width_bp) & (bp_all <= center_bp + half_width_bp)
+    if not np.any(local_mask):
+        return 0.0
+
+    local_idx = time_all[local_mask].astype(int, copy=False)
+    local_idx = local_idx[(local_idx >= 0) & (local_idx < trace.size)]
+    if local_idx.size < 3:
+        return 0.0
+
+    y = np.asarray(trace[local_idx], dtype=float)
+    sideband_width = max(half_width_bp * 1.25, 0.6)
+    gap = max(half_width_bp * 0.20, 0.1)
+    left_mask = (
+        (bp_all >= center_bp - half_width_bp - gap - sideband_width)
+        & (bp_all <= center_bp - half_width_bp - gap)
+    )
+    right_mask = (
+        (bp_all >= center_bp + half_width_bp + gap)
+        & (bp_all <= center_bp + half_width_bp + gap + sideband_width)
+    )
+
+    def local_level(mask: np.ndarray, fallback: np.ndarray) -> float:
+        idx = time_all[mask].astype(int, copy=False)
+        idx = idx[(idx >= 0) & (idx < trace.size)]
+        values = np.asarray(trace[idx], dtype=float) if idx.size else fallback
+        return float(np.percentile(values, 20))
+
+    edge_n = max(1, min(max(int(round(y.size * 0.15)), 1), y.size // 2))
+    left_level = local_level(left_mask, y[:edge_n])
+    right_level = local_level(right_mask, y[-edge_n:])
+    baseline = np.linspace(left_level, right_level, y.size)
+    return float(np.maximum(y - baseline, 0.0).sum())
 
 
 def _calculate_peak_area_fast(
@@ -883,25 +927,7 @@ def _calculate_peak_area_fast(
     label: str,
 ) -> float:
     half_width_bp = _peak_area_half_width_bp(assay, label, center_bp)
-    if trace.size == 0 or time_all.size == 0 or bp_all.size == 0:
-        return 0.0
-    local_mask = np.abs(bp_all - center_bp) <= half_width_bp
-    if not np.any(local_mask):
-        return 0.0
-    local_idx = time_all[local_mask].astype(int, copy=False)
-    local_idx = local_idx[(local_idx >= 0) & (local_idx < trace.size)]
-    if local_idx.size == 0:
-        return 0.0
-
-    baseline_mask = np.abs(bp_all - center_bp) <= max(half_width_bp * 2.5, 1.0)
-    baseline_idx = time_all[baseline_mask].astype(int, copy=False)
-    baseline_idx = baseline_idx[(baseline_idx >= 0) & (baseline_idx < trace.size)]
-    if baseline_idx.size:
-        baseline_level = float(np.percentile(trace[baseline_idx], 15))
-    else:
-        baseline_level = 0.0
-    signal = np.maximum(trace[local_idx] - baseline_level, 0.0)
-    return float(signal.sum())
+    return _calculate_peak_area_local_baseline(trace, time_all, bp_all, center_bp, half_width_bp)
 
 
 def _peak_height_from_trace(
@@ -941,6 +967,15 @@ def _correct_peak_channel_traces(
         baseline = estimate_running_baseline(raw, bin_size=bin_size, quantile=quantile)
         corrected[ch] = np.maximum(raw - baseline, 0.0)
     return corrected
+
+
+def _raw_peak_channel_traces(fsa: FsaFile, channels: list[str]) -> dict[str, np.ndarray]:
+    """Return raw FLT3 data-channel traces for quantitative area integration."""
+    return {
+        ch: np.asarray(fsa.fsa[ch]).astype(float)
+        for ch in channels
+        if ch in fsa.fsa
+    }
 
 
 def _assay_positive_ratio(assay: str) -> float:
@@ -1004,6 +1039,8 @@ def _build_peaks_from_rust_flt3_preview(
     assay: str,
     primary_channel: str,
     trace: np.ndarray,
+    peak_channels: list[str] | None = None,
+    area_channel_traces: dict[str, np.ndarray] | None = None,
 ) -> pd.DataFrame | None:
     preview = getattr(fsa, "rust_flt3_preview", None)
     sample_data = getattr(fsa, "sample_data_with_basepairs", None)
@@ -1016,6 +1053,14 @@ def _build_peaks_from_rust_flt3_preview(
 
     time_all = sample_data["time"].astype(int).to_numpy()
     bp_all = sample_data["basepairs"].to_numpy()
+    channels = list(peak_channels or [primary_channel])
+    area_traces = area_channel_traces or _raw_peak_channel_traces(fsa, channels)
+    area_combined_trace = _combine_peak_traces(
+        fsa=fsa,
+        peak_channels=list(area_traces.keys()),
+        primary_channel=primary_channel,
+        corrected_channel_traces=area_traces,
+    )
     rows: list[dict[str, object]] = []
     seen_keys: set[tuple[int, int]] = set()
 
@@ -1031,7 +1076,32 @@ def _build_peaks_from_rust_flt3_preview(
             return
         seen_keys.add(key)
         measured_height = _peak_height_from_trace(trace, time_all, bp_all, center_bp, assay, label)
-        measured_area = _calculate_peak_area_fast(trace, time_all, bp_all, center_bp, assay, label)
+        channel_areas = {
+            ch: _calculate_peak_area_fast(
+                area_trace,
+                time_all,
+                bp_all,
+                center_bp,
+                assay,
+                label,
+            )
+            for ch, area_trace in area_traces.items()
+        }
+        combined_area = _calculate_peak_area_fast(
+            area_combined_trace,
+            time_all,
+            bp_all,
+            center_bp,
+            assay,
+            label,
+        )
+        finite_channel_areas = {
+            ch: float(area)
+            for ch, area in channel_areas.items()
+            if np.isfinite(float(area)) and float(area) > 0.0
+        }
+        source_channel = max(finite_channel_areas, key=finite_channel_areas.get) if finite_channel_areas else primary_channel
+        measured_area = _resolve_peak_area(assay=assay, combined_area=combined_area, channel_areas=channel_areas)
         fallback_height = float(peak.get("intensity", 0.0) or 0.0)
         peak_height = measured_height if measured_height > 0.0 else fallback_height
         peak_area = measured_area if measured_area > 0.0 else peak_height
@@ -1041,9 +1111,10 @@ def _build_peaks_from_rust_flt3_preview(
             "area": float(peak_area),
             "keep": True,
             "label": label,
-            "source_channel": primary_channel,
-            f"area_{primary_channel}": float(peak_area),
+            "source_channel": source_channel,
         }
+        for ch, channel_area in channel_areas.items():
+            row[f"area_{ch}"] = float(channel_area)
         rows.append(row)
 
     append_peak(preview.get("wt_peak"), "WT")
@@ -1066,6 +1137,7 @@ def _detect_peaks(
     mut_bp: float | None = None,
     analysis_type: str | None = None,
     corrected_channel_traces: dict[str, np.ndarray] | None = None,
+    area_channel_traces: dict[str, np.ndarray] | None = None,
     fast_area: bool = False,
 ) -> pd.DataFrame:
     """Detect WT and mutant peaks and estimate their corrected AUC."""
@@ -1107,9 +1179,15 @@ def _detect_peaks(
     wt_range = assay_cfg.get("wt_range")
     mut_ranges = assay_cfg.get("mut_ranges")
 
-    channel_traces = corrected_channel_traces or _correct_peak_channel_traces(
+    area_traces = area_channel_traces or _raw_peak_channel_traces(
         fsa,
         assay_cfg.get("peak_channels", ["DATA1", "DATA2", "DATA3"]),
+    )
+    area_combined_trace = _combine_peak_traces(
+        fsa=fsa,
+        peak_channels=list(area_traces.keys()),
+        primary_channel=next(iter(area_traces), ""),
+        corrected_channel_traces=area_traces,
     )
 
     for idx in peak_idx:
@@ -1127,17 +1205,17 @@ def _detect_peaks(
         area_fn = _calculate_peak_area_fast if fast_area else _calculate_peak_area
         channel_areas = {
             ch: area_fn(
-                trace=corr_trace,
+                trace=area_trace,
                 time_all=time_all,
                 bp_all=bp_all,
                 center_bp=p_bp,
                 assay=assay,
                 label=label,
             )
-            for ch, corr_trace in channel_traces.items()
+            for ch, area_trace in area_traces.items()
         }
         combined_area = area_fn(
-            trace=trace,
+            trace=area_combined_trace,
             time_all=time_all,
             bp_all=bp_all,
             center_bp=p_bp,
@@ -1211,7 +1289,11 @@ def _combine_peak_traces(
     corrected_channel_traces: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray:
     combined_trace = None
-    channel_traces = corrected_channel_traces or _correct_peak_channel_traces(fsa, peak_channels)
+    channel_traces = (
+        corrected_channel_traces
+        if corrected_channel_traces is not None
+        else _correct_peak_channel_traces(fsa, peak_channels)
+    )
     for ch in peak_channels:
         corrected = channel_traces.get(ch)
         if corrected is None:
@@ -5563,11 +5645,14 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
             )
         )
     else:
+        area_channel_traces = _raw_peak_channel_traces(fsa, peak_channels)
         peaks = _build_peaks_from_rust_flt3_preview(
             fsa=fsa,
             assay=meta["assay"],
             primary_channel=meta["primary_peak_channel"],
             trace=raw_combined_trace,
+            peak_channels=peak_channels,
+            area_channel_traces=area_channel_traces,
         )
         if peaks is not None:
             corrected_channel_traces = _correct_peak_channel_traces(
@@ -5590,6 +5675,7 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
                     mut_bp=meta.get("mut_bp"),
                     analysis_type=meta.get("analysis_type"),
                     corrected_channel_traces=corrected_channel_traces,
+                    area_channel_traces=area_channel_traces,
                     fast_area=True,
                 )
                 peaks = _merge_supplemental_flt3_peaks(
@@ -5616,6 +5702,7 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
                 mut_bp=meta.get("mut_bp"),
                 analysis_type=meta.get("analysis_type"),
                 corrected_channel_traces=corrected_channel_traces,
+                area_channel_traces=area_channel_traces,
                 fast_area=meta.get("group") == "negative_control",
             )
 

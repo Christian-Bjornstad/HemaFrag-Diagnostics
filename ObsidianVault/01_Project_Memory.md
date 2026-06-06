@@ -36,6 +36,7 @@ HemaFrag is now focused on FLT3 work. Clonality is considered parked for a while
 - Python ladder-rescue/template fallback for FLT3 `GS500ROX` is legacy opt-in only via `HEMAFRAG_FLT3_ENABLE_PYTHON_LADDER_RESCUE`.
 - QC-only ROX500 runner should not generate DIT clinical reports or treat sample peak calls as final truth.
 - Operator/manual review chooses FLT3 sample peaks; HemaFrag should provide correct sizing and ratio calculation from explicit peak choices.
+- FLT3 peak-area quantitation intentionally uses raw DATA-channel traces with mild local sideband baseline integration; stricter baseline correction may be used for ladder/peak detection but must not be reused for quantitative area, including Rust-preview WT/MUT/ITD peaks.
 
 ## FLT3 Runner
 
@@ -137,3 +138,12 @@ HemaFrag is now focused on FLT3 work. Clonality is considered parked for a while
 - Clonality/FLT3 batch input defaults to `Latest run date`: when a broad parent folder is selected, HemaFrag parses direct run-folder dates (`YYYY_MM_DD` preferred, `YYYY-MM-DD` fallback), scans only folders from the newest date, and builds QC jobs from that same selected run set.
 - Historical clonality backfill should not let one bad `.fsa` block a whole night run. Source/runtime backfills use `analyses.clonality.pipeline.file_timeout_seconds` (default `240`) to isolate each file in a child process and skip it on timeout. Known repeated hang files are filtered in `core.batch.KNOWN_CLONALITY_BACKFILL_SKIP_FILES`.
 - Strict Rust ladder mode is opt-in with `HEMAFRAG_STRICT_RUST_LADDER=1`, `HEMAFRAG_RUST_ONLY=1`, or `engine.strict_rust_ladder=true`; it disables Python ladder fallback/rescue and clonality multiprocessing so failures surface as skipped/reviewed files under per-file timeout instead of hidden Python rescues.
+- Clonality interpretation assistance is experimental and default-off. Annotation/training v1 uses `scripts/render_clonality_interpretation_annotation_html.py` for ~500-file panels with patient + PK/RK/NK controls, `scripts/train_clonality_interpretation_quick_model.py` for offline `scikit-learn` research models, and schema `clonality_interpretation_v1`; DIT/final report text must not change from this feature yet.
+- SL interpretation in clonality v1 is DNA-quality oriented rather than clonality oriented: use area percentages for 100/200/300/400/600 bp, with `SLFragmentedPercent` based on 100+200 bp and compact quality classes such as `bra_kvalitet`, `litt_fragmentert`, and `mer_enn_50_prosent_fragmentert`.
+- Clonality v1 marks `uspesifikke_topper` only for peaks matching the known `NONSPECIFIC_PEAKS` list in `core/analyses/clonality/config.py`; unknown out-of-reference peaks are not automatically called nonspecific. Known nonspecific peaks are metadata/exclusion evidence, not an annotation/model class, and must be excluded from peak ratios/share and trace-learning windows.
+- Clonality patient sample interpretation uses a centralized `_ASSAY_DISPATCH` map to select dedicated helper functions (`_interpret_<assay>`) based on normalized assay name keys:
+  - **DHJH_D**: Zero-peak patient samples map to `polyklonal` (broad reference range and polyclonal background often lead to no detectable peaks after filtering).
+  - **DHJH_E**: Zero-peak patient samples map to `usikker_review` (narrow range, ambiguous quality vs. lack of rearrangement).
+  - **TCRbA / TCRbC**: Zero-peak patient samples map to `polyklonal` (expected polyclonal TCR background has no discrete peaks).
+  - **IGK**: Relaxed `polyklonal` threshold allows multi-peak profiles with ≥5 peaks and height share ≤ 0.48 to map to `polyklonal` (retains polyclonal status under high-peak density).
+- Clonality learning should prefer reference-window trace-shape features from raw `.fsa` data, evaluated per DATA channel plus patient/assay replicate concordance; trace models remain research-only and must not drive app output until evaluation is acceptable across rare classes. Settings include a separate learning export mode that writes app-run annotation seed JSON/CSV for later supervised learning.

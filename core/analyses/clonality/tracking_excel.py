@@ -10,6 +10,10 @@ import numpy as np
 import pandas as pd
 
 from config import APP_SETTINGS
+from core.analyses.clonality.interpretation import (
+    TRACKING_COLUMNS as CLONALITY_INTERPRETATION_COLUMNS,
+    interpretation_enabled,
+)
 from fraggler.fraggler import print_green
 from core.analyses.clonality.tracking_dashboard import refresh_clonality_tracking_dashboard
 from core.qc.qc_markers import (
@@ -60,6 +64,7 @@ RUN_SHEET_COLUMNS = [
     "LadderLinearMaxResidualBp",
     "LadderCurvature",
 ]
+RUN_SHEET_COLUMNS_WITH_INTERPRETATION = RUN_SHEET_COLUMNS + CLONALITY_INTERPRETATION_COLUMNS
 PEAK_SHEET_COLUMNS = [
     "Month",
     "IdentityKey",
@@ -156,7 +161,8 @@ def update_clonality_tracking_workbook(
     excel_path.parent.mkdir(parents=True, exist_ok=True)
 
     rules = rules or build_clonality_qc_rules()
-    df_runs, df_peaks, pk_identity_keys = _build_tracking_frames(entries, rules)
+    run_columns = _run_sheet_columns_for_entries(entries)
+    df_runs, df_peaks, pk_identity_keys = _build_tracking_frames(entries, rules, run_columns=run_columns)
     # If no data and file exists, nothing to do. If no data and file MISSING, we create the skeleton below.
     if df_runs.empty and df_peaks.empty and excel_path.exists():
         return
@@ -174,16 +180,16 @@ def update_clonality_tracking_workbook(
                 print_warning(f"Kunne ikke lese eksisterende {excel_path.name}, kanskje korrupt. Lager ny...")
 
             try:
-                old_runs = pd.read_excel(excel_path, sheet_name="Runs", engine="openpyxl") if has_runs else pd.DataFrame(columns=RUN_SHEET_COLUMNS)
+                old_runs = pd.read_excel(excel_path, sheet_name="Runs", engine="openpyxl") if has_runs else pd.DataFrame(columns=run_columns)
                 old_peaks = pd.read_excel(excel_path, sheet_name="PK_Peaks", engine="openpyxl") if has_peaks else pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
             except Exception:
-                old_runs = pd.DataFrame(columns=RUN_SHEET_COLUMNS)
+                old_runs = pd.DataFrame(columns=run_columns)
                 old_peaks = pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
         else:
-            old_runs = pd.DataFrame(columns=RUN_SHEET_COLUMNS)
+            old_runs = pd.DataFrame(columns=run_columns)
             old_peaks = pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
 
-        old_runs = _normalize_run_frame(old_runs)
+        old_runs = _normalize_run_frame(old_runs, run_columns=run_columns)
         old_peaks = _reindex_columns(old_peaks, PEAK_SHEET_COLUMNS)
 
         if not df_runs.empty and "IdentityKey" in old_runs.columns:
@@ -199,27 +205,28 @@ def update_clonality_tracking_workbook(
         if not all_peaks.empty and {"IdentityKey", "MarkerName"}.issubset(all_peaks.columns):
             all_peaks = all_peaks.drop_duplicates(subset=["IdentityKey", "MarkerName"], keep="last")
 
-        all_runs = _reindex_columns(all_runs, RUN_SHEET_COLUMNS)
+        all_runs = _reindex_columns(all_runs, run_columns)
         all_peaks = _reindex_columns(all_peaks, PEAK_SHEET_COLUMNS)
 
         writer_kwargs = {"engine": "openpyxl"}
         if excel_path.exists():
             writer_kwargs.update({"mode": "a", "if_sheet_exists": "replace"})
 
-        patient_runs, control_runs = _split_run_frames(all_runs)
+        patient_runs, control_runs = _split_run_frames(all_runs, run_columns=run_columns)
 
         with pd.ExcelWriter(excel_path, **writer_kwargs) as writer:
             all_runs.to_excel(writer, sheet_name="Runs", index=False)
             patient_runs.to_excel(writer, sheet_name="Patient_Runs", index=False)
             control_runs.to_excel(writer, sheet_name="Control_Runs", index=False)
             all_peaks.to_excel(writer, sheet_name="PK_Peaks", index=False)
-        _apply_reference_tracking_headers(excel_path)
+        _apply_reference_tracking_headers(excel_path, run_columns=run_columns)
         if refresh_dashboard:
             refresh_clonality_tracking_dashboard(excel_path)
         print_green(f"Clonality tracking workbook updated in {excel_path}")
 
 
-def _build_tracking_frames(entries: list[dict], rules: QCRules) -> tuple[pd.DataFrame, pd.DataFrame, set[str]]:
+def _build_tracking_frames(entries: list[dict], rules: QCRules, *, run_columns: list[str] | None = None) -> tuple[pd.DataFrame, pd.DataFrame, set[str]]:
+    run_columns = run_columns or RUN_SHEET_COLUMNS
     run_rows: list[dict] = []
     peak_rows: list[dict] = []
     pk_identity_keys: set[str] = set()
@@ -236,7 +243,7 @@ def _build_tracking_frames(entries: list[dict], rules: QCRules) -> tuple[pd.Data
             peak_rows.extend(_build_pk_peak_rows(entry, rules, base_row))
 
     return (
-        _reindex_columns(pd.DataFrame(run_rows), RUN_SHEET_COLUMNS),
+        _reindex_columns(pd.DataFrame(run_rows), run_columns),
         _reindex_columns(pd.DataFrame(peak_rows), PEAK_SHEET_COLUMNS),
         pk_identity_keys,
     )
@@ -385,6 +392,15 @@ def _build_run_row(entry: dict) -> dict:
         "LadderLinearMeanResidualBp": ladder_linear_mean_residual_bp,
         "LadderLinearMaxResidualBp": ladder_linear_max_residual_bp,
         "LadderCurvature": ladder_curvature,
+        "ClonalityInterpretationEnabled": entry.get("ClonalityInterpretationEnabled", ""),
+        "ClonalitySuggestion": entry.get("ClonalitySuggestion", ""),
+        "ClonalityConfidence": entry.get("ClonalityConfidence", ""),
+        "ClonalityReviewNeeded": entry.get("ClonalityReviewNeeded", ""),
+        "ClonalityEvidence": entry.get("ClonalityEvidence", ""),
+        "ClonalitySLQualityClass": entry.get("ClonalitySLQualityClass", ""),
+        "ClonalitySLFragmentedPercent": entry.get("ClonalitySLFragmentedPercent", ""),
+        "ClonalitySLQualityPhrase": entry.get("ClonalitySLQualityPhrase", ""),
+        "ClonalityModelVersion": entry.get("ClonalityModelVersion", ""),
     }
 
 
@@ -497,30 +513,32 @@ def sanitize_clonality_tracking_workbook(excel_path: Path, *, refresh_dashboard:
         if not any([has_runs, has_peaks]):
             return False
 
-        runs = pd.read_excel(excel_path, sheet_name="Runs", engine="openpyxl") if has_runs else pd.DataFrame(columns=RUN_SHEET_COLUMNS)
+        run_columns = RUN_SHEET_COLUMNS_WITH_INTERPRETATION if interpretation_enabled() else RUN_SHEET_COLUMNS
+        runs = pd.read_excel(excel_path, sheet_name="Runs", engine="openpyxl") if has_runs else pd.DataFrame(columns=run_columns)
         peaks = pd.read_excel(excel_path, sheet_name="PK_Peaks", engine="openpyxl") if has_peaks else pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
 
-        runs = _normalize_run_frame(runs)
+        runs = _normalize_run_frame(runs, run_columns=run_columns)
         peaks = _reindex_columns(peaks, PEAK_SHEET_COLUMNS)
 
         writer_kwargs = {"engine": "openpyxl", "mode": "a", "if_sheet_exists": "replace"}
-        patient_runs, control_runs = _split_run_frames(runs)
+        patient_runs, control_runs = _split_run_frames(runs, run_columns=run_columns)
 
         with pd.ExcelWriter(excel_path, **writer_kwargs) as writer:
             runs.to_excel(writer, sheet_name="Runs", index=False)
             patient_runs.to_excel(writer, sheet_name="Patient_Runs", index=False)
             control_runs.to_excel(writer, sheet_name="Control_Runs", index=False)
             peaks.to_excel(writer, sheet_name="PK_Peaks", index=False)
-        _apply_reference_tracking_headers(excel_path)
+        _apply_reference_tracking_headers(excel_path, run_columns=run_columns)
 
         if refresh_dashboard:
             refresh_clonality_tracking_dashboard(excel_path)
     return True
 
 
-def _normalize_run_frame(df: pd.DataFrame) -> pd.DataFrame:
+def _normalize_run_frame(df: pd.DataFrame, *, run_columns: list[str] | None = None) -> pd.DataFrame:
+    run_columns = run_columns or RUN_SHEET_COLUMNS
     if df.empty:
-        return pd.DataFrame(columns=RUN_SHEET_COLUMNS)
+        return pd.DataFrame(columns=run_columns)
 
     normalized = df.copy()
     legacy_identity = normalized.get("IdentityKey", pd.Series("", index=normalized.index)).fillna("").astype(str)
@@ -548,22 +566,23 @@ def _normalize_run_frame(df: pd.DataFrame) -> pd.DataFrame:
             
     normalized["IdentityKey"] = normalized_identity
     normalized["SourceRunDir"] = source_run_dir
-    return _reindex_columns(normalized, RUN_SHEET_COLUMNS)
+    return _reindex_columns(normalized, run_columns)
 
 
-def _split_run_frames(runs: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    runs = _normalize_run_frame(runs)
+def _split_run_frames(runs: pd.DataFrame, *, run_columns: list[str] | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    run_columns = run_columns or RUN_SHEET_COLUMNS
+    runs = _normalize_run_frame(runs, run_columns=run_columns)
     if runs.empty:
         return (
-            pd.DataFrame(columns=RUN_SHEET_COLUMNS),
-            pd.DataFrame(columns=RUN_SHEET_COLUMNS),
+            pd.DataFrame(columns=run_columns),
+            pd.DataFrame(columns=run_columns),
         )
 
     sample_kind = runs.get("SampleKind", pd.Series("", index=runs.index)).fillna("").astype(str).str.lower()
     control = runs.get("Control", pd.Series("", index=runs.index)).fillna("").astype(str)
     is_control = sample_kind.eq("control") | control.isin(CONTROL_IDS)
-    patient_runs = _reindex_columns(runs.loc[~is_control].copy(), RUN_SHEET_COLUMNS)
-    control_runs = _reindex_columns(runs.loc[is_control].copy(), RUN_SHEET_COLUMNS)
+    patient_runs = _reindex_columns(runs.loc[~is_control].copy(), run_columns)
+    control_runs = _reindex_columns(runs.loc[is_control].copy(), run_columns)
     return patient_runs, control_runs
 
 
@@ -642,18 +661,28 @@ def _month_bucket(run_date: str) -> str:
     return ""
 
 
-def _apply_reference_tracking_headers(excel_path: Path) -> None:
+def _run_sheet_columns_for_entries(entries: list[dict] | None = None) -> list[str]:
+    if interpretation_enabled():
+        return RUN_SHEET_COLUMNS_WITH_INTERPRETATION
+    for entry in entries or []:
+        if any(column in entry for column in CLONALITY_INTERPRETATION_COLUMNS):
+            return RUN_SHEET_COLUMNS_WITH_INTERPRETATION
+    return RUN_SHEET_COLUMNS
+
+
+def _apply_reference_tracking_headers(excel_path: Path, *, run_columns: list[str] | None = None) -> None:
     from openpyxl import load_workbook
 
+    run_columns = run_columns or RUN_SHEET_COLUMNS
     wb = load_workbook(excel_path)
     if "Runs" in wb.sheetnames:
         ws = wb["Runs"]
-        for col, header in enumerate(RUN_SHEET_COLUMNS, start=1):
+        for col, header in enumerate(run_columns, start=1):
             ws.cell(1, col).value = header
     for sheet_name in ("Patient_Runs", "Control_Runs"):
         if sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
-            for col, header in enumerate(RUN_SHEET_COLUMNS, start=1):
+            for col, header in enumerate(run_columns, start=1):
                 ws.cell(1, col).value = header
     if "PK_Peaks" in wb.sheetnames:
         ws = wb["PK_Peaks"]

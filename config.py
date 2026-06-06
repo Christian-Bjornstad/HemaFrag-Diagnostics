@@ -127,6 +127,14 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "assay_filter_substring": "",
                 "file_timeout_seconds": 240,
             },
+            "interpretation": {
+                "enabled": False,
+                "model_path": "",
+            },
+            "learning": {
+                "enabled": False,
+                "output_dir": "",
+            },
         },
         "flt3": {
             "batch": {

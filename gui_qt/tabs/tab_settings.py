@@ -52,10 +52,13 @@ class TabAnalysisSettings(QWidget):
 
         self.paths_card = self._build_paths_card()
         self.run_card = self._build_run_card()
+        self.interpretation_card = self._build_interpretation_card()
         self.shared_card = self._build_shared_card()
 
         main_layout.addWidget(self.paths_card)
         main_layout.addWidget(self.run_card)
+        if self.analysis_id == "clonality":
+            main_layout.addWidget(self.interpretation_card)
         main_layout.addWidget(self.shared_card)
         main_layout.addStretch()
 
@@ -130,6 +133,53 @@ class TabAnalysisSettings(QWidget):
         layout.addRow("", note)
         return card
 
+    def _build_interpretation_card(self) -> QWidget:
+        card = QWidget()
+        card.setObjectName("Card")
+        layout = QFormLayout(card)
+
+        layout.addRow(QLabel("<b>Clonality Interpretation Assistance</b>"))
+
+        self.chk_clonality_interpretation = QCheckBox("Enable clonality interpretation assistance")
+        layout.addRow("", self.chk_clonality_interpretation)
+
+        self.clonality_model_path = QLineEdit()
+        self.clonality_model_path.setPlaceholderText("Optional offline model.joblib path")
+        row_model = QHBoxLayout()
+        btn_browse_model = QPushButton("Browse...")
+        btn_browse_model.clicked.connect(self._browse_clonality_model_path)
+        row_model.addWidget(self.clonality_model_path, stretch=1)
+        row_model.addWidget(btn_browse_model)
+        layout.addRow("Experimental Model:", row_model)
+
+        note = QLabel(
+            "When enabled, HemaFrag adds experimental interpretation columns to clonality tracking output. "
+            "Final report text is not changed."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #64748b;")
+        layout.addRow("", note)
+
+        self.chk_clonality_learning = QCheckBox("Enable clonality learning annotation export")
+        layout.addRow("", self.chk_clonality_learning)
+
+        self.clonality_learning_output_dir = QLineEdit()
+        self.clonality_learning_output_dir.setPlaceholderText("Leave blank to save beside the run output")
+        row_learning = QHBoxLayout()
+        btn_browse_learning = QPushButton("Browse...")
+        btn_browse_learning.clicked.connect(lambda: self._browse_dir(self.clonality_learning_output_dir))
+        row_learning.addWidget(self.clonality_learning_output_dir, stretch=1)
+        row_learning.addWidget(btn_browse_learning)
+        layout.addRow("Learning Export Folder:", row_learning)
+
+        learning_note = QLabel(
+            "When enabled, each clonality batch run writes annotation seed JSON/CSV for later model learning."
+        )
+        learning_note.setWordWrap(True)
+        learning_note.setStyleSheet("color: #64748b;")
+        layout.addRow("", learning_note)
+        return card
+
     def _build_shared_card(self) -> QWidget:
         card = QWidget()
         card.setObjectName("Card")
@@ -177,6 +227,8 @@ class TabAnalysisSettings(QWidget):
         analysis_settings = get_analysis_settings(self.analysis_id)
         batch_settings = analysis_settings.get("batch", {})
         pipeline_settings = analysis_settings.get("pipeline", {})
+        interpretation_settings = analysis_settings.get("interpretation", {})
+        learning_settings = analysis_settings.get("learning", {})
         general_settings = APP_SETTINGS.get("general", {})
         qc_settings = APP_SETTINGS.get("qc", {})
         self.default_input.setText(batch_settings.get("base_input_dir", str(Path.home())))
@@ -188,6 +240,11 @@ class TabAnalysisSettings(QWidget):
         self.chk_agg_pat.setChecked(bool(batch_settings.get("aggregate_by_patient", True)))
         self.patient_regex.setText(batch_settings.get("patient_id_regex", r"\d{2}OUM\d{5}"))
         self.chk_agg_dit.setChecked(bool(batch_settings.get("aggregate_dit_reports", True)))
+        if self.analysis_id == "clonality":
+            self.chk_clonality_interpretation.setChecked(bool(interpretation_settings.get("enabled", False)))
+            self.clonality_model_path.setText(str(interpretation_settings.get("model_path", "") or ""))
+            self.chk_clonality_learning.setChecked(bool(learning_settings.get("enabled", False)))
+            self.clonality_learning_output_dir.setText(str(learning_settings.get("output_dir", "") or ""))
         self._sync_patient_regex_enabled()
         self._sync_scope_controls()
 
@@ -201,6 +258,8 @@ class TabAnalysisSettings(QWidget):
         profile = analyses.setdefault(self.analysis_id, {})
         batch_settings = profile.setdefault("batch", {})
         pipeline_settings = profile.setdefault("pipeline", {})
+        interpretation_settings = profile.setdefault("interpretation", {})
+        learning_settings = profile.setdefault("learning", {})
 
         batch_settings["base_input_dir"] = self.default_input.text().strip()
         batch_settings["output_base"] = self.default_output.text().strip()
@@ -211,6 +270,11 @@ class TabAnalysisSettings(QWidget):
 
         pipeline_settings["mode"] = self.mode_combo.currentText()
         pipeline_settings["assay_filter_substring"] = self.assay_filter.text().strip()
+        if self.analysis_id == "clonality":
+            interpretation_settings["enabled"] = self.chk_clonality_interpretation.isChecked()
+            interpretation_settings["model_path"] = self.clonality_model_path.text().strip()
+            learning_settings["enabled"] = self.chk_clonality_learning.isChecked()
+            learning_settings["output_dir"] = self.clonality_learning_output_dir.text().strip()
 
         if APP_SETTINGS.get("active_analysis") == self.analysis_id:
             APP_SETTINGS.setdefault("batch", {}).update(batch_settings)
@@ -244,6 +308,17 @@ class TabAnalysisSettings(QWidget):
         )
         if selected:
             self.tracking_excel_path.setText(selected)
+
+    def _browse_clonality_model_path(self) -> None:
+        start_path = self.clonality_model_path.text().strip() or self.default_output.text().strip() or str(Path.home())
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Clonality Interpretation Model",
+            start_path,
+            "Joblib Model (*.joblib);;All Files (*)",
+        )
+        if selected:
+            self.clonality_model_path.setText(selected)
 
     def _sync_patient_regex_enabled(self) -> None:
         self.patient_regex.setEnabled(self.chk_agg_pat.isChecked())
