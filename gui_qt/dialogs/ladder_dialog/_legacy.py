@@ -32,16 +32,6 @@ import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
-try:
-    import pyqtgraph as pg
-except Exception:
-    pg = None
-
-
-PASS_R2 = 0.9995
-CHECK_R2 = 0.9990
-PASS_MAX_ABS_RESIDUAL = 0.5
-CHECK_MAX_ABS_RESIDUAL = 1.5
 
 
 class LadderAdjustmentDialog(QDialog):
