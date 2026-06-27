@@ -1,7 +1,13 @@
 import numpy as np
 import pandas as pd
-from lmfit.models import GaussianModel
-from fraggler.fraggler import baseline_arPLS
+
+
+def _gaussian_model_cls():
+    # Lazy-import so `import core.area` does not pay the
+    # lmfit / `panel` / `param` import cost (~2.8 s) on first contact.
+    from lmfit.models import GaussianModel
+    return GaussianModel
+
 
 def compute_peak_area_gaussian(
     trace: np.ndarray,
@@ -65,7 +71,8 @@ def compute_peak_area_gaussian(
     # to avoid extreme performance hits and handle local variations effectively.
     # Note: baseline_arPLS defaults are ratio=0.99, lam=100 in fraggler, we use lam=1e4 for smoother baseline
     try:
-        baseline = baseline_arPLS(ext_trace, ratio=0.01, lam=1e4)
+        from fraggler.fraggler import baseline_arPLS as _babel_arPLS_for_area
+        baseline = _babel_arPLS_for_area(ext_trace, ratio=0.01, lam=1e4)
     except Exception:
         # Fallback to simple min if arPLS fails
         baseline = np.min(ext_trace)
@@ -89,7 +96,7 @@ def compute_peak_area_gaussian(
     raw_sum_area = float(np.sum(y))
 
     # 3) Gaussian Fit using lmfit
-    model = GaussianModel()
+    model = _gaussian_model_cls()()
     try:
         # We fit Gaussian over the array index.
         # This keeps the integral (amplitude) in the same scale as np.sum() over time_points

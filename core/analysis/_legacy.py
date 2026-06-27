@@ -2796,7 +2796,13 @@ def _rolling_quantile_baseline(
     bin_size: int = BASELINE_BIN_SIZE,
     quantile: float = BASELINE_QUANTILE,
 ) -> np.ndarray:
-    """Low-envelope baseline estimated from per-bin quantiles."""
+    """Low-envelope baseline estimated from per-bin quantiles.
+
+    Same semantics as the original Python-loop implementation:
+    bins of size ``bin_size`` cover the trace, the last bin may be
+    shorter, and the per-bin output is linearly interpolated back to
+    the original index range.
+    """
     values = np.asarray(trace, dtype=float)
     n = values.size
     if n == 0:
@@ -2804,34 +2810,48 @@ def _rolling_quantile_baseline(
     if bin_size < 20:
         bin_size = 20
 
-    n_bins = int(np.ceil(n / bin_size))
-    centers: list[float] = []
-    base_vals: list[float] = []
+    full_bins = n // bin_size
+    rem = n % bin_size
 
-    for b in range(n_bins):
-        start = b * bin_size
-        end = min((b + 1) * bin_size, n)
-        seg = values[start:end]
-        if seg.size == 0:
-            continue
-        centers.append(0.5 * (start + end - 1))
-        base_vals.append(float(np.quantile(seg, quantile)))
+    with np.errstate(all="ignore"):
+        if full_bins == 0:
+            # n < bin_size: a single short bin.
+            centres = np.array([0.5 * (n - 1)], dtype=float)
+            q_vals = np.array([float(np.quantile(values, quantile))],
+                              dtype=float)
+        elif rem == 0:
+            # Perfect fit: every bin has exactly `bin_size` items.
+            bins = values.reshape((full_bins, bin_size))
+            centres = (np.arange(full_bins, dtype=float) * bin_size
+                       + 0.5 * (bin_size - 1.0))
+            q_vals = np.quantile(bins, quantile, axis=1)
+        else:
+            # `full_bins` complete bins + one short trailing bin.
+            head = values[: full_bins * bin_size].reshape((full_bins, bin_size))
+            tail = values[full_bins * bin_size:]
+            centres = np.empty(full_bins + 1, dtype=float)
+            centres[:full_bins] = (
+                np.arange(full_bins, dtype=float) * bin_size
+                + 0.5 * (bin_size - 1.0)
+            )
+            centres[full_bins] = 0.5 * (full_bins * bin_size + n - 1)
+            head_q = np.quantile(head, quantile, axis=1)
+            tail_q = float(np.quantile(tail, quantile))
+            q_vals = np.empty(full_bins + 1, dtype=float)
+            q_vals[:full_bins] = head_q
+            q_vals[full_bins] = tail_q
 
-    if not centers:
-        return np.zeros_like(values, dtype=float)
-
-    centers_arr = np.asarray(centers, dtype=float)
-    base_vals_arr = np.asarray(base_vals, dtype=float)
     idx = np.arange(n, dtype=float)
+    if q_vals.size == 1:
+        return np.full_like(idx, q_vals[0], dtype=float)
+
     return np.interp(
         idx,
-        centers_arr,
-        base_vals_arr,
-        left=base_vals_arr[0],
-        right=base_vals_arr[-1],
+        centres,
+        q_vals,
+        left=q_vals[0],
+        right=q_vals[-1],
     )
-
-
 def _compute_robust_arpls_baseline(
     trace: np.ndarray,
     lam: float = 100.0,
