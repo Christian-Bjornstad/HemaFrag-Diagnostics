@@ -33,6 +33,7 @@ from gui_qt.ladder_utils import detect_fsa_for_ladder, load_adjustable_fsa
 from gui_qt.worker import Worker
 
 
+
 def _open_path(path: Path) -> None:
     if sys.platform == "darwin":
         subprocess.Popen(["open", str(path)])
