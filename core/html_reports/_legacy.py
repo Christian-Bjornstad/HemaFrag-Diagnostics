@@ -23,6 +23,7 @@ import numpy as np
 from fraggler.fraggler import print_green, print_warning
 
 import core.assay_config as assay_config
+from core.html_reports._constants import (DIT_PATTERN, DIT_QC_CONTROL_IDS, REPORT_STYLE, D835_DIGEST_HEIGHT_MIN, D835_DIGEST_AREA_MIN)
 from core.assay_config import (
     CHANNEL_COLORS,
     DEFAULT_TRACE_COLOR,

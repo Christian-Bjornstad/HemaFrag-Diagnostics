@@ -1,19 +1,23 @@
 """
 HemaFrag — html_reports constants and inline styles.
 
-Auto-curated from the previously-monolithic `core/html_reports.py`
-during the 2026-06-27 `code-cleanup` Phase 6. Re-exported via the
-package facade unchanged.
+Auto-curated from the previously-monolithic `core/html_reports.py` during
+the 2026-06-27 `code-cleanup` Phase 6. Re-exported via the package
+facade unchanged.
 """
 import re
 
-
+__all__ = [
+    "DIT_PATTERN",
+    "DIT_QC_CONTROL_IDS",
+    "REPORT_STYLE",
+    "D835_DIGEST_HEIGHT_MIN",
+    "D835_DIGEST_AREA_MIN",
+]
 
 
 DIT_PATTERN = re.compile(r"(\d{2}OUM\d{5})")
 DIT_QC_CONTROL_IDS = {"PK", "PK1", "PK2", "NK", "RK"}
-
-
 
 
 REPORT_STYLE = """
