@@ -19,6 +19,7 @@ scope, and each provides acceptance criteria so we can verify post-merge.
 | 04 | Clonality (parked) | `04_clonality_parked_review.md` | Parked subsystem — structure-only, no behavior changes. |
 | 05 | Scripts & packaging | `05_scripts_and_packaging_review.md` | CLI runners, Docker/Windows build chain, requirements, CI. |
 | 06 | Tests & hygiene | `06_tests_and_hygiene_review.md` | Test coverage gaps, post-cleanup workspace hygiene. |
+| 07 | Performance optimization | `07_optimization_essentials.md` | Essentials-preserving perf: shrink per-patient Resultater.html from ~5 MB to ~10 KB by externalizing plotly JS. |
 
 ## Cross-cutting concerns
 
