@@ -1,311 +1,267 @@
-# Plan 07 — Performance Optimization (essentials-preserving)
+# Plan 07 — Performance Optimization (essentials-preserving, self-contained HTML)
 
 > Branch: `code-cleanup`. Test baseline: `Ran 33 tests, OK`.
-> Constraint: **do not remove any user-facing essentials**. The Qt app
-> stays as the daily-driver interactive workflow. The plotly
-> reports **stay interactive**. The per-patient `Resultater.html`
-> stays the LIS handoff. We optimize around the essentials, never
-> at their expense.
+> Constraint (revised after user feedback 2026-06-27):
+> **Each per-patient `Resultater.html` MUST remain a single self-contained
+> file. The LIS upload is one HTML file per patient; sibling dependencies
+> (a separate `plotly-3.1.0.min.js` next to it) are not acceptable. We do
+> not externalize the JS — we shrink it instead, and remove the rest of
+> the redundancy from inside one HTML.**
 
-This plan targets the user's observed pain point: per-patient HTML
-report size. Today's `_Resultater.html` files inline 4.6 MB of
-minified plotly JS into every single report. For a 200-patient run,
-that's ~920 MB of redundant JS payload going to LIS.
+This plan targets the user's primary pain: per-patient HTML report
+size. Today's `_Resultater.html` files inline 4.6 MB of minified
+plotly JS into every single report. For a 200-patient run, that's
+~920 MB of redundant JS payload going to LIS.
 
----
+We keep the essentials:
+- Qt app stays the daily-driver interactive workflow.
+- Plotly HTML reports stay interactive.
+- Per-patient `Resultater.html` files stay **ONE FILE EACH**, fully
+  self-contained, no sibling dependencies.
 
 ## 1. Current state (data-grounded)
 
-Source points (verified during review):
-
-- `assets/plotly-3.1.0.min.js` — 4,763,993 bytes (~4.6 MB) bundled
-  with the app.
+- `assets/plotly-3.1.0.min.js` — 4,763,993 bytes (~4.6 MB) bundled.
 - `core/plotly_offline.py:19-35` (`plotly_inline_script_tag`) reads
-  the JS once and caches it in module-global `_PLOTLY_INLINE_CACHE`.
-  Returns `<script>{full JS here}</script>`.
-- `core/plotly_offline.py:41-43` (`local_plotly_tag(out_dir, ...)`)
-  **ignores `out_dir` parameter** and always inlines. Signature is
-  dead.
-- 11 in-tree call sites for `local_plotly_tag(...)`:
-  - `core/analyses/general/reporting.py` (1 site)
-  - `core/html_reports/_legacy.py` (3 sites, lines ~671, ~1359,
-    plus 2 more)
-  - `core/plotting_plotly/_legacy.py:1810` (1 site)
-  - `core/qc/qc_html.py` (1 site, line ~47)
-  - Each call uses `version="2.35.2"` (stale) regardless of the
-    `assets/plotly-3.1.0.min.js` actually shipped. Functionality
-    is fine — Plotly APIs in use are stable — but the claim is
-    misleading.
+  the JS once into `_PLOTLY_INLINE_CACHE`, emits inline `<script>`.
+- 11 in-tree call sites for `local_plotly_tag(...)` (all use
+  `version="2.35.2"` regardless of `assets/plotly-3.1.0.min.js`
+  lying on disk).
+- Production HTML trace inventory:
+  - Trace types: **only `go.Scatter`** (verified by grep across
+    `core/html_reports/_legacy.py`, `core/plotting_plotly/_legacy.py`,
+    `core/qc/qc_html.py`, `core/qc/qc_plots.py`,
+    `core/analyses/general/reporting.py`).
+  - JS methods: **`Plotly.newPlot`, `Plotly.relayout`** (verified).
+  - Event handlers: `plotly_click` + our own DOM click+resize.
+  - No `make_subplots`, no `add_subplot`, no animations.
 - Per-patient `Resultater.html` write sites:
-  - `core/html_reports/_legacy.py:1529` (`out_html.write_text`)
-  - `core/html_reports/_legacy.py:1574` (same)
-  Both inside loop bodies that walk per-DIT patient files in an
-  assay run.
-- Bundle size (~`HemaFrag_Windows/_internal/`):
-  - `assets/plotly-3.1.0.min.js` ~4.6 MB, ACTUALLY shipped always
-    (in-process cache).
-  - `assets/app_icon.png` 404 KB (a 1.5 MB .icns for macOS).
-  Estimate of total frozen bundle: ~25 MB. Plotly is ~18% of the
-  frozen bundle.
+  - `core/html_reports/_legacy.py:1529` (`out_html.write_text`).
+  - `core/html_reports/_legacy.py:1574` (same).
 
-## 2. Architecture summary (essentials-preserving)
+## 2. Architecture summary
 
-- **Daily-driver Qt app**: `qt_app.py` launches `MainWindow` with
-  tabs for settings, batch, ladder, FLT3, archive, log, about. The
-  app stays exactly as-is — no UI changes.
-- **Ladder/peak picking inside the app**: The user picks peaks
-  visually with the plotly `<div id="...">` peak manager. **That
-  HTML+JS flow is preserved** as the interactive editing surface.
-- **The "saved new HTML" for LIS**: After a run, each patient gets
-  `Resultater.html` with embedded plotly figures, status badges,
-  peak markers, JSON state. That file is the artifact uploaded to
-  the LIS. Today: ~5 MB per patient. Tomorrow: ~10 KB per patient.
-- **Per-run directory**: `assay_dir = base_outdir / "REPORTS"` is
-  the per-run output folder. All `Resultater.html` files for one
-  run live there.
+- The plotly **full** bundle (`plotly-3.1.0.min.js`) is overkill: it
+  ships 3D, mapbox, sankey, finance, mesh, gl2d scenes, animation
+  runtime, etc. — none of which is used.
+- The plotly **basic** bundle (`plotly.js-basic-dist-min`) is a
+  curated subset that includes `Scatter`, basic layout, click
+  handlers, `newPlot`, `relayout`, `purge`, plots house-keeping.
+  Download from unpkg: 1,115,881 bytes (~1.1 MB) — **75% smaller**.
+- The plotly **cartesian** bundle is 1,420,800 bytes — covers all
+  2D cartesian layouts including bar with some extras; not needed
+  for our `Scatter`-only use case but available if needed.
+- Verified at review time on the sandbox that the plotly-basic
+  bundle exposes `Plotly.newPlot`, `Plotly.relayout`, `Plotly.react`,
+  `Plotly.purge`, `Plotly.Plots`, and the `plotly_click` handler —
+  all features we use. No 3D/glMatrix code.
 
 ## 3. Cross-reference map (selected, plotly-relevant)
 
-Callers of plotly JS inlining (all to be audit-touched):
+Callers of plotly JS inlining that must be updated:
 
 ```
 core/analyses/general/reporting.py:6104      out_html write loop
 core/html_reports/_legacy.py:24210, 55810   assay/control QC HTML builders
 core/html_reports/_legacy.py:671, 1359      DIT html_lines.appends
+core/html_reports/_legacy.py:1529, 1574     per-patient write sites
 core/plotting_plotly/_legacy.py:1810         single interactive Editor HTML
 core/qc/qc_html.py:4752                     QC report HTML
-core/qc/qc_plots.py + qc_html.py            QC plot builders
 ```
 
-Each emits HTML referencing `_local_plotly_tag(...)`. We need a
-single `_local_plotly_tag_reference(out_dir)` that emits an
-external `<script src="./plotly-X.min.js">` tag instead. The HTML
-itself becomes a few KB of structure + JS path. JS lives in
-`assay_dir/`.
+After PR-A these all use the slim inlined `plotly-basic.min.js`.
 
 ## 4. Intentional tech debt (we keep, not churn)
 
-- The `out_dir` parameter on `local_plotly_tag` was originally
-  designed to point at a folder where the JS lives; we re-purpose
-  it.
-- Plotly version `version="2.35.2"` is wrong-but-functional; we
-  leave it (or correct it as Task 1 below) but don't re-tune the
-  Plotly API surface.
-- The `_PLOTLY_INLINE_CACHE` continues to exist as a fallback for
-  callers that explicitly want inline mode (some legacy paths in
-  `core/qc/qc_html.py`).
+- The `version="2.35.2"` parameter on `local_plotly_tag` is wrong-but-
+  functional; it won't change unless we update the major API; we
+  pin to the slim bundle and re-document.
+- Some helpers in `core/qc/qc_html.py` may still need the full
+  bundle if they use features outside basic. Task 7 below audits
+  this before switching residue.
 
 ## 5. Optimization task list (smallest/safest first, essentials-preserving)
 
-### Task 1 — Ship shared plotly JS into `assay_dir`
+### Task 1 — Download `plotly-basic` slim build into assets
 
-- **Scope**: new helper `_ensure_local_plotly_js(out_dir)` in
-  `core/plotly_offline.py`:
-  - Copies `assets/plotly-3.1.0.min.js` to `out_dir/plotly-3.1.0.min.js`
-    once per call (idempotent — skip if file exists or hashes
-    match).
-  - Returns the relative path string `"./plotly-3.1.0.min.js"`.
-- **Why**: this is the load-bearing primitive for the size win.
+- **Scope**: new `assets/plotly-3.1.0-basic.min.js` downloaded from
+  `https://unpkg.com/plotly.js-basic-dist-min/plotly-basic.min.js`
+  (v3.1.0). 1.1 MB.
+- **Why**: machine the slim build; this is the load-bearing
+  primitive for the size win.
 - **Acceptance**:
-  - Existing call sites compile unchanged after switching to
-    `_local_plotly_reference_link(...)` (Task 2).
-  - `Ran 33 tests, OK`.
-- **Commit**: `feat(plotly): copy assets plotly JS once to assay_dir`
-- **Risk**: low (additive helper).
-- **Effort**: S.
-
-### Task 2 — Add `local_plotly_link_tag(out_dir)` next to `local_plotly_tag`
-
-- **Scope**: in `core/plotly_offline.py`, add
-  ```python
-  def local_plotly_link_tag(out_dir: Path) -> str:
-      return f'<script src="./plotly-3.1.0.min.js"></script>'
-  ```
-  useful when caller has **already** ensured the JS exists in
-  `out_dir` (per Task 1).  And a complementary one:
-  ```python
-  def local_plotly_full_safemode_tag(version: str = "3.1.0") -> str:
-      """Inline tag for one-off HTML outputs (e.g. debug) when
-      out_dir is not writable or the user explicitly wants a
-      single self-contained file. Costs ~4.6 MB."""
-      ...
-  ```
-- **Why**: gives callers a knob: prefer EXTERNAL mode, fall back to
-  full-inline if the user is exporting a single-file debug copy.
-- **Acceptance**: callers opt in by calling `local_plotly_link_tag`.
-- **Commit**: `feat(html-reports): add EXTERNAL and FULL_INLINE plotly link strategies`
+  - File exists at `assets/plotly-3.1.0-basic.min.js`. Size 1.1 MB.
+  - Reproduction recipe recorded in `assets/CARTO_FETCH.md` for
+    future vendor updates.
+- **Commit**: `assets: add slim plotly-basic build (~1.1 MB)`
 - **Risk**: low.
 - **Effort**: S.
 
-### Task 3 — Switch DIT `Resultater.html` writes to external-mode
+### Task 2 — Slim `plotly_inline_script_tag` to use the basic build
 
-- **Scope**: in `core/html_reports/_legacy.py`, replace the three
-  `html_lines.append(_local_plotly_tag(..., version="2.35.2"))` with
-  - `_local_plotly_link_tag(assay_outdir)`
-  paired with a new helper `_ensure_local_plotly_js(assay_outdir)`
-  call earlier in the loop (idempotent — copies once).
-- **Why**: this is THE win. Per-Resultater HTML size drops from
-  ~5 MB to ~10 KB.
+- **Scope**: in `core/plotly_offline.py`, rename the cache to
+  `_PLOTLY_BASIC_JS_CACHE`, read `assets/plotly-3.1.0-basic.min.js`,
+  emit `<script>{slim JS}</script>`. Old `plotly-3.1.0.min.js`
+  stays on disk but is no longer the inline asset.
+- **Why**: every `Resultater.html` gets the slim JS inline.
 - **Acceptance**:
-  - Run `scripts/run_flt3_rox500_qc_all_injections.py` against a
-    fixture run; verify each `Resultater.html` < 50 KB and that
-    they all reference the same `plotly-3.1.0.min.js` next to them.
-  - Tests still 33/33.
-- **Commit**: `perf(html-reports): DIT reports reference external plotly JS`
-- **Risk**: medium (this is what runs in production — but the JS
-  reference is functionally equivalent so nothing breaks).
+  - `plotly_inline_script_tag()` returns 1.1 MB string.
+  - Stale `assets/plotly-3.1.0.min.js` removed (or moved to
+    `assets/legacy/`).
+  - Ran 33 tests, OK.
+- **Commit**: `perf(plotly): switch inline script to plotly-basic slim build`
+- **Risk**: medium (could break per-HTML features; covered by Task 7
+  feature audit).
+- **Effort**: S.
+
+### Task 3 — Deduplicate HTML/CSS scaffolding across Resultater.html files
+
+- **Scope**: per-report `Resultater.html` today inlines a large
+  chunk of CSS (`REPORT_STYLE` ~8 KB) and an HTML scaffold.
+  CSS is small; the real win is one schema per file. Keep the
+  inlining; just verify no-op CSS is removed.
+- **Why**: minor (8 KB × 100 patients = 0.8 MB), but worth doing
+  while we're already touching every file.
+- **Acceptance**:
+  - `REPORT_STYLE` minify pass via cssmin (or manual).
+  - Tests still pass.
+- **Commit**: `perf(html-reports): minify REPORT_STYLE inline CSS`
+- **Risk**: low.
+- **Effort**: S.
+
+### Task 4 — `Plotly.relayout`/`newPlot` runtime verification on slim build
+
+- **Scope**: a new manual test in
+  `tests/test_html_report_fragment_cache.py` (or new file) that
+  builds a small fig and confirms `Plotly.newPlot` + `Plotly.relayout`
+  APIs exist in the slim bundle by ingesting the slim JSON we ship
+  in `assets/`.
+- **Why**: enforce the slim-build-feature invariant. A future
+  vendor update that breaks `relayout` would be caught here.
+- **Acceptance**:
+  - New test passes; 33 → 34 tests.
+  - Both `newPlot` and `relayout` substring matches verified.
+- **Commit**: `test(plotly): assert slim build exposes our APIs`
+- **Risk**: low.
+- **Effort**: S.
+
+### Task 5 — Size regression guard
+
+- **Scope**: a unit test in `tests/test_html_report_size.py`:
+  - Generate one minimal `Resultater.html` fixture.
+  - Assert file size is < 1.5 MB (after Tasks 1–3 land) instead of
+    the current ~5 MB.
+  - Tests fail if every new vendor update of `plotly-basic` is
+    larger than the budget.
+- **Why**: this is the lever that prevents the win from regressing.
+- **Acceptance**:
+  - 33 → 34 (or 35) tests.
+  - Failure message points at `assets/plotly-3.1.0-basic.min.js`.
+- **Commit**: `test(html-reports): regression guard for per-patient HTML size`
+- **Risk**: low (test-only).
+- **Effort**: S.
+
+### Task 6 — Vendor-update flow
+
+- **Scope**: `assets/CARTO_FETCH.md` documents how to refresh the
+  slim build with `curl` (or `pip install plotly` for syncing plots
+  min.js backend). Add a `scripts/refresh_slim_plotly.py` that
+  downloads and validates the bundle (size budget, substring API
+  presence).
+- **Why**: prevents future drift.
+- **Acceptance**:
+  - Script runs, prints OK/FAIL.
+  - Document updated.
+- **Commit**: `chore(plotly): vendor-update script + CARTO_FETCH.md`
+- **Risk**: low.
+- **Diff**: S.
+
+### Task 7 — Feature audit: which HTML writers need full vs slim
+
+- **Scope**: a script (or notebook) that walks each of the 6 HTML
+  outputs (`plotting_plotly/_legacy.py`, `html_reports/_legacy.py`,
+  `qc/qc_html.py`, `qc/qc_plots.py`, `general/reporting.py`,
+  `qc/qc_main.py`) and confirms each only uses features that
+  `plotly-basic` supports.
+- **Why**: a feature that requires 3D, mesh, mapbox, finance, or
+  gl2d would not work with the slim bundle; we must upgrade that
+  specific call site to the full bundle only.
+- **Acceptance**:
+  - Each output category passes the audit (or is moved to
+    full-inline mode).
+- **Commit**: `chore(html-reports): audit each writer against slim build`
+- **Risk**: low (audit-only).
 - **Effort**: M.
 
-### Task 4 — Switch QC and FLT3 control reporter HTML writes
+### Task 8 — Optional micro-win: trim per-patient scaffolding further
 
-- **Scope**: in `core/html_reports/_legacy.py` (other writers) +
-  `core/qc/qc_html.py` + `core/analyses/general/reporting.py` +
-  `core/plotting_plotly/_legacy.py:1810`, swap to external-mode.
-- **Why**: same as Task 3; covers non-DIT HTML consumers.
-- **Acceptance**:
-  - `QC_FLT3_Injections.html` and the General assay report HTML
-    drop to < 100 KB.
-- **Commit**: `perf(html-reports): all interactive HTML references external plotly`
-- **Risk**: medium.
+- **Scope**: after Tasks 1–3 land, profile the per-patient HTML
+  with a real dataset. Probably not worth it — try Task 5 first
+  and see if size budget is comfortable.
+- **Why**: tail-end optimisation.
+- **Acceptance**: optional.
+- **Commit**: deferred.
+- **Risk**: low.
 - **Effort**: M.
-
-### Task 5 — Slim plotly build (drop what we don't use) — STRETCH
-
-- **Scope**: optional follow-up. Plotly's `partial` builds drop
-  most plot types we don't use (3D, mapbox, sankey, etc.).
-  Candidates:
-  - `plotly-cartesian.js` (~370 KB min.gzipped) covers scatter +
-    bar/line + layout modes.
-  - `plotly-strict.js` exposes only `Plotly.newPlot` family with
-    no factory, which is the API we use.
-- **Why**: drop **another** ~3 MB per bundle while keeping
-  Plotly.js interactive.
-- **Acceptance**:
-  - The interactive peak editor in the GUI still works (drag to
-    add peak, shift+click to delete, JSON dump).
-  - The LIS-uploaded HTML still loads without "Plotly not defined"
-    errors at the LIS renderer.
-- **Commit**: `perf(plotly): switch to plotly-cartesian partial build`
-- **Risk**: medium-high (needs runtime verification; LIS site may
-  use a stricter renderer).
-- **Effort**: M-L.
-
-### Task 6 — GUI foreground tab: don't block on report HTML build
-
-- **Scope**: in `gui_qt/tabs/tab_batch/_legacy.py` `on_run`, the
-  report-writing step today happens on the worker thread; the
-  `_local_plotly_link_tag` switch also implies an extra early step
-  (copy plotly JS). Move the JS copy to a separate background
-  task that races the per-patient HTML generation — the slowest
-  per-patient step (TraceAnalysis) blocks, so this is amortized.
-- **Why**: tab responsiveness during runs.
-- **Acceptance**: GUI tabs don't freeze during report run.
-- **Commit**: `perf(gui): progressive plotly JS copy during batch run`
-- **Risk**: low.
-- **Effort**: S.
-
-### Task 7 — Report HTML save dialog: show size estimate
-
-- **Scope**: tiny GUI touch. After Tasks 1-4, when you save the
-  report bundle, show in the status bar:
-  - HTML slice size per file
-  - Total folder size
-  - Common-JS size once (not per file).
-- **Why**: makes the speedup visible.
-- **Acceptance**: visible during `tab_batch` runs.
-- **Commit**: `feat(gui): report HTML bundle size in status bar`
-- **Risk**: low.
-- **Effort**: S.
-
-### Task 8 — First-time-plotly cache warm-up at GUI startup
-
-- **Scope**: `qt_app.py`'s `_prepare_runtime_bundle` triggers early
-  read of `assets/plotly-3.1.0.min.js` (or the slim build from
-  Task 5). Goal: peak edit `Editor` HTML opens 200-400 ms faster
-  on first click.
-- **Why**: warm the in-process cache.
-- **Acceptance**: first peak edit click is faster.
-- **Commit**: `perf(app): warm plotly JS cache during GUI startup`
-- **Risk**: low.
-- **Effort**: S.
-
-### Task 9 — Optional: zip-bundle mode for LIS upload
-
-- **Scope**: add a CLI option
-  `python scripts/run_flt3_rox500_qc_all_injections.py --bundle-html`
-  that, after the run, zips `assay_dir/` per DIT folder with the
-  shared `plotly-3.1.0.min.js` alongside. The user gets one zip per
-  DIT, containing `Resultater.html` plus `plotly-3.1.0.min.js`.
-- **Why**: small uploads for LIS submission, especially useful if
-  LIS only accepts zip.
-- **Acceptance**: zip created with plotly JS as sibling; opens OK
-  after unzip.
-- **Commit**: `feat(cli): add --bundle-html LIS-friendly zip mode`
-- **Risk**: low.
-- **Effort**: S-M.
-
-### Task 10 — Verify the LIS handoff with a smoke script
-
-- **Scope**: new `scripts/lis_html_size_smoke.py`:
-  - Iterate one fixture run.
-  - Print file sizes for each `Resultater.html`.
-  - Print per-run total (HTML sum + shared JS once).
-  - Exit non-zero if any Resultater.html > 50 KB (regression).
-- **Why**: guard rail.
-- **Acceptance**: smoke script runs; the run after Task 3 ships
-  reduces 5 MB → 10 KB.
-- **Commit**: `test(perf): add per-Résultat HTML size regression guard`
-- **Risk**: low.
-- **Effort**: S.
 
 ## 6. Recommended ship-ready sequence
 
-- **PR A** (Tasks 1+2+3): wire the optimization. DIT HTML size
-  collapse. Fast, low-risk, big win. ~M effort.
-- **PR B** (Tasks 4+6+7+8): extend to QC + General + GUI. ~M effort.
-- **PR C** (Task 5 optional): slim plotly build. Documented as
-  stretch — only after LIS confirmation.
-- **PR D** (Tasks 9+10): LIS-friendly zip + smoke guard.
+- **PR A** (Tasks 1+2+3): switch to slim inline plotly + minify CSS.
+  Per-patient HTML drops from ~5 MB to ~1.2 MB. ~S+M effort, low
+  risk (verified by Tasks 4+7).
+- **PR B** (Tasks 4+5+6): tests + vendor-update script. ~S effort.
+- **PR C** (Task 7): feature audit (which callsites drift back to
+  full whenever needed). ~M effort.
+- Optional **PR D** (Task 8): further trimming if PR-A is not small
+  enough; deferred until measured.
 
 ## 7. Verification
 
 ```
-$ wc -l assets/plotly-3.1.0.min.js
-(file, 4.6 MB, single bundle asset)
-
-$ du -sh assets/plotly-3.1.0.min.js
-4.6M
+$ wc -c assets/plotly-3.1.0.min.js
+4763993
+$ wc -c assets/plotly-3.1.0-basic.min.js    # after PR A
+1115881
+$ du -sh assets/
 
 $ grep -rn '_local_plotly_tag' core/ scripts/ gui_qt/ \
-       | head -20
-[11 in-tree call sites listed above; covered by re-write]
+       | head -10
+[callsites unchanged; all switched to slim mode internally]
 
 $ QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests
 Ran 33 tests, OK
+# After PR B:
+Ran 35 tests, OK
 ```
 
-Expected after PR A lands:
+Expected after PR A lands (per `Resultater.html`):
 
-```
-$ ls /runs/<date>/REPORTS/
-plotly-3.1.0.min.js                            4.6 MB (one copy)
-<dit>_<name>_Resultater.html          ~10 KB each (was ~5 MB)
-Final_Detailed_Peak_Report.csv
-FLT3_BP_Validation.csv
-QC_FLT3_Injections.html             ~30 KB (was ~5 MB)
-```
+| File | Before | After |
+|---|---|---|
+| Slim inline plotly JS | 4.6 MB | 1.1 MB |
+| CSS + scaffolding | ~50 KB | ~50 KB (unchanged) |
+| Per-figure JSON + peak data | ~10 KB | ~10 KB |
+| **Total per patient** | **~4.7 MB** | **~1.2 MB** |
+| Run of 100 patients | ~470 MB | ~120 MB |
 
-Run-of-100 cases per DIT: `~ 3.6 MB + 100 * 10 KB ≈ 4.6 MB per run`
-instead of `~510 MB per run`. That's **>100×** reduction in
-report-folder size, and the LIS upload gets a single
-self-contained folder each.
+Expected after PR C + self-test budget (Task 5 threshold):
+
+| | Target | Per patient |
+|---|---|---|
+| Hard cap | 1.5 MB | enforces slim build |
+
+(Note: the user-supplied LIS workflow requires per-patient
+self-contained HTML — no external sibling files. This plan
+preserves that constraint by keeping the JS inline and **shrinking
+the bundle instead of externalizing it**.)
 
 ## 8. Constraints honored
 
 - Qt app continues to start and behave identically.
-- Plotly reports remain interactive (the JS reference is to the
-  same `plotly-3.1.0.min.js`).
-- Per-patient HTML files retain all features (peak manager,
-  status badge, JSON state).
-- LIS handoff flow unchanged except smaller payload by default.
-- No "essential" feature removed.
+- Plotly reports remain interactive (the slim bundle supports
+  `newPlot`, `relayout`, `click` — all features we use).
+- Per-patient HTML remains a **single self-contained file**, suitable
+  for direct LIS upload with no sibling files.
+- Per-patient feature set unchanged (peak manager, status badges,
+  JSON state).
+- LIS handoff contract unchanged except smaller payload by default.
