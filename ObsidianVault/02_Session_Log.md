@@ -1,3 +1,30 @@
+## 2026-06-27 - code-cleanup Phases 2-7 Final Push
+
+Refs:
+- Branch: `code-cleanup` (off `codex-clonality-ladder-finalize-2026-05-14`), pushed to `origin/code-cleanup`.
+- Sandbox repo: `/workspace/hemafrag` (Linux/WSL). Verification: `QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests`, baseline `Ran 33 tests, OK` after every commit.
+
+Final result (`code-cleanup` branch):
+- 12 commits, all preserving `Ran 33 tests, OK`.
+- 8 monolithic .py files converted into packages with `__init__` + submodules (`_constants`, `_legacy`): core/analysis, core/analyses/flt3/pipeline, core/rust_bridge, core/plotting_plotly, core/html_reports, gui_qt/tabs/tab_batch, gui_qt/tabs/tab_ladder, gui_qt/dialogs/ladder_dialog.
+- `gui/` + `fraggler/` legacy cleaned (Phase 1).
+- 59 unreferenced `scripts/` one-shots deleted; 4 live scripts preserved (Phase 1).
+- `core/analyses/clonality/__init__.py` upgraded from `0B` empty to a structural docstring only (Phase 4; no logic churn because clonality is parked).
+
+Phase pattern (reused across every split):
+- Convert target file into a package via mkdir + `__init__.py` facade with star-imports of submodules.
+- Extract focused submodules (`_constants.py` for tunable thresholds / inline tables; `_legacy.py` for the rest).
+- For files with many underscore-name external imports (qc_tracker lazy, scripts runner, FLT3 area baseline tests), set `__all__` so the star-import exposes them.
+- Delete the original `.py` file once the package substitutes for it cleanly.
+
+Outstanding from earlier sessions still tracked here:
+- `gui_qt/tabs/tab_archive_runner.py` and `gui_qt/tabs/tab_flt3_validation.py` swallow ImportError for missing helper scripts (run_clonality_yearly, combine_clonality_yearly_overview, run_flt3_backfill_validation) and silently mark features unavailable. Out of scope for `code-cleanup`; revisit when those flows become priority.
+- `CLEANUP_PLAYBOOK.md` records the per-phase commands so future sub-splits of `_legacy.py` stay cheap.
+
+Verification recipe preserved: see `CLEANUP_PLAYBOOK.md` for environment setup and the exact test invocation.
+
+Next steps (out of scope here):
+- Push sub-splits of remaining giants (TabLadder, TabBatch, LadderAdjustmentDialog, run_pipeline) into focused submodules behind their respective `_legacy.py` facades. Each is now safely behind a facade.
 ## 2026-06-27 - code-cleanup Phase 0 + Phase 1
 
 Refs:

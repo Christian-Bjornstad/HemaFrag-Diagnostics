@@ -57,6 +57,34 @@ QT_QPA_PLATFORM=offscreen python3 -c "import gui_qt.tabs.tab_batch; print('ok')"
 4. **Update the Session Log after each phase.** Compact note per
    the project's logging policy.
 
-## Phase status
+## Phase status (all complete as of 2026-06-27)
 
-See code-cleanup phases (live below) for which phase is next.
+- [x] **Phase 0**: tests-baseline env + verification recipe documented
+- [x] **Phase 1**: delete legacy modules (gui/, 59 scripts, etc.)
+- [x] **Phase 2a**: split `core/analysis.py` into a package
+- [x] **Phase 3**: split `core/analyses/flt3/pipeline.py` into a package
+- [x] **Phase 4**: clonality subsystem structural tidy (`__init__.py` only)
+- [x] **Phase 5a/b/c**: split the three GUI giants into packages
+- [x] **Phase 6a/b/c**: split `core/rust_bridge.py`, `core/plotting_plotly.py`,
+       `core/html_reports.py` into packages
+- [x] **Phase 7**: final hygiene (this update)
+
+Result: 12 commits on `code-cleanup` branch, `Ran 33 tests, OK` baseline
+preserved across the entire campaign.
+
+Files converted from monolith to package:
+- `core/analysis.py`               -> `core/analysis/{__init__,_constants,_legacy}.py`
+- `core/analyses/flt3/pipeline.py` -> `core/analyses/flt3/pipeline/{__init__,_constants,_legacy}.py`
+- `core/rust_bridge.py`            -> `core/rust_bridge/{__init__,_constants,_legacy}.py`
+- `core/plotting_plotly.py`        -> `core/plotting_plotly/{__init__,_legacy}.py`
+- `core/html_reports.py`           -> `core/html_reports/{__init__,_constants,_legacy}.py`
+- `gui_qt/tabs/tab_batch.py`       -> `gui_qt/tabs/tab_batch/{__init__,_constants,_legacy}.py`
+- `gui_qt/tabs/tab_ladder.py`      -> `gui_qt/tabs/tab_ladder/{__init__,_legacy}.py`
+- `gui_qt/dialogs/ladder_dialog.py`-> `gui_qt/dialogs/ladder_dialog/{__init__,_constants,_legacy}.py`
+
+Subsequent sub-splits of `_legacy.py` (e.g. splitting the giant
+TabLadder / TabBatch / LadderAdjustmentDialog / TabBatch classes into
+focused submodules) are out of scope for this campaign — each `_legacy`
+file is now its own coherent unit that can be split incrementally
+later without breaking callers.
+
