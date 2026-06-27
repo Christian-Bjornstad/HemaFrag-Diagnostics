@@ -27,6 +27,12 @@ from core.analysis import (
     YMAX_PADDING_FACTOR,
 )
 from core.plotly_offline import local_plotly_tag as _local_plotly_tag
+from core.plot_cache import (
+    FsaPlotCache,
+    EntryPlotCache,
+    get_fsa_axis_arrays,
+    get_fsa_trace_array,
+)
 
 
 FLT3_NEGATIVE_CONTROL_YMIN = 250.0
@@ -61,55 +67,19 @@ def _json_dumps_compact(value: object) -> str:
 
 
 def _get_entry_plot_cache(entry: dict) -> dict:
-    cache = entry.get("_plotly_report_cache")
-    if not isinstance(cache, dict):
-        cache = {}
-        entry["_plotly_report_cache"] = cache
-    return cache
+    return EntryPlotCache.for_entry(entry).store
 
 
 def _get_fsa_plot_cache(fsa: object) -> dict:
-    cache = getattr(fsa, "_plotly_report_cache", None)
-    if not isinstance(cache, dict):
-        cache = {}
-        setattr(fsa, "_plotly_report_cache", cache)
-    return cache
+    return FsaPlotCache.for_fsa(fsa).store
 
 
 def _get_fsa_axis_arrays(fsa: object) -> dict | None:
-    raw_df = getattr(fsa, "sample_data_with_basepairs", None)
-    if raw_df is None or raw_df.empty:
-        return None
-    if "time" not in raw_df.columns or "basepairs" not in raw_df.columns:
-        return None
-
-    cache = _get_fsa_plot_cache(fsa)
-    cache_key = ("axis_arrays", id(raw_df), tuple(raw_df.columns))
-    cached = cache.get("axis_arrays")
-    if isinstance(cached, dict) and cached.get("key") == cache_key:
-        return cached["value"]
-
-    value = {
-        "time_all": raw_df["time"].astype(int).to_numpy(),
-        "bp_all": raw_df["basepairs"].to_numpy(),
-        "available_channels": tuple(k for k in fsa.fsa.keys() if k.startswith("DATA")),
-    }
-    cache["axis_arrays"] = {"key": cache_key, "value": value}
-    return value
+    return get_fsa_axis_arrays(fsa)
 
 
 def _get_trace_array(fsa: object, channel: str) -> np.ndarray:
-    cache = _get_fsa_plot_cache(fsa)
-    trace_arrays = cache.setdefault("trace_arrays", {})
-    cached = trace_arrays.get(channel)
-    current = getattr(fsa, "fsa", {}).get(channel)
-    current_id = id(current)
-    if isinstance(cached, dict) and cached.get("source_id") == current_id:
-        return cached["value"]
-
-    value = np.asarray(current, dtype=float)
-    trace_arrays[channel] = {"source_id": current_id, "value": value}
-    return value
+    return get_fsa_trace_array(fsa, channel)
 
 
 def _baseline_correct_trace_for_display(full_trace: np.ndarray, assay_name: str | None) -> np.ndarray:
