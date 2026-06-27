@@ -23,25 +23,6 @@ from config import (
 )
 from core.analyses.clonality.ladder_review_gate import RESOLVED_LABELS
 
-
-ANALYSIS_LABELS = {
-    "clonality": "Klonalitet",
-    "flt3": "FLT3 Analysis",
-    "general": "General",
-}
-
-GENERAL_LADDER_OPTIONS = [
-    ("LIZ500", "LIZ500_250"),
-    ("ROX400HD", "ROX400HD"),
-    ("GS500ROX", "GS500ROX"),
-]
-GENERAL_TRACE_OPTIONS = [
-    ("DATA1", "Blue trace"),
-    ("DATA2", "Green trace"),
-    ("DATA3", "Yellow / Black trace"),
-]
-
-
 class FlowLayout(QLayout):
     """Simple wrapping layout for compact option cards."""
 
