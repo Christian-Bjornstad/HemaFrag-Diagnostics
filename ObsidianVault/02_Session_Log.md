@@ -1,3 +1,23 @@
+## 2026-06-27 - code-cleanup Phase 0 + Phase 1
+
+Refs:
+- Branch: `code-cleanup` (off `codex-clonality-ladder-finalize-2026-05-14`).
+- Sandbox repo: `/workspace/hemafrag` (Linux/WSL). Windows project plan lives at `C:\Users\molpa\hemafrag-refactor-plan.md` but is not in the repo and not reachable from the sandbox.
+- Verification recipe: `QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests` (baseline `Ran 33 tests, OK`). Recorded in `CLEANUP_PLAYBOOK.md`.
+
+Phase 0:
+- Recorded one-time system deps and the per-phase verify command in `CLEANUP_PLAYBOOK.md`.
+- `AGENTS.md` now points at the playbook for the staged `code-cleanup` campaigns.
+
+Phase 1 (delete-not-archive, per user):
+- Live tests/GUI imports that were initially misidentified as legacy:
+  - `fraggler/fraggler.py` provides `FsaFile`, `baseline_arPLS`, `fit_size_standard_to_ladder`, print helpers used by 14 modules and 8 tests; preserved.
+  - `app_meta.py` is imported by `gui_qt/main_window.py` and `gui_qt/about_content.py`; preserved.
+  - `app.py` is referenced by `HemaFrag.spec` PyInstaller datas; preserved.
+- Final deletions: `gui/` (11 files) + 59 unimported files in `scripts/` (57 one-shot `.py` + 2 dated `.sh` launchers).
+- Surviving scripts (`render_clonality_interpretation_annotation_html.py`, `train_clonality_interpretation_quick_model.py`, `run_flt3_rox500_qc_all_injections.py`, `run_flt3_liz500_qc_all_injections.py`) are kept because tests or GUI import them.
+- Outstanding latent issue: `gui_qt/tabs/tab_archive_runner.py` and `gui_qt/tabs/tab_flt3_validation.py` swallow ImportError for missing scripts (`run_clonality_yearly`, `combine_clonality_yearly_overview`, `run_flt3_backfill_validation`) and silently flag features unavailable. Tracking only; outside Phase 1 scope.
+- Commits: `37112cb` (Phase 0), Phase 1 commit lands next.
 # HemaFrag Session Log
 
 ## 2026-06-04 - Assay-Specific Clonality Interpretation Dispatch

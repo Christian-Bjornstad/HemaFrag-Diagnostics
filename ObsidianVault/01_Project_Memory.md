@@ -1,3 +1,5 @@
+- 2026-06-27: Started `code-cleanup` full-remodel campaign. Branch baseline = `codex-clonality-ladder-finalize-2026-05-14`. Test baseline = 33 unittest tests passing (recorded in `CLEANUP_PLAYBOOK.md`).
+- 2026-06-27: `fraggler/`, `app_meta.py`, `app.py` are live, not legacy. They are referenced by 14 core modules and tests. The legacy space was `gui/` (replaced by `gui_qt/`) and 59 one-shot scripts under `scripts/`.
 # HemaFrag Project Memory
 
 ## Current Focus
