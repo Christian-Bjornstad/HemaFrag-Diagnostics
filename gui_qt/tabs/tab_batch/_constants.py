@@ -21,3 +21,9 @@ GENERAL_TRACE_OPTIONS = [
     ("DATA2", "Green trace"),
     ("DATA3", "Yellow / Black trace"),
 ]
+
+__all__ = [
+    'ANALYSIS_LABELS',
+    'GENERAL_LADDER_OPTIONS',
+    'GENERAL_TRACE_OPTIONS',
+]

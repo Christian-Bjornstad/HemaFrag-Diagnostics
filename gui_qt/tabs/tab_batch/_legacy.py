@@ -22,6 +22,7 @@ from config import (
     GENERAL_DEFAULT_PRIMARY_CHANNEL,
 )
 from core.analyses.clonality.ladder_review_gate import RESOLVED_LABELS
+from . import GENERAL_LADDER_OPTIONS, GENERAL_TRACE_OPTIONS
 
 class FlowLayout(QLayout):
     """Simple wrapping layout for compact option cards."""
