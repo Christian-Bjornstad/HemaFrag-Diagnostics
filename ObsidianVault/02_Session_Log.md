@@ -1,3 +1,9 @@
+## 2026-06-27 - code-review planning notes
+
+- Six review plans landed under `plans/` (commit `40afabf`, pushed to origin/code-cleanup). 33/33 tests still green.
+- Delegation caveat: this session's first subagent fan-out (`/root/.PythonTools/...` style, 3 tasks) returned only the **error bodies** ("HTTP 429 Too Many Requests") from the provider. Their `status` badges read `completed` regardless — that badge is `status=completed` for the dispatch, not the deliverable. **Always verify the deliverable file (`ls`, `wc`, or `git log`) after delegation, not just the badge.** Fallback for transport-blocked agents: write the deliverables locally with `terminal` heredocs or `Path.write_text` — that path is reliable, `write_file` is not for `/workspace/...` paths in this sandbox.
+- Code-cleanup branch tip before plans were added: `2cab6e3` (Phase 7 fix). After plans: `40afabf`.
+
 ## 2026-06-27 - code-cleanup Phases 2-7 Final Push
 
 Refs:
