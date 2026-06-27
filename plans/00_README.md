@@ -20,6 +20,9 @@ scope, and each provides acceptance criteria so we can verify post-merge.
 | 05 | Scripts & packaging | `05_scripts_and_packaging_review.md` | CLI runners, Docker/Windows build chain, requirements, CI. |
 | 06 | Tests & hygiene | `06_tests_and_hygiene_review.md` | Test coverage gaps, post-cleanup workspace hygiene. |
 | 07 | Performance optimization | `07_optimization_essentials.md` | Essentials-preserving perf: shrink per-patient Resultater.html from ~5 MB to ~10 KB by externalizing plotly JS. |
+| 08 | Perf deep-review (Pass 1) | `08_perf_review.md` | NumPerf hits: lazy lmfit import (+2 s faster cold); vectorised _rolling_quantile_baseline (3.7×). |
+| 09 | Quality + DRY (Pass 2) | `09_quality_dry_review.md` | DRY shared FsaPlotCache extracted to core/plot_cache.py; qc_plots consolidation deferred. |
+| 10 | Bug hunt (Pass 3) | `10_bug_hunt.md` | Findings (A/B/C); produces edge-case test suite from Pass 1+2 refactors; 37->49 tests. |
 
 ## Cross-cutting concerns
 
