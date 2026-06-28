@@ -145,6 +145,166 @@ def sample_annotation_files(
     return selected, summary
 
 
+
+def per_channel_trace_summary(entry: dict[str, Any]) -> dict[str, Any]:
+    """Per-`DATA*`-channel raw-trace summary.
+
+    Returns a flat dict where the keys are dotted (`peak_count_per_channel.<DATA1>`)
+    plus four aggregate fields (`peak_variance_per_channel`, `mad_per_channel`,
+    `dome_peak_count_per_channel`, `dome_height_ratio_per_channel`).
+    Designed so the ML can decide `intet_pcr_produkt_darlig_dna` vs
+    `qc_teknisk_fail` from the per-channel shape alone.
+
+    Safe to call on entries with missing `peaks_by_channel`: returns
+    dict of length 0 with no exception.
+    """
+    pb = entry.get("peaks_by_channel")
+    if not isinstance(pb, dict):
+        pb = {}
+
+    out: dict[str, Any] = {
+        "peak_count_per_channel": {},
+        "peak_variance_per_channel": {},
+        "mad_per_channel": {},
+        "dome_peak_count_per_channel": {},
+        "dome_height_ratio_per_channel": {},
+    }
+    if not pb:
+        return out
+
+    channel_names = sorted(str(k) for k in pb.keys())
+    for channel in channel_names:
+        frame = pb[channel]
+        if not hasattr(frame, "empty"):
+            continue
+        if frame.empty or "peaks" not in frame.columns:
+            heights = np.array([], dtype=float)
+        else:
+            heights = pd.to_numeric(frame["peaks"], errors="coerce").fillna(0.0).to_numpy()
+        heights = heights[heights > 0]
+        if heights.size == 0:
+            out["peak_count_per_channel"][channel] = 0
+            out["peak_variance_per_channel"][channel] = 0.0
+            out["mad_per_channel"][channel] = 0.0
+            out["dome_peak_count_per_channel"][channel] = 0
+            out["dome_height_ratio_per_channel"][channel] = 0.0
+            continue
+        max_h = float(np.nanmax(heights))
+        n = int(heights.size)
+        peak_count = int(n)
+        peak_var = float(np.nanvar(heights)) if n > 1 else 0.0
+        median_h = float(np.nanmedian(heights))
+        mad = float(np.nanmedian(np.abs(heights - median_h))) if n > 0 else 0.0
+        dome_threshold = 0.6 * max_h
+        dome_count = int(np.sum(heights >= dome_threshold))
+        mean_height = float(np.nanmean(heights)) if n > 0 else 0.0
+        dome_ratio = float(max_h / mean_height) if mean_height > 0 else 0.0
+
+        out["peak_count_per_channel"][channel] = peak_count
+        out["peak_variance_per_channel"][channel] = peak_var
+        out["mad_per_channel"][channel] = mad
+        out["dome_peak_count_per_channel"][channel] = dome_count
+        out["dome_height_ratio_per_channel"][channel] = dome_ratio
+    return out
+
+
+def reference_window_features(entry: dict[str, Any]) -> dict[str, Any]:
+    """Three reference-window position features for the dominant peak.
+
+    Reads ASSAY_REFERENCE_RANGES via assay_interpretation_range() and computes:
+      - dom_distance_to_ref_window_center_bp: signed bp distance from dominant
+        peak to range midpoint; positive = upstream of center.
+      - ref_window_coverage_fraction: dominant-peak width (estimated as 3 bp)
+        divided by full window width — cheap proxy.
+      - in_reference_window: True iff dominant basepair lies within window.
+    """
+    assay = str(entry.get("assay") or "")
+    range_text = ""
+    rng_min: float = float("nan")
+    rng_max: float = float("nan")
+    try:
+        rng = assay_interpretation_range(assay)  # may raise ValueError
+        if isinstance(rng, tuple) and len(rng) == 2:
+            rng_min, rng_max = float(rng[0]), float(rng[1])
+            range_text = f"{int(rng_min)}-{int(rng_max)}"
+    except (KeyError, ValueError, TypeError):
+        pass
+
+    dom_bp_raw = entry.get("dominant_peak_basepairs")
+    try:
+        dom_bp = float(dom_bp_raw) if dom_bp_raw is not None else float("nan")
+    except (TypeError, ValueError):
+        dom_bp = float("nan")
+
+    if (
+        dom_bp != dom_bp  # NaN check
+        or rng_min != rng_min
+        or rng_max != rng_max
+    ):
+        return {
+            "dom_distance_to_ref_window_center_bp": float("nan"),
+            "ref_window_coverage_fraction": 0.0,
+            "in_reference_window": False,
+            "interpretation_window_for_assay": range_text,
+        }
+    center = (rng_min + rng_max) / 2.0
+    distance = dom_bp - center
+    width = max(rng_max - rng_min, 1e-9)
+    in_window = bool(rng_min <= dom_bp <= rng_max)
+    coverage = 3.0 / width
+    return {
+        "dom_distance_to_ref_window_center_bp": float(distance),
+        "ref_window_coverage_fraction": float(coverage) if in_window else 0.0,
+        "in_reference_window": in_window,
+        "interpretation_window_for_assay": range_text,
+    }
+
+
+def compute_patient_panel_features(
+    entry: dict[str, Any],
+    all_patient_entries: Iterable[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Per-patient replicate concordance (T-2.3).
+
+    Given the entry plus an iterable of all sibling entries sharing the same
+    DIT, count distinct assays run and the fraction of the canonical
+    clonality panel that's been completed for this patient.
+
+    The canonical panel is intentionally explicit (FR1, FR2, FR3, IGK,
+    KDE, TCRG-A, TCRG-B, DHJH_D, DHJH_E) — chemist owns the list.
+    Today's call site is the pipeline orchestrator in Phase 6; this is
+    a stand-in callable that returns safe defaults when the orchestrator
+    has not yet plumbed the patient-entry iterator.
+    """
+    canonical: tuple[str, ...] = (
+        "FR1", "FR2", "FR3", "IGK", "KDE", "TCRGA", "TCRGB", "DHJHD", "DHJHE",
+    )
+
+    if not all_patient_entries:
+        return {
+            "patient_assays_run_count": 0,
+            "assay_panel_completeness_pct": 0.0,
+            "patient_entry_count": 0,
+        }
+
+    def _canon(name: Any) -> str | None:
+        s = str(name or "").strip().upper()
+        # Strip whitespace + separators that may or may not exist in the source.
+        s = s.replace(" ", "").replace("-", "").replace("_", "")
+        return s or None
+
+    seen = {_canon(e.get("assay")) for e in all_patient_entries}
+    seen.discard(None)
+    distinct_count = sum(1 for c in canonical if c in seen)
+    complete = distinct_count / len(canonical) if canonical else 0.0
+    return {
+        "patient_assays_run_count": int(distinct_count),
+        "assay_panel_completeness_pct": float(complete),
+        "patient_entry_count": len(list(all_patient_entries)),
+    }
+
+
+
 def features_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
     file_name = str(entry.get("file_name") or getattr(entry.get("fsa"), "file_name", "") or "")
     sample_kind, control, control_bucket = sample_kind_for_file(file_name)
@@ -224,6 +384,9 @@ def features_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "sl_quality_class": sl_quality.get("quality_class", ""),
         "sl_quality_phrase": sl_quality.get("quality_phrase", ""),
         "annotation_schema_version": ANNOTATION_SCHEMA_VERSION,
+        **per_channel_trace_summary(entry),
+        **reference_window_features(entry),
+        **compute_patient_panel_features(entry),
     }
 
 

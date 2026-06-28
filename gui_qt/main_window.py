@@ -9,6 +9,7 @@ from app_meta import APP_VERSION
 from gui_qt.styles import VIBRANT_PRO_QSS
 from gui_qt.tabs.tab_batch import TabBatch
 from gui_qt.tabs.tab_archive_runner import TabArchiveRunner
+from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
 from gui_qt.tabs.tab_flt3_validation import TabFlt3Validation
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_log import TabLog
@@ -158,6 +159,7 @@ class MainWindow(QMainWindow):
         self.tab_ladder = TabLadder()
         self.tab_archive_runner = TabArchiveRunner()
         self.tab_flt3_validation = TabFlt3Validation()
+        self.tab_clonality_interpretation = TabClonalityInterpretation()
         self.tab_log = TabLog()
         self.tab_about = TabAbout()
         self.tab_settings_clonality = TabAnalysisSettings("clonality")
@@ -178,6 +180,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ladder))
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_flt3_validation))
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_clonality_interpretation))
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_clonality))
@@ -275,10 +278,10 @@ class MainWindow(QMainWindow):
             self.tab_flt3_validation.set_analysis(analysis_id)
             
         if analysis_id == "clonality":
-            page_map = {0: 0, 1: 1, 2: 2, 3: 4, 4: 6}
+            page_map = {0: 0, 1: 1, 2: 2, 3: 5, 4: 7}
             page_idx = page_map.get(tab_idx, 0)
         elif analysis_id == "flt3":
-            page_map = {0: 0, 1: 1, 2: 3, 3: 4, 4: 7}
+            page_map = {0: 0, 1: 1, 2: 3, 3: 5, 4: 8}
             page_idx = page_map.get(tab_idx, 0)
         else:
             if tab_idx == 3:
