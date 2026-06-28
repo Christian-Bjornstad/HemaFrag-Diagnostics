@@ -10,7 +10,7 @@ REM   - Creates .venv at the repo root.
 REM   - pip install --upgrade pip wheel setuptools in the venv.
 REM   - pip install -r requirements.txt in the venv.
 REM   - If wheels\fraggler_kernels*.whl exists, installs it (Rust engine).
-REM   - Writes a start.bat launcher next to qt_app.py.
+REM   - start.bat is pre-committed in the repo.
 REM
 REM Re-runnable: deletes .venv and rebuilds if one already exists.
 REM ============================================================
@@ -112,23 +112,12 @@ if "%WHEEL_INSTALLED%"=="1" (
     echo [inprocess]     to enable Rust: drop a .whl file into wheels\, or run build_wheel_windows.bat.
 )
 
-REM Generate start.bat
-echo.
-echo [install] writing start.bat ...
-(
-    echo @echo off
-    echo setlocal
-    echo cd /d "%REPO_ROOT%"
-    echo "%%REPO_ROOT%%\.venv\Scripts\python.exe" -X utf8 "%%REPO_ROOT%%\qt_app.py" %%* 1^>"%%REPO_ROOT%%\start.log" 2^>^&1
-    echo set "EC=%%ERRORLEVEL%%"
-    echo if not "%%EC%%"=="0" ^(
-    echo     echo.
-    echo     echo [start.bat] qt_app.py exited with code %%EC%%  -  see start.log
-    echo     echo.
-    echo ^)
-    echo exit /b %%EC%%
-) > "%REPO_ROOT%\start.bat"
-echo [install] start.bat written.
+REM start.bat is committed alongside install.bat - no need to generate.
+if exist "%REPO_ROOT%\start.bat" (
+    echo [install] start.bat already exists.
+) else (
+    echo [WARN] start.bat missing  -  re-run git pull or restore from commit history.
+)
 
 REM Final verification
 echo.
