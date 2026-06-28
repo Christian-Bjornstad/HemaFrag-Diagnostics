@@ -60,3 +60,22 @@ data/*
 
 # Logs
 *.log
+
+# venv / install artefacts
+.venv/
+venv/
+.install_state
+err.log
+
+# Wheel outputs (kept local — prebuilt wheel goes in wheels/ if user
+# wants to share, but not commit-generated)
+target/wheels/*.whl
+!wheels/
+
+# Crate build outputs (avoid touching ~600MB on git status)
+fraggler-v2/target/
+
+# Windows things .NET-style
+Thumbs.db
+*.lnk
+
