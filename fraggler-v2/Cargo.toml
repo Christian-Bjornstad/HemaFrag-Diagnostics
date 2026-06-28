@@ -3,6 +3,7 @@ members = [
     "crates/fraggler-core",
     "crates/fraggler-cli",
     "crates/fraggler-desktop",
+    "crates/fraggler-kernels-py",
 ]
 resolver = "2"
 
