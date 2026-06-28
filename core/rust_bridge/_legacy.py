@@ -69,7 +69,7 @@ from core.rust_bridge._constants import (
 )
 from fraggler.fraggler import FsaFile, baseline_arPLS, fit_size_standard_to_ladder
 
-__all__ = ['_RustPrimitiveWorker', '_RustSizingModel', '_allow_guardrail_review_hydration', '_anchor_intensity', '_apply_rust_result_to_fsa', '_apply_rust_sizing_model_to_fsa', '_baseline_correct_for_validation', '_cache_key', '_cpu_topology', '_eval_monotone_cubic_spline', '_eval_polynomial', '_flt3_liz_override_enabled', '_get_cached_rust_result', '_get_rust_worker', '_get_rust_worker_pool', '_increment_rust_engine_stat', '_invalidate_rust_worker', '_invalidate_rust_worker_pool', '_is_gs500rox_ladder', '_is_rox_ladder', '_normalized_size_standard_trace_for_fsa', '_resolve_cli_bin', '_run_cli_once', '_rust_prewarm_worker_count', '_rust_timeout_seconds', '_store_cached_rust_result', '_validate_rust_anchor_selection', '_validation_trace_for_fsa', 'format_rust_engine_stats', 'merge_rust_engine_stats', 'prime_rust_worker_results', 'reset_rust_engine_stats', 'run_ladder_fit_hybrid', 'rust_engine_stats_snapshot']
+__all__ = ['_RustPrimitiveWorker', '_RustSizingModel', '_allow_guardrail_review_hydration', '_anchor_intensity', '_apply_rust_result_to_fsa', '_apply_rust_sizing_model_to_fsa', '_baseline_correct_for_validation', '_cache_key', '_cpu_topology', '_eval_monotone_cubic_spline', '_eval_polynomial', '_flt3_liz_override_enabled', '_get_cached_rust_result', '_get_rust_worker', '_get_rust_worker_pool', '_increment_rust_engine_stat', '_invalidate_rust_worker', '_invalidate_rust_worker_pool', '_is_gs500rox_ladder', '_is_rox_ladder', '_normalized_size_standard_trace_for_fsa', '_resolve_cli_bin', '_run_cli_once', '_rust_prewarm_worker_count', '_rust_timeout_seconds', '_store_cached_rust_result', '_validate_rust_anchor_selection', '_validation_trace_for_fsa', 'format_rust_engine_stats', 'merge_rust_engine_stats', 'prime_rust_worker_results', 'reset_rust_engine_stats', 'run_ladder_fit_hybrid', 'rust_engine_stats_snapshot', '_log_rust_cli_missing_once', '_RUST_CLI_MISSING_LOGGED', '_RUST_CLI_MISSING_FALLBACK_COUNT', '_RUST_CLI_MISSING_FIRST_SAMPLE']
 
 class _RustSizingModel:
     def __init__(
@@ -266,6 +266,31 @@ def _resolve_cli_bin() -> Path | None:
     if cli_bin is not None:
         _CLI_BIN_CACHE = cli_bin
     return cli_bin
+
+
+_RUST_CLI_MISSING_LOGGED = False
+_RUST_CLI_MISSING_FALLBACK_COUNT = 0
+_RUST_CLI_MISSING_FIRST_SAMPLE: str | None = None
+
+
+def _log_rust_cli_missing_once(*, fsa: Path | None = None) -> None:
+    """Log the missing fraggler-cli at most once per process; subsequent
+    misses are counted so the user can see whether Rust was attempted
+    (without flooding the log with N copies of the same warning)."""
+    global _RUST_CLI_MISSING_LOGGED, _RUST_CLI_MISSING_FALLBACK_COUNT
+    global _RUST_CLI_MISSING_FIRST_SAMPLE
+    _RUST_CLI_MISSING_FALLBACK_COUNT += 1
+    if not _RUST_CLI_MISSING_LOGGED:
+        _RUST_CLI_MISSING_LOGGED = True
+        sample_name = fsa.name if fsa is not None else "(unknown)"
+        log(
+            "[RUST WARNING] fraggler-cli not found. Rust runtime disabled "
+            f"(first missing: {sample_name}). Subsequent runs will continue "
+            "to fall back to the Python ladder-fitting path until the binary "
+            "is built or HEMAFRAG_DISABLE_RUST_LOG_REPLAY=1 is unset. "
+            "Set CMAKE_BUILD_TYPE / build the crate in "
+            "fraggler-v2/target/(release|debug)/fraggler-cli(.exe) to enable."
+        )
 
 
 class _RustPrimitiveWorker:
@@ -988,7 +1013,7 @@ def run_ladder_fit_hybrid(fsa: FsaFile, analysis_kind: str) -> FsaFile | None:
     """
     cli_bin = _resolve_cli_bin()
     if not cli_bin or not cli_bin.exists():
-        log("[RUST ERROR] Could not find fraggler-cli. Rust runtime analysis cannot continue.")
+        _log_rust_cli_missing_once(fsa=Path(fsa.file))
         return None
 
     fsa_path = Path(fsa.file)
