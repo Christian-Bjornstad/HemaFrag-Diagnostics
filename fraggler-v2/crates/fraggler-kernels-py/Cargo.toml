@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 anyhow.workspace = true
 camino.workspace = true
-pyo3 = { version = "0.24", features = ["extension-module"] }
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py311"] }
 fraggler-core = { path = "../fraggler-core" }
 serde.workspace = true
 serde_json.workspace = true
