@@ -33,8 +33,7 @@ fn parse_analysis_kind(s: Option<&str>) -> PyResult<Option<AnalysisKind>> {
 }
 
 /// Run the Rust primitive analysis on a single FSA file and return a
-/// Python dict. We deliberately return a dict (not a struct) so callers
-/// can pick fields by name without learning a new typed API.
+/// Python dict.
 #[pyfunction]
 fn analyze_fsa<'py>(
     py: Python<'py>,
@@ -76,18 +75,27 @@ fn analyze_fsa<'py>(
 /// Convert a `serde_json::Value` to an equivalent Python object.
 fn json_to_py<'py>(py: Python<'py>, v: Value) -> PyResult<Bound<'py, PyAny>> {
     match v {
-        Value::Null => Ok(py.None().into_any()),
-        Value::Bool(b) => Ok(b.into_pyobject(py)?.into_any()),
+        Value::Null => Ok(py.None().into_bound(py)),
+        Value::Bool(b) => {
+            let bound = b.into_pyobject(py)?;
+            Ok(bound.to_owned().into_any())
+        }
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Ok(i.into_pyobject(py)?.into_any())
+                let bound = i.into_pyobject(py)?;
+                Ok(bound.to_owned().into_any())
             } else if let Some(f) = n.as_f64() {
-                Ok(f.into_pyobject(py)?.into_any())
+                let bound = f.into_pyobject(py)?;
+                Ok(bound.to_owned().into_any())
             } else {
-                Ok(n.to_string().into_pyobject(py)?.into_any())
+                let bound = n.to_string().into_pyobject(py)?;
+                Ok(bound.to_owned().into_any())
             }
         }
-        Value::String(s) => Ok(s.into_pyobject(py)?.into_any()),
+        Value::String(s) => {
+            let bound = s.into_pyobject(py)?;
+            Ok(bound.to_owned().into_any())
+        }
         Value::Array(items) => {
             let list = PyList::empty(py);
             for item in items {
@@ -114,7 +122,6 @@ fn fraggler_cli_path() -> Option<String> {
         &["fraggler-cli"]
     };
 
-    // 1) Sibling of the installed extension module (maturin installs near it).
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             for c in candidates {
@@ -126,7 +133,6 @@ fn fraggler_cli_path() -> Option<String> {
         }
     }
 
-    // 2) Workspace target/ paths we recognise during development.
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = here.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf());
     if let Some(root) = workspace_root {
@@ -143,14 +149,13 @@ fn fraggler_cli_path() -> Option<String> {
     None
 }
 
-/// Always `True` if the module is loaded at all.
 #[pyfunction]
 fn is_available() -> bool {
     true
 }
 
 #[pymodule]
-fn _fraggler_native(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn fraggler_native(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analyze_fsa, m)?)?;
     m.add_function(wrap_pyfunction!(fraggler_cli_path, m)?)?;
     m.add_function(wrap_pyfunction!(is_available, m)?)?;

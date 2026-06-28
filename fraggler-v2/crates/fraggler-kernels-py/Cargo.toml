@@ -7,14 +7,13 @@ authors.workspace = true
 description = "PyO3 Python extension exposing fraggler-core engine primitives"
 
 [lib]
-# cdylib so Python loads it as a native module; rlib so other Rust code can link.
-name = "_fraggler_native"
+name = "fraggler_native"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow.workspace = true
 camino.workspace = true
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "0.24", features = ["extension-module"] }
 fraggler-core = { path = "../fraggler-core" }
 serde.workspace = true
 serde_json.workspace = true
