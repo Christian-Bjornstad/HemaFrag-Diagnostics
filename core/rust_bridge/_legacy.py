@@ -69,7 +69,7 @@ from core.rust_bridge._constants import (
 )
 from fraggler.fraggler import FsaFile, baseline_arPLS, fit_size_standard_to_ladder
 
-__all__ = ['_RustPrimitiveWorker', '_RustSizingModel', '_allow_guardrail_review_hydration', '_anchor_intensity', '_apply_rust_result_to_fsa', '_apply_rust_sizing_model_to_fsa', '_baseline_correct_for_validation', '_cache_key', '_cpu_topology', '_eval_monotone_cubic_spline', '_eval_polynomial', '_flt3_liz_override_enabled', '_get_cached_rust_result', '_get_rust_worker', '_get_rust_worker_pool', '_increment_rust_engine_stat', '_invalidate_rust_worker', '_invalidate_rust_worker_pool', '_is_gs500rox_ladder', '_is_rox_ladder', '_normalized_size_standard_trace_for_fsa', '_resolve_cli_bin', '_run_cli_once', '_rust_prewarm_worker_count', '_rust_timeout_seconds', '_store_cached_rust_result', '_validate_rust_anchor_selection', '_validation_trace_for_fsa', 'format_rust_engine_stats', 'merge_rust_engine_stats', 'prime_rust_worker_results', 'reset_rust_engine_stats', 'run_ladder_fit_hybrid', 'rust_engine_stats_snapshot', '_log_rust_cli_missing_once', '_RUST_CLI_MISSING_LOGGED', '_RUST_CLI_MISSING_FALLBACK_COUNT', '_RUST_CLI_MISSING_FIRST_SAMPLE']
+__all__ = ['_RustPrimitiveWorker', '_RustSizingModel', '_allow_guardrail_review_hydration', '_anchor_intensity', '_apply_rust_result_to_fsa', '_apply_rust_sizing_model_to_fsa', '_baseline_correct_for_validation', '_cache_key', '_cpu_topology', '_eval_monotone_cubic_spline', '_eval_polynomial', '_flt3_liz_override_enabled', '_get_cached_rust_result', '_get_rust_worker', '_get_rust_worker_pool', '_increment_rust_engine_stat', '_invalidate_rust_worker', '_invalidate_rust_worker_pool', '_is_gs500rox_ladder', '_is_rox_ladder', '_normalized_size_standard_trace_for_fsa', '_resolve_cli_bin', '_run_cli_once', '_rust_prewarm_worker_count', '_rust_timeout_seconds', '_store_cached_rust_result', '_validate_rust_anchor_selection', '_validation_trace_for_fsa', 'format_rust_engine_stats', 'merge_rust_engine_stats', 'prime_rust_worker_results', 'reset_rust_engine_stats', 'run_ladder_fit_hybrid', 'rust_engine_stats_snapshot', '_log_rust_cli_missing_once', '_in_process_native_wheel_is_available', '_run_in_process_wheel_once', '_RUST_CLI_MISSING_LOGGED', '_RUST_CLI_MISSING_FALLBACK_COUNT', '_RUST_CLI_MISSING_FIRST_SAMPLE']
 
 class _RustSizingModel:
     def __init__(
@@ -271,6 +271,42 @@ def _resolve_cli_bin() -> Path | None:
 _RUST_CLI_MISSING_LOGGED = False
 _RUST_CLI_MISSING_FALLBACK_COUNT = 0
 _RUST_CLI_MISSING_FIRST_SAMPLE: str | None = None
+
+
+def _in_process_native_wheel_is_available() -> bool:
+    """True iff the `fraggler_kernels` wheel is importable and reports ready."""
+    try:
+        import fraggler_native as native  # noqa: F401
+    except Exception:
+        return False
+    try:
+        return bool(native.is_available())
+    except Exception:
+        return False
+
+
+def _run_in_process_wheel_once(
+    fsa: FsaFile, analysis_kind: str
+) -> dict[str, Any] | None:
+    """Call the in-process Rust kernel directly (no subprocess).
+
+    Returns a dict shaped like fraggler-core's Primitive Analysis Result
+    (the same shape _apply_rust_result_to_fsa expects) or None on failure.
+    """
+    try:
+        import fraggler_native as native  # noqa: F401
+    except Exception:
+        return None
+
+    fsa_path = Path(fsa.file)
+    try:
+        return native.analyze_fsa(str(fsa_path), str(analysis_kind)) or None
+    except Exception as exc:
+        log(
+            "[RUST] in-process kernel failed for "
+            f"{fsa.file_name}: {type(exc).__name__}: {exc}"
+        )
+        return None
 
 
 def _log_rust_cli_missing_once(*, fsa: Path | None = None) -> None:
@@ -1007,10 +1043,29 @@ def _allow_guardrail_review_hydration(
 
 def run_ladder_fit_hybrid(fsa: FsaFile, analysis_kind: str) -> FsaFile | None:
     """
-    Passes the FSA file to the fraggler-cli to perform baseline correction,
-    peak detection, and ladder fitting. Retrieves the mapped ladder steps 
-    and applies them directly to the Python FsaFile.
+    Run the Rust engine against the FSA file. Strategy order:
+    1. in-process `fraggler_kernels` wheel (no subprocess, no tmp files)
+    2. persistent Rust worker via subprocess stdio (POSIX only)
+    3. standalone `fraggler-cli` subprocess with JSON request
+    Returns the FsaFile annotated with Rust engine output, or None.
     """
+    # Fast path: fraggler_kernels wheel (in-process Rust, abi3 stable).
+    if _in_process_native_wheel_is_available():
+        started = time.monotonic()
+        try:
+            res = _run_in_process_wheel_once(fsa, analysis_kind)
+        except Exception as exc:
+            log(f"[RUST] in-process wheel raised: {exc}")
+            res = None
+        if isinstance(res, dict):
+            elapsed = time.monotonic() - started
+            _increment_rust_engine_stat("worker_hits")
+            log(
+                f"[RUST] In-process kernel finished in {elapsed:.2f}s for {fsa.file_name}"
+            )
+            return _apply_rust_result_to_fsa(fsa, res)
+        # otherwise, fall through to the legacy subprocess path
+
     cli_bin = _resolve_cli_bin()
     if not cli_bin or not cli_bin.exists():
         _log_rust_cli_missing_once(fsa=Path(fsa.file))
