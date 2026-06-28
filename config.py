@@ -130,6 +130,16 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
             "interpretation": {
                 "enabled": False,
                 "model_path": "",
+                "thresholds": {
+                    "FR1": 0.85, "FR2": 0.85, "FR3": 0.85,
+                    "TCRG-A": 0.75, "TCRG-B": 0.75,
+                    "TCRB-A": 0.75, "TCRB-B": 0.75, "TCRB-C": 0.75,
+                    "DHJH_D": 0.92, "DHJH_E": 0.92,
+                    "IGK": 0.92, "KDE": 0.92,
+                    "SL": 0.95, "IKZF1": 0.95,
+                    "Ktr-albumin": 0.92,
+                    "_default": 0.85,
+                },
             },
             "learning": {
                 "enabled": False,
