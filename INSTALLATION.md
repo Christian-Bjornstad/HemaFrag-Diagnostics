@@ -131,7 +131,10 @@ Then it builds:
 .\build_wheel_windows.bat
 ```
 
-Output: `wheels\fraggler_kernels-0.1.0-cp312-cp312-win_amd64.whl`
+Output: `wheels\fraggler_kernels-0.1.0-cp312-abi3-win_amd64.whl`
+
+This wheel uses the CPython 3.12 stable ABI (abi3-py312), so it
+runs on any Python 3.12+ interpreter on Windows without recompilation.
 
 Re-run `install.bat` to pick up the freshly-built wheel.
 
