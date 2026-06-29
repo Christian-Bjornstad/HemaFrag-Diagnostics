@@ -30,33 +30,32 @@ Plus 28 new tests across the three Plan-11 test files. The 4 pre-existing flaky 
 (test_rust_result_cache, test_strict_rust_ladder_mode, test_html_report_fragment_cache,
 test_html_report_size) are excluded because they were broken before this sprint.
 
-## Incomplete: research deliverables
+## Research deliverables shipped
 
-- [~] DELIVERABLE 1: pubmed_anchor_survey.md - STUB ONLY (commit 6415817)
-      18-line status note + TODO list. The async researcher-agent (deleg_77136ad2)
-      returned "time to write" at the end of its 32-minute run but never wrote the
-      file. The main-session exhausted tool canvas for 2.5kB markdown.
-      URLs to re-anchor tomorrow are:
-        - euroclonality.org
-        - pubmed.ncbi.nlm.nih.gov/14671650  (van Dongen 2003)
-        - pmc.ncbi.nlm.nih.gov/articles/PMC3469789  (Langerak 2012)
-        - pmc.ncbi.nlm.nih.gov/articles/PMC6746026  (TRG multiplex)
-        - invivoscribe.com/uploads/collateral/D-0329.pdf
-        - nature.com/articles/leu2012246
+- [x] DELIVERABLE 1 (06deb2c): `internet_cite/2026-06-28_pubmed_anchor_survey.md` (164 lines).
+      BIOMED-2 / EuroClonality primary citations + 16-row per-assay bp-window table
+      + WHO-HAEM5 informational anchor notes.
+- [x] DELIVERABLE 2 (06deb2c): `decisions/model_registry_2026-06-28.md` (143 lines).
+      RandomForest + Platt scaling = primary Phase-3 model; Calibrated QDA = head-to-head;
+      xgboost deferred per trigger criterion; TabPFN/TabNet surveyed NOT adopted;
+      ImmuneML/NetTCR-2.0/TITAN listed out of scope.
 
-- [ ] DELIVERABLE 2: model_registry_2026-06-28.md - NOT STARTED
-      Re-do tomorrow alongside deliverable 1.
+## Phases shipped (2026-06-29)
 
-## Tomorrow's pickup list (Phase 3+)
+- [x] Phase 1 (54930b0): tab widget, main_window wire, audit.md
+- [x] Phase 2 (54930b0): per-channel + reference-window + patient panel features
+- [x] Phase 3 (85a9d22): ml_training.py + scripts/train_clonality_interpretation_models.py + 12 tests
+- [x] Phase 4 (5c7d1db): calibration.py + predict_with_rejection + 15 tests +
+      attach_ml_suggestion_if_enabled orchestrator bridge
+- [x] Python 3.12 wheel rebuild (c56c723): cp312-abi3
+- [x] Research markdowns (06deb2c): pubmed_anchor_survey.md + model_registry_2026-06-28.md
 
-1. Re-author the two Obsidian research deliverables (above).
-2. Phase 3 / T-3.1 - scripts/train_clonality_interpretation_models.py  (full pipeline):
-   - 22k-labelled catalogue from /Volumes/T7 Shield/DATA/clonality.
-   - DIT-by-DIT stratified split.
-   - RandomForest + QDA per assay with N >= 200.
-   - Save per-assay joblib artifacts under ObsidianVault/Clonality_ML_Log/models/<date>/<assay>/.
+Current pytest (sans 4 pre-existing flaky): 161 passed, 1 skipped, 22 warnings.
 
-3. Phase 3 / T-3.2 - core/analyses/clonality/ml_training.py (shared internal).
-4. Phase 3 / T-3.3 - tests/test_clonality_interpretation_ml.py (>=6 cases).
-5. Phase 4 calibration review with chemist.
-6. Trigger criterion for xgboost if rare-class F1 < 0.85 on FR1 OOF.
+
+## Tomorrow's pickup (Phase 5+)
+
+1. **Chemist calibration review** — per-assay τ values from T-1.3 are educated-guess. Now that Phase 4 calibration.py ships, run the per-assay OOF pass and let chemist sign off on adjusted τ values.
+2. **xgboost trigger criterion** — if FR1 rare-class F1 < 0.85 on OOF, promote xgboost per `decisions/xgboost_pending.md`.
+3. **Phase 7 feedback loop** — when GUI disagreement ledger is enabled, append JSONL lines under `ObsidianVault/Clonality_ML_Log/feedback/<date>.jsonl`.
+4. **Real-data first model run** — re-run today's CLI on `/Volumes/T7 Shield/DATA/clonality/Clonality_Tracking.xlsx` (22k labelled catalogue) to ship the FIRST per-assay model in production. Required: chemist-approved labels-csv from a recent batch run.
