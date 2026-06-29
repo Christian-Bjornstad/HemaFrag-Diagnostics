@@ -53,9 +53,48 @@ test_html_report_size) are excluded because they were broken before this sprint.
 Current pytest (sans 4 pre-existing flaky): 161 passed, 1 skipped, 22 warnings.
 
 
-## Tomorrow's pickup (Phase 5+)
 
-1. **Chemist calibration review** — per-assay τ values from T-1.3 are educated-guess. Now that Phase 4 calibration.py ships, run the per-assay OOF pass and let chemist sign off on adjusted τ values.
-2. **xgboost trigger criterion** — if FR1 rare-class F1 < 0.85 on OOF, promote xgboost per `decisions/xgboost_pending.md`.
-3. **Phase 7 feedback loop** — when GUI disagreement ledger is enabled, append JSONL lines under `ObsidianVault/Clonality_ML_Log/feedback/<date>.jsonl`.
-4. **Real-data first model run** — re-run today's CLI on `/Volumes/T7 Shield/DATA/clonality/Clonality_Tracking.xlsx` (22k labelled catalogue) to ship the FIRST per-assay model in production. Required: chemist-approved labels-csv from a recent batch run.
+
+## Tomorrow's pickup (Phase 5+ — re-evaluating)
+
+Today's session shipped two important pre-flight pieces:
+
+- [x] Smoke-tested the train CLI end-to-end on synthetic data:
+      commands/train_clonality_interpretation_models.py produces
+      joblib + metadata + per-assay markdown reports for FR1,
+      TCRG-A, DHJH_D. (commit c8c59fb)
+- [x] Fixed four pre-existing flaky tests from the
+      package-shell refactor: cache pruning monkeypatch targets,
+      monkeypatch module path issues, missing import os/sys.
+      (commit 2d8182a. 171 tests green.)
+- [x] QFileDialog Browse button on the interpretation tab
+      so chemists can pick any tracking workbook from the GUI.
+      (commit 698ea73.)
+- [x] scripts/export_clonality_labels_csv.py -- the missing
+      glue that lets us turn a tracking Excel into labels.csv
+      without regenerating the Excel via the rule engine.
+      (commit 698ea73.)
+
+Tomorrow's pickup (revised):
+
+1. **Real-data first model run.** Use the new exporter:
+   ```
+   python scripts/export_clonality_labels_csv.py \
+       --xls /Volumes/T7 Shield/DATA/clonality/Clonality_Tracking.xlsx \
+       --out /tmp/labels.csv
+   python scripts/train_clonality_interpretation_models.py \
+       --xls /Volumes/T7 Shield/DATA/clonality/Clonality_Tracking.xlsx \
+       --labels-csv /tmp/labels.csv \
+       --output-dir /Volumes/T7 Shield/DATA/clonality/models/
+   ```
+   This should now work end-to-end on the 22k labelled catalogue.
+
+2. **Chemist calibration review** — once the first OOF metrics
+   are in, review per-assay τ values in `config.py`.
+
+3. **xgboost trigger criterion** — if FR1 rare-class F1 < 0.85,
+   per `decisions/xgboost_pending.md`.
+
+4. **Phase 7 feedback loop** — when chemist iterates on disagreement
+   rows via the Browse-loaded GUI tab, append JSONL lines under
+   `ObsidianVault/Clonality_ML_Log/feedback/<date>.jsonl`.
