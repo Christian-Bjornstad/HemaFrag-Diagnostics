@@ -227,7 +227,7 @@ def _render_per_assay_markdown(metrics, who_called):
     return chr(10).join(out_lines)
 
 
-def _assemble_labelled_df_with_labels_csv(xlsx_path, labels_csv_path):
+def _assemble_labelled_df_with_labels_csv(xlsx_path, labels_csv_path, entry_metadata_path=None):
     """Variant that joins labels from a separate CSV.
 
     The CSV must have columns: DIT, Assay, ClonalitySuggestion.
@@ -335,6 +335,12 @@ def _parse_args(argv=None):
         help="Optional CSV with columns DIT,Assay,ClonalitySuggestion. Required when the tracking workbook does not already include the label column.",
     )
     p.add_argument(
+        "--entry-metadata",
+        type=Path,
+        default=None,
+        help="Optional JSON file keyed on identity_key with extra metadata per FSA file. Required when build_clonality_feature_tables cannot otherwise populate identity_key.",
+    )
+    p.add_argument(
         "--test-size",
         type=float,
         default=0.20,
@@ -358,19 +364,19 @@ def main(argv=None):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     today = args.date if args.date else datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    report_dir = output_dir.parent / "reports" / today
+    report_dir = output_dir / "reports" / today
+    report_dir.mkdir(parents=True, exist_ok=True)
     print("[train] loading tracking workbook: {}".format(xlsx_path))
     if args.labels_csv:
         if not Path(args.labels_csv).exists():
             raise FileNotFoundError("--labels-csv {} not found".format(args.labels_csv))
         combined = _assemble_labelled_df_with_labels_csv(
             xlsx_path, Path(args.labels_csv),
+            entry_metadata_path=args.entry_metadata,
         )
     else:
         combined = _assemble_labelled_df(xlsx_path)
     combined = _ensure_columns_renamed(combined)
-    print("[train] combined rows: {}".format(len(combined)))
-    combined = _assemble_labelled_df(xlsx_path)
     print("[train] combined rows: {}".format(len(combined)))
 
     include_assays = None
@@ -433,7 +439,7 @@ def main(argv=None):
             "report_path": str(report_path),
         })
 
-    summary_path = output_dir.parent / "reports" / today / "summary.json"
+    summary_path = output_dir / "reports" / today / "summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps({"date": today, "summaries": summaries}, indent=2), encoding="utf-8")
 
