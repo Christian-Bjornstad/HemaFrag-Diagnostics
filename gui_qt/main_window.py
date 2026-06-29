@@ -130,13 +130,26 @@ class MainWindow(QMainWindow):
             "Klonalitet",
             "clonality",
             self.on_sub_tab_clicked,
-            sub_buttons=["Run", "Ladder", "Archive Runner", "Log", "Settings"],
+            sub_buttons=[
+                "Run",
+                "Ladder",
+                "Archive Runner",
+                "Interpretation",
+                "Log",
+                "Settings",
+            ],
         )
         self.group_flt3 = AnalysisGroup(
             "FLT3 Analysis",
             "flt3",
             self.on_sub_tab_clicked,
-            sub_buttons=["Run", "Ladder", "Archive Runner", "Log", "Settings"],
+            sub_buttons=[
+                "Run",
+                "Ladder",
+                "Archive Runner",
+                "Log",
+                "Settings",
+            ],
         )
         self.group_general = AnalysisGroup("General", "general", self.on_sub_tab_clicked)
         
@@ -278,7 +291,7 @@ class MainWindow(QMainWindow):
             self.tab_flt3_validation.set_analysis(analysis_id)
             
         if analysis_id == "clonality":
-            page_map = {0: 0, 1: 1, 2: 2, 3: 5, 4: 7}
+            page_map = {0: 0, 1: 1, 2: 2, 3: 4, 4: 5, 5: 7}
             page_idx = page_map.get(tab_idx, 0)
         elif analysis_id == "flt3":
             page_map = {0: 0, 1: 1, 2: 3, 3: 5, 4: 8}

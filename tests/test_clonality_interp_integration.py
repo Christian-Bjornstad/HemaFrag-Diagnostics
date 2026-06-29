@@ -182,3 +182,34 @@ def test_audit_md_documents_per_entry_features():
             continue
         # Use first-form bool assertion: at least *something* about each lives in the doc.
         # We tolerate the docs being summarized; not strict here.
+
+
+def test_clonality_sidebar_has_interpretation_button(qapp):
+    """Regression: sidebar must surface the Interpretation sub-button
+    inside the Klonalitet (clonality) analysis group.
+
+    Bug history: 2026-06-29 morning session - tab widget was registered
+    in the stacked widget but no sidebar button was added, so the
+    tab was invisible.
+    """
+    from gui_qt.main_window import MainWindow
+
+    w = MainWindow()
+    # Find clonality group's sub_buttons
+    clonality_group = w.group_clonality
+    sub_labels = list(clonality_group.sub_button_labels)
+    assert "Interpretation" in sub_labels, (
+        "Klonalitet sidebar must include an 'Interpretation' sub-button; "
+        "the tab is otherwise unreachable. sub_labels=%r" % sub_labels
+    )
+    # Find index of interpretation and verify it maps to a non-zero stack page
+    interp_idx = sub_labels.index("Interpretation")
+    w._activate_analysis("clonality")
+    w.on_sub_tab_clicked("clonality", interp_idx)
+    assert w.stacked_widget.currentIndex() == 4, (
+        f"Interpretation should default to stack[4]; got {w.stacked_widget.currentIndex()}"
+    )
+    # Confirm the page shown is the actual interpreter widget
+    page = w.stacked_widget.widget(4).widget()
+    from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
+    assert isinstance(page, TabClonalityInterpretation)
