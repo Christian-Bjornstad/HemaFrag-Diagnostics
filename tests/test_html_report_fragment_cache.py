@@ -1,4 +1,4 @@
-from core import html_reports
+from core.html_reports import _legacy as html_reports
 
 
 def test_default_report_plot_fragment_is_not_cached(monkeypatch):
@@ -21,6 +21,7 @@ def test_default_report_plot_fragment_is_not_cached(monkeypatch):
 
 def test_report_plot_fragment_cache_respects_qc_rules(monkeypatch):
     from core.qc.qc_rules import QCRules
+    from core.html_reports import _legacy as html_reports
 
     calls = {"count": 0}
 

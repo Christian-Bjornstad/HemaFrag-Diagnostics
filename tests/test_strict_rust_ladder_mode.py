@@ -30,17 +30,33 @@ def test_strict_rust_ladder_disables_flt3_template_rescue(monkeypatch):
 
 
 def test_strict_rust_ladder_skips_python_fit_in_rust_bridge(monkeypatch):
-    from core import rust_bridge
+    """Under HEMAFRAG_STRICT_RUST_LADDER=1, _apply_rust_result_to_fsa
+    must NOT fall back to fit_size_standard_to_ladder, even if the Rust
+    preview returns 0 valid scan_indices.
+
+    Note: fit_size_standard_to_ladder lives in fraggler.fraggler, not
+    in core.rust_bridge. The previous version of this test patched the
+    wrong name; that was the failing root cause.
+    """
+    import fraggler.fraggler
+    from core.rust_bridge import _legacy as legacy
 
     monkeypatch.setenv("HEMAFRAG_STRICT_RUST_LADDER", "1")
-    monkeypatch.setattr(rust_bridge, "_validate_rust_anchor_selection", lambda *_args: (True, ""))
-    monkeypatch.setattr(rust_bridge, "_apply_rust_sizing_model_to_fsa", lambda *_args: None)
+    monkeypatch.setattr(legacy, "_validate_rust_anchor_selection", lambda *_args: (True, ""))
+    monkeypatch.setattr(
+        legacy, "_apply_rust_sizing_model_to_fsa", lambda *_args: None
+    )
 
     def fail_if_called(_fsa):
-        raise AssertionError("Python ladder fallback should not be called in strict Rust mode")
+        raise AssertionError(
+            "Python ladder fallback should not be called in strict Rust mode"
+        )
 
-    monkeypatch.setattr(rust_bridge, "fit_size_standard_to_ladder", fail_if_called)
-    fsa = SimpleNamespace(file_name="dummy.fsa", ladder="LIZ500", sample_data=[1.0, 2.0, 3.0])
+    monkeypatch.setattr(fraggler.fraggler, "fit_size_standard_to_ladder", fail_if_called)
+    fsa = SimpleNamespace(
+        file_name="dummy.fsa", ladder="LIZ500",
+        sample_data=[1.0, 2.0, 3.0],
+    )
     res = {
         "ladder_fit_preview": {
             "best_scan_indices": [100, 200, 300],
@@ -48,4 +64,4 @@ def test_strict_rust_ladder_skips_python_fit_in_rust_bridge(monkeypatch):
         }
     }
 
-    assert rust_bridge._apply_rust_result_to_fsa(fsa, res) is None
+    assert legacy._apply_rust_result_to_fsa(fsa, res) is None

@@ -68,6 +68,7 @@ from core.rust_bridge._constants import (
     ROX_MIN_HARD_WINDOW_FRACTION,
 )
 from fraggler.fraggler import FsaFile, baseline_arPLS, fit_size_standard_to_ladder
+from core.rust_bridge._constants import _persistent_rust_worker_supported
 
 __all__ = ['_RustPrimitiveWorker', '_RustSizingModel', '_allow_guardrail_review_hydration', '_anchor_intensity', '_apply_rust_result_to_fsa', '_apply_rust_sizing_model_to_fsa', '_baseline_correct_for_validation', '_cache_key', '_cpu_topology', '_eval_monotone_cubic_spline', '_eval_polynomial', '_flt3_liz_override_enabled', '_get_cached_rust_result', '_get_rust_worker', '_get_rust_worker_pool', '_increment_rust_engine_stat', '_invalidate_rust_worker', '_invalidate_rust_worker_pool', '_is_gs500rox_ladder', '_is_rox_ladder', '_normalized_size_standard_trace_for_fsa', '_resolve_cli_bin', '_run_cli_once', '_rust_prewarm_worker_count', '_rust_timeout_seconds', '_store_cached_rust_result', '_validate_rust_anchor_selection', '_validation_trace_for_fsa', 'format_rust_engine_stats', 'merge_rust_engine_stats', 'prime_rust_worker_results', 'reset_rust_engine_stats', 'run_ladder_fit_hybrid', 'rust_engine_stats_snapshot', '_log_rust_cli_missing_once', '_in_process_native_wheel_is_available', '_run_in_process_wheel_once', '_RUST_CLI_MISSING_LOGGED', '_RUST_CLI_MISSING_FALLBACK_COUNT', '_RUST_CLI_MISSING_FIRST_SAMPLE']
 

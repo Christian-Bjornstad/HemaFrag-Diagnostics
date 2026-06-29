@@ -5,6 +5,10 @@ Auto-curated from the previously-monolithic `core/rust_bridge.py` during
 the 2026-06-27 `code-cleanup` Phase 6. Re-exported via the package
 facade unchanged.
 """
+from __future__ import annotations
+
+import os
+import sys
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any

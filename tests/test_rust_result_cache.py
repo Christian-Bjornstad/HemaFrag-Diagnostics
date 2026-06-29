@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 def test_cached_rust_result_is_reusable(monkeypatch):
-    from core import rust_bridge
+    from core.rust_bridge import _legacy as rust_bridge
 
     monkeypatch.setattr(rust_bridge, "_RUST_RESULT_CACHE_MAX", 8)
     with rust_bridge._RUST_RESULT_CACHE_LOCK:
@@ -17,23 +17,23 @@ def test_cached_rust_result_is_reusable(monkeypatch):
 
 
 def test_cached_rust_result_prunes_old_entries(monkeypatch):
-    from core import rust_bridge
+    from core.rust_bridge import _legacy as legacy
 
-    monkeypatch.setattr(rust_bridge, "_RUST_RESULT_CACHE_MAX", 2)
-    with rust_bridge._RUST_RESULT_CACHE_LOCK:
-        rust_bridge._RUST_RESULT_CACHE.clear()
+    monkeypatch.setattr(legacy, "_RUST_RESULT_CACHE_MAX", 2)
+    with legacy._RUST_RESULT_CACHE_LOCK:
+        legacy._RUST_RESULT_CACHE.clear()
 
-    rust_bridge._store_cached_rust_result(Path("/tmp/a.fsa"), "clonality", {"file": "a"})
-    rust_bridge._store_cached_rust_result(Path("/tmp/b.fsa"), "clonality", {"file": "b"})
-    rust_bridge._store_cached_rust_result(Path("/tmp/c.fsa"), "clonality", {"file": "c"})
+    legacy._store_cached_rust_result(Path("/tmp/a.fsa"), "clonality", {"file": "a"})
+    legacy._store_cached_rust_result(Path("/tmp/b.fsa"), "clonality", {"file": "b"})
+    legacy._store_cached_rust_result(Path("/tmp/c.fsa"), "clonality", {"file": "c"})
 
-    assert rust_bridge._get_cached_rust_result(Path("/tmp/a.fsa"), "clonality") is None
-    assert rust_bridge._get_cached_rust_result(Path("/tmp/b.fsa"), "clonality") == {"file": "b"}
-    assert rust_bridge._get_cached_rust_result(Path("/tmp/c.fsa"), "clonality") == {"file": "c"}
+    assert legacy._get_cached_rust_result(Path("/tmp/a.fsa"), "clonality") is None
+    assert legacy._get_cached_rust_result(Path("/tmp/b.fsa"), "clonality") == {"file": "b"}
+    assert legacy._get_cached_rust_result(Path("/tmp/c.fsa"), "clonality") == {"file": "c"}
 
 
 def test_cached_rust_result_invalidates_when_file_changes(tmp_path, monkeypatch):
-    from core import rust_bridge
+    from core.rust_bridge import _legacy as rust_bridge
 
     monkeypatch.setattr(rust_bridge, "_RUST_RESULT_CACHE_MAX", 8)
     with rust_bridge._RUST_RESULT_CACHE_LOCK:
@@ -49,7 +49,7 @@ def test_cached_rust_result_invalidates_when_file_changes(tmp_path, monkeypatch)
 
 
 def test_rust_worker_owner_pid_prevents_reusing_inherited_worker(monkeypatch):
-    from core import rust_bridge
+    from core.rust_bridge import _legacy as rust_bridge
 
     created = []
 
@@ -81,7 +81,7 @@ def test_rust_worker_owner_pid_prevents_reusing_inherited_worker(monkeypatch):
 
 
 def test_persistent_rust_worker_can_be_disabled_by_env(monkeypatch):
-    from core import rust_bridge
+    from core.rust_bridge import _legacy as rust_bridge
 
     monkeypatch.setenv("HEMAFRAG_DISABLE_PERSISTENT_RUST_WORKER", "1")
 
@@ -89,7 +89,7 @@ def test_persistent_rust_worker_can_be_disabled_by_env(monkeypatch):
 
 
 def test_rust_engine_stats_helpers():
-    from core import rust_bridge
+    from core.rust_bridge import _legacy as rust_bridge
 
     rust_bridge.reset_rust_engine_stats()
     rust_bridge._increment_rust_engine_stat("cache_hits")
