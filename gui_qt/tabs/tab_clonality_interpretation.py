@@ -17,6 +17,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QBrush, QColor, QPalette
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QFileDialog,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
@@ -112,6 +113,10 @@ class TabClonalityInterpretation(QWidget):
         self._disagreements_only.toggled.connect(self._refresh_table)
         toolbar.addWidget(self._disagreements_only)
 
+        self._browse_btn = QPushButton("Browse...")
+        self._browse_btn.clicked.connect(self._browse_btn_clicked)
+        toolbar.addWidget(self._browse_btn)
+
         self._refresh_btn = QPushButton("Refresh")
         self._refresh_btn.clicked.connect(self._refresh_btn_clicked)
         toolbar.addWidget(self._refresh_btn)
@@ -183,6 +188,29 @@ class TabClonalityInterpretation(QWidget):
 
     def _refresh_btn_clicked(self) -> None:
         self.load_batch_from_tracking()
+
+    def _browse_btn_clicked(self) -> None:
+        """Open QFileDialog to pick a tracking workbook."""
+        from PyQt6.QtWidgets import QFileDialog
+
+        if not self._batch_combo.currentText() or self._batch_combo.currentText() == "(no batch loaded)":
+            start_dir = str(Path.cwd())
+        else:
+            start_dir = str(Path(self._batch_combo.currentText()).parent)
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select a Clonality_Tracking.xlsx",
+            start_dir,
+            "Tracking workbooks (*.xlsx);;All files (*.*)",
+        )
+        if not file_path:
+            return
+        path = Path(file_path)
+        # If user picks this same path, register it on the combo
+        if self._batch_combo.findText(str(path)) < 0:
+            self._batch_combo.addItem(str(path))
+        self._batch_combo.setCurrentText(str(path))
+        self.load_batch_from_tracking(file_path)
 
     def _refresh_table(self) -> None:
         self._table.setRowCount(0)
