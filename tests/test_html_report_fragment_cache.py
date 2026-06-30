@@ -19,6 +19,10 @@ def test_save_peaks_script_escapes_closing_script_and_embeds_plot_payload(tmp_pa
 
     assert '<\\/script>' in header_html
     assert 'type="application\\/json">[\\\\s\\\\S]*?<\\/script>' in header_html
+    new_tag_line = next(line.strip() for line in header_html.splitlines() if line.strip().startswith("var newTag ="))
+    new_plot_tag_line = next(line.strip() for line in header_html.splitlines() if line.strip().startswith("var newPlotTag ="))
+    assert new_tag_line == r"""var newTag = '<script id="peak-data" type="application/json">\\n' + peakDataStr + '\\n<\/script>';"""
+    assert new_plot_tag_line == r"""var newPlotTag = '<script id="plot-state" type="application/json">\\n' + plotStateStr + '\\n<\/script>';"""
     assert "_writeEmbeddedPeakData" in header_html
     assert "data-peak-payload" in inspect.getsource(plotting_plotly.build_interactive_peak_plot_for_entry)
     assert "data-peak-payload" in inspect.getsource(plotting_plotly.build_interactive_assay_batch_plot_html)
