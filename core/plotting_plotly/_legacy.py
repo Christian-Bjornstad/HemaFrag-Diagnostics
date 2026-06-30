@@ -627,7 +627,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
 """
 
     html_fragment = f"""
-<div id="{div_id}" class="peak-editor-block"></div>
+<div id="{div_id}" class="peak-editor-block" data-peak-payload=""></div>
 <div id="{div_id}_table_container" class="peak-table-container" style="display:none;">
     <table id="{div_id}_table">
         <thead>
@@ -978,7 +978,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
     function updatePeakManagerRegistration() {{
       if (!window.PeakManager) return;
       ensurePeakIds();
-      window.PeakManager.registerPlot(divId, {{
+      var plotApi = {{
         getPeaks: function() {{ return peaks; }},
         getPeakData: function() {{
           return {{
@@ -991,7 +991,11 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
             }}
           }};
         }}
-      }});
+      }};
+      window.PeakManager.registerPlot(divId, plotApi);
+      if (typeof window.PeakManager._writeEmbeddedPeakData === "function") {{
+        window.PeakManager._writeEmbeddedPeakData(divId, plotApi.getPeakData());
+      }}
     }}
     updatePeakManagerRegistration();
 
@@ -1758,7 +1762,7 @@ def build_interactive_assay_batch_plot_html(
         # --- HTML for denne editoren ---
         html_parts.append("<div class='assay-block'>")
         html_parts.append(f"<h3>{escape(fsa.file_name)} – {escape(primary_ch)}</h3>")
-        html_parts.append(f"<div id='{div_id}'></div>")
+        html_parts.append(f"<div id='{div_id}' data-peak-payload=''></div>")
         html_parts.append(
             f"<div id='{div_id}_table_container' class='peak-table-container' style='display:none;'>"
             f"<table id='{div_id}_table'>"
@@ -1909,14 +1913,20 @@ def build_interactive_assay_batch_plot_html(
       return Number.isFinite(p.x) && Number.isFinite(p.y);
     }});
 
-    if (window.PeakManager) {{
-        window.PeakManager.registerPlot(divId, {{
-            getPeaks: function() {{ return peaks; }},
-            getPeakData: function() {{
-              return {{ peaks: peaks }};
-            }}
-        }});
+    function updatePeakManagerRegistration() {{
+      if (!window.PeakManager) return;
+      var plotApi = {{
+        getPeaks: function() {{ return peaks; }},
+        getPeakData: function() {{
+          return {{ peaks: peaks }};
+        }}
+      }};
+      window.PeakManager.registerPlot(divId, plotApi);
+      if (typeof window.PeakManager._writeEmbeddedPeakData === "function") {{
+        window.PeakManager._writeEmbeddedPeakData(divId, plotApi.getPeakData());
+      }}
     }}
+    updatePeakManagerRegistration();
 
     function redrawPeaks() {{
       var xs = peaks.map(function(p) {{ return p.x; }});
@@ -1955,6 +1965,7 @@ def build_interactive_assay_batch_plot_html(
       if (tbody) tbody.innerHTML = tableHtml;
       var tCont = document.getElementById(divId + "_table_container");
       if (tCont) tCont.style.display = (tableHtml !== "") ? "block" : "none";
+      updatePeakManagerRegistration();
     }}
 
     function findNearestPeakIdx(xClick) {{

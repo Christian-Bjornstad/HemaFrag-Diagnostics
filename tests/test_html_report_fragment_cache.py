@@ -1,4 +1,27 @@
+import inspect
+
 from core.html_reports import _legacy as html_reports
+
+
+def test_save_peaks_script_escapes_closing_script_and_embeds_plot_payload(tmp_path):
+    from core.plotting_plotly import _legacy as plotting_plotly
+
+    html_lines = []
+    html_reports._create_html_header(
+        "26OUM00001",
+        2026,
+        1,
+        tmp_path,
+        html_lines,
+        display_name="Klonalitet",
+    )
+    header_html = "\n".join(html_lines)
+
+    assert '<\\/script>' in header_html
+    assert 'type="application\\/json">[\\\\s\\\\S]*?<\\/script>' in header_html
+    assert "_writeEmbeddedPeakData" in header_html
+    assert "data-peak-payload" in inspect.getsource(plotting_plotly.build_interactive_peak_plot_for_entry)
+    assert "data-peak-payload" in inspect.getsource(plotting_plotly.build_interactive_assay_batch_plot_html)
 
 
 def test_default_report_plot_fragment_is_not_cached(monkeypatch):

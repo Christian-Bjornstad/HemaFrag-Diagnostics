@@ -602,6 +602,24 @@ window.PeakManager = {
         }
         return { peaks: [], flt3_manual_ratio_selection: null };
     },
+    _readEmbeddedPeakData: function(id) {
+        try {
+            var el = document.getElementById(id);
+            if (!el) return null;
+            var raw = el.getAttribute('data-peak-payload');
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch(e) {
+            return null;
+        }
+    },
+    _writeEmbeddedPeakData: function(id, payload) {
+        try {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.setAttribute('data-peak-payload', JSON.stringify(payload || { peaks: [] }));
+        } catch(e) {}
+    },
     getAllPeaks: function() {
         var all = {};
         for (var id in this.plots) {
@@ -625,7 +643,11 @@ window.PeakManager = {
     },
     getInitialPeakDataForPlot: function(id) {
         var data = this._readPeakData();
-        return this._normalizePeakPayload(data[id]);
+        var fromScript = this._normalizePeakPayload(data[id]);
+        if (fromScript.peaks.length || fromScript.flt3_manual_ratio_selection) {
+            return fromScript;
+        }
+        return this._normalizePeakPayload(this._readEmbeddedPeakData(id));
     },
     getInitialPeaksForPlot: function(id) {
         return this.getInitialPeakDataForPlot(id).peaks;
@@ -650,16 +672,21 @@ window.PeakManager = {
         }
         
         var allPeaks = this.getAllPeakData();
+        for (var plotId in allPeaks) {
+            if (Object.prototype.hasOwnProperty.call(allPeaks, plotId)) {
+                this._writeEmbeddedPeakData(plotId, allPeaks[plotId]);
+            }
+        }
         var allPlotStates = (window.ReportPlotManager && window.ReportPlotManager.getAllStates)
             ? window.ReportPlotManager.getAllStates()
             : {};
         var currentHtml = document.documentElement.outerHTML;
         var peakDataStr = JSON.stringify(allPeaks);
         var plotStateStr = JSON.stringify(allPlotStates);
-        var pattern = /<script id="peak-data" type="application\/json">[\\s\\S]*?</script>/;
-        var newTag = '<script id="peak-data" type="application/json">\n' + peakDataStr + '\n</script>';
-        var plotPattern = /<script id="plot-state" type="application\/json">[\\s\\S]*?</script>/;
-        var newPlotTag = '<script id="plot-state" type="application/json">\n' + plotStateStr + '\n</script>';
+        var pattern = /<script id="peak-data" type="application\/json">[\\s\\S]*?<\/script>/;
+        var newTag = '<script id="peak-data" type="application/json">\n' + peakDataStr + '\n<\/script>';
+        var plotPattern = /<script id="plot-state" type="application\/json">[\\s\\S]*?<\/script>/;
+        var newPlotTag = '<script id="plot-state" type="application/json">\n' + plotStateStr + '\n<\/script>';
         var updatedHtml = currentHtml.replace(pattern, newTag).replace(plotPattern, newPlotTag);
         var blob = new Blob(['<!DOCTYPE html>\n' + updatedHtml], {type: 'text/html'});
         var url = URL.createObjectURL(blob);
