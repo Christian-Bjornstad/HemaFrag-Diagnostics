@@ -656,12 +656,12 @@ window.PeakManager = {
         var currentHtml = document.documentElement.outerHTML;
         var peakDataStr = JSON.stringify(allPeaks);
         var plotStateStr = JSON.stringify(allPlotStates);
-        var pattern = /<script id="peak-data" type="application\/json">[\\s\\S]*?<\/script>/;
-        var newTag = '<script id="peak-data" type="application/json">\\n' + peakDataStr + '\\n<\/script>';
-        var plotPattern = /<script id="plot-state" type="application\/json">[\\s\\S]*?<\/script>/;
-        var newPlotTag = '<script id="plot-state" type="application/json">\\n' + plotStateStr + '\\n<\/script>';
+        var pattern = /<script id="peak-data" type="application\/json">[\\s\\S]*?</script>/;
+        var newTag = '<script id="peak-data" type="application/json">\n' + peakDataStr + '\n</script>';
+        var plotPattern = /<script id="plot-state" type="application\/json">[\\s\\S]*?</script>/;
+        var newPlotTag = '<script id="plot-state" type="application/json">\n' + plotStateStr + '\n</script>';
         var updatedHtml = currentHtml.replace(pattern, newTag).replace(plotPattern, newPlotTag);
-        var blob = new Blob(['<!DOCTYPE html>\\n' + updatedHtml], {type: 'text/html'});
+        var blob = new Blob(['<!DOCTYPE html>\n' + updatedHtml], {type: 'text/html'});
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a'); a.href = url; a.download = document.title + '.html'; a.click(); URL.revokeObjectURL(url);
     }

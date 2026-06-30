@@ -153,3 +153,35 @@ def test_browse_button_populates_table_when_given_real_xlsx(tmp_path):
     rows = t.load_batch_from_tracking(tracking_file=xlsx)
     assert rows >= 0  # not None
     # Synth fallback may have triggered, but the file_dialog path is now wired.
+
+
+def test_tab_has_export_csv_button(qapp):
+    from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
+
+    t = TabClonalityInterpretation()
+    assert hasattr(t, "_export_csv_btn"), "missing _export_csv_btn"
+    assert t._export_csv_btn.text() == "Export CSV"
+
+
+def test_tab_has_feedback_button(qapp):
+    from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
+
+    t = TabClonalityInterpretation()
+    assert hasattr(t, "_feedback_btn"), "missing _feedback_btn"
+    assert t._feedback_btn.text() == "Feedback"
+
+
+def test_export_csv_method_is_callable(qapp, monkeypatch):
+    """Calling _export_csv_clicked when no path chosen (QFileDialog
+    returns '') must not crash."""
+    from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
+
+    t = TabClonalityInterpretation()
+    t.set_inline_synth_entries()
+    # Patch QFileDialog.getSaveFileName to return ("", "") (no selection)
+    monkeypatch.setattr(
+        "gui_qt.tabs.tab_clonality_interpretation.QFileDialog.getSaveFileName",
+        lambda *a, **kw: ("", ""),
+    )
+    # Should not raise
+    t._export_csv_clicked()

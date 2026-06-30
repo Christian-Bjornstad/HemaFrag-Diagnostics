@@ -120,6 +120,15 @@ class TabClonalityInterpretation(QWidget):
         self._refresh_btn = QPushButton("Refresh")
         self._refresh_btn.clicked.connect(self._refresh_btn_clicked)
         toolbar.addWidget(self._refresh_btn)
+
+        self._export_csv_btn = QPushButton("Export CSV")
+        self._export_csv_btn.clicked.connect(self._export_csv_clicked)
+        toolbar.addWidget(self._export_csv_btn)
+
+        self._feedback_btn = QPushButton("Feedback")
+        self._feedback_btn.clicked.connect(self._feedback_clicked)
+        toolbar.addWidget(self._feedback_btn)
+
         layout.addLayout(toolbar)
 
         # Table
@@ -188,6 +197,138 @@ class TabClonalityInterpretation(QWidget):
 
     def _refresh_btn_clicked(self) -> None:
         self.load_batch_from_tracking()
+
+    def _export_csv_clicked(self) -> None:
+        """Save the visible rows to a CSV the chemist can review."""
+        from PyQt6.QtWidgets import QFileDialog
+        if not self._rows:
+            QMessageBox.information(
+                self, "Nothing to export",
+                "Load a tracking workbook first (Browse...) before exporting.",
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Comparison CSV",
+            str(Path.cwd() / "interpretation_comparison.csv"),
+            "CSV files (*.csv)",
+        )
+        if not path:
+            return
+        rows = []
+        for entry in self._rows:
+            rows.append({
+                "IdentityKey": str(entry.get("dit") or entry.get("DIT") or ""),
+                "Assay": str(entry.get("assay") or entry.get("Assay") or ""),
+                "Group": str(entry.get("group") or entry.get("Group") or ""),
+                "RuleSuggestion": str(entry.get("ClonalitySuggestion") or ""),
+                "MLSuggestion": str(entry.get("ClonalityMLSuggestion") or ""),
+                "RuleConfidence": float(entry.get("ClonalityConfidence") or 0.0),
+                "MLConfidence": float(entry.get("ClonalityMLConfidence") or 0.0),
+                "ReviewNeeded": bool(entry.get("ClonalityReviewNeeded")),
+                "DomPeakBp": float(entry.get("DominantPeakBasepairs") or entry.get("dominant_peak_basepairs") or 0.0),
+                "Evidence": str(entry.get("ClonalityEvidence") or entry.get("Evidence") or ""),
+            })
+        try:
+            import pandas as pd
+            df = pd.DataFrame(rows)
+            df.to_csv(path, index=False)
+            self._status_label.setText(
+                f"Exported {len(rows)} rows to {path}"
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Export failed",
+                f"Could not write CSV: {exc}",
+            )
+
+    def _feedback_clicked(self) -> None:
+        """Append a one-line feedback record to
+        ObsidianVault/Clonality_ML_Log/feedback/<date>.jsonl.
+        Reads the i-th selected row if the user has selected exactly
+        one; otherwise prompts the user first.
+        """
+        from datetime import datetime, timezone
+        import json
+
+        items = self._table.selectedItems()
+        if not items:
+            QMessageBox.information(
+                self, "No row selected",
+                "Click a single row first, then Feedback.",
+            )
+            return
+        row_idx = items[0].row()
+        # The table may have filter on; figure out the original row via position
+        rows = self._rows
+        if self._disagreements_only.isChecked():
+            rows = [r for r in rows if _classify_row(r, self._ml_present) != "agree"]
+        if row_idx >= len(rows):
+            QMessageBox.information(
+                self, "Row out of range", "Selected row is not in the loaded batch.",
+            )
+            return
+        entry = rows[row_idx]
+
+        # Decide a verdict via the cell we recorded when building the column
+        # (we don't have a separator-level annotation; ask user).
+        verdict_options = ["rule_correct", "ml_correct", "ambiguous", "needs_review"]
+        verdict, ok = QMessageBox.question(
+            self,
+            "Mark verdict",
+            """Mark the selected row as:
+
+Rule suggested: %s ;
+ML suggested: %s
+
+Was the rule right (Yes), the ML right (No), or ambiguous (Cancel)?""" % (
+                entry.get("ClonalitySuggestion", "") or "",
+                entry.get("ClonalityMLSuggestion", "(off)") or "",
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if verdict == QMessageBox.StandardButton.Cancel:
+            return
+        if verdict == QMessageBox.StandardButton.Yes:
+            verdict_label = "rule_correct"
+        else:
+            verdict_label = "ml_correct"
+
+        # Pick a deterministic feedback file path
+        repo_simulation = Path.cwd()
+        for parent in [repo_simulation, repo_simulation.parent, repo_simulation.parent.parent]:
+            obs_dir = parent / "ObsidianVault" / "Clonality_ML_Log"
+            if (parent / "ObsidianVault").exists() and (parent / ".git").exists():
+                break
+        else:
+            obs_dir = repo_simulation
+        feedback_dir = obs_dir / "feedback"
+        feedback_dir.mkdir(parents=True, exist_ok=True)
+        _date_stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        feedback_path = feedback_dir / (_date_stamp + ".jsonl")
+
+        record = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "verdict": verdict_label,
+            "identity_key": str(entry.get("dit") or entry.get("DIT") or ""),
+            "assay": str(entry.get("assay") or entry.get("Assay") or ""),
+            "rule_suggestion": str(entry.get("ClonalitySuggestion") or ""),
+            "ml_suggestion": str(entry.get("ClonalityMLSuggestion") or ""),
+            "rule_confidence": float(entry.get("ClonalityConfidence") or 0.0),
+            "ml_confidence": float(entry.get("ClonalityMLConfidence") or 0.0),
+            "review_needed": bool(entry.get("ClonalityReviewNeeded")),
+            "evidence": str(entry.get("ClonalityEvidence") or ""),
+        }
+        try:
+            with open(feedback_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+            self._status_label.setText(
+                f"Feedback logged: {feedback_path}"
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Feedback write failed", f"{exc}"
+            )
 
     def _browse_btn_clicked(self) -> None:
         """Open QFileDialog to pick a tracking workbook."""

@@ -233,7 +233,7 @@ class MainWindow(QMainWindow):
     def on_about_clicked(self) -> None:
         self._clear_sidebar_selection()
         self.btn_about.setChecked(True)
-        self.stacked_widget.setCurrentIndex(5)
+        self.stacked_widget.setCurrentIndex(6)
 
     def _wrap_scroll_page(self, page: QWidget) -> QScrollArea:
         scroll = QScrollArea()
