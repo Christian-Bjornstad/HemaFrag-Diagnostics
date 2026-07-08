@@ -139,9 +139,13 @@ Status re-implementation after lost container work:
         blocks the CSV save). Stable `stage` values: `"review"`, `"locate_file"`,
         `"bulk_review"`. In-memory mirror `_audit_event_stream` capped at 200
         (AUDIT_STREAM_CAP) for the Phase 12.17 panel to consume.
-- [ ] Phase 12.10 — drop-row hook (`drop_review_case` in core +
-        "Drop row from bundle..." right-click menu). Symmetric to
-        `relocate_review_case`. Always emits `stage="drop"` audit.
+- [x] Phase 12.10 — drop-row hook — commit `c2d810b`.
+        9 new tests. Suite: 279 → 288 + 1 skipped. Core: `drop_review_case`
+        (atomic CSV rewrite + `ladder_review_drops.json` append, returns
+        `{full_path, previous_label, dropped_at_utc, dropped_row_index}`)
+        + `read_review_drops`. GUI: chip-strip right-click menu now always
+        offers "Drop row from bundle…"; QMessageBox confirms; emits Phase 12.9
+        `stage="drop"`; reloads bundle so chip and file list refresh.
 - [ ] Phase 12.11 — DIT prefix filter. `extract_dit_candidates(rows, prefix)`
         reads DIT (\d{2}OUM\d{5}) from `full_path` first, falls back
         to `source_run_dir`. GUI: `QLineEdit` + "Clear".

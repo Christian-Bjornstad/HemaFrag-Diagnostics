@@ -273,6 +273,48 @@ Suite: 264 (Phase 12.8) → 279 (+15), 1 skipped, 0 regressions.
   rewrite + drops audit log.
 - **T-12.10.b** — "Drop row from bundle…" menu + confirm + reload.
 
+**LANDED (2026-07-08, branch pre-push):**
+
+Phase 12.10 core helper + wiring shipped.
+
+Core (`core/analyses/clonality/ladder_review_gate.py`):
+- `drop_review_case(bundle_dir, full_path | str)` — atomic
+  CSV rewrite, removes matching row, appends to
+  `ladder_review_drops.json`. Returns dict with
+  `{full_path, previous_label, dropped_at_utc,
+  dropped_row_index}`. Raises FileNotFoundError on missing
+  CSV or unknown path.
+- `read_review_drops(bundle_dir)` — chronological log;
+  missing file returns `[]`; corrupt JSON returns `[]`
+  with no exception.
+- `DROPPED_AT_UTC_FORMAT` constant.
+
+GUI (`gui_qt/tabs/tab_ladder/_overview.py` +
+`_legacy.py`):
+- `chipDropRequested` `pyqtSignal` on `ChipStripOverview`.
+- `_bind_chip_click`: right-click menu now **always**
+  offers "Drop row from bundle…" (per the skill). Locate
+  File still gates on `state == "file_unreachable"` —
+  Locate File only makes sense for unreachable paths.
+- `_on_drop_review_case` slot — confirms via
+  `QMessageBox.question`, calls the helper, emits Phase 12.9
+  `stage="drop"` audit event, then reloads the bundle so
+  the chip and file list both refresh.
+- Failures (missing CSV / unknown row / IO error) turn the
+  status bar red and leave the chip in place — destructive
+  ops are gated on a clean CSV before they cascade.
+
+Tests (9 new):
+- `DropReviewCaseTests` (7): core helper pins (row removal,
+  log accumulation, missing/unknown error paths,
+  Path-object passthrough).
+- `TabLadderDropReviewCaseWiringTests` (2): the chip strip
+  exposes the new signal; the slot emits the right audit
+  stage when the confirm dialog is stubbed.
+
+Suite: 279 (Phase 12.9) → 288 (+9), 1 skipped, 0 regressions.
+
+
 ## Phase 12.11 — DIT prefix filter
 
 - **T-12.11.a** — `extract_dit_candidates(rows, prefix)` pure helper.
