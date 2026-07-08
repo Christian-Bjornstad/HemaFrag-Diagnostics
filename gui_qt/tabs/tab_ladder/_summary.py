@@ -475,3 +475,84 @@ def dit_filter_keep(indices: list[int]) -> set[int] | None:
     if not indices:
         return None
     return set(indices)
+
+
+# Phase 12.12 — bundle summary banner helpers.
+# -----------------------------------------------------------------------
+#
+# The chip-strip's legend (one line of color counts) is too terse
+# for a 750-row bundle — the chemist loses the totals when the
+# strip scrolls off-screen. A small `QLabel` banner sits directly
+# below the strip and renders live state counts plus the
+# most-recent save timestamp. Two pure helpers below keep the GUI
+# rendering path small and unit-testable.
+
+NEVER_SAVED_LABEL = "never"
+
+
+def most_recent_save_timestamp(
+    rows, *, now_iso: str | None = None
+) -> str:
+    """Return the largest ``reviewed_at_utc`` ISO string, or ``"never"``.
+
+    ISO-8601 timestamps sort lexicographically (left-to-right
+    YYYY-MM-DD-HH-MM-SS...), so the max-of-strs yields the
+    most-recent save without parsing into ``datetime``. Empty
+    rows, or rows without a ``reviewed_at_utc`` value, fall back
+    to :data:`NEVER_SAVED_LABEL`.
+
+    `now_iso` is unused today; pre-parameterized to keep tests
+    deterministic if a future phase injects a fresh-timestamp
+    helper for "saved within last X minutes" derivations.
+    """
+    candidates: list[str] = []
+    for row in rows or []:
+        try:
+            ts = str(row.get("reviewed_at_utc", "") or "")
+        except Exception:
+            ts = ""
+        if ts:
+            candidates.append(ts)
+    if not candidates:
+        return NEVER_SAVED_LABEL
+    return max(candidates)
+
+
+def format_summary_banner(
+    rows,
+    *,
+    visible_count: int | None = None,
+    total_count: int | None = None,
+) -> str:
+    """Render the bundle summary banner.
+
+    Layout (matches the skill, single line):
+        ``visible N of T | N needs review | M unreachable | K reviewed |
+        U untouched | last saved: <timestamp>``
+
+    Pass ``visible_count=...`` when the chip filter is active
+    so the chemist sees that the dim path is taking a slice
+    out of the totals. ``total_count`` overrides the
+    zero-on-empty-row computation when callers know the
+    bundle size independent of the in-memory row list.
+
+    Empty input returns the "0 / 0 / never" string so the
+    banner always renders something during a fresh load
+    before the cases arrive.
+    """
+    counts = count_chip_states(rows)
+    if total_count is None:
+        total_count = sum(counts.values())
+    if visible_count is None:
+        visible_count = total_count
+    ts = most_recent_save_timestamp(rows)
+
+    parts = [
+        f"visible {visible_count} of {total_count}",
+        f"{counts['needs_review']} needs review",
+        f"{counts['file_unreachable']} unreachable",
+        f"{counts['reviewed']} reviewed",
+        f"{counts['untouched']} untouched",
+        f"last saved: {ts}",
+    ]
+    return " | ".join(parts)

@@ -202,6 +202,19 @@ class TabLadder(QWidget):
         self._chip_strip.chipDropRequested.connect(self._on_drop_review_case)
         layout.addWidget(self._chip_strip)
 
+        # Phase 12.12 — bundle summary banner directly under the
+        # chip frame so the chemist sees live state counts +
+        # the most-recent save timestamp. The banner re-renders
+        # from `_sync_chip_strip`, so every existing trigger
+        # (load, save, drop, locate, bulk review, Ctrl+R) drives
+        # it for free — no sprinkled refresh calls.
+        from gui_qt.tabs.tab_ladder._summary import format_summary_banner
+        self.bundle_summary_label = QLabel(
+            format_summary_banner([])
+        )
+        self.bundle_summary_label.setObjectName("BundleSummaryLabel")
+        layout.addWidget(self.bundle_summary_label)
+
         # Phase 12.8 — "Mark Visible Reviewed (no change)" bulk button
         # sits right under the chip strip so the chemist can sweep
         # triage in one click. The status string reads the *changed*
@@ -1810,14 +1823,21 @@ class TabLadder(QWidget):
         itself (which state-toggles are checked) is *not* reset —
         the chemist's prior choices persist across bundle loads;
         the counts label simply reflects the new totals.
+
+        Phase 12.12 — also refreshes the bundle summary banner
+        directly from the rows so every existing trigger
+        (bundle load, save annotation, Locate File, drop,
+        bulk review, Ctrl+R) drives the banner for free.
         """
         try:
             from gui_qt.tabs.tab_ladder._overview import ChipFilterBar, ChipStripOverview
+            from gui_qt.tabs.tab_ladder._summary import format_summary_banner
         except Exception:
             return
         # Lazy lookup — _build_source_card sets self._chip_strip.
         strip = getattr(self, "_chip_strip", None)
         filter_bar = getattr(self, "_chip_filter_bar", None)
+        summary_label = getattr(self, "bundle_summary_label", None)
         if strip is None or not isinstance(strip, ChipStripOverview):
             return
         rows = cases if cases is not None else getattr(
@@ -1826,6 +1846,15 @@ class TabLadder(QWidget):
         strip.setRows(rows)
         if isinstance(filter_bar, ChipFilterBar):
             filter_bar.setRows(rows)
+
+        # Phase 12.12 — single-writer banner refresh. Always
+        # called from _sync_chip_strip so every trigger paths
+        # through here without sprinkling refresh calls.
+        if summary_label is not None:
+            try:
+                summary_label.setText(format_summary_banner(rows))
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Phase 12.7 — chip-state filter bar slot.

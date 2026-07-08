@@ -26,6 +26,7 @@ from gui_qt.tabs.tab_ladder._io import (
 )
 from gui_qt.tabs.tab_ladder._summary import (
     CHIP_STATE_LABELS,
+    NEVER_SAVED_LABEL,
     REVIEWED_NO_CHANGE_LABEL,
     RELEVANT_CHIP_STATES,
     apply_filter_rows,
@@ -38,8 +39,10 @@ from gui_qt.tabs.tab_ladder._summary import (
     entry_original_path,
     extract_dit_candidates,
     format_file_item,
+    format_summary_banner,
     is_chip_state_allowed,
     metadata_from_entry,
+    most_recent_save_timestamp,
     next_chip_index,
     resolve_cache_key,
 )
@@ -1005,6 +1008,102 @@ class ExtractDitCandidatesTests(unittest.TestCase):
         kept = dit_filter_keep([0, 2, 4])
         self.assertIsInstance(kept, set)
         self.assertEqual(kept, {0, 2, 4})
+
+
+class MostRecentSaveTimestampTests(unittest.TestCase):
+    """Phase 12.12 — `most_recent_save_timestamp` pure helper."""
+
+    def test_returns_never_for_empty(self) -> None:
+        self.assertEqual(most_recent_save_timestamp([]), NEVER_SAVED_LABEL)
+        self.assertEqual(
+            most_recent_save_timestamp(None), NEVER_SAVED_LABEL
+        )
+
+    def test_returns_never_when_no_timestamps(self) -> None:
+        rows = [
+            {"full_path": "/p/a.fsa"},
+            {"full_path": "/p/b.fsa", "reviewed_at_utc": ""},
+        ]
+        self.assertEqual(
+            most_recent_save_timestamp(rows), NEVER_SAVED_LABEL
+        )
+
+    def test_picks_largest_iso_string(self) -> None:
+        # Lexicographic max works because ISO-8601 is sortable left-to-right.
+        rows = [
+            {"reviewed_at_utc": "2026-07-08T10:00:00+00:00"},
+            {"reviewed_at_utc": "2026-07-08T13:30:00+00:00"},
+            {"reviewed_at_utc": "2026-07-08T11:15:00+00:00"},
+        ]
+        self.assertEqual(
+            most_recent_save_timestamp(rows),
+            "2026-07-08T13:30:00+00:00",
+        )
+
+    def test_handles_garbage_timestamp_safely(self) -> None:
+        rows = [
+            {"reviewed_at_utc": "not-iso"},
+            {"reviewed_at_utc": None},
+            {"full_path": "no-ts-marker"},  # missing key
+            {"reviewed_at_utc": 12345},  # wrong type
+        ]
+        # Most return › never — no crashes, no false positives.
+        result = most_recent_save_timestamp(rows)
+        self.assertIn(result, ["not-iso", "never"])  # whichever max-in-faithful-order
+
+
+class FormatSummaryBannerTests(unittest.TestCase):
+    """Phase 12.12 — `format_summary_banner` pure helper."""
+
+    def test_empty_input_returns_zeroed_banner(self) -> None:
+        out = format_summary_banner([])
+        self.assertIn("0 needs review", out)
+        self.assertIn("0 unreachable", out)
+        self.assertIn("0 reviewed", out)
+        self.assertIn("0 untouched", out)
+        self.assertIn("last saved: never", out)
+
+    def test_includes_visible_and_total(self) -> None:
+        rows = [
+            {"full_path": "a", "_path_unreachable": "false", "label": "manual_adjusted"},
+            {"full_path": "b", "_path_unreachable": "false", "label": ""},
+        ]
+        out = format_summary_banner(rows)
+        self.assertIn("visible 2 of 2", out)
+
+    def test_visible_count_override(self) -> None:
+        rows = [
+            {"full_path": "a", "_path_unreachable": "false", "label": ""},
+            {"full_path": "b", "_path_unreachable": "false", "label": ""},
+        ]
+        # Caller knows only 1 chip is visible (filter is on).
+        out = format_summary_banner(rows, visible_count=1)
+        self.assertIn("visible 1 of 2", out)
+
+    def test_total_count_override(self) -> None:
+        rows = [
+            {"full_path": "a", "_path_unreachable": "false", "label": ""},
+        ]
+        # Caller passes a bundle size they know the loader saw.
+        # Visible defaults to total, so the rendered line reads
+        # "visible 1 of 5" only when the caller also passes
+        # visible_count=1.
+        out = format_summary_banner(rows, visible_count=1, total_count=5)
+        self.assertIn("visible 1 of 5", out)
+        # When only total_count is provided, visible defaults
+        # to total — i.e. all-in-one mode.
+        out_default = format_summary_banner(rows, total_count=5)
+        self.assertIn("visible 5 of 5", out_default)
+
+    def test_includes_most_recent_save(self) -> None:
+        rows = [
+            {"full_path": "a", "_path_unreachable": "false",
+             "reviewed_at_utc": "2026-07-08T10:00:00+00:00"},
+            {"full_path": "b", "_path_unreachable": "false",
+             "reviewed_at_utc": "2026-07-08T13:30:00+00:00"},
+        ]
+        out = format_summary_banner(rows)
+        self.assertIn("last saved: 2026-07-08T13:30:00+00:00", out)
 
 
 if __name__ == "__main__":

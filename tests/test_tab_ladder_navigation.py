@@ -420,5 +420,46 @@ class TabLadderDitFilterWiringTests(unittest.TestCase):
         self.assertIsNone(tab._chip_strip._allowed_indices)
 
 
+class TabLadderBundleSummaryBannerTests(unittest.TestCase):
+    """Phase 12.12 — bundle summary banner wiring."""
+
+    def test_banner_label_installed(self) -> None:
+        tab = TabLadder(parent=None)
+        self.assertTrue(hasattr(tab, "bundle_summary_label"))
+
+    def test_initial_zeroed_banner(self) -> None:
+        tab = TabLadder(parent=None)
+        # The banner always renders something, even before
+        # a bundle is loaded.
+        text = tab.bundle_summary_label.text()
+        self.assertIn("0 needs review", text)
+        self.assertIn("last saved: never", text)
+
+    def test_sync_chip_strip_refreshes_banner(self) -> None:
+        # Calling _sync_chip_strip with rows containing one
+        # reviewed row should update the banner to show
+        # "1 reviewed" + the most recent save timestamp.
+        tab = TabLadder(parent=None)
+        rows = [
+            {
+                "full_path": "/p/a.fsa",
+                "_path_unreachable": "false",
+                "label": "manual_adjusted",
+                "reviewed_at_utc": "2026-07-08T13:30:00+00:00",
+            },
+            {
+                "full_path": "/p/b.fsa",
+                "_path_unreachable": "false",
+                "label": "",
+                "ladder_qc_status": "review_required",
+            },
+        ]
+        tab._sync_chip_strip(cases=rows)
+        text = tab.bundle_summary_label.text()
+        self.assertIn("1 needs review", text)
+        self.assertIn("1 reviewed", text)
+        self.assertIn("last saved: 2026-07-08T13:30:00+00:00", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
