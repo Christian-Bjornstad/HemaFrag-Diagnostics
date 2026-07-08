@@ -9,6 +9,7 @@ Pure functions only; no Qt widgets, no instance-state reads/writes.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -319,3 +320,75 @@ def next_chip_index(
     # only_relevant=True and no row qualifies). wrap=False lets
     # callers signal "stay put" vs "loop forever".
     return cur if wrap else -1
+
+
+# Phase 12.8 — bulk-mark-reviewed helper.
+# -----------------------------------------------------------------------
+#
+# The "Mark Visible Reviewed (no change)" button on the chip frame
+# needs a pure helper that produces the new-row annotations for
+# each visible case. The IO layer (`bulk_save_review_bundle_annotations`
+# in `_io.py`) consumes those annotations; this helper just shapes
+# the input.
+
+REVIEWED_NO_CHANGE_LABEL = "reviewed_no_change"
+
+
+def bulk_mark_reviewed_no_change(
+    rows, paths, *, now_iso=None
+):
+    """Return row annotations marking each ``paths`` entry as reviewed_no_change.
+
+    Parameters
+    ----------
+    rows : list[dict]
+        Bundle rows (so the helper can confirm a path is in the
+        current bundle before emitting an annotation — silent skip
+        rather than phantom-write).
+    paths : iterable
+        Full paths (str or Path) to mark reviewed.
+    now_iso : str, optional
+        UTC ISO timestamp. Defaults to a fresh
+        ``datetime.now(timezone.utc).isoformat()``; overridden
+        in tests for determinism.
+
+    Returns a list of annotation dicts keyed by ``full_path`` plus
+    ``label``, ``label_note``, ``reviewed_at_utc``,
+    ``adjustment_path``. Always ``label_note = ""`` and
+    ``adjustment_path = ""`` — "no change" means exactly that:
+    no manual adjustment, just an explicit "I've looked at this."
+    """
+    if not paths:
+        return []
+    if now_iso is None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Build a set membership check keyed by full_path text so
+    # callers can pass Path objects or str without surprise.
+    in_bundle = set()
+    for row in rows or []:
+        try:
+            in_bundle.add(str(row.get("full_path", "") or ""))
+        except Exception:
+            continue
+
+    out = []
+    for raw in paths:
+        if raw is None:
+            continue
+        text = str(raw)
+        if text and text not in in_bundle:
+            # Path not in current bundle — skip silently. The
+            # button is "visible" only; phantom-annotation would
+            # corrupt the audit log.
+            continue
+        out.append(
+            {
+                "full_path": text,
+                "label": REVIEWED_NO_CHANGE_LABEL,
+                "label_note": "",
+                "reviewed_at_utc": now_iso,
+                "adjustment_path": "",
+            }
+        )
+    return out

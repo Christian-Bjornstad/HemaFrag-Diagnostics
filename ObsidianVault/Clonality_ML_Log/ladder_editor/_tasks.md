@@ -160,6 +160,63 @@ Suite: 232 (Phase 12.6) → 250 (+18), 1 skipped, 0 regressions.
 - **T-12.8.b** — `bulk_save_review_bundle_annotations(bundle_dir, rows)`.
 - **T-12.8.c** — "Mark Visible Reviewed (no change)" button.
 
+**LANDED (2026-07-08, branch pre-push):**
+
+Phase 12.8 helpers + GUI wiring shipped.
+
+Helpers:
+- `REVIEWED_NO_CHANGE_LABEL = "reviewed_no_change"` — single
+  constant so the string is referenced from one place. The GUI's
+  status string and the audit event builder both point here.
+- `bulk_mark_reviewed_no_change(rows, paths, *, now_iso=None)`
+  — pure helper. Returns one annotation dict per *in-bundle*
+  path with `label=reviewed_no_change`, `label_note=""`, the
+  injected (or fresh) `reviewed_at_utc` ISO timestamp, and
+  `adjustment_path=""`. Paths not in the bundle are silently
+  skipped so the button can't phantom-write a row that isn't
+  tracked.
+
+IO layer (`gui_qt/tabs/tab_ladder/_io.py`):
+- `bulk_save_review_bundle_annotations(bundle_dir, new_rows)`
+  — single atomic CSV rewrite applying every annotation, plus
+  an `ladder_review_annotations.json` accumulator. **Returns
+  the count of rows whose stored label *actually flipped***,
+  not the touched count — Plan 12 §12.8 pitfall. Empty new
+  label means "chemist cleared the field" — don't inflate the
+  count, don't overwrite the existing label. Missing CSV
+  raises `FileNotFoundError` so the GUI's worker error signal
+  surfaces fail-loud.
+
+GUI (`gui_qt/tabs/tab_ladder/_legacy.py`):
+- "Mark Visible Reviewed (no change)" button under the chip
+  strip (`btn_bulk_mark_reviewed`).
+- Companion status label (`bulk_mark_label`) reading
+  `Marked X of Y visible row(s) reviewed`.
+- `_on_bulk_mark_visible_reviewed_clicked` slot:
+  1. Resolves the visible-row paths via `apply_filter_rows(cases,
+     self._chip_filter_bar.allowedStates())` so the sweep
+     matches the chemist's filter choice.
+  2. Calls the pure helper to shape annotations.
+  3. Calls the IO helper for the atomic CSV rewrite.
+  4. Updates the label and a `_set_status(...)` line with the
+     changed count vs the touched count.
+  5. Re-loads the bundle via `_load_review_bundle()` so the
+     chip strip + filter bar counts reflect the new state.
+
+Tests (14 new):
+- `BulkMarkReviewedNoChangeTests` (4): shape, in-bundle gating,
+  empty-input, Path-object inputs, default-now-iso-recentness.
+- `BulkSaveReviewBundleAnnotationsTests` (6): atomic CSV
+  rewrite, label-change-vs-touch count, empty-label no-op,
+  missing-CSV raises, empty input returns 0, unknown path
+  silently skipped.
+- `TabLadderBulkMarkReviewedWiringTests` (3): button installed,
+  no-bundle click is no-op, with-bundle click returns
+  "Marked 1 of 2".
+
+Suite: 250 (Phase 12.7) → 264 (+14), 1 skipped, 0 regressions.
+
+
 ## Phase 12.9 — audit JSONL stream
 
 - **T-12.9.a** — `make_audit_event`, `append_audit_event`,

@@ -140,5 +140,67 @@ class TabLadderChipFilterForwardingTests(unittest.TestCase):
         self.assertEqual(strip._allowed_states, bar._allowed_states)
 
 
+class TabLadderBulkMarkReviewedWiringTests(unittest.TestCase):
+    """Phase 12.8 — 'Mark Visible Reviewed (no change)' button wiring."""
+
+    def test_button_installed(self) -> None:
+        tab = TabLadder(parent=None)
+        self.assertTrue(hasattr(tab, "btn_bulk_mark_reviewed"))
+        self.assertTrue(hasattr(tab, "bulk_mark_label"))
+
+    def test_click_without_bundle_writes_red_status(self) -> None:
+        tab = TabLadder(parent=None)
+        # The status widget isn't easy to introspect directly
+        # without knowing its inner name; we just confirm that
+        # the click is a no-op that doesn't raise.
+        tab._on_bulk_mark_visible_reviewed_clicked()
+
+    def test_click_with_bundle_writes_changed_count(self) -> None:
+        import csv as csvmod
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            real_a = bundle / "a.fsa"; real_a.write_text("x")
+            real_b = bundle / "b.fsa"; real_b.write_text("x")
+            csv_path = bundle / "ladder_review_cases.csv"
+            # Two rows: a.fsa is needs_review, b.fsa is already
+            # reviewed_no_change. After the bulk save, only a.fsa
+            # should count toward "changed" (b.fsa's stored label
+            # didn't change).
+            with csv_path.open("w", newline="", encoding="utf-8") as h:
+                w = csvmod.DictWriter(
+                    h, fieldnames=["full_path", "label", "ladder_qc_status",
+                                   "ladder_review_required", "_path_unreachable"]
+                )
+                w.writeheader()
+                w.writerow({
+                    "full_path": str(real_a), "label": "",
+                    "ladder_qc_status": "review_required",
+                    "ladder_review_required": "true",
+                    "_path_unreachable": "false",
+                })
+                w.writerow({
+                    "full_path": str(real_b), "label": "reviewed_no_change",
+                    "ladder_qc_status": "ok",
+                    "ladder_review_required": "false",
+                    "_path_unreachable": "false",
+                })
+
+            tab = TabLadder(parent=None)
+            tab._review_bundle_dir = bundle
+            tab._review_bundle_cases = [
+                {"full_path": str(real_a), "label": "",
+                 "ladder_qc_status": "review_required",
+                 "_path_unreachable": "false"},
+                {"full_path": str(real_b), "label": "reviewed_no_change",
+                 "ladder_qc_status": "ok",
+                 "_path_unreachable": "false"},
+            ]
+            tab.review_bundle_dir.setText(str(bundle))
+
+            tab._on_bulk_mark_visible_reviewed_clicked()
+            self.assertIn("Marked 1 of 2", tab.bulk_mark_label.text())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

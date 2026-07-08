@@ -164,6 +164,30 @@ class TabLadder(QWidget):
         self._chip_strip.chipLocateRequested.connect(self._on_locate_file)
         layout.addWidget(self._chip_strip)
 
+        # Phase 12.8 — "Mark Visible Reviewed (no change)" bulk button
+        # sits right under the chip strip so the chemist can sweep
+        # triage in one click. The status string reads the *changed*
+        # count (rows where the label actually flipped) — not the
+        # raw touch count.
+        bulk_row = QHBoxLayout()
+        bulk_row.setContentsMargins(4, 0, 4, 0)
+        bulk_row.setSpacing(6)
+        self.btn_bulk_mark_reviewed = QPushButton(
+            "Mark Visible Reviewed (no change)"
+        )
+        self.btn_bulk_mark_reviewed.setObjectName("BtnBulkMarkReviewed")
+        self.btn_bulk_mark_reviewed.setToolTip(
+            "Marks every visible (filtered) chip as reviewed_no_change."
+        )
+        self.btn_bulk_mark_reviewed.clicked.connect(
+            self._on_bulk_mark_visible_reviewed_clicked
+        )
+        self.bulk_mark_label = QLabel("")
+        self.bulk_mark_label.setObjectName("BulkMarkLabel")
+        bulk_row.addWidget(self.btn_bulk_mark_reviewed)
+        bulk_row.addWidget(self.bulk_mark_label, stretch=1)
+        layout.addLayout(bulk_row)
+
         # Phase 12.6 — keyboard navigation across the chip strip:
         # Alt+J/K = prev/next chip; Ctrl+. = jump to next "relevant"
         # chip (needs_review or file_unreachable), skipping reviewed
@@ -1608,6 +1632,89 @@ class TabLadder(QWidget):
             # didn't install set_filter (older clone / partial pull),
             # we don't want the filter bar to crash the tab.
             pass
+
+    # ------------------------------------------------------------------
+    # Phase 12.8 — "Mark Visible Reviewed (no change)" bulk button slot.
+    # ------------------------------------------------------------------
+
+    def _on_bulk_mark_visible_reviewed_clicked(self) -> None:
+        """Mark every visible (filtered) chip as reviewed_no_change.
+
+        Calls into the pure helper `bulk_mark_reviewed_no_change`
+        for the annotation shape, then `bulk_save_review_bundle_annotations`
+        for the atomic CSV rewrite. Status string reports the
+        *changed* count (rows whose label actually flipped), not
+        the touched count — see Plan 12 §12.8 pitfall.
+
+        After save, the bundle is reloaded so the chip strip's
+        green chips update. Phase 12.9 (audit JSONL) and 12.17
+        (in-memory panel) also receive the same event.
+        """
+        from gui_qt.tabs.tab_ladder._io import bulk_save_review_bundle_annotations
+        from gui_qt.tabs.tab_ladder._summary import (
+            apply_filter_rows,
+            bulk_mark_reviewed_no_change,
+        )
+
+        bundle_dir = self._review_bundle_dir
+        cases = self._review_bundle_cases or []
+        if bundle_dir is None or not cases:
+            self._set_status(
+                "Load a review bundle before marking cases reviewed.", error=True
+            )
+            return
+
+        # Use the same filter the chip strip is showing so the
+        # sweep matches what the chemist sees — phase 12.7's
+        # `allowedStates()` returns None for "no filter" which
+        # `apply_filter_rows` already handles.
+        allowed_states = self._chip_filter_bar.allowedStates()
+        visible_rows = apply_filter_rows(cases, allowed_states)
+        if not visible_rows:
+            self._set_status("No visible rows to mark reviewed.")
+            return
+
+        paths = [str(r.get("full_path", "") or "") for r in visible_rows]
+        new_rows = bulk_mark_reviewed_no_change(cases, paths)
+        if not new_rows:
+            self._set_status(
+                "No bundle rows matched — bundle reloaded unchanged.",
+                error=True,
+            )
+            return
+
+        try:
+            changed = bulk_save_review_bundle_annotations(
+                Path(bundle_dir), new_rows
+            )
+        except FileNotFoundError as exc:
+            self._set_status(f"Bulk save failed: {exc}", error=True)
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            self._set_status(f"Bulk save failed: {exc}", error=True)
+            return
+
+        self.bulk_mark_label.setText(
+            f"Marked {changed} of {len(new_rows)} visible row(s) reviewed"
+        )
+        self._set_status(
+            f"Bulk reviewed: {changed} label(s) changed, "
+            f"{len(new_rows) - changed} already reviewed."
+        )
+
+        # Phase 12.8 — re-load the bundle so the chip strip's green
+        # chips update. _load_review_bundle() is async (spawns a
+        # worker that fires _on_review_bundle_result), and the
+        # standard sync path rebuilds the chip strip + filter
+        # bar counts from disk — no in-memory patching.
+        if bundle_dir != Path(self.review_bundle_dir.text().strip()).expanduser():
+            # Keep the path-widget in sync in case it didn't already
+            # match — defensive in case _review_bundle_dir was set
+            # programmatically.
+            self.review_bundle_dir.setText(str(bundle_dir))
+        self._load_review_bundle()
+
+    # ------------------------------------------------------------------
 
     def _on_scan_result(self, request_id: int, source: Path, files: list[Path]) -> None:
         if request_id != self._scan_request_id:

@@ -120,16 +120,18 @@ Status re-implementation after lost container work:
         Helpers: `next_chip_index(rows, current_index, direction, *, only_relevant, wrap)`.
         Routes: `QShortcut` on the *tab* (not on the strip — strip owns
         mouse semantics; chord keys live on the window context).
-- [x] Phase 12.7 — chip filter helpers + GUI filter bar — local HEAD, not yet pushed.
+- [x] Phase 12.7 — chip filter helpers + GUI filter bar — commit `3e9868c`.
         18 new tests. Suite: 232 → 250 + 1 skipped. Helpers: `apply_filter_rows`,
         `count_states` (alias of `count_chip_states`), `is_chip_state_allowed`.
         GUI: `ChipFilterBar` widget above `ChipStripOverview` with toggleable
         color-coded chips + "All" / "None" + counts label. Toggles propagate
         via `filterChanged → set_filter(allowed_states)`.
-- [ ] Phase 12.8 — "Mark Visible Reviewed (no change)" bulk button
-        + `bulk_mark_reviewed_no_change` / `bulk_save_review_bundle_annotations`.
-        Returned count = rows whose label *actually changed*; no-op
-        labels must NOT inflate the count.
+- [x] Phase 12.8 — Mark Visible Reviewed bulk button — local HEAD, not yet pushed.
+        14 new tests. Suite: 250 → 264 + 1 skipped. Helpers: `bulk_mark_reviewed_no_change`
+        (pure), `bulk_save_review_bundle_annotations` (CSV+JSON atomic), and constant
+        `REVIEWED_NO_CHANGE_LABEL`. GUI: button under chip strip; status label
+        reports CHANGED-count, not touched-count (Plan 12 §12.8 pitfall). After save,
+        reload the bundle so chip strip + counts re-render.
 - [ ] Phase 12.9 — audit JSONL stream (`ladder_review_audit.jsonl`).
         `make_audit_event`, `append_audit_event`, `read_audit_log` in `_io.py`.
         Stable `stage` values: `"review"`, `"bulk_review"`, `"locate_file"`, `"drop"`.

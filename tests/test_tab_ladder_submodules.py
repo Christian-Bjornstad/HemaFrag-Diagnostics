@@ -15,14 +15,17 @@ from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 from gui_qt.tabs.tab_ladder._io import (
+    bulk_save_review_bundle_annotations,
     load_review_bundle_worker,
     review_case_paths_from_bundle,
     save_review_bundle_annotation_worker,
 )
 from gui_qt.tabs.tab_ladder._summary import (
     CHIP_STATE_LABELS,
+    REVIEWED_NO_CHANGE_LABEL,
     RELEVANT_CHIP_STATES,
     apply_filter_rows,
+    bulk_mark_reviewed_no_change,
     chip_state,
     count_chip_states,
     count_states,
@@ -623,6 +626,196 @@ class ChipFilterHelperTests(unittest.TestCase):
         # If a chip-state with a typo lands at the helper, the
         # output is False rather than raising — defensive.
         self.assertFalse(is_chip_state_allowed("nonsense", {"reviewed"}))
+
+
+class BulkMarkReviewedNoChangeTests(unittest.TestCase):
+    """Phase 12.8 — `bulk_mark_reviewed_no_change` pure helper.
+
+    Pins the label, label_note, reviewed_at_utc, and adjustment_path
+    shape; pins the in-bundle gating so the button can't phantom-write
+    a path that isn't in the bundle; pins the deterministic
+    ``now_iso`` injection for tests.
+    """
+
+    def test_returns_list_per_path_with_correct_shape(self) -> None:
+        rows = [
+            {"full_path": "/p/a.fsa"},
+            {"full_path": "/p/b.fsa"},
+        ]
+        out = bulk_mark_reviewed_no_change(rows, ["/p/a.fsa"], now_iso="T")
+        self.assertEqual(len(out), 1)
+        entry = out[0]
+        self.assertEqual(entry["full_path"], "/p/a.fsa")
+        self.assertEqual(entry["label"], REVIEWED_NO_CHANGE_LABEL)
+        self.assertEqual(entry["label_note"], "")
+        self.assertEqual(entry["reviewed_at_utc"], "T")
+        self.assertEqual(entry["adjustment_path"], "")
+
+    def test_skips_paths_not_in_bundle(self) -> None:
+        # The button is "Mark Visible Reviewed"; a path that's
+        # only in the GUI file list but not the bundle must be
+        # silently skipped — never phantom-write.
+        rows = [{"full_path": "/in/b.fsa"}]
+        out = bulk_mark_reviewed_no_change(
+            rows, ["/in/b.fsa", "/stray/z.fsa"], now_iso="T"
+        )
+        self.assertEqual([r["full_path"] for r in out], ["/in/b.fsa"])
+
+    def test_empty_paths_returns_empty(self) -> None:
+        self.assertEqual(bulk_mark_reviewed_no_change([], []), [])
+
+    def test_accepts_path_objects(self) -> None:
+        rows = [{"full_path": "/p/a.fsa"}]
+        out = bulk_mark_reviewed_no_change(
+            rows,
+            [Path("/p/a.fsa")],
+            now_iso="T",
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["full_path"], "/p/a.fsa")
+
+    def test_default_now_iso_recent(self) -> None:
+        import re
+        rows = [{"full_path": "/p/a.fsa"}]
+        out = bulk_mark_reviewed_no_change(rows, ["/p/a.fsa"])
+        self.assertRegex(out[0]["reviewed_at_utc"], r"\d{4}-\d{2}-\d{2}T")
+
+
+class BulkSaveReviewBundleAnnotationsTests(unittest.TestCase):
+    """Phase 12.8 — `bulk_save_review_bundle_annotations` IO helper.
+
+    Pins:
+      - atomic CSV rewrite;
+      - returns CHANGED count, not just touched (rows whose label
+        was already in the new state don't inflate the count);
+      - empty label in input means no change (don't count);
+      - missing CSV raises FileNotFoundError so the GUI's worker
+        error signal can surface the miss.
+    """
+
+    def _write_csv(self, td: str, lines: list[str]) -> Path:
+        p = Path(td) / "ladder_review_cases.csv"
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return p
+
+    def test_bulk_save_writes_updated_rows_to_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = self._write_csv(td, [
+                "full_path,label,ladder_qc_status",
+                "/p/a.fsa,,review_required",
+                "/p/b.fsa,,review_required",
+            ])
+            new_rows = [
+                {
+                    "full_path": "/p/a.fsa",
+                    "label": "reviewed_no_change",
+                    "label_note": "n/a",
+                    "reviewed_at_utc": "2026-07-08T10:00:00+00:00",
+                    "adjustment_path": "",
+                },
+                {
+                    "full_path": "/p/b.fsa",
+                    "label": "reviewed_no_change",
+                    "label_note": "",
+                    "reviewed_at_utc": "2026-07-08T10:00:00+00:00",
+                    "adjustment_path": "",
+                },
+            ]
+            changed = bulk_save_review_bundle_annotations(Path(td), new_rows)
+            self.assertEqual(changed, 2)
+            text = csv_path.read_text(encoding="utf-8")
+            self.assertIn("reviewed_no_change", text)
+            # The annotations JSON was also written.
+            annotations = json.loads(
+                (Path(td) / "ladder_review_annotations.json").read_text()
+            )
+            self.assertEqual(
+                set(annotations.keys()), {"/p/a.fsa", "/p/b.fsa"}
+            )
+
+    def test_bulk_save_only_counts_actual_label_changes(self) -> None:
+        # PITFALL: a row whose stored label is already the new one
+        # must NOT inflate the "changed" count. Two rows: one will
+        # flip, one will stay.
+        with tempfile.TemporaryDirectory() as td:
+            self._write_csv(td, [
+                "full_path,label,ladder_qc_status",
+                "/p/a.fsa,,review_required",
+                "/p/b.fsa,reviewed_no_change,ok",
+            ])
+            new_rows = [
+                {
+                    "full_path": "/p/a.fsa",
+                    "label": "reviewed_no_change",
+                    "label_note": "",
+                    "reviewed_at_utc": "T",
+                    "adjustment_path": "",
+                },
+                {
+                    "full_path": "/p/b.fsa",
+                    "label": "reviewed_no_change",
+                    "label_note": "",
+                    "reviewed_at_utc": "T",
+                    "adjustment_path": "",
+                },
+            ]
+            changed = bulk_save_review_bundle_annotations(Path(td), new_rows)
+            self.assertEqual(changed, 1, "only one row should have changed")
+
+    def test_bulk_save_empty_label_skips_change_count(self) -> None:
+        # Empty label means the chemist cleared the field by
+        # accident — must not flip the existing label nor
+        # count toward the change tally.
+        with tempfile.TemporaryDirectory() as td:
+            self._write_csv(td, [
+                "full_path,label,ladder_qc_status",
+                "/p/a.fsa,manual_adjusted,ok",
+            ])
+            new_rows = [
+                {
+                    "full_path": "/p/a.fsa",
+                    "label": "",
+                    "label_note": "",
+                    "reviewed_at_utc": "T",
+                    "adjustment_path": "",
+                },
+            ]
+            changed = bulk_save_review_bundle_annotations(Path(td), new_rows)
+            self.assertEqual(changed, 0)
+
+    def test_bulk_save_missing_csv_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(FileNotFoundError):
+                bulk_save_review_bundle_annotations(Path(td), [
+                    {"full_path": "/x/y.fsa", "label": "reviewed_no_change"}
+                ])
+
+    def test_bulk_save_empty_input_returns_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            self._write_csv(td, [
+                "full_path,label", "/p/a.fsa,"
+            ])
+            self.assertEqual(
+                bulk_save_review_bundle_annotations(Path(td), []), 0
+            )
+
+    def test_bulk_save_unknown_path_silently_skipped(self) -> None:
+        # The bulk helper is invoked with potentially many rows;
+        # a stray path that doesn't match a bundle row must not
+        # crash the run.
+        with tempfile.TemporaryDirectory() as td:
+            self._write_csv(td, [
+                "full_path,label", "/p/a.fsa,"
+            ])
+            changed = bulk_save_review_bundle_annotations(Path(td), [
+                {"full_path": "/p/a.fsa", "label": "reviewed_no_change",
+                 "label_note": "", "reviewed_at_utc": "T",
+                 "adjustment_path": ""},
+                {"full_path": "/stray/z.fsa", "label": "reviewed_no_change",
+                 "label_note": "", "reviewed_at_utc": "T",
+                 "adjustment_path": ""},
+            ])
+            self.assertEqual(changed, 1)
 
 
 if __name__ == "__main__":

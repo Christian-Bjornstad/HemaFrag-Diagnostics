@@ -161,3 +161,114 @@ def save_review_bundle_annotation_worker(
         json.dumps(existing, indent=2, ensure_ascii=True), encoding="utf-8"
     )
     return annotation
+
+
+# Phase 12.8 — bulk save helper (Mark Visible Reviewed button).
+# -----------------------------------------------------------------------
+#
+# `bulk_save_review_bundle_annotations` is the multi-row counterpart of
+# `save_review_bundle_annotation_worker`. It reads the bundle CSV, applies
+# a list of new row annotations, and re-emits the CSV once with all
+# changes atomically.
+#
+# It also accumulates the latest annotation per row into
+# `ladder_review_annotations.json` so a future read can reconstruct
+# the chemist's last bulk save.
+#
+# Returns the count of rows whose label *actually changed*. Rows
+# that were already in the new state are NOT counted — the chemist
+# wants the bulk-button's status string to read "12 cases reviewed"
+# rather than "37 cases touched." This is the pitfall-averting bullet
+# from the Plan 12 recipe.
+
+def bulk_save_review_bundle_annotations(
+    bundle_dir: Path, new_rows: list[dict]
+) -> int:
+    """Apply a list of row annotations to the bundle CSV atomically.
+
+    Each row in ``new_rows`` must carry at least ``full_path`` plus
+    any of ``label``, ``label_note``, ``reviewed_at_utc``,
+    ``adjustment_path``. The row is matched against the bundle CSV
+    by ``full_path`` text equality.
+
+    Returns the number of rows whose stored label *changed* as a
+    result of this call (zero-count rows still get their
+    ``reviewed_at_utc`` updated though, because the chemist's
+    intent with "no change" is still a fresh save event).
+
+    Raises FileNotFoundError when the bundle CSV is missing so the
+    GUI's worker error signal can surface the miss.
+    """
+    if not new_rows:
+        return 0
+    cases_path = bundle_dir / "ladder_review_cases.csv"
+    if not cases_path.exists():
+        raise FileNotFoundError(f"Missing review bundle file: {cases_path.name}")
+
+    fieldnames, rows = _read_bundle_csv(cases_path)
+
+    for field in ("label", "label_note", "reviewed_at_utc", "adjustment_path", "_path_unreachable"):
+        if field not in fieldnames and any(field in r for r in rows):
+            fieldnames.append(field)
+        if field not in fieldnames:
+            fieldnames.append(field)
+
+    # Build a {full_path_text: row} index for fast lookup. We keep
+    # text equality on the path string because the bundle CSV writes
+    # POSIX-style paths verbatim; if a future caller needs cache-key
+    # resolution, that's a separate function.
+    rows_by_path: dict[str, list[dict]] = {}
+    for row in rows:
+        key = str(row.get("full_path", "") or "")
+        if key:
+            rows_by_path.setdefault(key, []).append(row)
+
+    annotations_path = bundle_dir / "ladder_review_annotations.json"
+    existing: dict[str, dict] = {}
+    if annotations_path.exists():
+        try:
+            existing = json.loads(annotations_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+
+    changed_count = 0
+
+    for new_row in new_rows:
+        # Phase 12.8 pitfall: only rows with a truthy new label
+        # count toward the "actually changed" tally. Empty label
+        # (chemist cleared the field by accident) must NOT inflate
+        # the count. Tests pin this contract.
+        new_label = (new_row.get("label") or "").strip()
+        full_path_text = str(new_row.get("full_path", "") or "")
+        if not full_path_text:
+            continue
+        target = rows_by_path.get(full_path_text)
+        if not target:
+            # Path not found in bundle — skip with no error.
+            # The bulk button only marks "visible" rows which
+            # were already filtered into the bundle.
+            continue
+
+        for stored_row in target:
+            previous_label = (stored_row.get("label") or "").strip().lower()
+            if new_label:
+                if new_label.lower() != previous_label:
+                    changed_count += 1
+            for f in ("label", "label_note", "reviewed_at_utc", "adjustment_path"):
+                if f in new_row:
+                    stored_row[f] = new_row[f]
+
+        annotations = dict(new_row)
+        annotations.pop("full_path", None)
+        existing[full_path_text] = annotations
+
+    with cases_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    annotations_path.write_text(
+        json.dumps(existing, indent=2, ensure_ascii=True), encoding="utf-8"
+    )
+
+    return changed_count
