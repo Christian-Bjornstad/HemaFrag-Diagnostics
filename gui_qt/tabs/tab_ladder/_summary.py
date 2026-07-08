@@ -127,3 +127,82 @@ def format_file_item(file_path: Path, case: dict | None) -> str:
     if qc:
         parts.append(qc)
     return " · ".join(parts)
+
+
+# Phase 12.3 — chip-strip state labels + precedence.
+CHIP_STATE_LABELS = {
+    "reviewed",
+    "needs_review",
+    "file_unreachable",
+    "untouched",
+}
+
+# Color contract for the four chip-state precedence. The convention
+# matches `core/analyses/clonality/clonality_qc` semantics:
+# - reviewed         → green (chemist has cleared the row)
+# - needs_review     → amber (bad ladder fit or pending review)
+# - file_unreachable → red (path doesn't resolve on disk)
+# - untouched        → gray (row loaded but chemist hasn't touched it)
+CHIP_STATE_COLORS = {
+    "reviewed": "#16a34a",         # green
+    "needs_review": "#d97706",     # amber
+    "file_unreachable": "#dc2626", # red
+    "untouched": "#94a3b8",        # gray
+}
+
+
+def chip_state(row: dict, *, check_filesystem: bool = False) -> str:
+    """Return one of: 'reviewed' | 'needs_review' | 'file_unreachable' | 'untouched'.
+
+    The state of a row is the *highest* priority in this order —
+    file_unreachable (most actionable for the chemist) wins over
+    needs_review, which wins over touched-but-not-saved, which
+    wins over untouched.
+
+    The `check_filesystem` kwarg forces a `Path.exists()` check
+    rather than relying on the row's `_path_unreachable` tag,
+    which is useful when callers don't trust the cached tag.
+
+    Tests pin the precedence contract — see
+    `tests/test_tab_ladder_submodules.py::ChipStateHelperTests`.
+    """
+    # 1. File unreachable — Phase 12.0 tags row["_path_unreachable"].
+    if check_filesystem:
+        raw_path = str(row.get("full_path", "") or "")
+        if raw_path and not Path(raw_path).expanduser().exists():
+            return "file_unreachable"
+    elif str(row.get("_path_unreachable", "")).lower() == "true":
+        return "file_unreachable"
+
+    # 2. Label resolved → reviewed (manual_adjusted or reviewed_no_change).
+    label = str(row.get("label", "") or "").strip().lower()
+    if label in {"manual_adjusted", "reviewed_no_change"}:
+        return "reviewed"
+
+    # 3. Open tooltip reasons flag a needs_review row.
+    ladder_qc_status = str(row.get("ladder_qc_status", "") or "").strip().lower()
+    review_required_raw = str(row.get("ladder_review_required", "") or "").strip().lower()
+    review_required = review_required_raw in {"true", "1", "yes"}
+    if ladder_qc_status in {"review_required", "missing_ladder", "ladder_qc_failed"} or review_required:
+        return "needs_review"
+
+    return "untouched"
+
+
+def count_chip_states(rows: list[dict], *, check_filesystem: bool = False) -> dict:
+    """Tally how many rows fall into each chip-state bucket.
+
+    Returns {reviewed: int, needs_review: int, file_unreachable: int,
+    untouched: int}. Used by the chip-strip legend + bundle summary banner.
+    """
+    counts = {key: 0 for key in CHIP_STATE_LABELS}
+    for row in rows or []:
+        try:
+            state = chip_state(row, check_filesystem=check_filesystem)
+        except Exception:
+            state = "untouched"
+        if state in counts:
+            counts[state] += 1
+        else:
+            counts["untouched"] += 1
+    return counts

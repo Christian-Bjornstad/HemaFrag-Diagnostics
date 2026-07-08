@@ -144,6 +144,16 @@ class TabLadder(QWidget):
         row3.addWidget(self.btn_rerun_review_bundle)
         layout.addLayout(row3)
 
+        # Phase 12.3 — chip-strip overview above the file list.
+        # One chip per loaded bundle case (reviewed/needs_review/
+        # file_unreachable/untouched). Click a chip to select that
+        # file in the list below.
+        from gui_qt.tabs.tab_ladder._overview import ChipStripOverview
+
+        self._chip_strip = ChipStripOverview(parent=card)
+        self._chip_strip.chipActivated.connect(self._on_chip_activated)
+        layout.addWidget(self._chip_strip)
+
         self.file_list = QListWidget()
         self.file_list.setMinimumHeight(220)
         self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1290,6 +1300,19 @@ class TabLadder(QWidget):
         self._save_review_bundle_annotation_worker(self._review_bundle_dir, cache_key, annotation)
         review_case.update(annotation)
         self._review_case_by_path[cache_key] = review_case
+        # Phase 12.3 — propagate to the cases list so the chip strip
+        # sees the updated label/color.
+        for row in self._review_bundle_cases:
+            try:
+                if self._resolve_cache_key(Path(str(row.get("full_path", "") or ""))) == cache_key:
+                    row["label"] = annotation["label"]
+                    row["label_note"] = annotation["label_note"]
+                    row["reviewed_at_utc"] = annotation["reviewed_at_utc"]
+                    row["adjustment_path"] = annotation["adjustment_path"]
+                    break
+            except Exception:
+                continue
+        self._sync_chip_strip()
         self._recent_reviewed_files.add(cache_key)
         tab_run = self._run_tab_for_review()
         if tab_run is not None and hasattr(tab_run, "register_ladder_review_update"):
@@ -1347,6 +1370,35 @@ class TabLadder(QWidget):
 
         return save_review_bundle_annotation_worker(bundle_dir, full_path, annotation)
 
+    def _on_chip_activated(self, file_path) -> None:
+        """Phase 12.3 — chip click selects the file in the list."""
+        if file_path is None:
+            return
+        try:
+            self._select_file(Path(file_path))
+        except Exception:
+            pass
+
+    def _sync_chip_strip(self, cases=None) -> None:
+        """Phase 12.3 — re-render chip strip from current cases.
+
+        Pass `cases=None` to use whatever the worker saved into
+        `self._review_bundle_cases`. The chip strip clears to empty
+        when no bundle is loaded.
+        """
+        try:
+            from gui_qt.tabs.tab_ladder._overview import ChipStripOverview
+        except Exception:
+            return
+        # Lazy lookup — _build_source_card sets self._chip_strip.
+        strip = getattr(self, "_chip_strip", None)
+        if strip is None or not isinstance(strip, ChipStripOverview):
+            return
+        rows = cases if cases is not None else getattr(
+            self, "_review_bundle_cases", None
+        ) or []
+        strip.setRows(rows)
+
     def _on_scan_result(self, request_id: int, source: Path, files: list[Path]) -> None:
         if request_id != self._scan_request_id:
             return
@@ -1401,6 +1453,8 @@ class TabLadder(QWidget):
             self._set_status(status_msg, error=True)
         else:
             self._set_status(status_msg)
+        # Phase 12.3 — refresh the chip strip whenever bundle loads.
+        self._sync_chip_strip()
 
     def _on_review_bundle_error(self, request_id: int, err_tuple) -> None:
         if request_id != self._scan_request_id:
@@ -1411,6 +1465,7 @@ class TabLadder(QWidget):
         self._review_bundle_cases = []
         self._review_case_by_path = {}
         self._refresh_review_bundle_run_button()
+        self._sync_chip_strip(cases=[])
         self._set_status(f"Could not load review bundle: {err_tuple[1]}", error=True)
 
     def _on_metadata_result(self, request_id: int, result: dict) -> None:

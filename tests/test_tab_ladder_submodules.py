@@ -20,6 +20,8 @@ from gui_qt.tabs.tab_ladder._io import (
     save_review_bundle_annotation_worker,
 )
 from gui_qt.tabs.tab_ladder._summary import (
+    chip_state,
+    count_chip_states,
     entry_cache_key,
     entry_original_path,
     format_file_item,
@@ -263,6 +265,108 @@ class TabLadderWorkersHelperTests(unittest.TestCase):
             find_report_matches_worker(
                 Path("p.fsa"), "no_such_dir_for_test_xyz"
             )
+
+
+class ChipStateHelperTests(unittest.TestCase):
+    """Phase 12.3 — chip_state precedence contract.
+
+    The chip strip's four-state precedence:
+       file_unreachable > reviewed > needs_review > untouched
+    """
+
+    def test_unreachable_wins_over_reviewed(self) -> None:
+        # Even a "reviewed" labeled row counts as file_unreachable
+        # because the chemist cannot actually access it.
+        with tempfile.TemporaryDirectory() as td:
+            ghost = "/no/such/path_xyz.fsa"
+            row = {
+                "full_path": ghost,
+                "_path_unreachable": "true",
+                "label": "manual_adjusted",
+                "ladder_qc_status": "ok",
+            }
+            self.assertEqual(chip_state(row), "file_unreachable")
+
+    def test_reviewed_label(self) -> None:
+        for label in ("manual_adjusted", "reviewed_no_change"):
+            row = {
+                "full_path": str(Path("real.fsa")),
+                "_path_unreachable": "false",
+                "label": label,
+                "ladder_qc_status": "ok",
+            }
+            self.assertEqual(chip_state(row), "reviewed")
+
+    def test_needs_review_when_label_empty_and_flag_set(self) -> None:
+        row = {
+            "full_path": str(Path("real.fsa")),
+            "_path_unreachable": "false",
+            "label": "",
+            "ladder_qc_status": "review_required",
+            "ladder_review_required": "true",
+            "primary_reason": "poor_linear_liz_fit",
+        }
+        self.assertEqual(chip_state(row), "needs_review")
+
+    def test_needs_review_with_missing_ladder(self) -> None:
+        row = {
+            "full_path": str(Path("real.fsa")),
+            "_path_unreachable": "false",
+            "label": "",
+            "ladder_qc_status": "missing_ladder",
+        }
+        self.assertEqual(chip_state(row), "needs_review")
+
+    def test_untouched_when_nothing_set(self) -> None:
+        row = {
+            "full_path": str(Path("real.fsa")),
+            "_path_unreachable": "false",
+            "label": "",
+            "ladder_qc_status": "ok",
+        }
+        self.assertEqual(chip_state(row), "untouched")
+
+    def test_check_filesystem_true_returns_unreachable_when_path_missing(self) -> None:
+        # Use a tag of "false" but force a filesystem check that has
+        # to discover the path is missing anyway.
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "real.fsa"
+            real.write_bytes(b"x")
+            row = {
+                "full_path": "/ghost/of/path_x.fsa",
+                "_path_unreachable": "false",
+                "label": "",
+                "ladder_qc_status": "ok",
+            }
+            self.assertEqual(chip_state(row, check_filesystem=True), "file_unreachable")
+            # And the same row with real_path + check_filesystem
+            # returns untouched.
+            row2 = {
+                "full_path": str(real),
+                "_path_unreachable": "false",
+                "label": "",
+                "ladder_qc_status": "ok",
+            }
+            self.assertEqual(chip_state(row2, check_filesystem=True), "untouched")
+
+    def test_count_chip_states_tallies_each_bucket(self) -> None:
+        rows = [
+            {"full_path": "r1", "_path_unreachable": "false", "label": "manual_adjusted"},
+            {"full_path": "r2", "_path_unreachable": "true"},
+            {"full_path": "r3", "_path_unreachable": "false", "label": "", "ladder_qc_status": "review_required"},
+            {"full_path": "r4", "_path_unreachable": "false", "label": ""},
+            {"full_path": "r5", "_path_unreachable": "false", "label": ""},
+        ]
+        counts = count_chip_states(rows)
+        self.assertEqual(counts["reviewed"], 1)
+        self.assertEqual(counts["file_unreachable"], 1)
+        self.assertEqual(counts["needs_review"], 1)
+        self.assertEqual(counts["untouched"], 2)
+
+    def test_count_chip_states_handles_empty(self) -> None:
+        counts = count_chip_states([])
+        for key in ("reviewed", "needs_review", "file_unreachable", "untouched"):
+            self.assertEqual(counts[key], 0)
 
 
 if __name__ == "__main__":
