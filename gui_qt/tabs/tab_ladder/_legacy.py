@@ -1518,13 +1518,18 @@ class TabLadder(QWidget):
     # in-memory audit event stream.")
 
     def _install_navigation_shortcuts(self) -> None:
-        """Wire Alt+J / Alt+K / Ctrl+. to TabLadder navigation slots.
+        """Wire Alt+J / Alt+K / Ctrl+. / Ctrl+R to TabLadder slots.
 
         The QShortcut objects are kept on the instance (Qt owns them
         once parentship is set), so they survive as long as the tab
         does. We retain the QShortcut list as `self._nav_shortcuts`
         in case future phases need to introspect or remove bindings
         (e.g. when a smaller mode forces only J/K).
+
+        Phase 12.13 — Ctrl+R is added here because it's part of the
+        same shortcut family as the chip nav keys; routing it
+        through `_install_navigation_shortcuts` keeps the install
+        path single.
         """
         # WindowShortcut context ensures the chord is captured even
         # while focus is in a child widget (file_list, line edits).
@@ -1532,10 +1537,18 @@ class TabLadder(QWidget):
         prev_sc = QShortcut(QKeySequence("Alt+J"), self, context=ctx)
         next_sc = QShortcut(QKeySequence("Alt+K"), self, context=ctx)
         relevant_sc = QShortcut(QKeySequence("Ctrl+."), self, context=ctx)
+        mark_current_sc = QShortcut(
+            QKeySequence("Ctrl+R"), self, context=ctx
+        )
         prev_sc.activated.connect(lambda: self._nav_move_chip(direction=-1))
         next_sc.activated.connect(lambda: self._nav_move_chip(direction=+1))
         relevant_sc.activated.connect(self._nav_jump_next_relevant)
-        self._nav_shortcuts = [prev_sc, next_sc, relevant_sc]
+        mark_current_sc.activated.connect(
+            self._mark_current_file_reviewed_no_change
+        )
+        self._nav_shortcuts = [
+            prev_sc, next_sc, relevant_sc, mark_current_sc
+        ]
 
     def _nav_move_chip(self, direction: int) -> None:
         """Alt+J (prev) / Alt+K (next) — walk chips one-by-one.
@@ -1957,6 +1970,88 @@ class TabLadder(QWidget):
             self.dit_filter_input.blockSignals(False)
         # Manually fire so the slot updates the chip strip + summary.
         self._on_dit_filter_changed("")
+
+    # ------------------------------------------------------------------
+    # Phase 12.13 — Ctrl+R mark-current-reviewed shortcut.
+    # ------------------------------------------------------------------
+    #
+    # Keyboard-first "sweep & mark" loop:
+    #   Ctrl+. — next need-review (Phase 12.6)
+    #   Ctrl+R — mark the currently-selected row as
+    #            reviewed_no_change without opening the
+    #            Ladder Adjustment dialog.
+
+    def _mark_current_file_reviewed_no_change(self) -> None:
+        """Ctrl+R handler — note-only save on the current row.
+
+        Reuses the existing `_save_review_bundle_annotation`
+        with `action="note_only"`. The helper already handles
+        audit emission (Phase 12.9 `stage="review"` event),
+        in-memory mirror, and the chip-strip / banner refresh
+        via `_sync_chip_strip`.
+
+        **Pitfall guard (Plan 12 §13):** the save helper ends
+        with `_rebuild_file_list()` → `_select_file(...)`,
+        which briefly clears `_current_file` to None when
+        the rebuild can't re-locate the row. Any
+        follow-up `self._current_file.name` access in this
+        slot would raise AttributeError. We capture
+        `target_name` BEFORE the save helper so the status
+        string can speak to the chemist's choice even if
+        the selection does transient-null.
+
+        Safe no-ops:
+          - no bundle loaded
+          - no file selected
+          - select file is not in the loaded bundle (scanned
+            but not part of the batch); we refuse to mark
+            a row that wasn't actually tracked.
+        """
+        if not self._review_bundle_dir:
+            self._set_status(
+                "Load a review bundle before marking row reviewed.",
+                error=True,
+            )
+            return
+        if self._current_file is None:
+            self._set_status(
+                "Select a file in the file list first (Ctrl+R marks the current selection).",
+                error=True,
+            )
+            return
+
+        cache_key = self._resolve_cache_key(self._current_file)
+        if cache_key not in self._review_case_by_path:
+            self._set_status(
+                f"{self._current_file.name} is not part of the loaded bundle — not marking.",
+                error=True,
+            )
+            return
+
+        # Capture the name BEFORE the save helper runs so the
+        # status string is safe even when `_select_file`
+        # transient-nulls `_current_file`. Plan 12 §13 pitfall.
+        target_name = self._current_file.name
+        review_case = self._review_case_by_path[cache_key]
+
+        try:
+            self._save_review_bundle_annotation(
+                review_case,
+                {
+                    "action": "note_only",
+                    "comment": "",
+                    "linear_max": review_case.get("linear_max"),
+                    "linear_mean": review_case.get("linear_mean"),
+                    "linear_r2": review_case.get("linear_r2"),
+                },
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            self._set_status(
+                f"Mark {target_name} reviewed failed: {exc}",
+                error=True,
+            )
+            return
+        self._set_status(f"Marked {target_name} reviewed (no change).")
 
     # ------------------------------------------------------------------
     # Phase 12.8 — "Mark Visible Reviewed (no change)" bulk button slot.

@@ -14,11 +14,12 @@ from gui_qt.tabs.tab_ladder._summary import CHIP_STATE_LABELS
 
 
 class TabLadderNavigationWiringTests(unittest.TestCase):
-    def test_three_shortcuts_installed(self) -> None:
+    def test_shortcuts_installed(self) -> None:
         tab = TabLadder(parent=None)
-        # 3 shortcuts: Alt+J (prev), Alt+K (next), Ctrl+. (next relevant)
+        # 4 shortcuts: Alt+J (prev), Alt+K (next), Ctrl+. (next relevant),
+        # Ctrl+R (mark current reviewed, Phase 12.13).
         self.assertTrue(hasattr(tab, "_nav_shortcuts"))
-        self.assertEqual(len(tab._nav_shortcuts), 3)
+        self.assertEqual(len(tab._nav_shortcuts), 4)
 
     def test_nav_move_silent_without_bundle(self) -> None:
         # No bundle loaded → the slot just returns, doesn't crash.
@@ -459,6 +460,55 @@ class TabLadderBundleSummaryBannerTests(unittest.TestCase):
         self.assertIn("1 needs review", text)
         self.assertIn("1 reviewed", text)
         self.assertIn("last saved: 2026-07-08T13:30:00+00:00", text)
+
+
+class TabLadderCtrlRWiringTests(unittest.TestCase):
+    """Phase 12.13 — Ctrl+R mark-current-reviewed shortcut."""
+
+    def test_slot_method_exists(self) -> None:
+        tab = TabLadder(parent=None)
+        self.assertTrue(hasattr(tab, "_mark_current_file_reviewed_no_change"))
+
+    def test_no_bundle_status_warnings(self) -> None:
+        # Without a bundle, the slot must warn + return, not crash.
+        tab = TabLadder(parent=None)
+        # Bundle dir / cases all None here.
+        tab._review_bundle_dir = None
+        tab._review_bundle_cases = []
+        tab._current_file = None
+        # Just confirm no exception.
+        tab._mark_current_file_reviewed_no_change()
+
+    def test_no_current_file_warning(self) -> None:
+        tab = TabLadder(parent=None)
+        tab._review_bundle_dir = Path("/tmp/any")
+        # current_file remains None.
+        tab._mark_current_file_reviewed_no_change()
+
+    def test_current_file_not_in_bundle_refuses(self) -> None:
+        # A scanned path that isn't part of the loaded
+        # bundle must be refused — phantom-write guard.
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            csv_path = bundle / "ladder_review_cases.csv"
+            csv_path.write_text(
+                "full_path,label\n/p/in_bundle.fsa,\n", encoding="utf-8"
+            )
+            tab = TabLadder(parent=None)
+            tab._review_bundle_dir = bundle
+            tab._review_bundle_cases = [
+                {"full_path": "/p/in_bundle.fsa", "_path_unreachable": "false"}
+            ]
+            tab._review_case_by_path = {
+                tab._resolve_cache_key(Path("/p/in_bundle.fsa")):
+                    tab._review_bundle_cases[0]
+            }
+            # current_file is something NOT in the bundle.
+            tab._current_file = Path("/p/scanned_but_not_in_batch.fsa")
+            # Should not raise — silently refuse with warning.
+            tab._mark_current_file_reviewed_no_change()
 
 
 if __name__ == "__main__":
