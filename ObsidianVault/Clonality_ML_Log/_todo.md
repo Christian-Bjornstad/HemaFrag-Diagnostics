@@ -177,9 +177,23 @@ Status re-implementation after lost container work:
         `LadderAdjustmentDialog.__init__` swaps `setWindowTitle(...)` →
         `refresh_dialog_header(self, fsa=fsa)`. Title now reads
         `"Ladder Adjustment · <file> · <assay> · <ladder>"`.
-- [ ] Phase 12.15 — rerun-rationale JSONL (`ladder_review_rationale.jsonl`).
-        `append_rerun_rationale / read_rerun_rationales / build_rerun_rationale / format_rerun_rationale_line`.
-        Wires into `_on_single_rerun_finished` and `_on_review_bundle_rerun_finished`.
+- [x] Phase 12.15 — rerun-rationale JSONL — commit `68d6a9e`.
+        9 new tests. Suite: 328 → 337 + 1 skipped. Helpers:
+        `build_rerun_rationale(rerun_kind, ...)`, `append_rerun_rationale`,
+        `read_rerun_rationales`, `format_rerun_rationale_line`. Wire-in:
+        `_on_single_rerun_finished` emits on still-flagged + success;
+        `_on_review_bundle_rerun_finished` emits on failed-jobs.
+        Constant `RERUN_RATIONALE_LOG_FILENAME`.
+- [x] Phase 12.17 — audit-trail mini panel — commit `6185bb4`.
+        10 new tests. Suite: 337 → 347 + 1 skipped. Closes Plan 12:
+        `recent_audit_view` `QPlainTextEdit` (read-only, 200 block-cap)
+        below the bundle summary banner; renders `_audit_event_stream`
+        via `format_audit_event_line` (microseconds + tz trimmed,
+        placeholder fallbacks for missing fields).
+- [x] All re-implemented Plan 12 phases shipped end-to-end.
+  **347 passed, 1 skipped, 0 regressions.** The chip strip
+  + audit pipeline + keyboard nav + summary banner cover the
+  full ladder-review UX arc.
 - [ ] Phase 12.16 — bundle import/export zip.
         `import_bundle(zip_path, target_dir)` / `export_bundle(bundle_dir, zip_path)`.
         "Import Bundle..." / "Export Bundle..." buttons in the chip frame.
