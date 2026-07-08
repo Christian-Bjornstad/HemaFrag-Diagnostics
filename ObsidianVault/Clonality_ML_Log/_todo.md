@@ -169,9 +169,14 @@ Status re-implementation after lost container work:
         `target_name = self._current_file.name` BEFORE the save call so
         `_rebuild_file_list()`'s `_select_file` transient-null doesn't crash
         the status string (Plan 12 §13 pitfall).
-- [ ] Phase 12.14 — ladder editor preview header. `compose_dialog_header(file, assay, ladder)`
-        + `refresh_dialog_header(dialog, fsa)`. Dialog `__init__`
-        swaps `setWindowTitle(...)` → `refresh_dialog_header(self, fsa)`.
+- [x] Phase 12.14 — ladder editor preview header — commit `54a0ca0`.
+        7 new tests. Suite: 321 → 328 + 1 skipped. Helpers:
+        `compose_dialog_header(file, assay, ladder)` (pure, middle-dot joined);
+        `refresh_dialog_header(dialog, fsa)` (side-effect wrapper);
+        constants `LADDER_DIALOG_BASE_TITLE` / `LADDER_DIALOG_TITLE_SEPARATOR`.
+        `LadderAdjustmentDialog.__init__` swaps `setWindowTitle(...)` →
+        `refresh_dialog_header(self, fsa=fsa)`. Title now reads
+        `"Ladder Adjustment · <file> · <assay> · <ladder>"`.
 - [ ] Phase 12.15 — rerun-rationale JSONL (`ladder_review_rationale.jsonl`).
         `append_rerun_rationale / read_rerun_rationales / build_rerun_rationale / format_rerun_rationale_line`.
         Wires into `_on_single_rerun_finished` and `_on_review_bundle_rerun_finished`.

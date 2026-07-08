@@ -458,6 +458,34 @@ Suite: 317 (Phase 12.12) → 321 (+4), 1 skipped, 0 regressions.
 - **T-12.14.b** — wire the dialog `__init__` to call
   `refresh_dialog_header(self, fsa)`.
 
+**LANDED (2026-07-08, branch pre-push):**
+
+Phase 12.14 dialog header shipped. Helpers in
+`gui_qt/dialogs/ladder_dialog/_legacy.py`:
+- `compose_dialog_header(file_name, assay="", ladder="")` -
+  pure function. Joins non-empty parts with middle-dot
+  separator. Empty intermediates skipped; all-empty falls
+  back to the base title.
+- `refresh_dialog_header(dialog, fsa=None)` - side-effect
+  wrapper that calls `dialog.setWindowTitle`. None dialog
+  / None fsa / exceptions all tolerated.
+- `LADDER_DIALOG_BASE_TITLE`, `LADDER_DIALOG_TITLE_SEPARATOR`
+  constants.
+
+GUI (`gui_qt/dialogs/ladder_dialog/_legacy.py`):
+- `LadderAdjustmentDialog.__init__` swaps
+  `self.setWindowTitle(f"Ladder Adjustment - {fsa.file_name}")`
+  for `refresh_dialog_header(self, fsa=fsa)`.
+- Title format: `"Ladder Adjustment · <file> · <assay> · <ladder>"`.
+
+Tests (7 new, in `tests/test_ladder_dialog_header.py`):
+- `ComposeDialogHeaderTests` (4): file_only,
+  file+assay+ladder, empty_assay_skipped, all_empty_falls_back.
+- `RefreshDialogHeaderTests` (3): sets window title,
+  tolerates None dialog / None fsa, handles garbage FSA.
+
+Suite: 321 (Phase 12.13) -> 328 (+7), 1 skipped, 0 regressions.
+
 ## Phase 12.15 — rerun-rationale JSONL
 
 - **T-12.15.a** — `append_rerun_rationale(bundle_dir, event)`,
