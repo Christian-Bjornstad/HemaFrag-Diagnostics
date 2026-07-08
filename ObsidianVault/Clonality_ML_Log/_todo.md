@@ -153,9 +153,14 @@ Status re-implementation after lost container work:
         gains `dit_filter_keep(kept_indices)` setter that AND-composes with
         `set_filter(allowed_states)`; slot reads `self._review_bundle_cases` and
         dispatches both.
-- [ ] Phase 12.12 — bundle summary banner. `most_recent_save_timestamp(rows)`
-        + `format_summary_banner(...)`. Refresh embedded inside
-        `_sync_overview_with_bundle` (one writer, no scattered refreshes).
+- [x] Phase 12.12 — bundle summary banner — commit `4cd6b54`.
+        12 new tests. Suite: 305 → 317 + 1 skipped. Helpers: `most_recent_save_timestamp`
+        (lexicographic max over ISO strings, "never" fallback), `format_summary_banner`
+        (renders `visible N of T | needs_review | unreachable | reviewed | untouched |
+        last saved: <ts>`). GUI: `bundle_summary_label` QLabel below chip strip,
+        rendered as part of `_sync_chip_strip` (single writer) so every existing
+        trigger path (load / save / drop / locate / bulk review) drives the banner
+        for free.
 - [ ] Phase 12.13 — `Ctrl+R` mark-current-reviewed shortcut. Reuse
         `_save_review_bundle_annotation(action="note_only")`.
         Capture `target_name = self._current_file.name` BEFORE the

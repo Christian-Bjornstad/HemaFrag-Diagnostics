@@ -373,10 +373,43 @@ Suite: 288 (Phase 12.10) → 305 (+17), 1 skipped, 0 regressions.
 ## Phase 12.12 — bundle summary banner
 
 - **T-12.12.a** — `most_recent_save_timestamp(rows)`,
-  `format_summary_banner(rows, *, visible_count=None, total_count=None)`
-  pure helpers.
+  `format_summary_banner(rows, *, visible_count=None,
+  total_count=None)` pure helpers.
 - **T-12.12.b** — QLabel banner; refresh embedded in
-  `_sync_overview_with_bundle`.
+  `_sync_chip_strip`.
+
+**LANDED (2026-07-08, branch pre-push):**
+
+Phase 12.12 helpers + GUI wiring shipped.
+
+Helpers (`gui_qt/tabs/tab_ladder/_summary.py`):
+- `NEVER_SAVED_LABEL = "never"` — single constant.
+- `most_recent_save_timestamp(rows)` — lexicographic max
+  over `reviewed_at_utc` ISO strings; falls back to
+  "never".
+- `format_summary_banner(rows, *, visible_count=None,
+  total_count=None)` — renders the banner line, empty
+  input produces the zero-line fallback.
+
+GUI (`gui_qt/tabs/tab_ladder/_legacy.py`):
+- `bundle_summary_label` `QLabel` installed directly
+  below the chip strip in `_build_source_card`.
+- `_sync_chip_strip` is the single writer; the banner
+  refresh piggy-backs on it. Every existing trigger path
+  (load, save, drop, locate, bulk review) re-renders the
+  banner for free.
+
+Tests (12 new):
+- `MostRecentSaveTimestampTests` (4): empty / None,
+  no-timestamps, picks lexicographic max, garbage
+  timestamps tolerated.
+- `FormatSummaryBannerTests` (5): empty input zeroed,
+  visible-and-total default, visible_count override,
+  total_count override shape, includes most-recent save.
+- `TabLadderBundleSummaryBannerTests` (3): banner label
+  installed, initial zeroed banner, sync refresh.
+
+Suite: 305 (Phase 12.11) → 317 (+12), 1 skipped, 0 regressions.
 
 ## Phase 12.13 — Ctrl+R mark-current-reviewed
 
