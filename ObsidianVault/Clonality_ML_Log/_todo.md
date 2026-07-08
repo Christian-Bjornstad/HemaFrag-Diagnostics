@@ -126,16 +126,19 @@ Status re-implementation after lost container work:
         GUI: `ChipFilterBar` widget above `ChipStripOverview` with toggleable
         color-coded chips + "All" / "None" + counts label. Toggles propagate
         via `filterChanged → set_filter(allowed_states)`.
-- [x] Phase 12.8 — Mark Visible Reviewed bulk button — local HEAD, not yet pushed.
+- [x] Phase 12.8 — Mark Visible Reviewed bulk button — commit `7f6cff7`.
         14 new tests. Suite: 250 → 264 + 1 skipped. Helpers: `bulk_mark_reviewed_no_change`
         (pure), `bulk_save_review_bundle_annotations` (CSV+JSON atomic), and constant
         `REVIEWED_NO_CHANGE_LABEL`. GUI: button under chip strip; status label
         reports CHANGED-count, not touched-count (Plan 12 §12.8 pitfall). After save,
         reload the bundle so chip strip + counts re-render.
-- [ ] Phase 12.9 — audit JSONL stream (`ladder_review_audit.jsonl`).
-        `make_audit_event`, `append_audit_event`, `read_audit_log` in `_io.py`.
-        Stable `stage` values: `"review"`, `"bulk_review"`, `"locate_file"`, `"drop"`.
-        Outer try/except `pass` so CSV path is never blocked.
+- [x] Phase 12.9 — audit JSONL stream — commit `3620e8b`.
+        15 new tests. Suite: 264 → 279 + 1 skipped. Helpers: `make_audit_event`,
+        `append_audit_event`, `read_audit_log` + constant `AUDIT_LOG_FILENAME`.
+        Wire-in: every save slot wrapped in try/except (Plan 12 §14 — audit never
+        blocks the CSV save). Stable `stage` values: `"review"`, `"locate_file"`,
+        `"bulk_review"`. In-memory mirror `_audit_event_stream` capped at 200
+        (AUDIT_STREAM_CAP) for the Phase 12.17 panel to consume.
 - [ ] Phase 12.10 — drop-row hook (`drop_review_case` in core +
         "Drop row from bundle..." right-click menu). Symmetric to
         `relocate_review_case`. Always emits `stage="drop"` audit.

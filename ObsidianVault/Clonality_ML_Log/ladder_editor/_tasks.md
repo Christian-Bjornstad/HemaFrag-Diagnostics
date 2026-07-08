@@ -223,6 +223,50 @@ Suite: 250 (Phase 12.7) → 264 (+14), 1 skipped, 0 regressions.
   `read_audit_log`.
 - **T-12.9.b** — wire emit into save / drop / bulk-review / locate-file.
 
+**LANDED (2026-07-08, branch pre-push):**
+
+Phase 12.9 helpers + wiring shipped. Helpers in
+`gui_qt/tabs/tab_ladder/_io.py`:
+
+- `AUDIT_LOG_FILENAME = "ladder_review_audit.jsonl"` —
+  single constant.
+- `make_audit_event(stage, *, row, action, comment, extra)`
+  — pure event constructor; always returns at least
+  `{stage, timestamp_utc, row_path_text, action, comment}`.
+- `append_audit_event(bundle_dir, event)` — appends one JSON
+  line. Returns True/False; never raises. Cwd-anchored when
+  `bundle_dir=None`.
+- `read_audit_log(bundle_dir)` — reads all events as a list;
+  missing log returns `[]`; bad lines silently skipped.
+
+Wire-in (`gui_qt/tabs/tab_ladder/_legacy.py`):
+- Every save slot wrapped in `try/except Exception: pass`
+  per Plan 12 §14 — audit failure never blocks the primary
+  save path.
+- `_save_review_bundle_annotation` emits `stage="review"`
+  (with linear_max/r2 means).
+- `_on_locate_file` emits `stage="locate_file"` carrying
+  the old/new path swap.
+- `_on_bulk_mark_visible_reviewed_clicked` emits
+  `stage="bulk_review"` carrying touched+changed counts.
+- `_append_audit_event` + `_audit_event_stream` capped at
+  200 (`AUDIT_STREAM_CAP`).
+- `_clear_recent_audit_panel` wired into
+  `_on_review_bundle_result` so loading a new bundle resets.
+
+Tests (15 new):
+- `MakeAuditEventTests` (6): required fields, row_path_text,
+  action/comment, extra merge, garbage extras, no-row.
+- `AppendAuditEventTests` (5): round-trip, filename,
+  None-bundle, missing-log returns `[]`, JSONL line shape.
+- `TabLadderAuditStreamWiringTests` (3): stream init,
+  200-cap rolling, clear reset.
+- `TabLadderBulkMarkWritesAuditEventTests` (1): bulk-review
+  click → JSONL write.
+
+Suite: 264 (Phase 12.8) → 279 (+15), 1 skipped, 0 regressions.
+
+
 ## Phase 12.10 — drop row
 
 - **T-12.10.a** — `drop_review_case(bundle_dir, full_path)` atomic
