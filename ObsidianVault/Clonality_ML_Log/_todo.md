@@ -115,15 +115,17 @@ Status re-implementation after lost container work:
 - [x] Phase 12.1 — split `tab_ladder` into package (commit `a75d64a`)
 - [x] Phase 12.3 — chip-strip overview widget (commit `14b7bc1`)
 - [x] Phase 12.4 — Locate File re-entry (`relocate_review_case` + GUI, commit `43d2bfc`)
-- [x] Phase 12.6 — keyboard nav (Alt+J/K/Ctrl+.) — local HEAD, not yet pushed.
-        13 new tests (9 helper + 4 wiring integration). Suite: 232 → 232 + 1 skipped.
+- [x] Phase 12.6 — keyboard nav (Alt+J/K/Ctrl+.) — commit `20f8e90`.
+        13 new tests (9 helper + 4 wiring integration). Suite: 219 → 232 + 1 skipped.
         Helpers: `next_chip_index(rows, current_index, direction, *, only_relevant, wrap)`.
         Routes: `QShortcut` on the *tab* (not on the strip — strip owns
         mouse semantics; chord keys live on the window context).
-- [ ] Phase 12.7 — chip filter helpers (`apply_filter_rows`, `count_states`)
-        + GUI filter dim. `CHIP_STATE_LABELS` already exported by `chip_state`.
-        Dim reuses `set_filter(allowed_states)`; non-matching chips drop
-        to `rgba(R, G, B, 0.35)`.
+- [x] Phase 12.7 — chip filter helpers + GUI filter bar — local HEAD, not yet pushed.
+        18 new tests. Suite: 232 → 250 + 1 skipped. Helpers: `apply_filter_rows`,
+        `count_states` (alias of `count_chip_states`), `is_chip_state_allowed`.
+        GUI: `ChipFilterBar` widget above `ChipStripOverview` with toggleable
+        color-coded chips + "All" / "None" + counts label. Toggles propagate
+        via `filterChanged → set_filter(allowed_states)`.
 - [ ] Phase 12.8 — "Mark Visible Reviewed (no change)" bulk button
         + `bulk_mark_reviewed_no_change` / `bulk_save_review_bundle_annotations`.
         Returned count = rows whose label *actually changed*; no-op

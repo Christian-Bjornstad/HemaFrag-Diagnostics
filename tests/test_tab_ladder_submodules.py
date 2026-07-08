@@ -22,11 +22,14 @@ from gui_qt.tabs.tab_ladder._io import (
 from gui_qt.tabs.tab_ladder._summary import (
     CHIP_STATE_LABELS,
     RELEVANT_CHIP_STATES,
+    apply_filter_rows,
     chip_state,
     count_chip_states,
+    count_states,
     entry_cache_key,
     entry_original_path,
     format_file_item,
+    is_chip_state_allowed,
     metadata_from_entry,
     next_chip_index,
     resolve_cache_key,
@@ -516,6 +519,110 @@ class NextChipIndexHelperTests(unittest.TestCase):
         # so a fresh row never returns a state that's also in the
         # relevant set without the helper agreeing on the bucket.
         self.assertTrue(RELEVANT_CHIP_STATES.issubset(CHIP_STATE_LABELS))
+
+
+class ChipFilterHelperTests(unittest.TestCase):
+    """Phase 12.7 — chip-state filter helpers.
+
+    These pure helpers back the ChipFilterBar widget (which lives in
+    `_overview.py`). Each test pins one branch of:
+      - ``apply_filter_rows(rows, allowed_states)`` returns the
+        subset of rows whose chip state is in the allowed set.
+      - ``count_states(rows)`` is an alias for ``count_chip_states``
+        — same dict shape, same values.
+      - ``is_chip_state_allowed(state, allowed_states)`` decodes a
+        single state name against the same allowed-set contract.
+    """
+
+    @staticmethod
+    def _row(state: str, fp: str = "r.fsa") -> dict:
+        """Construct a row tagged with a chip state."""
+        if state == "reviewed":
+            return {"full_path": fp, "_path_unreachable": "false",
+                    "label": "manual_adjusted", "ladder_qc_status": "ok"}
+        if state == "needs_review":
+            return {"full_path": fp, "_path_unreachable": "false",
+                    "label": "", "ladder_qc_status": "review_required"}
+        if state == "file_unreachable":
+            return {"full_path": fp, "_path_unreachable": "true",
+                    "label": "", "ladder_qc_status": "ok"}
+        if state == "untouched":
+            return {"full_path": fp, "_path_unreachable": "false",
+                    "label": "", "ladder_qc_status": "ok"}
+        raise ValueError(f"unknown state {state}")
+
+    def test_apply_filter_rows_none_returns_all(self) -> None:
+        rows = [self._row("reviewed"), self._row("untouched")]
+        out = apply_filter_rows(rows, None)
+        self.assertEqual(len(out), 2)
+        # Shallow-copied — mutating output must not mutate input.
+        out[0]["_mut"] = True
+        self.assertNotIn("_mut", rows[0])
+
+    def test_apply_filter_rows_subset_keeps_targets_only(self) -> None:
+        rows = [
+            self._row("reviewed", "r.fsa"),
+            self._row("needs_review", "n.fsa"),
+            self._row("file_unreachable", "x.fsa"),
+            self._row("untouched", "u.fsa"),
+        ]
+        out = apply_filter_rows(rows, {"needs_review", "file_unreachable"})
+        # We can't preserve order of the original list, so
+        # compare by full_path instead.
+        self.assertEqual({r["full_path"] for r in out}, {"n.fsa", "x.fsa"})
+
+    def test_apply_filter_rows_empty_set_matches_nothing(self) -> None:
+        rows = [self._row("reviewed"), self._row("untouched")]
+        self.assertEqual(apply_filter_rows(rows, set()), [])
+
+    def test_apply_filter_rows_accepts_list_or_tuple(self) -> None:
+        # The GUI sometimes passes a list, not a set — make sure
+        # the helper normalizes correctly.
+        rows = [self._row("needs_review"), self._row("untouched")]
+        out_list = apply_filter_rows(rows, ["needs_review"])
+        out_tuple = apply_filter_rows(rows, ("needs_review",))
+        self.assertEqual(len(out_list), 1)
+        self.assertEqual(len(out_tuple), 1)
+        self.assertEqual(out_list[0]["full_path"], out_tuple[0]["full_path"])
+
+    def test_apply_filter_rows_input_none_safe(self) -> None:
+        # Defensive contract — bundles mid-load may pass None.
+        self.assertEqual(apply_filter_rows(None, None), [])
+        self.assertEqual(apply_filter_rows(None, {"reviewed"}), [])
+
+    def test_count_states_alias_to_count_chip_states(self) -> None:
+        # Pin the alias so a future name-fat finger doesn't fork
+        # the implementation.
+        rows = [
+            self._row("reviewed"),
+            self._row("file_unreachable"),
+            self._row("untouched"),
+        ]
+        self.assertEqual(count_states(rows), count_chip_states(rows))
+        # And the dict shape must match CHIP_STATE keys.
+        self.assertEqual(set(count_states([]).keys()), set(CHIP_STATE_LABELS))
+
+    def test_is_chip_state_allowed_none_means_open(self) -> None:
+        self.assertTrue(is_chip_state_allowed("needs_review", None))
+        self.assertTrue(is_chip_state_allowed("untouched", None))
+
+    def test_is_chip_state_allowed_set_membership(self) -> None:
+        allowed = {"needs_review", "file_unreachable"}
+        self.assertTrue(is_chip_state_allowed("needs_review", allowed))
+        self.assertTrue(is_chip_state_allowed("file_unreachable", allowed))
+        self.assertFalse(is_chip_state_allowed("reviewed", allowed))
+        self.assertFalse(is_chip_state_allowed("untouched", allowed))
+
+    def test_is_chip_state_allowed_empty_set_blocks_all(self) -> None:
+        # The "None" button on the filter bar produces an empty set
+        # to mean "match nothing" — pin the contract.
+        for s in ("reviewed", "needs_review", "file_unreachable", "untouched"):
+            self.assertFalse(is_chip_state_allowed(s, set()))
+
+    def test_is_chip_state_allowed_handles_garbage_state(self) -> None:
+        # If a chip-state with a typo lands at the helper, the
+        # output is False rather than raising — defensive.
+        self.assertFalse(is_chip_state_allowed("nonsense", {"reviewed"}))
 
 
 if __name__ == "__main__":

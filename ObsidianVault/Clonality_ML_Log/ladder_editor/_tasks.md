@@ -104,6 +104,56 @@ Suite: 219 (Phase 12.4) → 232 (+13), 1 skipped, 0 regressions.
 - **T-12.7.b** — Filter toggle in chip frame, dim non-matching chips
   with rgba(R,G,B,0.35).
 
+**LANDED (2026-07-08, branch pre-push):**
+
+Phase 12.7 helpers + GUI wiring shipped. Helpers landed in
+`gui_qt/tabs/tab_ladder/_summary.py`:
+- `count_states = count_chip_states` — alias so GUI code can
+  stay terse without forking the implementation.
+- `apply_filter_rows(rows, allowed_states)` — returns shallow
+  copies of the rows whose chip state is in the allowed set.
+  `allowed_states` accepts set / list / tuple / None. None is
+  "no filter" (every row passes). Empty set is "match nothing"
+  (returns `[]`). Input `None` is tolerated (returns `[]`).
+- `is_chip_state_allowed(state, allowed_states)` — does the
+  single-state lookup without rerunning `chip_state(row)`;
+  used by the GUI to dim each chip without re-extracting.
+
+GUI wiring (`gui_qt/tabs/tab_ladder/_overview.py` +
+`_legacy.py`):
+- `ChipFilterBar` widget — a horizontal row of toggleable
+  buttons, one per chip-state, color-coded per `CHIP_STATE_COLORS`.
+  "All" / "None" buttons on the right + a live counts label
+  ("3 / 7" or "visible 1 / 7 (Reviewed: 3, Unreachable: 3)"
+  when filtered). Initial state: every chip-state allowed
+  (`allowedStates()` returns `None` = no filter).
+- `FILTER_BAR_STATE_ORDER` — `(reviewed, needs_review,
+  file_unreachable, untouched)` so the left→right walk
+  matches the natural color-coded urgency.
+- `FILTER_BAR_LABELS` — human-readable maps for the counts
+  breakdown.
+- Tab wires `ChipFilterBar.filterChanged` → `_on_chip_filter_changed`
+  → `ChipStripOverview.set_filter(allowed_states)`. The chip strip
+  already exposes `set_filter` from Phase 12.3 (it dims
+  non-matching chips to opacity 0.35).
+- `_sync_chip_strip()` — single writer that pushes rows to
+  both the strip and the filter bar; the bar's filter
+  selection persists across bundle reloads (counts re-render
+  but no reset).
+
+Tests (18 new):
+- `ChipFilterHelperTests` (10): None-is-open, subset, empty-set
+  semantics, list/tuple normalize, input-None safety, alias
+  pin, is_* helpers covering None / set / empty / garbage.
+- `ChipFilterBarWiringTests` (5): bar + strip installed,
+  initial state, select-all/none, setRows updates counts,
+  empty-input clears label.
+- `TabLadderChipFilterForwardingTests` (1): bar toggle
+  propagates into the chip strip.
+
+Suite: 232 (Phase 12.6) → 250 (+18), 1 skipped, 0 regressions.
+
+
 ## Phase 12.8 — bulk review
 
 - **T-12.8.a** — `bulk_mark_reviewed_no_change(rows, paths, now_iso=None)`.

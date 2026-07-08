@@ -149,7 +149,15 @@ class TabLadder(QWidget):
         # One chip per loaded bundle case (reviewed/needs_review/
         # file_unreachable/untouched). Click a chip to select that
         # file in the list below.
-        from gui_qt.tabs.tab_ladder._overview import ChipStripOverview
+        from gui_qt.tabs.tab_ladder._overview import ChipFilterBar, ChipStripOverview
+
+        # Phase 12.7 — chip-state filter bar above the chip strip.
+        # The chemist clicks a colored chip-state toggle button to
+        # dim everything in that bucket; the chip strip itself stays
+        # clickable (opacity 0.35, not hidden).
+        self._chip_filter_bar = ChipFilterBar(parent=card)
+        layout.addWidget(self._chip_filter_bar)
+        self._chip_filter_bar.filterChanged.connect(self._on_chip_filter_changed)
 
         self._chip_strip = ChipStripOverview(parent=card)
         self._chip_strip.chipActivated.connect(self._on_chip_activated)
@@ -1550,19 +1558,56 @@ class TabLadder(QWidget):
         Pass `cases=None` to use whatever the worker saved into
         `self._review_bundle_cases`. The chip strip clears to empty
         when no bundle is loaded.
+
+        Phase 12.7 — also pushes the rows to the chip-state filter
+        bar so its counts label re-renders. The filter selection
+        itself (which state-toggles are checked) is *not* reset —
+        the chemist's prior choices persist across bundle loads;
+        the counts label simply reflects the new totals.
         """
         try:
-            from gui_qt.tabs.tab_ladder._overview import ChipStripOverview
+            from gui_qt.tabs.tab_ladder._overview import ChipFilterBar, ChipStripOverview
         except Exception:
             return
         # Lazy lookup — _build_source_card sets self._chip_strip.
         strip = getattr(self, "_chip_strip", None)
+        filter_bar = getattr(self, "_chip_filter_bar", None)
         if strip is None or not isinstance(strip, ChipStripOverview):
             return
         rows = cases if cases is not None else getattr(
             self, "_review_bundle_cases", None
         ) or []
         strip.setRows(rows)
+        if isinstance(filter_bar, ChipFilterBar):
+            filter_bar.setRows(rows)
+
+    # ------------------------------------------------------------------
+    # Phase 12.7 — chip-state filter bar slot.
+    # ------------------------------------------------------------------
+
+    def _on_chip_filter_changed(self, allowed_states) -> None:
+        """Forward the filter bar's selection into the chip strip.
+
+        ``allowed_states`` is either None (no filter) or a set of
+        chip-state names. Passing None clears the dim path; passing
+        a set dims non-matching chips to 35% opacity (handled by
+        ``ChipStripOverview.set_filter``).
+
+        The chip strip stays clickable in both modes — Phase 12.7
+        only dims, never hides. Tests pin the contract at
+        ``tests/test_tab_ladder_submodules.py::ChipFilterHelperTests``
+        and ``tests/test_tab_ladder_navigation.py``.
+        """
+        strip = getattr(self, "_chip_strip", None)
+        if strip is None:
+            return
+        try:
+            strip.setFilter(allowed_states)
+        except Exception:
+            # The chip-strip widget is opportunistic — if Phase 12.3
+            # didn't install set_filter (older clone / partial pull),
+            # we don't want the filter bar to crash the tab.
+            pass
 
     def _on_scan_result(self, request_id: int, source: Path, files: list[Path]) -> None:
         if request_id != self._scan_request_id:

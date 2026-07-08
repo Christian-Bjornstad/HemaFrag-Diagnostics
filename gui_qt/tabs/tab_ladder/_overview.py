@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QWidget,
@@ -39,8 +40,34 @@ from PyQt6.QtWidgets import (
 
 from gui_qt.tabs.tab_ladder._summary import (
     CHIP_STATE_COLORS,
+    CHIP_STATE_LABELS,
     chip_state,
+    count_states,
+    is_chip_state_allowed,
 )
+
+
+# Display ordering for the four chip states — used by the filter bar
+# in addition to the chip strip itself. Alphabetical-by-importance
+# would put "file_unreachable" first (highest priority), but the
+# chemist walks left→right and expects the natural-color order:
+# reviewed → needs_review → unreachable → untouched.
+FILTER_BAR_STATE_ORDER = (
+    "reviewed",
+    "needs_review",
+    "file_unreachable",
+    "untouched",
+)
+
+
+# Human-readable chip-state name → button label combo (kept terse so
+# the filter row stays compact on a tab of modest width).
+FILTER_BAR_LABELS = {
+    "reviewed": "Reviewed",
+    "needs_review": "Needs review",
+    "file_unreachable": "Unreachable",
+    "untouched": "Untouched",
+}
 
 
 class ChipStripOverview(QWidget):
@@ -164,3 +191,178 @@ class ChipStripOverview(QWidget):
                 menu.exec(event.globalPos())
 
         chip.mousePressEvent = handler  # type: ignore[assignment]
+
+
+# Phase 12.7 — chip-state filter bar.
+# -----------------------------------------------------------------------
+#
+# `ChipFilterBar` is the small row of toggleable, color-coded chips that
+# lives directly above the chip strip. The chemist clicks a chip-state
+# to toggle it in/out of the allowed set; non-matching chips in the
+# strip drop to ~35% opacity (handled by `ChipStripOverview.set_filter`).
+#
+# Initial state: every chip-state allowed. "All" re-enables everything;
+# "None" hides every chip. The bar stays purely-stateful so a freshly
+# loaded bundle doesn't reset the chemist's prior filtering choices
+# unless explicitly told to.
+
+class ChipFilterBar(QWidget):
+    """Toggleable chip-state filter row above the chip strip."""
+
+    filterChanged = pyqtSignal(object)  # emitted with the allowed_states set (or None)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(4, 0, 4, 0)
+        outer.setSpacing(6)
+
+        title = QLabel("Filter:")
+        title.setObjectName("ChipFilterBarTitle")
+        outer.addWidget(title)
+
+        self._buttons: dict[str, QPushButton] = {}
+        # Start with everything allowed; an explicit "off" set would be
+        # confusing — chemist sees a fresh bundle with no chips highlighted.
+        self._allowed_states: set[str] = set(CHIP_STATE_LABELS)
+        self._rows: list[dict] = []
+
+        for state in FILTER_BAR_STATE_ORDER:
+            btn = QPushButton("")
+            btn.setCheckable(True)
+            btn.setChecked(True)
+            color = CHIP_STATE_COLORS.get(state, "#94a3b8")
+            btn.setStyleSheet(
+                f"QPushButton {{ background-color: {color}; color: white; "
+                f"border-radius: 8px; padding: 2px 10px; font-weight: 600; "
+                f"opacity: 1.0; }}"
+                f"QPushButton:checked {{ opacity: 1.0; }}"
+                f"QPushButton:!checked {{ opacity: 0.35; }}"
+            )
+            btn.toggled.connect(lambda checked, s=state: self._on_toggle(s, checked))
+            btn.setObjectName(f"ChipFilter_{state}")
+            outer.addWidget(btn)
+            self._buttons[state] = btn
+
+        # 'all' and 'none' utility buttons at the far right.
+        self.btn_all = QPushButton("All")
+        self.btn_all.setObjectName("ChipFilter_All")
+        self.btn_all.clicked.connect(self._select_all)
+        outer.addWidget(self.btn_all)
+
+        self.btn_none = QPushButton("None")
+        self.btn_none.setObjectName("ChipFilter_None")
+        self.btn_none.clicked.connect(self._select_none)
+        outer.addWidget(self.btn_none)
+
+        outer.addStretch(1)
+
+        # Counts label sits at the right edge and re-renders on every
+        # bar state change so the chemist sees "3 / 7" etc.
+        self.counts_label = QLabel("")
+        self.counts_label.setObjectName("ChipFilterCounts")
+        outer.addWidget(self.counts_label)
+
+        self._refresh_counts()
+
+    # ---- public API --------------------------------------------------
+
+    def allowedStates(self) -> set[str] | None:
+        """Return the current allowed-states set, or None if no filter.
+
+        ``None`` codifies "no filter — every chip passes", and is what
+        consumers pass to ChipStripOverview.set_filter() to clear the
+        dim path. A non-empty subset means only those states pass.
+        An empty subset means "match nothing" (returns [] /
+        dims everything). The GUI itself never produces an empty
+        set under normal click patterns — the user has to click
+        "None" deliberately. Either way, the surface stays one
+        value with three discrete shapes.
+        """
+        if not self._allowed_states:
+            # The filter bar model is "subset-of-CHIP_STATE_LABELS".
+            # We propagate both None (no filter) and empty-set
+            # (filter everything) semantics, but the GUI's
+            # bottom-button ("None") produces empty-set on purpose.
+            return set(self._allowed_states)
+        if self._allowed_states == set(CHIP_STATE_LABELS):
+            return None
+        return set(self._allowed_states)
+
+    def isStateAllowed(self, state: str) -> bool:
+        """Convenience wrapper — passes through chip_state helper."""
+        return is_chip_state_allowed(state, self._allowed_states)
+
+    def setRows(self, rows: list[dict]) -> None:
+        """Update the cached rows for counts rendering.
+
+        Doesn't touch the filter state — the chemist's filtering
+        choice persists across bundle loads. Pass ``rows=[]`` on a
+        fresh load to reset counts.
+        """
+        self._rows = list(rows or [])
+        self._refresh_counts()
+
+    def clearFilter(self) -> None:
+        """Re-enable every chip-state (sets the bar back to default)."""
+        # Block signals so each button doesn't fire its own toggle
+        # path; just emit one filterChanged at the end.
+        for state, btn in self._buttons.items():
+            blocker = btn.blockSignals(True)
+            try:
+                btn.setChecked(state in CHIP_STATE_LABELS)
+            finally:
+                btn.blockSignals(blocker)
+        self._allowed_states = set(CHIP_STATE_LABELS)
+        self._refresh_counts()
+        self.filterChanged.emit(self.allowedStates())
+
+    # ---- internals ---------------------------------------------------
+
+    def _on_toggle(self, state: str, checked: bool) -> None:
+        if checked:
+            self._allowed_states.add(state)
+        else:
+            self._allowed_states.discard(state)
+        self._refresh_counts()
+        self.filterChanged.emit(self.allowedStates())
+
+    def _select_all(self) -> None:
+        self.clearFilter()
+
+    def _select_none(self) -> None:
+        # Uncheck every chip button; the filter is then "match nothing."
+        for state, btn in self._buttons.items():
+            blocker = btn.blockSignals(True)
+            try:
+                btn.setChecked(False)
+            finally:
+                btn.blockSignals(blocker)
+        self._allowed_states = set()
+        self._refresh_counts()
+        self.filterChanged.emit(self.allowedStates())
+
+    def _refresh_counts(self) -> None:
+        # Tally rows by state regardless of filter — the chemist
+        # wants to see "hidden 3 / total 7" not "visible 7 / total 7"
+        # to understand the dim path's behavior.
+        counts = count_states(self._rows)
+        allowed = self._allowed_states
+        visible = sum(counts[s] for s in counts if s in allowed)
+        total = sum(counts.values())
+        if not self._rows:
+            self.counts_label.setText("")
+            return
+        if allowed == set(CHIP_STATE_LABELS):
+            self.counts_label.setText(f"{visible} / {total}")
+        else:
+            # Show breakdown so the chemist sees which bucket is
+            # being filtered.
+            breakdown = ", ".join(
+                f"{FILTER_BAR_LABELS[s]}:{counts[s]}"
+                for s in FILTER_BAR_STATE_ORDER
+                if counts[s]
+            )
+            self.counts_label.setText(
+                f"visible {visible} / {total}  ({breakdown})"
+            )

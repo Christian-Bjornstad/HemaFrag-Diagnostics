@@ -208,6 +208,64 @@ def count_chip_states(rows: list[dict], *, check_filesystem: bool = False) -> di
     return counts
 
 
+# Phase 12.7 — chip-state filter helpers.
+# -----------------------------------------------------------------------
+#
+# The chip-strip widget exposes ``set_filter(allowed_states)`` which
+# dims chips whose state isn't in the set (Phase 12.3). These helpers
+# give the GUI a clean way to compute that set and to inspect the
+# effect of the filter without round-tripping through Qt.
+#
+# Alias for ``count_chip_states`` so gui code that prefers a shorter
+# name can stay terse without forking the implementation.
+
+count_states = count_chip_states
+
+
+def apply_filter_rows(rows, allowed_states):
+    """Return rows whose chip state is in ``allowed_states``.
+
+    ``allowed_states`` may be:
+      * a collection (set/list/tuple) of state names.
+      * ``None`` — equivalent to "no filter"; every row is returned.
+      * an empty collection — strict "match nothing"; returns ``[]``.
+
+    Each row is returned as ``dict(row)`` (shallow copy) so downstream
+    callers can mutate without disturbing the input list. Errors during
+    state evaluation (e.g. unexpected keys) downgrade to ``untouched``,
+    matching ``count_chip_states``'s permissive fallback.
+    """
+    if allowed_states is None:
+        return [dict(r) for r in rows or []]
+    allowed = set(allowed_states)
+    out: list[dict] = []
+    for row in rows or []:
+        try:
+            state = chip_state(row)
+        except Exception:
+            state = "untouched"
+        if state in allowed:
+            out.append(dict(row))
+    return out
+
+
+def is_chip_state_allowed(state, allowed_states):
+    """Decide whether a single chip state passes the filter.
+
+    Returns True when ``allowed_states`` is None (no filter), or when
+    the state appears in the allowed set. Empty allowed set → always
+    False (a strip-wide filter that hides everything). Used by the
+    GUI filter widget to decide whether to dim a chip on each
+    state-toggle without recomputing the chip's row.
+    """
+    if allowed_states is None:
+        return True
+    try:
+        return str(state) in set(allowed_states)
+    except Exception:
+        return False
+
+
 # Phase 12.6 — keyboard navigation helpers.
 # -----------------------------------------------------------------------
 #
