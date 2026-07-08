@@ -27,10 +27,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QMouseEvent
+from PyQt6.QtGui import QAction, QMouseEvent
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QMenu,
     QScrollArea,
     QSizePolicy,
     QWidget,
@@ -46,6 +47,7 @@ class ChipStripOverview(QWidget):
     """Horizontal strip of colored chips, one per loaded case."""
 
     chipActivated = pyqtSignal(object)  # emitted with the file's Path
+    chipLocateRequested = pyqtSignal(object)  # Phase 12.4 — right-click "Locate File..."
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -140,17 +142,25 @@ class ChipStripOverview(QWidget):
             # mousePressEvent override; capture `path` so we don't
             # accidentally read stale row data.
             file_path = Path(str(row.get("full_path", "") or ""))
-            self._bind_chip_click(chip, file_path)
+            self._bind_chip_click(chip, file_path, state)
 
             self._chip_layout.insertWidget(
                 self._chip_layout.count() - 1, chip
             )
             self._labels.append((file_path, state, chip))
 
-    def _bind_chip_click(self, chip: QLabel, path: Path) -> None:
+    def _bind_chip_click(self, chip: QLabel, path: Path, state: str) -> None:
         def handler(event: QMouseEvent) -> None:
-            if event is None or event.button() != Qt.MouseButton.LeftButton:
+            if event is None:
                 return
-            self.chipActivated.emit(path)
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.chipActivated.emit(path)
+            elif event.button() == Qt.MouseButton.RightButton and state == "file_unreachable":
+                # Phase 12.4 — context menu for unreachable chips only.
+                menu = QMenu(chip)
+                act = QAction("Locate File...", chip)
+                act.triggered.connect(lambda: self.chipLocateRequested.emit(path))
+                menu.addAction(act)
+                menu.exec(event.globalPos())
 
         chip.mousePressEvent = handler  # type: ignore[assignment]

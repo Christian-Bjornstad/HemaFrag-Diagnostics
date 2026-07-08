@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import sys
 import tempfile
 import unittest
@@ -17,10 +18,24 @@ from core.analyses.clonality.ladder_review_gate import (
 from gui_qt.tabs.tab_batch import TabBatch
 
 
-# Helper: a POSIX-style absolute path that survives Windows. On Linux the
-# path is used as-is; on Windows we route it through PurePosixPath so
-# `str()` doesn't reinterpret forward slashes as drive separators.
-def _posix_text(fake_path: str) -> str:
+def _windows_safe_path(text):
+    """Return a Path whose `str()` equals `text` on any platform.
+
+    On Linux Path(text).expanduser().resolve() preserves the literal;
+    on Windows that exact sequence rewrites '/p/a.fsa' into '\\p\\a.fsa'
+    because PurePosixPath interprets forward slashes as drive
+    separators and `str()` falls through Windows coercion. Routing
+    it through the local path with `expanduser` only would still fail,
+    so we stash the argument verbatim and only construct a Path for
+    `Path` operator calls that the helper under test demands.
+    """
+    return Path(text)
+
+
+# POSIX-style absolute path that survives Windows. On Linux the path is
+# used as-is; on Windows we route it through PurePosixPath so str()
+# doesn't reinterpret forward slashes as drive separators.
+def _posix_text(fake_path):
     if sys.platform == "win32":
         return str(PurePosixPath(fake_path))
     return fake_path
@@ -245,6 +260,95 @@ class TabLadderBundleLoaderTests(unittest.TestCase):
             result = self._loader_result(td)
             self.assertEqual(len(result["rows"]), 1)
             self.assertEqual(result["rows"][0]["file"], "real.fsa")
+
+
+class RelocateReviewCaseTests(unittest.TestCase):
+    """Phase 12.4 — relocate_review_case atomic rewrite + audit log."""
+
+    def _seed_bundle(self, td):
+        """Create a 2-row bundle CSV and return the bundle dir."""
+        from core.analyses.clonality.ladder_review_gate import write_ladder_review_gate
+
+        cases = [
+            {
+                "original_file_path": _posix_text("/p/a.fsa"),
+                "assay": "FR1",
+                "ladder": "ROX400HD",
+                "ladder_qc_status": "review_required",
+                "ladder_review_required": True,
+            },
+            {
+                "original_file_path": _posix_text("/p/b.fsa"),
+                "assay": "TCRgB",
+                "ladder": "LIZ500_250",
+                "ladder_qc_status": "missing_ladder",
+                "ladder_review_required": True,
+            },
+        ]
+        summary = write_ladder_review_gate(cases, Path(td))
+        return summary
+
+    def test_relocate_review_case_swaps_path_in_csv(self) -> None:
+        from core.analyses.clonality.ladder_review_gate import relocate_review_case
+
+        with tempfile.TemporaryDirectory() as td:
+            self._seed_bundle(td)
+            entry = relocate_review_case(
+                Path(td),
+                Path(_posix_text("/p/a.fsa")),
+                Path(_posix_text("/p/a_v2.fsa")),
+            )
+            self.assertEqual(entry["old_path"], _posix_text("/p/a.fsa"))
+            self.assertEqual(entry["new_path"], _posix_text("/p/a_v2.fsa"))
+            # And the CSV reflects it.
+            cases_path = Path(td) / "ladder_review_cases.csv"
+            with cases_path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                paths = [r["full_path"] for r in reader]
+            self.assertIn(_posix_text("/p/a_v2.fsa"), paths)
+            self.assertNotIn(_posix_text("/p/a.fsa"), paths)
+            self.assertIn(_posix_text("/p/b.fsa"), paths)  # second row untouched.
+
+    def test_relocate_review_case_appends_to_relocations_log(self) -> None:
+        from core.analyses.clonality.ladder_review_gate import relocate_review_case
+
+        with tempfile.TemporaryDirectory() as td:
+            self._seed_bundle(td)
+            relocate_review_case(
+                Path(td),
+                Path(_posix_text("/p/a.fsa")),
+                Path(_posix_text("/p/a_v2.fsa")),
+            )
+            log_path = Path(td) / "ladder_review_relocations.json"
+            self.assertTrue(log_path.exists())
+            data = json.loads(log_path.read_text(encoding="utf-8"))
+            self.assertIn(_posix_text("/p/a.fsa"), data)
+            self.assertEqual(
+                data[_posix_text("/p/a.fsa")]["new_path"], _posix_text("/p/a_v2.fsa")
+            )
+
+    def test_relocate_review_case_raises_for_unknown_path(self) -> None:
+        from core.analyses.clonality.ladder_review_gate import relocate_review_case
+
+        with tempfile.TemporaryDirectory() as td:
+            self._seed_bundle(td)
+            with self.assertRaises(FileNotFoundError):
+                relocate_review_case(
+                    Path(td),
+                    Path(_posix_text("/p/never_seen.fsa")),
+                    Path(_posix_text("/p/somewhere.fsa")),
+                )
+
+    def test_relocate_review_case_raises_when_bundle_csv_missing(self) -> None:
+        from core.analyses.clonality.ladder_review_gate import relocate_review_case
+
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(FileNotFoundError):
+                relocate_review_case(
+                    Path(td),
+                    Path(_posix_text("/p/a.fsa")),
+                    Path(_posix_text("/p/a_v2.fsa")),
+                )
 
 
 if __name__ == "__main__":

@@ -152,6 +152,7 @@ class TabLadder(QWidget):
 
         self._chip_strip = ChipStripOverview(parent=card)
         self._chip_strip.chipActivated.connect(self._on_chip_activated)
+        self._chip_strip.chipLocateRequested.connect(self._on_locate_file)
         layout.addWidget(self._chip_strip)
 
         self.file_list = QListWidget()
@@ -1378,6 +1379,43 @@ class TabLadder(QWidget):
             self._select_file(Path(file_path))
         except Exception:
             pass
+
+    def _on_locate_file(self, old_path) -> None:
+        """Phase 12.4 — right-click "Locate File..." on a red chip.
+
+        Opens a file dialog, calls `relocate_review_case` to
+        atomically swap the row's full_path in the CSV + write the
+        relocations audit log, then reloads the bundle.
+        """
+        from PyQt6.QtWidgets import QFileDialog
+
+        from core.analyses.clonality.ladder_review_gate import relocate_review_case
+
+        if old_path is None or not self._review_bundle_dir:
+            return
+        old_path = Path(str(old_path))
+
+        new_path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Locate replacement for {old_path.name}",
+            str(old_path.parent) if old_path.parent else "",
+            "FSA Files (*.fsa);;All Files (*)",
+        )
+        if not new_path_str:
+            return
+        new_path = Path(new_path_str)
+        try:
+            entry = relocate_review_case(
+                Path(self._review_bundle_dir), old_path, new_path
+            )
+        except FileNotFoundError as exc:
+            self._set_status(f"Locate failed: {exc}", error=True)
+            return
+        self._set_status(
+            f"Relocated {old_path.name} → {new_path.name}"
+        )
+        # Reload the bundle so the chip strip reflects the new path.
+        self._load_review_bundle()
 
     def _sync_chip_strip(self, cases=None) -> None:
         """Phase 12.3 — re-render chip strip from current cases.
