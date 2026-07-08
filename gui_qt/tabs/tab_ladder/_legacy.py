@@ -1475,20 +1475,35 @@ class TabLadder(QWidget):
         if not cases_path.exists():
             raise FileNotFoundError(f"Missing review bundle file: {cases_path.name}")
 
+        # Phase 12.0 — preserve every bundled row whose `full_path`
+        # is non-empty, even when the FSA is not currently reachable
+        # on disk. The previous implementation silently dropped
+        # unreachable rows so the editor would "kinda work" (load 0
+        # cases) without warning the chemist. We now tag unreachable
+        # rows (so the GUI can surface them) and surface the count
+        # via a separate `missing_paths` field.
         rows: list[dict] = []
+        missing_paths: list[str] = []
         with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
-                full_path = Path(str(row.get("full_path", "") or "")).expanduser()
-                if not full_path.exists():
+                raw_path = str(row.get("full_path", "") or "").strip()
+                if not raw_path:
                     continue
-                row["full_path"] = str(full_path)
+                full_path = Path(raw_path).expanduser()
+                if not full_path.exists():
+                    missing_paths.append(raw_path)
+                    row["_path_unreachable"] = "true"
+                else:
+                    row["_path_unreachable"] = "false"
+                row["full_path"] = raw_path
                 rows.append(row)
 
         return {
             "bundle_dir": bundle_dir,
             "cases_path": cases_path,
             "rows": rows,
+            "missing_paths": missing_paths,
         }
 
     @staticmethod
@@ -1604,11 +1619,24 @@ class TabLadder(QWidget):
             for row in self._review_bundle_cases
             if self._cached_review_payload_for(Path(str(row.get("full_path", "") or ""))) is not None
         )
-        self._set_status(
+        missing_paths = result.get("missing_paths", []) or []
+        status_msg = (
             f"Loaded review bundle {self._review_bundle_dir.name} with "
-            f"{len(self._review_bundle_cases)} case(s): {resolved} reviewed, {unresolved} unresolved, "
-            f"{cached_count} cached."
+            f"{len(self._review_bundle_cases)} case(s): {resolved} reviewed, "
+            f"{unresolved} unresolved, {cached_count} cached."
         )
+        if missing_paths:
+            # Phase 12.0 — never let the editor silently load with
+            # unreachable rows. Paint the status bar red so the
+            # chemist immediately knows Locate File is in play.
+            status_msg += (
+                f"  ⚠ {len(missing_paths)} case(s) reference a path "
+                f"that is currently unreachable — open those via "
+                f"'Locate File' before saving."
+            )
+            self._set_status(status_msg, error=True)
+        else:
+            self._set_status(status_msg)
 
     def _on_review_bundle_error(self, request_id: int, err_tuple) -> None:
         if request_id != self._scan_request_id:
