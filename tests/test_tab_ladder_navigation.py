@@ -279,5 +279,80 @@ class TabLadderBulkMarkWritesAuditEventTests(unittest.TestCase):
             self.assertIn("bulk_review", stream_stages)
 
 
+class TabLadderDropReviewCaseWiringTests(unittest.TestCase):
+    """Phase 12.10 — drop-row hook wiring."""
+
+    def test_chip_strip_exposes_drop_signal(self) -> None:
+        tab = TabLadder(parent=None)
+        # The widget must have at least one bound signal we can
+        # hook into (Qt's bound signal introspects).
+        from PyQt6.QtCore import QMetaObject
+        # Just confirm the connection didn't error out by checking
+        # the slot exists on the tab.
+        self.assertTrue(hasattr(tab, "_on_drop_review_case"))
+        # And that the chip-strip has its chipDropRequested signal.
+        from gui_qt.tabs.tab_ladder._overview import ChipStripOverview
+        self.assertTrue(
+            hasattr(ChipStripOverview, "chipDropRequested")
+        )
+
+    def test_drop_slot_emits_drop_stage_audit_event(self) -> None:
+        # Synthesize a drop without the confirm dialog by
+        # out-of-band calling the helper, then verify the
+        # audit stream carries a stage="drop" event AND the
+        # in-memory mirror too.
+        import csv as csvmod
+        import tempfile
+        from unittest.mock import patch
+
+        from core.analyses.clonality.ladder_review_gate import (
+            drop_review_case,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            csv_path = bundle / "ladder_review_cases.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as h:
+                w = csvmod.DictWriter(
+                    h, fieldnames=["full_path", "label",
+                                   "ladder_qc_status",
+                                   "ladder_review_required",
+                                   "_path_unreachable"]
+                )
+                w.writeheader()
+                w.writerow({
+                    "full_path": "/p/a.fsa", "label": "manual_adjusted",
+                    "ladder_qc_status": "ok",
+                    "ladder_review_required": "false",
+                    "_path_unreachable": "false",
+                })
+
+            tab = TabLadder(parent=None)
+            tab._review_bundle_dir = bundle
+            tab._review_bundle_cases = [
+                {"full_path": "/p/a.fsa", "label": "manual_adjusted",
+                 "ladder_qc_status": "ok",
+                 "_path_unreachable": "false"},
+            ]
+
+            # Bypass the QMessageBox.question by stubbing it.
+            from PyQt6.QtWidgets import QMessageBox
+            with patch.object(
+                QMessageBox, "question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ):
+                tab._on_drop_review_case("/p/a.fsa")
+
+            # The CSV lost the row.
+            text = csv_path.read_text(encoding="utf-8")
+            self.assertNotIn("/p/a.fsa", text)
+            # The audit stream carries a stage="drop" event.
+            drop_events = [
+                e for e in tab._audit_event_stream
+                if e.get("stage") == "drop"
+            ]
+            self.assertGreaterEqual(len(drop_events), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

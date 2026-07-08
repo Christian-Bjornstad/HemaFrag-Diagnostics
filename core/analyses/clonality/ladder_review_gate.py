@@ -292,3 +292,119 @@ def relocate_review_case(
     )
 
     return relocated_entry
+
+
+# Phase 12.10 — drop_review_case + drops audit log.
+# -----------------------------------------------------------------------
+#
+# Symmetric to relocate_review_case (Phase 12.4): when a chemist
+# realises a row no longer belongs in the bundle (duplicate FSA,
+# wrong well ID, etc.), they right-click the chip and pick
+# "Drop row from bundle...". The row's full_path entry is
+# atomically removed from `ladder_review_cases.csv` and the
+# drop is appended to `ladder_review_drops.json` so the audit
+# trail lives alongside the bundle.
+#
+# The Plan 11 trainer pivots on `stage="drop"` events (Phase 12.9
+# audit stream); `ladder_review_drops.json` is the durable
+# backup that survives the chemistry-tab reinstall.
+
+DROPPED_AT_UTC_FORMAT = "%Y-%m-%dT%H:%M:%S+00:00"
+
+
+def drop_review_case(bundle_dir: Path, full_path: Path | str) -> dict:
+    """Remove a row from the bundle CSV + append a drops audit entry.
+
+    Returns ``{"full_path": str, "previous_label": str,
+    "dropped_at_utc": iso8601, "dropped_row_index": int}``.
+
+    Raises FileNotFoundError when:
+      * the bundle's `ladder_review_cases.csv` is missing, or
+      * no row's full_path matches `full_path`.
+    """
+    target_text = _path_to_str(full_path)
+    target_key = _resolve_cache_key(target_text)
+
+    cases_path = bundle_dir / "ladder_review_cases.csv"
+    if not cases_path.exists():
+        raise FileNotFoundError(f"Missing review bundle file: {cases_path.name}")
+
+    with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+
+    if "full_path" not in fieldnames:
+        raise FileNotFoundError(
+            f"No 'full_path' column in {cases_path.name}"
+        )
+
+    dropped_row_index = -1
+    previous_label = ""
+    for index, row in enumerate(rows):
+        row_path_text = str(row.get("full_path", "") or "")
+        row_matches = row_path_text == target_text
+        if not row_matches and row_path_text:
+            try:
+                row_matches = _resolve_cache_key(row_path_text) == target_key
+            except Exception:
+                row_matches = False
+        if row_matches:
+            previous_label = str(row.get("label", "") or "")
+            dropped_row_index = index
+            del rows[index]
+            break
+
+    if dropped_row_index == -1:
+        raise FileNotFoundError(
+            f"Could not find review bundle row matching {target_text}"
+        )
+
+    with cases_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    drops_path = bundle_dir / "ladder_review_drops.json"
+    existing: list[dict] = []
+    if drops_path.exists():
+        try:
+            loaded = json.loads(drops_path.read_text(encoding="utf-8"))
+            # Drops log is a list (chronological-ish append); the
+            # relocations log is a dict (keyed by old_path).
+            if isinstance(loaded, list):
+                existing = loaded
+        except Exception:
+            existing = []
+
+    drop_entry = {
+        "full_path": target_text,
+        "previous_label": previous_label,
+        "dropped_at_utc": datetime.now(timezone.utc).isoformat(),
+        "dropped_row_index": dropped_row_index,
+    }
+    existing.append(drop_entry)
+    drops_path.write_text(
+        json.dumps(existing, indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
+
+    return drop_entry
+
+
+def read_review_drops(bundle_dir: Path) -> list[dict]:
+    """Return the chronological drops log as a list of dicts.
+
+    Returns [] when the log is missing or unreadable; tests pin
+    that contract so a corrupted drops file doesn't crash the GUI.
+    """
+    drops_path = bundle_dir / "ladder_review_drops.json"
+    if not drops_path.exists():
+        return []
+    try:
+        loaded = json.loads(drops_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(loaded, list):
+        return []
+    return loaded

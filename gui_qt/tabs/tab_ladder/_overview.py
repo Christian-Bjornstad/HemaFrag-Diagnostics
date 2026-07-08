@@ -75,6 +75,7 @@ class ChipStripOverview(QWidget):
 
     chipActivated = pyqtSignal(object)  # emitted with the file's Path
     chipLocateRequested = pyqtSignal(object)  # Phase 12.4 — right-click "Locate File..."
+    chipDropRequested = pyqtSignal(object)  # Phase 12.10 — right-click "Drop row from bundle..."
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -182,12 +183,27 @@ class ChipStripOverview(QWidget):
                 return
             if event.button() == Qt.MouseButton.LeftButton:
                 self.chipActivated.emit(path)
-            elif event.button() == Qt.MouseButton.RightButton and state == "file_unreachable":
-                # Phase 12.4 — context menu for unreachable chips only.
+            elif event.button() == Qt.MouseButton.RightButton:
+                # Phase 12.10 — context menu now always offers two
+                # actions: "Locate File..." (when reachable
+                # resource moved) and "Drop row from bundle..."
+                # for paths the chemist no longer wants tracked.
                 menu = QMenu(chip)
-                act = QAction("Locate File...", chip)
-                act.triggered.connect(lambda: self.chipLocateRequested.emit(path))
-                menu.addAction(act)
+                if state == "file_unreachable":
+                    # Locate File only makes sense when the chip
+                    # is currently unreachable — otherwise the
+                    # path is already on disk and there's nothing
+                    # to relocate.
+                    locate_act = QAction("Locate File...", chip)
+                    locate_act.triggered.connect(
+                        lambda: self.chipLocateRequested.emit(path)
+                    )
+                    menu.addAction(locate_act)
+                drop_act = QAction("Drop row from bundle...", chip)
+                drop_act.triggered.connect(
+                    lambda: self.chipDropRequested.emit(path)
+                )
+                menu.addAction(drop_act)
                 menu.exec(event.globalPos())
 
         chip.mousePressEvent = handler  # type: ignore[assignment]

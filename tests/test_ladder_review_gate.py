@@ -13,6 +13,8 @@ import pytest
 from core.analyses.clonality.ladder_review_gate import (
     collect_ladder_review_cases,
     count_unresolved_review_cases,
+    drop_review_case,
+    read_review_drops,
     write_ladder_review_gate,
 )
 from gui_qt.tabs.tab_batch import TabBatch
@@ -349,6 +351,83 @@ class RelocateReviewCaseTests(unittest.TestCase):
                     Path(_posix_text("/p/a.fsa")),
                     Path(_posix_text("/p/a_v2.fsa")),
                 )
+
+
+class DropReviewCaseTests(unittest.TestCase):
+    """Phase 12.10 — `drop_review_case` + `read_review_drops`.
+
+    Pins:
+      - the row is removed atomically;
+      - `ladder_review_drops.json` accumulates one entry per drop;
+      - re-dropping the same path raises FileNotFoundError;
+      - missing CSV raises FileNotFoundError.
+    """
+
+    def _write_csv(self, td, lines):
+        p = Path(td) / "ladder_review_cases.csv"
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return p
+
+    def test_drop_removes_row_and_returns_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = self._write_csv(td, [
+                "full_path,label",
+                "/p/a.fsa,manual_adjusted",
+                "/p/b.fsa,",
+            ])
+            entry = drop_review_case(Path(td), "/p/a.fsa")
+            self.assertEqual(entry["full_path"], "/p/a.fsa")
+            self.assertEqual(entry["previous_label"], "manual_adjusted")
+            self.assertEqual(entry["dropped_row_index"], 0)
+            self.assertIn("dropped_at_utc", entry)
+            text = csv_path.read_text(encoding="utf-8")
+            self.assertNotIn("/p/a.fsa", text)
+            self.assertIn("/p/b.fsa", text)
+            drops = read_review_drops(Path(td))
+            self.assertEqual(len(drops), 1)
+            self.assertEqual(drops[0]["full_path"], "/p/a.fsa")
+
+    def test_drop_accumulates_log_across_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            self._write_csv(td, [
+                "full_path,label",
+                "/p/a.fsa,",
+                "/p/b.fsa,",
+            ])
+            drop_review_case(Path(td), "/p/a.fsa")
+            drop_review_case(Path(td), "/p/b.fsa")
+            drops = read_review_drops(Path(td))
+            self.assertEqual(len(drops), 2)
+            self.assertEqual([d["full_path"] for d in drops],
+                             ["/p/a.fsa", "/p/b.fsa"])
+
+    def test_drop_raises_for_unknown_path(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            self._write_csv(td, ["full_path,label", "/p/a.fsa,"])
+            with self.assertRaises(FileNotFoundError):
+                drop_review_case(Path(td), "/p/z.fsa")
+
+    def test_drop_raises_when_csv_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(FileNotFoundError):
+                drop_review_case(Path(td), "/x.fsa")
+
+    def test_read_review_drops_returns_empty_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(read_review_drops(Path(td)), [])
+
+    def test_read_review_drops_handles_corrupt_json(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "ladder_review_drops.json").write_text(
+                "not-valid-json{", encoding="utf-8"
+            )
+            self.assertEqual(read_review_drops(Path(td)), [])
+
+    def test_drop_returns_path_object_passthrough(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            self._write_csv(td, ["full_path,label", "/p/a.fsa,"])
+            entry = drop_review_case(Path(td), Path("/p/a.fsa"))
+            self.assertEqual(entry["full_path"], "/p/a.fsa")
 
 
 if __name__ == "__main__":

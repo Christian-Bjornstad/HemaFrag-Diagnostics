@@ -166,6 +166,11 @@ class TabLadder(QWidget):
         self._chip_strip = ChipStripOverview(parent=card)
         self._chip_strip.chipActivated.connect(self._on_chip_activated)
         self._chip_strip.chipLocateRequested.connect(self._on_locate_file)
+        # Phase 12.10 — drop-row hook. Chip context menu now
+        # always offers "Drop row from bundle..." (right-click),
+        # and the slot confirms + calls the helper + emits
+        # the Phase 12.9 stage="drop" audit event.
+        self._chip_strip.chipDropRequested.connect(self._on_drop_review_case)
         layout.addWidget(self._chip_strip)
 
         # Phase 12.8 — "Mark Visible Reviewed (no change)" bulk button
@@ -1683,6 +1688,85 @@ class TabLadder(QWidget):
             pass
 
         # Reload the bundle so the chip strip reflects the new path.
+        self._load_review_bundle()
+
+    # ------------------------------------------------------------------
+    # Phase 12.10 — drop-row hook.
+    # ------------------------------------------------------------------
+
+    def _on_drop_review_case(self, full_path) -> None:
+        """Right-click "Drop row from bundle..." handler.
+
+        Calls ``drop_review_case`` (core helper) after a
+        ``QMessageBox.question`` confirms the destructive op.
+        Always emits a Phase 12.9 ``stage="drop"`` audit event
+        so Plan 11 trainers see the spurious row as a
+        remove-event rather than a heavier ``reviewed`` outcome.
+
+        On any failure (missing CSV, missing row, filesystem
+        permission error) the status bar goes red and the chip
+        stays put — the bundle reloads only on success.
+        """
+        from PyQt6.QtWidgets import QMessageBox
+
+        from core.analyses.clonality.ladder_review_gate import drop_review_case
+
+        if full_path is None or not self._review_bundle_dir:
+            return
+        full_path = Path(str(full_path))
+
+        # Confirm — destructive op, no undo beyond the
+        # ladder_review_drops.json audit.
+        confirm = QMessageBox.question(
+            self,
+            "Drop row from bundle",
+            f"Drop {full_path.name} from the review bundle?\n"
+            "The CSV row is removed and the drop audit-logged; "
+            "the bundle reloads to refresh the chip strip.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            entry = drop_review_case(Path(self._review_bundle_dir), full_path)
+        except FileNotFoundError as exc:
+            self._set_status(f"Drop failed: {exc}", error=True)
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            self._set_status(f"Drop failed: {exc}", error=True)
+            return
+
+        self._set_status(f"Dropped {full_path.name} from bundle.")
+
+        # Phase 12.9 — emit a "drop" stage audit event so Plan 11
+        # trainers see the spurious row as a remove-event, not
+        # a "reviewed" outcome.
+        try:
+            from gui_qt.tabs.tab_ladder._io import (
+                make_audit_event,
+                append_audit_event,
+            )
+
+            event = make_audit_event(
+                stage="drop",
+                row={"full_path": str(full_path)},
+                action="drop_row",
+                comment=f"previous_label={entry.get('previous_label', '')}",
+                extra={
+                    "previous_label": entry.get("previous_label", ""),
+                    "dropped_row_index": entry.get("dropped_row_index"),
+                    "dropped_at_utc": entry.get("dropped_at_utc"),
+                },
+            )
+            append_audit_event(self._review_bundle_dir, event)
+            self._append_audit_event(event)
+        except Exception:
+            pass
+
+        # Reload the bundle so the chip strip drops the chip and
+        # the file list removes the row.
         self._load_review_bundle()
 
     def _sync_chip_strip(self, cases=None) -> None:
