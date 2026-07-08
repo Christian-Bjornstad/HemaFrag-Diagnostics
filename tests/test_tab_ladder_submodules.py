@@ -41,6 +41,7 @@ from gui_qt.tabs.tab_ladder._summary import (
     entry_cache_key,
     entry_original_path,
     extract_dit_candidates,
+    format_audit_event_line,
     format_file_item,
     format_rerun_rationale_line,
     format_summary_banner,
@@ -1194,6 +1195,71 @@ class RerunRationaleHelperTests(unittest.TestCase):
         self.assertIn("<no-kind>", line)
         self.assertIn("0 file(s)", line)
         self.assertIn("<no-reason>", line)
+
+
+class FormatAuditEventLineTests(unittest.TestCase):
+    """Phase 12.17 — `format_audit_event_line` pure helper."""
+
+    def test_full_event(self) -> None:
+        event = {
+            "stage": "review",
+            "action": "save",
+            "row_path_text": "/p/a.fsa",
+            "comment": "label=reviewed_no_change",
+            "timestamp_utc": "2026-07-08T13:30:00.123456+00:00",
+        }
+        line = format_audit_event_line(event)
+        # Microseconds + tz suffix trimmed.
+        self.assertIn("2026-07-08T13:30:00", line)
+        self.assertNotIn("123456", line)
+        self.assertNotIn("+00:00", line)
+        # stage:action joined.
+        self.assertIn("review:save", line)
+        self.assertIn("/p/a.fsa", line)
+        self.assertIn("label=reviewed_no_change", line)
+
+    def test_z_suffix_trimmed(self) -> None:
+        event = {
+            "stage": "review",
+            "action": "save",
+            "row_path_text": "/p/a.fsa",
+            "comment": "saved",
+            "timestamp_utc": "2026-07-08T13:30:00.000000Z",
+        }
+        line = format_audit_event_line(event)
+        self.assertNotIn("Z", line.rsplit("--", 1)[0].rsplit("--", 1)[0])
+        self.assertNotIn("000000", line)
+
+    def test_no_action_keeps_stage(self) -> None:
+        event = {
+            "stage": "review",
+            "row_path_text": "/p/a.fsa",
+            "comment": "no action",
+            "timestamp_utc": "2026-07-08T13:30:00",
+        }
+        line = format_audit_event_line(event)
+        # Head is just the stage (no trailing ":")
+        self.assertIn("review --", line)
+        # The plain stage marker shows without an action suffix.
+        # Verify by checking the canonical shape.
+        self.assertTrue(line.startswith("2026-07-08T13:30:00 --"))
+
+    def test_placeholder_fallbacks(self) -> None:
+        # Empty event yields the canonical placeholder markers
+        # so the rendered line never collapses a column.
+        line = format_audit_event_line({})
+        self.assertIn("<no-time>", line)
+        self.assertIn("<no-stage>", line)
+        self.assertIn("<no-path>", line)
+        self.assertIn("<no-comment>", line)
+
+    def test_partial_event(self) -> None:
+        # Only stage populated; everything else empty.
+        event = {"stage": "review"}
+        line = format_audit_event_line(event)
+        self.assertIn("review", line)
+        self.assertIn("<no-path>", line)
+        self.assertIn("<no-comment>", line)
 
 
 if __name__ == "__main__":

@@ -511,5 +511,78 @@ class TabLadderCtrlRWiringTests(unittest.TestCase):
             tab._mark_current_file_reviewed_no_change()
 
 
+class TabLadderAuditPanelWiringTests(unittest.TestCase):
+    """Phase 12.17 — audit-trail mini panel wiring."""
+
+    def test_panel_widget_installed(self) -> None:
+        tab = TabLadder(parent=None)
+        self.assertTrue(hasattr(tab, "recent_audit_view"))
+
+    def test_panel_is_read_only(self) -> None:
+        tab = TabLadder(parent=None)
+        # The widget is a QPlainTextEdit; readOnly must be True
+        # so the chemist's strokes don't accidentally edit the
+        # audit log display.
+        self.assertTrue(tab.recent_audit_view.isReadOnly())
+
+    def test_refresh_recent_audit_panel_renders_stream(self) -> None:
+        tab = TabLadder(parent=None)
+        # Append three synthetic audit events directly to
+        # the in-memory stream (the panel render ignores the
+        # IO side-effect).
+        tab._audit_event_stream.extend([
+            {
+                "stage": "review", "action": "save",
+                "row_path_text": "/p/a.fsa",
+                "comment": "label=reviewed",
+                "timestamp_utc": "2026-07-08T13:30:00",
+            },
+            {
+                "stage": "bulk_review", "action": "mark_visible_reviewed",
+                "row_path_text": "",
+                "comment": "5/7 labels flipped",
+                "timestamp_utc": "2026-07-08T13:35:12+00:00",
+            },
+            {
+                "stage": "drop", "action": "drop_row",
+                "row_path_text": "/p/z.fsa",
+                "comment": "",
+                "timestamp_utc": "2026-07-08T13:40:00.000000Z",
+            },
+        ])
+        tab._refresh_recent_audit_panel()
+        text = tab.recent_audit_view.toPlainText()
+        # Each event got rendered.
+        self.assertIn("review:save", text)
+        self.assertIn("bulk_review:mark_visible_reviewed", text)
+        self.assertIn("drop:drop_row", text)
+        # The bulk_review event had no row → placeholder "<no-path>".
+        self.assertIn("<no-path>", text)
+        # Timestamps were rendered with trimmed tz suffixes.
+        self.assertNotIn("+00:00", text)
+        self.assertNotIn(".000000", text)
+        self.assertNotIn("Z", text)
+
+    def test_refresh_with_empty_stream_safe(self) -> None:
+        tab = TabLadder(parent=None)
+        # No events → refresh is a no-op (panel may be cleared).
+        tab._refresh_recent_audit_panel()
+        # The panel didn't crash; the plain text is just empty.
+        text = tab.recent_audit_view.toPlainText()
+        self.assertEqual(text, "")
+
+    def test_clear_recent_audit_panel_wipes_widget(self) -> None:
+        tab = TabLadder(parent=None)
+        tab._audit_event_stream.extend([
+            {"stage": "x", "action": "y", "row_path_text": "",
+             "comment": "", "timestamp_utc": "T"},
+        ])
+        tab._clear_recent_audit_panel()
+        # Stream is reset.
+        self.assertEqual(tab._audit_event_stream, [])
+        # Widget shows nothing.
+        self.assertEqual(tab.recent_audit_view.toPlainText(), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

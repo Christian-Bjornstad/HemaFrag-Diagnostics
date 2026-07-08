@@ -457,6 +457,36 @@ def extract_dit_candidates(
     return indices, dits
 
 
+def format_audit_event_line(event: dict) -> str:
+    """Render one audit stream event as a single line.
+
+    Format: ``<ts> -- <stage>:<action> -- <path> -- <comment>``.
+
+    Microseconds and Z / +HH:MM tz suffixes are trimmed so
+    the panel reads consistently regardless of the writer's
+    iso8601 flavour. Empty timestamp / stage / path /
+    comment fall back to placeholder markers so the rendered
+    line never collapses a column visually.
+    """
+    ts_raw = str(event.get("timestamp_utc") or "").strip()
+    # Trim microseconds and tz suffixes for compact rendering.
+    if "." in ts_raw:
+        ts_raw = ts_raw.split(".", 1)[0]
+    if "+" in ts_raw[10:]:
+        ts_raw = ts_raw.rsplit("+", 1)[0]
+    elif ts_raw.endswith("Z"):
+        ts_raw = ts_raw[:-1]
+    ts = ts_raw or "<no-time>"
+
+    stage = str(event.get("stage") or "").strip() or "<no-stage>"
+    action = str(event.get("action") or "").strip()
+    path = str(event.get("row_path_text") or "").strip() or "<no-path>"
+    comment = str(event.get("comment") or "").strip() or "<no-comment>"
+
+    head = f"{stage}:{action}" if action else stage
+    return f"{ts} -- {head} -- {path} -- {comment}"
+
+
 def dit_filter_keep(indices: list[int]) -> set[int] | None:
     """Convert the helper's index list into the GUI's allowed-set shape.
 

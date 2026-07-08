@@ -215,6 +215,23 @@ class TabLadder(QWidget):
         self.bundle_summary_label.setObjectName("BundleSummaryLabel")
         layout.addWidget(self.bundle_summary_label)
 
+        # Phase 12.17 — audit-trail mini panel. A read-only
+        # QPlainTextEdit sits directly below the summary banner;
+        # every save / drop / locate / bulk-review / Ctrl+R event
+        # that lands in `_audit_event_stream` re-renders here.
+        # The panel is capped at the same 200-event stream as
+        # `_audit_event_stream` so memory stays bounded.
+        from PyQt6.QtWidgets import QPlainTextEdit
+        self.recent_audit_view = QPlainTextEdit(parent=card)
+        self.recent_audit_view.setObjectName("RecentAuditView")
+        self.recent_audit_view.setReadOnly(True)
+        self.recent_audit_view.setMaximumBlockCount(200)
+        # Compact height — a few rows of the most recent
+        # events. The chemist can scroll if they want.
+        self.recent_audit_view.setMinimumHeight(60)
+        self.recent_audit_view.setMaximumHeight(120)
+        layout.addWidget(self.recent_audit_view)
+
         # Phase 12.8 — "Mark Visible Reviewed (no change)" bulk button
         # sits right under the chip strip so the chemist can sweep
         # triage in one click. The status string reads the *changed*
@@ -1738,11 +1755,42 @@ class TabLadder(QWidget):
             pass
 
     def _refresh_recent_audit_panel(self) -> None:
-        """Re-render the in-memory audit panel (Phase 12.17 widget)."""
-        # Phase 12.9 ships the stub; Phase 12.17 attaches the
-        # `recent_audit_view` widget populated from
-        # `self._audit_event_stream`.
-        return
+        """Re-render the audit-trail mini panel from the in-memory stream.
+
+        Phase 12.17 — populates `self.recent_audit_view` (a
+        read-only QPlainTextEdit) with the most recent
+        events from `_audit_event_stream`. Each line is
+        formatted via `format_audit_event_line` so caller
+        timestamps / stages / paths / comments render
+        consistently. Newest event at the bottom — the
+        panel scrolls to the end automatically so the
+        chemist sees the latest save live.
+        """
+        view = getattr(self, "recent_audit_view", None)
+        if view is None:
+            return
+        try:
+            from gui_qt.tabs.tab_ladder._summary import (
+                format_audit_event_line,
+            )
+            stream = self._audit_event_stream
+            lines = [format_audit_event_line(evt) for evt in stream]
+            # Clear + append avoids the QPlainTextEdit's
+            # internal block-count churn for a single
+            # long append pass.
+            view.clear()
+            if lines:
+                view.appendPlainText("\n".join(lines))
+            try:
+                # Scroll to the end so the latest event
+                # is visible.
+                cursor = view.textCursor()
+                cursor.movePosition(cursor.MoveOperation.End)
+                view.setTextCursor(cursor)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _on_locate_file(self, old_path) -> None:
         """Phase 12.4 — right-click "Locate File..." on a red chip.
