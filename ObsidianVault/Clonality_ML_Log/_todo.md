@@ -146,11 +146,13 @@ Status re-implementation after lost container work:
         + `read_review_drops`. GUI: chip-strip right-click menu now always
         offers "Drop row from bundle…"; QMessageBox confirms; emits Phase 12.9
         `stage="drop"`; reloads bundle so chip and file list refresh.
-- [ ] Phase 12.11 — DIT prefix filter. `extract_dit_candidates(rows, prefix)`
-        reads DIT (\d{2}OUM\d{5}) from `full_path` first, falls back
-        to `source_run_dir`. GUI: `QLineEdit` + "Clear".
-        Separate setter `dit_filter_keep(kept_paths)` AND-combined
-        with `set_filter(allowed_states)`.
+- [x] Phase 12.11 — DIT prefix filter — commit `00d5859`.
+        17 new tests. Suite: 288 → 305 + 1 skipped. Helpers: `extract_dit_candidates(rows, prefix)`
+        (case-insensitive, full_path → source_run_dir fallback), `dit_filter_keep(indices)`;
+        GUI: `QLineEdit` "Filter by DIT" + Clear button + summary label. ChipStrip
+        gains `dit_filter_keep(kept_indices)` setter that AND-composes with
+        `set_filter(allowed_states)`; slot reads `self._review_bundle_cases` and
+        dispatches both.
 - [ ] Phase 12.12 — bundle summary banner. `most_recent_save_timestamp(rows)`
         + `format_summary_banner(...)`. Refresh embedded inside
         `_sync_overview_with_bundle` (one writer, no scattered refreshes).

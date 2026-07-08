@@ -318,8 +318,57 @@ Suite: 279 (Phase 12.9) → 288 (+9), 1 skipped, 0 regressions.
 ## Phase 12.11 — DIT prefix filter
 
 - **T-12.11.a** — `extract_dit_candidates(rows, prefix)` pure helper.
-- **T-12.11.b** — QLineEdit "Filter by DIT" + Clear button. Composability:
-  `set_filter(allowed_states)` AND `dit_filter_keep(kept_paths)`.
+- **T-12.11.b** — QLineEdit "Filter by DIT" + Clear button.
+  Composability: `set_filter(allowed_states)` AND
+  `dit_filter_keep(kept_paths)`.
+
+**LANDED (2026-07-08, branch pre-push):**
+
+Phase 12.11 helpers + GUI wiring shipped.
+
+Helpers (`gui_qt/tabs/tab_ladder/_summary.py`):
+- `_DIT_REGEX = re.compile(r"(\d{2}OUM\d{5})", re.IGNORECASE)`.
+- `_row_dit(row)` — best-effort DIT extraction; reads
+  `full_path` first, falls back to `source_run_dir` (T7
+  Shield rename fallback). Returns `""` on no match.
+- `extract_dit_candidates(rows, prefix) -> (indices, dits)` —
+  case-insensitive prefix match, prefix compared uppercase
+  to uppercase DIT. Empty prefix → `([], [])`. Rows whose
+  DIT can't be extracted never match.
+- `dit_filter_keep(indices) -> set[int] | None` —
+  converts index list to GUI's allowed-set shape; empty
+  input returns `None` ("no filter").
+
+GUI (`gui_qt/tabs/tab_ladder/_overview.py` +
+`_legacy.py`):
+- `ChipStripOverview.dit_filter_keep(kept_indices)` — *separate*
+  setter from `set_filter(allowed_states)`. Internally
+  AND-composes the two: a chip is full opacity only when
+  both filters allow it. None on either disables that filter
+  without resetting the other.
+- `QLineEdit` "Filter by DIT" with placeholder
+  "e.g. 24OUM203" + Clear button.
+- Summary label "N matches: DIT1, DIT2, +X more" so the
+  chemist sees what survived the filter.
+- `_on_dit_filter_changed(text)` slot: re-extracts from
+  `self._review_bundle_cases`, calls `dit_filter_keep`,
+  sets the summary label.
+- `_on_clear_dit_filter_clicked` slot: clears the
+  `QLineEdit` with signal-blocking so we get one
+  emission rather than two.
+
+Tests (17 new):
+- `ExtractDitCandidatesTests` (11): full_path extraction,
+  source_run_dir fallback, case-insensitive matching,
+  uppercase output, empty prefix, empty rows, no match,
+  no-DIT rows, prefix-only-at-start, dit_filter_keep
+  None-for-empty, dit_filter_keep set shape.
+- `TabLadderDitFilterWiringTests` (6): input + button +
+  label installed, slot updates summary on prefix, slot
+  clears on empty, zero-matches summary, Clear button
+  pathway, AND-composition shape.
+
+Suite: 288 (Phase 12.10) → 305 (+17), 1 skipped, 0 regressions.
 
 ## Phase 12.12 — bundle summary banner
 
