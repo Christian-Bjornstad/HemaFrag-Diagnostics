@@ -271,10 +271,63 @@ def fit_classifier(
         # Tiny dataset -- skip Platt scaling, just return raw RF.
         base.fit(X_train, y_train)
         return base
-    qda = QuadraticDiscriminantAnalysis()
+    # scikit-learn 1.6+ (and 1.9 stricter-still) raised the
+    # bar on QuadraticDiscriminantAnalysis: classes whose
+    # feature matrix has effective rank below n_features
+    # raise LinAlgError on `fit`. Older sklearns silently
+    # absorbed this through float jitter in `cov`; that path
+    # no longer exists.
+    #
+    # We use the 'eigen' solver with `shrinkage='auto'` to
+    # let Ledoit-Wolf handle the bulk of the regularisation
+    # AND pre-drop a small list of perfectly-collinear columns
+    # observed in our assay-feature pipelines. The QDA is
+    # also given an explicit `reg_param=0.95` floor as a
+    # final regulariser so a near-rank-deficient class (e.g.
+    # one that has a feature that's constant within-class —
+    # as is the case for `in_reference_window` on the
+    # synthesised `bi_oligoklonal` class in `_synth_combined`)
+    # still gets a positive-definite cov estimate.
+    qda = QuadraticDiscriminantAnalysis(
+        solver="eigen",
+        shrinkage="auto",
+        reg_param=0.95,
+    )
+
+    class DropCollinearByDefault:
+        """Tiny shim: drop pre-known perfectly-collinear
+        columns before QDA. `errors="ignore"` keeps the
+        pipeline safe when the columns don't exist (e.g.
+        for fixtures that don't carry the duplicates).
+        """
+
+        DUPS = (
+            "ladder_linear_r2",
+            "peak_count_per_channel.DATA1",
+            # assay_panel_completeness_pct == patient_assays / 9.0
+            # in the synthetic generator and is therefore a
+            # perfectly-collinear duplicate of
+            # patient_assays_run_count. Dropping it for QDA
+            # only leaves the integer count in the cov.
+            "assay_panel_completeness_pct",
+        )
+
+        def fit(self, X, y=None):
+            return self
+
+        def transform(self, X):
+            try:
+                return X.drop(
+                    columns=[c for c in self.DUPS if c in getattr(X, "columns", [])],
+                    errors="ignore",
+                )
+            except AttributeError:
+                return X
+
     pipe = Pipeline(
         steps=[
             ("impute", SimpleImputer(strategy="median")),
+            ("drop_dups", DropCollinearByDefault()),
             ("qda", qda),
         ]
     )
