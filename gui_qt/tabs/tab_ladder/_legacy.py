@@ -68,6 +68,10 @@ class TabLadder(QWidget):
         self._single_rerun_request_id = 0
         self._review_bundle_rerun_request_id = 0
         self._metadata_loading = False
+        # Phase 12.9 — in-memory audit event stream. Every save /
+        # drop / locate / bulk-review call site appends here so
+        # the in-memory panel (Phase 12.17) has a live echo.
+        self._audit_event_stream: list[dict] = []
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -1361,6 +1365,30 @@ class TabLadder(QWidget):
         self._select_file(self._current_file)
         self._refresh_review_bundle_run_button()
 
+        # Phase 12.9 — emit a "review" stage audit event. Wrapped
+        # in try/except per the Plan 12 §14 pitfall so a failed
+        # audit append never blocks the primary save. The
+        # in-memory panel (Phase 12.17) is also updated so the
+        # chemist sees the event in the recent-annotations panel.
+        try:
+            from gui_qt.tabs.tab_ladder._io import make_audit_event, append_audit_event
+
+            event = make_audit_event(
+                stage="review",
+                row=review_case,
+                action=action,
+                comment=f"saved label={label}",
+                extra={
+                    "linear_max": annotation.get("linear_max"),
+                    "linear_mean": annotation.get("linear_mean"),
+                    "linear_r2": annotation.get("linear_r2"),
+                },
+            )
+            append_audit_event(self._review_bundle_dir, event)
+            self._append_audit_event(event)
+        except Exception:
+            pass
+
     def _start_metadata_load(self, file_path: Path) -> None:
         self._metadata_request_id += 1
         request_id = self._metadata_request_id
@@ -1431,6 +1459,16 @@ class TabLadder(QWidget):
     # (Inspect / Locate File / Drop row in Phase 12.10), so binding
     # chord keys there would clash.
     # ------------------------------------------------------------------
+
+    # Phase 12.9 + 12.17 — in-memory audit stream. Every save / drop /
+    # locate / bulk-review call site appends here so the
+    # recent-annotations panel (Phase 12.17) has a live echo.
+    # The list is capped at 200 events; older events roll off
+    # the head (Phase 12.17 fill-in). Phase 12.9 init only;
+    # the actual panel render widget is wired in Phase 12.17.
+    # (The actual list initialization is in __init__ via the
+    # _append_audit_event method below — see "Phase 12.9 —
+    # in-memory audit event stream.")
 
     def _install_navigation_shortcuts(self) -> None:
         """Wire Alt+J / Alt+K / Ctrl+. to TabLadder navigation slots.
@@ -1539,6 +1577,55 @@ class TabLadder(QWidget):
                 return i
         return -1
 
+    # ------------------------------------------------------------------
+    # Phase 12.9 — in-memory audit event stream.
+    # ------------------------------------------------------------------
+    #
+    # Every save-path slot (save / bulk_review / locate_file / drop
+    # in Phase 12.10) calls `self._append_audit_event(event)` after
+    # `append_audit_event(bundle_dir, event)` so the event flows
+    # both to disk AND into the in-memory echo list. Phase 12.17
+    # adds the panel render widget; until then the append method
+    # just keeps the list capped at 200 events.
+    #
+    # The cap at 200 mirrors Plan 12 §17 — once the panel lands,
+    # the chemist only ever sees the last 200 saves anyway, so
+    # the in-memory stream doesn't need to grow unboundedly.
+
+    AUDIT_STREAM_CAP = 200
+
+    def _append_audit_event(self, event: dict) -> None:
+        """Append one event to the in-memory stream, capped at 200."""
+        try:
+            stream = self._audit_event_stream
+            stream.append(event)
+            if len(stream) > self.AUDIT_STREAM_CAP:
+                # Roll off the head to keep memory bounded.
+                del stream[: -self.AUDIT_STREAM_CAP]
+        except Exception:
+            # Audit must never crash the save path.
+            pass
+
+    def _clear_recent_audit_panel(self) -> None:
+        """Reset the in-memory stream on a fresh bundle load.
+
+        Wired into `_on_review_bundle_result` so loading a new
+        bundle doesn't bleed stale events across sessions.
+        Phase 12.9 ships the slot; Phase 12.17 will reuse it
+        for the panel widget.
+        """
+        try:
+            self._audit_event_stream = []
+        except Exception:
+            pass
+
+    def _refresh_recent_audit_panel(self) -> None:
+        """Re-render the in-memory audit panel (Phase 12.17 widget)."""
+        # Phase 12.9 ships the stub; Phase 12.17 attaches the
+        # `recent_audit_view` widget populated from
+        # `self._audit_event_stream`.
+        return
+
     def _on_locate_file(self, old_path) -> None:
         """Phase 12.4 — right-click "Locate File..." on a red chip.
 
@@ -1573,6 +1660,28 @@ class TabLadder(QWidget):
         self._set_status(
             f"Relocated {old_path.name} → {new_path.name}"
         )
+
+        # Phase 12.9 — emit a "locate_file" stage audit event
+        # capturing the path swap. Outer try/except per Plan 12 §14.
+        try:
+            from gui_qt.tabs.tab_ladder._io import make_audit_event, append_audit_event
+
+            event = make_audit_event(
+                stage="locate_file",
+                row={"full_path": str(new_path)},
+                action="relocate",
+                comment=f"{old_path.name} → {new_path.name}",
+                extra={
+                    "old_path": str(old_path),
+                    "new_path": str(new_path),
+                    "matched_row_index": entry.get("updated_row_index"),
+                },
+            )
+            append_audit_event(self._review_bundle_dir, event)
+            self._append_audit_event(event)
+        except Exception:
+            pass
+
         # Reload the bundle so the chip strip reflects the new path.
         self._load_review_bundle()
 
@@ -1702,6 +1811,33 @@ class TabLadder(QWidget):
             f"{len(new_rows) - changed} already reviewed."
         )
 
+        # Phase 12.9 — emit a "bulk_review" stage audit event
+        # carrying the touched + changed counts. Wrapped in
+        # try/except per Plan 12 §14 so an audit failure never
+        # blocks the primary save path.
+        try:
+            from gui_qt.tabs.tab_ladder._io import make_audit_event, append_audit_event
+
+            event = make_audit_event(
+                stage="bulk_review",
+                row=None,
+                action="mark_visible_reviewed",
+                comment=f"{changed}/{len(new_rows)} labels flipped",
+                extra={
+                    "touched_count": len(new_rows),
+                    "changed_count": changed,
+                    "filter": (
+                        sorted(self._chip_filter_bar.allowedStates())
+                        if self._chip_filter_bar.allowedStates() is not None
+                        else None
+                    ),
+                },
+            )
+            append_audit_event(bundle_dir, event)
+            self._append_audit_event(event)
+        except Exception:
+            pass
+
         # Phase 12.8 — re-load the bundle so the chip strip's green
         # chips update. _load_review_bundle() is async (spawns a
         # worker that fires _on_review_bundle_result), and the
@@ -1772,6 +1908,10 @@ class TabLadder(QWidget):
             self._set_status(status_msg)
         # Phase 12.3 — refresh the chip strip whenever bundle loads.
         self._sync_chip_strip()
+        # Phase 12.9 — clear the in-memory audit stream so events
+        # from the previous bundle don't bleed into this one.
+        # Phase 12.17 uses the same hook for the panel reset.
+        self._clear_recent_audit_panel()
 
     def _on_review_bundle_error(self, request_id: int, err_tuple) -> None:
         if request_id != self._scan_request_id:

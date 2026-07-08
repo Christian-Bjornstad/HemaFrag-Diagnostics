@@ -202,5 +202,82 @@ class TabLadderBulkMarkReviewedWiringTests(unittest.TestCase):
             self.assertIn("Marked 1 of 2", tab.bulk_mark_label.text())
 
 
+class TabLadderAuditStreamWiringTests(unittest.TestCase):
+    """Phase 12.9 — in-memory + on-disk audit event stream."""
+
+    def test_audit_stream_initialized_empty(self) -> None:
+        tab = TabLadder(parent=None)
+        self.assertEqual(tab._audit_event_stream, [])
+
+    def test_append_audit_event_caps_at_200(self) -> None:
+        tab = TabLadder(parent=None)
+        for i in range(250):
+            tab._append_audit_event({"stage": "x", "i": i})
+        self.assertEqual(len(tab._audit_event_stream), 200)
+        # The oldest entries rolled off; the most recent 200 are
+        # the ones that landed in the head.
+        self.assertEqual(tab._audit_event_stream[0]["i"], 50)
+        self.assertEqual(tab._audit_event_stream[-1]["i"], 249)
+
+    def test_clear_recent_audit_panel_resets_stream(self) -> None:
+        tab = TabLadder(parent=None)
+        for i in range(10):
+            tab._append_audit_event({"stage": "x", "i": i})
+        tab._clear_recent_audit_panel()
+        self.assertEqual(tab._audit_event_stream, [])
+
+
+class TabLadderBulkMarkWritesAuditEventTests(unittest.TestCase):
+    """Phase 12.9 — bulk-review emits an on-disk audit event."""
+
+    def test_bulk_review_click_writes_audit_jsonl(self) -> None:
+        # Set up the tab + a 2-row bundle, then verify that the
+        # audit stream receives a "bulk_review" event AND the
+        # on-disk jsonl file grows by one entry.
+        import csv as csvmod
+        import tempfile
+
+        from gui_qt.tabs.tab_ladder._io import (
+            read_audit_log,
+            AUDIT_LOG_FILENAME,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            csv_path = bundle / "ladder_review_cases.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as h:
+                w = csvmod.DictWriter(
+                    h, fieldnames=["full_path", "label", "ladder_qc_status",
+                                   "ladder_review_required", "_path_unreachable"]
+                )
+                w.writeheader()
+                w.writerow({
+                    "full_path": "/p/a.fsa", "label": "",
+                    "ladder_qc_status": "review_required",
+                    "ladder_review_required": "true",
+                    "_path_unreachable": "false",
+                })
+
+            tab = TabLadder(parent=None)
+            tab._review_bundle_dir = bundle
+            tab._review_bundle_cases = [
+                {"full_path": "/p/a.fsa", "label": "",
+                 "ladder_qc_status": "review_required",
+                 "_path_unreachable": "false"},
+            ]
+            tab.review_bundle_dir.setText(str(bundle))
+            tab._on_bulk_mark_visible_reviewed_clicked()
+
+            # 1. On-disk JSONL gained one entry.
+            log = read_audit_log(bundle)
+            self.assertTrue(len(log) >= 1, "audit log should be written")
+            stage_set = {e["stage"] for e in log}
+            self.assertIn("bulk_review", stage_set)
+            # 2. In-memory stream mirror has at least one event.
+            self.assertTrue(len(tab._audit_event_stream) >= 1)
+            stream_stages = {e["stage"] for e in tab._audit_event_stream}
+            self.assertIn("bulk_review", stream_stages)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

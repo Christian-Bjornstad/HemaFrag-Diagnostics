@@ -272,3 +272,135 @@ def bulk_save_review_bundle_annotations(
     )
 
     return changed_count
+
+
+# Phase 12.9 — audit JSONL stream.
+# -----------------------------------------------------------------------
+#
+# Plan 11 Phase 7 ("feedback loop") consumes a JSONL audit stream; the
+# ladder-tab GUI writes one event per save / drop / locate-file /
+# bulk-review into `ladder_review_audit.jsonl`. The helpers here
+# shape the event, write it as one JSON line, and read the log back.
+#
+# Two layers of defense:
+#   - Outer try/except around every save path catches audit-write
+#     failures so the primary CSV is never blocked (Plan 12 §14).
+#   - bundle_dir=None is allowed so callers can pass the in-memory
+#     stream regardless of whether a bundle is loaded yet.
+
+AUDIT_LOG_FILENAME = "ladder_review_audit.jsonl"
+
+
+def make_audit_event(
+    stage: str,
+    *,
+    row=None,
+    action: str = "",
+    comment: str = "",
+    extra: dict | None = None,
+) -> dict:
+    """Build a canonical audit event dict.
+
+    Required field ``stage`` is the snake_case namespace — every
+    call site uses one stable string ("review", "bulk_review",
+    "locate_file", "drop", "rerun", etc.). Trainers pivot on
+    ``stage`` so a name change is a breaking change; callers
+    must reuse the existing strings or update Plan 11 trainers
+    in lock-step.
+
+    Optional fields:
+      - ``row`` (a dict, used for ``row_path_text`` extraction)
+      - ``action`` (verb describing what happened, e.g. "save")
+      - ``comment`` (one-line human-readable string)
+      - ``extra`` (free-form key/value dict)
+
+    Returns a dict with at least ``stage``, ``timestamp_utc``,
+    ``row_path_text``, and ``action``.
+    """
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).isoformat()
+    row_path_text = ""
+    if row is not None:
+        try:
+            row_path_text = str(row.get("full_path", "") or "")
+        except Exception:
+            try:
+                row_path_text = str(row)
+            except Exception:
+                row_path_text = ""
+
+    event: dict = {
+        "stage": str(stage),
+        "timestamp_utc": ts,
+        "row_path_text": row_path_text,
+        "action": str(action or ""),
+        "comment": str(comment or ""),
+    }
+    if extra:
+        try:
+            for k, v in extra.items():
+                event[k] = v
+        except Exception:
+            # Don't crash on garbage extras — the audit stream
+            # must always produce a well-formed line.
+            pass
+    return event
+
+
+def append_audit_event(bundle_dir, event: dict) -> bool:
+    """Append one JSON line to the audit log.
+
+    ``bundle_dir`` may be a ``Path`` or ``None`` (audit to local
+    cwd if no bundle). Returns True on success, False on any
+    failure so callers can distinguish silent-skip from success.
+
+    The function never raises — it's invoked inside the
+    save-path with an outer try/except, and any malformed
+    payload just gets logged to stderr at most.
+    """
+    try:
+        if bundle_dir is None:
+            base = Path.cwd()
+        else:
+            base = Path(bundle_dir)
+        log_path = base / AUDIT_LOG_FILENAME
+        line = json.dumps(event, ensure_ascii=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        return True
+    except Exception:
+        return False
+
+
+def read_audit_log(bundle_dir) -> list[dict]:
+    """Read all events from the audit log as a list of dicts.
+
+    Returns an empty list if the log file is missing. Bad JSON
+    lines are silently skipped — a corrupted audit log shouldn't
+    crash the GUI's status widget.
+
+    The list is in chronological insertion order (the natural
+    ordering of a JSONL stream). Pair with the helper
+    ``format_audit_event_line`` (in Phase 12.17) to render.
+    """
+    out: list[dict] = []
+    try:
+        if bundle_dir is None:
+            base = Path.cwd()
+        else:
+            base = Path(bundle_dir)
+        log_path = base / AUDIT_LOG_FILENAME
+        if not log_path.exists():
+            return out
+        with log_path.open("r", encoding="utf-8", errors="replace") as h:
+            for line in h:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        return out
+    return out

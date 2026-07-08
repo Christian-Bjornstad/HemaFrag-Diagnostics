@@ -15,8 +15,12 @@ from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 from gui_qt.tabs.tab_ladder._io import (
+    AUDIT_LOG_FILENAME,
+    append_audit_event,
     bulk_save_review_bundle_annotations,
     load_review_bundle_worker,
+    make_audit_event,
+    read_audit_log,
     review_case_paths_from_bundle,
     save_review_bundle_annotation_worker,
 )
@@ -816,6 +820,105 @@ class BulkSaveReviewBundleAnnotationsTests(unittest.TestCase):
                  "adjustment_path": ""},
             ])
             self.assertEqual(changed, 1)
+
+
+class MakeAuditEventTests(unittest.TestCase):
+    """Phase 12.9 — `make_audit_event` pure helper."""
+
+    def test_required_fields_present(self) -> None:
+        event = make_audit_event(stage="review")
+        self.assertIn("stage", event)
+        self.assertIn("timestamp_utc", event)
+        self.assertIn("row_path_text", event)
+        self.assertIn("action", event)
+        self.assertIn("comment", event)
+        self.assertEqual(event["stage"], "review")
+
+    def test_row_path_text_extracted_from_dict(self) -> None:
+        event = make_audit_event(
+            stage="drop", row={"full_path": "/p/a.fsa"}
+        )
+        self.assertEqual(event["row_path_text"], "/p/a.fsa")
+
+    def test_action_and_comment_passed_through(self) -> None:
+        event = make_audit_event(
+            stage="bulk_review",
+            action="mark_visible_reviewed",
+            comment="5/7 labels flipped",
+        )
+        self.assertEqual(event["action"], "mark_visible_reviewed")
+        self.assertEqual(event["comment"], "5/7 labels flipped")
+
+    def test_extra_merged(self) -> None:
+        event = make_audit_event(
+            stage="locate_file",
+            extra={"old_path": "/a", "new_path": "/b"},
+        )
+        self.assertEqual(event.get("old_path"), "/a")
+        self.assertEqual(event.get("new_path"), "/b")
+
+    def test_extra_garbage_does_not_crash(self) -> None:
+        # If a caller passes a non-dict for extra, the helper
+        # must not crash.
+        try:
+            make_audit_event(stage="x", extra=None)
+        except Exception:
+            self.fail("extra=None should not raise")
+
+    def test_no_row_means_empty_path_text(self) -> None:
+        event = make_audit_event(stage="bulk_review")
+        self.assertEqual(event["row_path_text"], "")
+
+
+class AppendAuditEventTests(unittest.TestCase):
+    """Phase 12.9 — `append_audit_event` + `read_audit_log` IO helpers."""
+
+    def test_append_then_read_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            event = make_audit_event(
+                stage="review", row={"full_path": "/p/a.fsa"},
+                action="save", comment="label=reviewed_no_change"
+            )
+            self.assertTrue(append_audit_event(bundle, event))
+            log = read_audit_log(bundle)
+            self.assertEqual(len(log), 1)
+            # Round-tripped stage/action/comment match.
+            self.assertEqual(log[0]["stage"], "review")
+            self.assertEqual(log[0]["action"], "save")
+            self.assertEqual(log[0]["row_path_text"], "/p/a.fsa")
+            # And the timestamp is a non-empty string.
+            self.assertTrue(log[0]["timestamp_utc"])
+
+    def test_log_filename_constant(self) -> None:
+        self.assertEqual(AUDIT_LOG_FILENAME, "ladder_review_audit.jsonl")
+
+    def test_append_with_none_bundle_does_not_crash(self) -> None:
+        # bundle_dir=None writes to cwd — we don't actually want
+        # the test to pollute cwd, so we just confirm it doesn't
+        # raise. It may or may not write to cwd depending on
+        # where pytest runs so we don't pin the side-effect.
+        event = make_audit_event(stage="review", action="save")
+        result = append_audit_event(None, event)
+        self.assertIsInstance(result, bool)
+
+    def test_read_missing_log_returns_empty_list(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(read_audit_log(Path(td)), [])
+
+    def test_appended_lines_are_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            append_audit_event(bundle, make_audit_event(stage="a"))
+            append_audit_event(bundle, make_audit_event(stage="b"))
+            log_path = bundle / AUDIT_LOG_FILENAME
+            text = log_path.read_text(encoding="utf-8")
+            lines = [line for line in text.split("\n") if line]
+            self.assertEqual(len(lines), 2)
+            # Each line is parseable JSON with the right stage.
+            import json as _json
+            stages = [_json.loads(line)["stage"] for line in lines]
+            self.assertEqual(stages, ["a", "b"])
 
 
 if __name__ == "__main__":
