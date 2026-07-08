@@ -54,6 +54,49 @@ Numbered `T-12.X.Y`. Each task carries `scope`, `do`, `verify`, `done_when`.
   pure helper.
 - **T-12.6.b** — QShortcut bindings: Alt+J, Alt+K, Ctrl+.
 
+**LANDED (2026-07-08, branch pre-push):**
+
+Phase 12.6 helpers + wiring shipped. Helpers landed in
+`gui_qt/tabs/tab_ladder/_summary.py`:
+- `RELEVANT_CHIP_STATES = {"needs_review", "file_unreachable"}` —
+  the chip states Ctrl+. considers worth visiting. Reviewed and
+  untouched are deliberately skipped.
+- `next_chip_index(rows, current_index, direction, *,
+  only_relevant=False, check_filesystem=False, wrap=True)` —
+  walks the chip list one-by-one with the same modulo wrap
+  semantics as `_save_review_bundle_annotation`'s row math,
+  clamping out-of-range `current_index` with `% n` so that
+  stale indices from a bundle reload don't behave erratically.
+  Returns -1 for empty input or `wrap=False` + nothing qualifies.
+
+GUI wiring in `gui_qt/tabs/tab_ladder/_legacy.py`:
+- `_install_navigation_shortcuts()` — three `QShortcut`s
+  bound to the *tab* (WindowShortcut context so they fire
+  while focus is in the file-list or line edits). Kept on
+  `self._nav_shortcuts` for future introspection / phase-12.5
+  dialog mode that might disable them.
+- `_nav_move_chip(direction)` — Alt+J / Alt+K; silent if no
+  bundle or no current selection, so the user's accidental
+  chord doesn't blank the chip strip.
+- `_nav_jump_next_relevant()` — Ctrl+.; writes a "No further
+  chip needs review." status on full-cycle exhaustion with
+  `wrap=True`, leaves file focus put.
+- `_current_chip_index()` — scans `self._review_bundle_cases`
+  for `Path(row["full_path"]) == self._current_file`. Returns
+  -1 if no bundle or current selection isn't in the loaded
+  rows (typical after a Drop / Locate File reload).
+
+Tests (13 new):
+- `tests/test_tab_ladder_submodules.py::NextChipIndexHelperTests`
+  (9 cases — walks, wrap, only_relevant, out-of-range clamp,
+  constant lock-in).
+- `tests/test_tab_ladder_navigation.py` (4 wiring cases —
+  shortcut count, silent-on-empty-bundle, current_index
+  resolution against synthetic bundle).
+
+Suite: 219 (Phase 12.4) → 232 (+13), 1 skipped, 0 regressions.
+
+
 ## Phase 12.7 — chip filter
 
 - **T-12.7.a** — `apply_filter_rows(rows, allowed_states)`,

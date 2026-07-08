@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, QThreadPool, QTimer
+from PyQt6.QtGui import QKeySequence, QShortcut
 
 from config import APP_SETTINGS, get_analysis_settings
 from core.analysis import load_ladder_adjustment, save_ladder_adjustment
@@ -154,6 +155,12 @@ class TabLadder(QWidget):
         self._chip_strip.chipActivated.connect(self._on_chip_activated)
         self._chip_strip.chipLocateRequested.connect(self._on_locate_file)
         layout.addWidget(self._chip_strip)
+
+        # Phase 12.6 — keyboard navigation across the chip strip:
+        # Alt+J/K = prev/next chip; Ctrl+. = jump to next "relevant"
+        # chip (needs_review or file_unreachable), skipping reviewed
+        # and untouched.
+        self._install_navigation_shortcuts()
 
         self.file_list = QListWidget()
         self.file_list.setMinimumHeight(220)
@@ -1379,6 +1386,126 @@ class TabLadder(QWidget):
             self._select_file(Path(file_path))
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Phase 12.6 — keyboard navigation across the chip strip.
+    #
+    # Alt+J → previous chip (any state)
+    # Alt+K → next chip (any state)
+    # Ctrl+. → next "relevant" chip (needs_review or file_unreachable)
+    #
+    # The shortcuts live on the TabLadder widget itself rather than on
+    # the chip-strip widget — the strip owns left/right-click semantics
+    # (Inspect / Locate File / Drop row in Phase 12.10), so binding
+    # chord keys there would clash.
+    # ------------------------------------------------------------------
+
+    def _install_navigation_shortcuts(self) -> None:
+        """Wire Alt+J / Alt+K / Ctrl+. to TabLadder navigation slots.
+
+        The QShortcut objects are kept on the instance (Qt owns them
+        once parentship is set), so they survive as long as the tab
+        does. We retain the QShortcut list as `self._nav_shortcuts`
+        in case future phases need to introspect or remove bindings
+        (e.g. when a smaller mode forces only J/K).
+        """
+        # WindowShortcut context ensures the chord is captured even
+        # while focus is in a child widget (file_list, line edits).
+        ctx = Qt.ShortcutContext.WindowShortcut
+        prev_sc = QShortcut(QKeySequence("Alt+J"), self, context=ctx)
+        next_sc = QShortcut(QKeySequence("Alt+K"), self, context=ctx)
+        relevant_sc = QShortcut(QKeySequence("Ctrl+."), self, context=ctx)
+        prev_sc.activated.connect(lambda: self._nav_move_chip(direction=-1))
+        next_sc.activated.connect(lambda: self._nav_move_chip(direction=+1))
+        relevant_sc.activated.connect(self._nav_jump_next_relevant)
+        self._nav_shortcuts = [prev_sc, next_sc, relevant_sc]
+
+    def _nav_move_chip(self, direction: int) -> None:
+        """Alt+J (prev) / Alt+K (next) — walk chips one-by-one.
+
+        Reads the bundle cases directly out of `self._review_bundle_cases`
+        so the strip and the list stay in lock-step. If no bundle is
+        loaded, the shortcut stays silent (no status flicker).
+        """
+        from gui_qt.tabs.tab_ladder._summary import next_chip_index
+
+        if not self._review_bundle_cases:
+            return
+        current_index = self._current_chip_index()
+        if current_index < 0:
+            return  # No chip selected — don't blanket-snap to index 0.
+        target = next_chip_index(
+            self._review_bundle_cases,
+            current_index,
+            direction=direction,
+            only_relevant=False,
+        )
+        if target < 0 or target == current_index:
+            return
+        target_row = self._review_bundle_cases[target]
+        target_path_str = str(target_row.get("full_path", "") or "")
+        if not target_path_str:
+            return
+        try:
+            self._select_file(Path(target_path_str))
+        except Exception:
+            pass
+
+    def _nav_jump_next_relevant(self) -> None:
+        """Ctrl+. — focus the next needs_review or file_unreachable chip.
+
+        Skips reviewed and untouched rows so the chemist can sweep
+        triage without the keyboard caring about the chips they've
+        already cleared. If no relevant chip is found in a single
+        cycle, status gets a one-line hint and focus stays put.
+        """
+        from gui_qt.tabs.tab_ladder._summary import next_chip_index
+
+        if not self._review_bundle_cases:
+            return
+        current_index = self._current_chip_index()
+        if current_index < 0:
+            return
+        target = next_chip_index(
+            self._review_bundle_cases,
+            current_index,
+            direction=+1,
+            only_relevant=True,
+            wrap=True,
+        )
+        if target < 0 or target == current_index:
+            self._set_status("No further chip needs review.")
+            return
+        target_row = self._review_bundle_cases[target]
+        target_path_str = str(target_row.get("full_path", "") or "")
+        if not target_path_str:
+            return
+        try:
+            self._select_file(Path(target_path_str))
+        except Exception:
+            pass
+
+    def _current_chip_index(self) -> int:
+        """Return the index of the currently-focused chip in the bundle.
+
+        -1 if no bundle is loaded, or if `_current_file` no longer
+        resolves to a row in the latest bundle (e.g. cleared by a
+        drop / relocate reload). The map-key resolution mirrors
+        the chip-strip path-comparison so the indices stay stable.
+        """
+        if not self._review_bundle_cases:
+            return -1
+        cur = self._current_file
+        if cur is None:
+            return -1
+        for i, row in enumerate(self._review_bundle_cases):
+            try:
+                row_path = Path(str(row.get("full_path", "") or ""))
+            except Exception:
+                continue
+            if row_path == cur:
+                return i
+        return -1
 
     def _on_locate_file(self, old_path) -> None:
         """Phase 12.4 — right-click "Locate File..." on a red chip.

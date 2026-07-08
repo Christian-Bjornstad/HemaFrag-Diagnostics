@@ -20,12 +20,15 @@ from gui_qt.tabs.tab_ladder._io import (
     save_review_bundle_annotation_worker,
 )
 from gui_qt.tabs.tab_ladder._summary import (
+    CHIP_STATE_LABELS,
+    RELEVANT_CHIP_STATES,
     chip_state,
     count_chip_states,
     entry_cache_key,
     entry_original_path,
     format_file_item,
     metadata_from_entry,
+    next_chip_index,
     resolve_cache_key,
 )
 from gui_qt.tabs.tab_ladder._workers import (
@@ -367,6 +370,152 @@ class ChipStateHelperTests(unittest.TestCase):
         counts = count_chip_states([])
         for key in ("reviewed", "needs_review", "file_unreachable", "untouched"):
             self.assertEqual(counts[key], 0)
+
+
+class NextChipIndexHelperTests(unittest.TestCase):
+    """Phase 12.6 — keyboard navigation helper for Alt+J / Alt+K / Ctrl+. .
+
+    The contract:
+
+    - direction=+1 → next (Alt+K); direction=-1 → prev (Alt+J).
+    - Without only_relevant, every adjacent chip is fair game; the
+      index wraps mod n (single full-cycle scan).
+    - With only_relevant=True, chips whose state is in
+      RELEVANT_CHIP_STATES win; reviewed and untouched are skipped.
+    - Returns -1 when rows is empty, or when wrap=False and no
+      qualifying chip is found in a single cycle.
+    """
+
+    GOOD_PATH = "real.fsa"  # i.e. wherever the test runs; just a stable path.
+
+    @staticmethod
+    def _make_rows(spec: list[str]) -> list[dict]:
+        """Build rows tagged with chip states from a list of one-letter codes.
+
+        Codes used by tests:
+          R = reviewed (label=manual_adjusted)
+          U = untouched (label=, ladder_qc_status=ok)
+          N = needs_review (ladder_qc_status=review_required)
+          X = file_unreachable (_path_unreachable="true")
+        """
+        code_to_row = {
+            "R": {"full_path": "r.fsa", "_path_unreachable": "false",
+                  "label": "manual_adjusted", "ladder_qc_status": "ok"},
+            "U": {"full_path": "u.fsa", "_path_unreachable": "false",
+                  "label": "", "ladder_qc_status": "ok"},
+            "N": {"full_path": "n.fsa", "_path_unreachable": "false",
+                  "label": "", "ladder_qc_status": "review_required"},
+            "X": {"full_path": "x.fsa", "_path_unreachable": "true",
+                  "label": "", "ladder_qc_status": "ok"},
+        }
+        return [code_to_row[c] for c in spec]
+
+    def test_returns_minus_one_for_empty_rows(self) -> None:
+        self.assertEqual(next_chip_index([], current_index=0, direction=1), -1)
+        self.assertEqual(
+            next_chip_index([], current_index=0, direction=1, only_relevant=True), -1
+        )
+
+    def test_next_returns_adjacent_independent_of_state(self) -> None:
+        rows = self._make_rows(["R", "U", "N", "X"])  # 4 chips, all states
+        # Plain "next" (Alt+K) doesn't filter, so any chip works.
+        self.assertEqual(next_chip_index(rows, 0, direction=1), 1)
+        self.assertEqual(next_chip_index(rows, 2, direction=1), 3)
+        # Wrap: 3 → 0
+        self.assertEqual(next_chip_index(rows, 3, direction=1), 0)
+        # Without state filter, the loop returns the very next index
+        # — no scroll through to a "relevant" chip.
+        self.assertEqual(
+            next_chip_index(rows, 0, direction=1, only_relevant=True, wrap=False),
+            2,  # N at index 2 is the first relevant after 0
+        )
+
+    def test_prev_returns_adjacent_independent_of_state(self) -> None:
+        rows = self._make_rows(["R", "U", "N", "X"])
+        self.assertEqual(next_chip_index(rows, 2, direction=-1), 1)
+        self.assertEqual(next_chip_index(rows, 0, direction=-1), 3)  # wrap back to last
+        self.assertEqual(next_chip_index(rows, 1, direction=-1), 0)
+
+    def test_only_relevant_skips_reviewed_and_untouched(self) -> None:
+        # Mix with a reviewed + untouched sandwich; next relevant is
+        # the first needs_review or file_unreachable after start.
+        rows = self._make_rows(["R", "U", "N"])
+        self.assertEqual(
+            next_chip_index(rows, 0, direction=1, only_relevant=True), 2
+        )
+        # Starting past the first relevant — wraps and lands on the
+        # only one available.
+        self.assertEqual(
+            next_chip_index(rows, 2, direction=1, only_relevant=True), 2
+        )
+        # Starting from the last relevant itself — single-cycle wrap
+        # returns the same index because nothing new appears.
+        self.assertEqual(
+            next_chip_index(rows, 2, direction=-1, only_relevant=True), 2
+        )
+
+    def test_only_relevant_targets_file_unreachable(self) -> None:
+        rows = self._make_rows(["R", "X", "U", "N"])
+        self.assertEqual(
+            next_chip_index(rows, 0, direction=1, only_relevant=True), 1
+        )
+        # From X, next relevant forward is N (index 3).
+        self.assertEqual(
+            next_chip_index(rows, 1, direction=1, only_relevant=True), 3
+        )
+        # From N, next relevant backward is X (index 1).
+        self.assertEqual(
+            next_chip_index(rows, 3, direction=-1, only_relevant=True), 1
+        )
+
+    def test_only_relevant_wrap_false_returns_minus_one(self) -> None:
+        rows = self._make_rows(["R", "U"])
+        # No relevant anchor at all — wrap=False yields -1.
+        self.assertEqual(
+            next_chip_index(rows, 0, direction=1, only_relevant=True, wrap=False),
+            -1,
+        )
+
+    def test_only_relevant_wrap_true_falls_back_to_current(self) -> None:
+        rows = self._make_rows(["R", "U"])
+        # wrap=True (default) keeps the chemist's focus put rather
+        # than signaling "no chip".
+        self.assertEqual(
+            next_chip_index(rows, 0, direction=1, only_relevant=True, wrap=True),
+            0,
+        )
+
+    def test_clamps_out_of_range_current_index(self) -> None:
+        # Stale current_index from before rows shrunk — must not crash.
+        rows = self._make_rows(["R", "N", "U"])
+        # 99 % n == 0 (Python modulo), so current_index clamps to 0;
+        # next direction=+1 returns 1 (N) regardless of only_relevant
+        # because the default doesn't filter by state.
+        self.assertEqual(next_chip_index(rows, 99, direction=1), 1)
+        # -3 % n == 0 on n=3 → cur=0; with only_relevant=True, the
+        # next relevant forward is index 1 (N).
+        self.assertEqual(
+            next_chip_index(rows, -3, direction=1, only_relevant=True), 1
+        )
+        # An out-of-range index that wraps back to a different point
+        # also walks correctly. n=3, current_index=4 → 4 % 3 == 1
+        # (N), direction=+1 with only_relevant=True → wraps and the
+        # only relevant anchor in the rows is index 1 itself.
+        self.assertEqual(
+            next_chip_index(rows, 4, direction=1, only_relevant=True), 1
+        )
+
+    def test_relevant_chip_states_constants(self) -> None:
+        # Lock the contract — Phase 12.6 callers import this set
+        # indirectly via the helper. If we ever broaden it, callers
+        # that draw checklist chips (red + amber only) would shift.
+        self.assertEqual(
+            RELEVANT_CHIP_STATES, {"needs_review", "file_unreachable"}
+        )
+        # And chip_state's set of recognized states must be a superset
+        # so a fresh row never returns a state that's also in the
+        # relevant set without the helper agreeing on the bucket.
+        self.assertTrue(RELEVANT_CHIP_STATES.issubset(CHIP_STATE_LABELS))
 
 
 if __name__ == "__main__":

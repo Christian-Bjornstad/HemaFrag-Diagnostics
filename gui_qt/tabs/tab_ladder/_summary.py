@@ -206,3 +206,58 @@ def count_chip_states(rows: list[dict], *, check_filesystem: bool = False) -> di
         else:
             counts["untouched"] += 1
     return counts
+
+
+# Phase 12.6 — keyboard navigation helpers.
+# -----------------------------------------------------------------------
+#
+# Alt+J / Alt+K walk chips one-by-one (prev / next). Ctrl+. jumps to
+# the next "relevant" chip — one whose state is in RELEVANT_CHIP_STATES
+# — skipping reviewed and untouched. "relevant" is anything the
+# chemist still owes attention to: an amber needs_review row or a
+# red file_unreachable row.
+
+RELEVANT_CHIP_STATES = {"needs_review", "file_unreachable"}
+
+
+def next_chip_index(
+    rows: list[dict],
+    current_index: int,
+    direction: int = 1,
+    *,
+    only_relevant: bool = False,
+    check_filesystem: bool = False,
+    wrap: bool = True,
+) -> int:
+    """Return the index of the next chip to focus.
+
+    direction=+1 → next (Alt+K), direction=-1 → prev (Alt+J).
+
+    When ``only_relevant=True`` (Ctrl+.), the scan skips chips in
+    ``{"reviewed", "untouched"}`` and lands on the first
+    needs_review or file_unreachable chip after ``current_index``.
+
+    Returns -1 when ``rows`` is empty or when ``wrap=False`` and no
+    suitable chip is found in a single full cycle. With wrap=True
+    and a non-empty ``rows``, never returns -1 — it falls back to
+    ``current_index`` if nothing else qualifies.
+    """
+    if not rows:
+        return -1
+    n = len(rows)
+    # Clamp the starting point into the [-n, n) range so callers
+    # passing a stale current_index (e.g. after row replacement)
+    # still get a deterministic walk.
+    cur = current_index % n
+    for offset in range(1, n + 1):
+        idx = (cur + direction * offset) % n
+        if only_relevant:
+            state = chip_state(rows[idx], check_filesystem=check_filesystem)
+            if state in RELEVANT_CHIP_STATES:
+                return idx
+        else:
+            return idx
+    # Scan completed without a match (only possible when
+    # only_relevant=True and no row qualifies). wrap=False lets
+    # callers signal "stay put" vs "loop forever".
+    return cur if wrap else -1

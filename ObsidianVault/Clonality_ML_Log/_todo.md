@@ -98,3 +98,75 @@ Tomorrow's pickup (revised):
 4. **Phase 7 feedback loop** — when chemist iterates on disagreement
    rows via the Browse-loaded GUI tab, append JSONL lines under
    `ObsidianVault/Clonality_ML_Log/feedback/<date>.jsonl`.
+
+---
+
+## Plan 12 — Ladder Studio remodel (branch `ml-clonality-interpretation-2026-06-27`)
+
+Started 2026-07-08. Skill file
+`~/.hermes/skills/lab-workflow/hemafrag-diagnostics-lab/SKILL.md`
+is the consolidated design. Master plan + tasks:
+`ObsidianVault/Clonality_ML_Log/ladder_editor/_plan.md`,
+`ObsidianVault/Clonality_ML_Log/ladder_editor/_tasks.md`.
+
+Status re-implementation after lost container work:
+
+- [x] Phase 12.0 — fix silent-drop in bundle loader (commit `12d29ad`)
+- [x] Phase 12.1 — split `tab_ladder` into package (commit `a75d64a`)
+- [x] Phase 12.3 — chip-strip overview widget (commit `14b7bc1`)
+- [x] Phase 12.4 — Locate File re-entry (`relocate_review_case` + GUI, commit `43d2bfc`)
+- [x] Phase 12.6 — keyboard nav (Alt+J/K/Ctrl+.) — local HEAD, not yet pushed.
+        13 new tests (9 helper + 4 wiring integration). Suite: 232 → 232 + 1 skipped.
+        Helpers: `next_chip_index(rows, current_index, direction, *, only_relevant, wrap)`.
+        Routes: `QShortcut` on the *tab* (not on the strip — strip owns
+        mouse semantics; chord keys live on the window context).
+- [ ] Phase 12.7 — chip filter helpers (`apply_filter_rows`, `count_states`)
+        + GUI filter dim. `CHIP_STATE_LABELS` already exported by `chip_state`.
+        Dim reuses `set_filter(allowed_states)`; non-matching chips drop
+        to `rgba(R, G, B, 0.35)`.
+- [ ] Phase 12.8 — "Mark Visible Reviewed (no change)" bulk button
+        + `bulk_mark_reviewed_no_change` / `bulk_save_review_bundle_annotations`.
+        Returned count = rows whose label *actually changed*; no-op
+        labels must NOT inflate the count.
+- [ ] Phase 12.9 — audit JSONL stream (`ladder_review_audit.jsonl`).
+        `make_audit_event`, `append_audit_event`, `read_audit_log` in `_io.py`.
+        Stable `stage` values: `"review"`, `"bulk_review"`, `"locate_file"`, `"drop"`.
+        Outer try/except `pass` so CSV path is never blocked.
+- [ ] Phase 12.10 — drop-row hook (`drop_review_case` in core +
+        "Drop row from bundle..." right-click menu). Symmetric to
+        `relocate_review_case`. Always emits `stage="drop"` audit.
+- [ ] Phase 12.11 — DIT prefix filter. `extract_dit_candidates(rows, prefix)`
+        reads DIT (\d{2}OUM\d{5}) from `full_path` first, falls back
+        to `source_run_dir`. GUI: `QLineEdit` + "Clear".
+        Separate setter `dit_filter_keep(kept_paths)` AND-combined
+        with `set_filter(allowed_states)`.
+- [ ] Phase 12.12 — bundle summary banner. `most_recent_save_timestamp(rows)`
+        + `format_summary_banner(...)`. Refresh embedded inside
+        `_sync_overview_with_bundle` (one writer, no scattered refreshes).
+- [ ] Phase 12.13 — `Ctrl+R` mark-current-reviewed shortcut. Reuse
+        `_save_review_bundle_annotation(action="note_only")`.
+        Capture `target_name = self._current_file.name` BEFORE the
+        save call so `_rebuild_file_list`'s `_select_file` doesn't
+        transient-None-then-crash the status read.
+- [ ] Phase 12.14 — ladder editor preview header. `compose_dialog_header(file, assay, ladder)`
+        + `refresh_dialog_header(dialog, fsa)`. Dialog `__init__`
+        swaps `setWindowTitle(...)` → `refresh_dialog_header(self, fsa)`.
+- [ ] Phase 12.15 — rerun-rationale JSONL (`ladder_review_rationale.jsonl`).
+        `append_rerun_rationale / read_rerun_rationales / build_rerun_rationale / format_rerun_rationale_line`.
+        Wires into `_on_single_rerun_finished` and `_on_review_bundle_rerun_finished`.
+- [ ] Phase 12.16 — bundle import/export zip.
+        `import_bundle(zip_path, target_dir)` / `export_bundle(bundle_dir, zip_path)`.
+        "Import Bundle..." / "Export Bundle..." buttons in the chip frame.
+- [ ] Phase 12.17 — audit-trail mini panel.
+        `_append_audit_event(event)` + `_audit_event_stream` (capped 200),
+        read-only `QPlainTextEdit` rendered via `format_audit_event_line`.
+        `_clear_recent_audit_panel()` wired into `_on_review_bundle_result`.
+
+Deferred: Phase 12.2 (dialog package split), Phase 12.5
+(J/K next-missing inside the Ladder Adjustment dialog).
+
+Cadence: one atomic commit per phase (helpers + tests + GUI
+wiring + status doc, all in one commit). `git push origin
+ml-clonality-interpretation-2026-06-27` immediately after each
+so a container restart can't lose the work — see Plan 12 §15.
+
