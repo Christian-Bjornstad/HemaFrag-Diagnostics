@@ -33,6 +33,80 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 
+# Phase 12.14 — dialog preview header.
+# -----------------------------------------------------------------------
+#
+# The Ladder Adjustment dialog's title used to read
+# "Ladder Adjustment - <file>" — file name only. For batch
+# review the chemist spends far more time on the **assay /
+# ladder context** than on the file name. The helpers below
+# build a richer title so the chem's eye picks up the run
+# metadata without scrolling.
+#
+# Lives in `_legacy.py` rather than a sub-module so future
+# dialog package split (Phase 12.2) keeps the import surface
+# stable.
+
+LADDER_DIALOG_BASE_TITLE = "Ladder Adjustment"
+LADDER_DIALOG_TITLE_SEPARATOR = " · "
+
+
+def compose_dialog_header(
+    file_name: str,
+    assay: str = "",
+    ladder: str = "",
+) -> str:
+    """Compose the dialog title from file / assay / ladder.
+
+    Joins file name with optional assay + ladder using
+    a middle-dot separator. Empty intermediate parts are
+    skipped so the title degrades gracefully when the
+    FSA only carries a subset of metadata.
+    """
+    parts: list[str] = []
+    if file_name and str(file_name).strip():
+        parts.append(str(file_name).strip())
+    if assay and str(assay).strip():
+        parts.append(str(assay).strip())
+    if ladder and str(ladder).strip():
+        parts.append(str(ladder).strip())
+    if not parts:
+        return LADDER_DIALOG_BASE_TITLE
+    return (
+        LADDER_DIALOG_BASE_TITLE
+        + LADDER_DIALOG_TITLE_SEPARATOR
+        + LADDER_DIALOG_TITLE_SEPARATOR.join(parts)
+    )
+
+
+def refresh_dialog_header(dialog, fsa=None) -> None:
+    """Set the dialog's window title from the FSA object's metadata.
+
+    Reads `assay` and `ladder` attributes off the FSA via
+    `getattr(...)` defaults to empty string. Falls back
+    gracefully when `fsa is None` — leaves the title alone
+    rather than crashing.
+    """
+    if dialog is None or fsa is None:
+        return
+    file_name = (
+        getattr(fsa, "file_name", "")
+        or getattr(fsa, "file", LADDER_DIALOG_BASE_TITLE)
+    )
+    assay = getattr(fsa, "assay", "") or ""
+    ladder = getattr(fsa, "ladder", "") or ""
+    try:
+        dialog.setWindowTitle(
+            compose_dialog_header(file_name, assay, ladder)
+        )
+    except Exception:
+        # The Qt side-effect must never raise — fall back to a
+        # safe title so the dialog is at least visible.
+        try:
+            dialog.setWindowTitle(LADDER_DIALOG_BASE_TITLE)
+        except Exception:
+            pass
+
 
 class LadderAdjustmentDialog(QDialog):
     def __init__(self, fsa, parent=None, *, review_context: dict | None = None, review_comment: str = ""):
@@ -41,7 +115,12 @@ class LadderAdjustmentDialog(QDialog):
         self.review_context = review_context or {}
         self._initial_review_comment = review_comment
         self._review_action = "apply"
-        self.setWindowTitle(f"Ladder Adjustment - {fsa.file_name}")
+        # Phase 12.14 — dialog title now includes the assay
+        # + ladder so the chemist sees run-context without
+        # scrolling. compose_dialog_header is a pure function
+        # (testable without Qt); refresh_dialog_header does
+        # the side-effect on the QDialog instance.
+        refresh_dialog_header(self, fsa=fsa)
         screen = QApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else None
         if available is not None:
