@@ -305,35 +305,10 @@ class TabLadder(QWidget):
 
     @staticmethod
     def _format_file_item(file_path: Path, case: dict | None) -> str:
-        if not case:
-            return file_path.name
+        # Phase 12.1 — delegate to the pure-Python helper module.
+        from gui_qt.tabs.tab_ladder._summary import format_file_item
 
-        parts = [file_path.name]
-        assay = str(case.get("assay", "") or "").strip()
-        well = str(case.get("well", "") or "").strip()
-        ladder = str(case.get("ladder", "") or "").strip()
-        if assay:
-            parts.append(assay)
-        if well:
-            parts.append(well)
-        if ladder:
-            parts.append(ladder)
-        linear_max = case.get("linear_max")
-        linear_r2 = case.get("linear_r2")
-        qc = str(case.get("ladder_qc", "") or "").strip()
-        if linear_max not in (None, ""):
-            try:
-                parts.append(f"max {float(linear_max):.2f}")
-            except Exception:
-                parts.append(f"max {linear_max}")
-        if linear_r2 not in (None, ""):
-            try:
-                parts.append(f"r2 {float(linear_r2):.5f}")
-            except Exception:
-                parts.append(f"r2 {linear_r2}")
-        if qc:
-            parts.append(qc)
-        return " · ".join(parts)
+        return format_file_item(file_path, case)
 
     def _choose_source_dir(self) -> None:
         folder = QFileDialog.getExistingDirectory(
@@ -530,66 +505,38 @@ class TabLadder(QWidget):
 
     @staticmethod
     def _resolve_cache_key(file_path: Path) -> Path:
-        try:
-            return file_path.expanduser().resolve()
-        except Exception:
-            return file_path.expanduser()
+        # Phase 12.1 — delegate to the pure-Python helper module.
+        from gui_qt.tabs.tab_ladder._summary import resolve_cache_key
+
+        return resolve_cache_key(file_path)
 
     @staticmethod
     def _entry_original_path(entry: dict) -> Path | None:
-        raw_path = str(entry.get("original_file_path") or entry.get("full_path") or "").strip()
-        if not raw_path:
-            fsa = entry.get("fsa")
-            raw_path = str(getattr(fsa, "file", "") or getattr(fsa, "path", "") or "").strip()
-        if not raw_path:
-            return None
-        return Path(raw_path).expanduser()
+        # Phase 12.1 — delegate.
+        from gui_qt.tabs.tab_ladder._summary import entry_original_path
+
+        return entry_original_path(entry)
 
     @staticmethod
     def _metadata_from_entry(file_path: Path, entry: dict) -> dict:
-        trace_channels = entry.get("trace_channels") or []
-        if not isinstance(trace_channels, list):
-            trace_channels = list(trace_channels)
-        primary_peak_channel = str(entry.get("primary_peak_channel") or (trace_channels[0] if trace_channels else "DATA1"))
-        return {
-            "analysis": APP_SETTINGS.get("active_analysis", "clonality"),
-            "assay": str(entry.get("assay") or ""),
-            "group": str(entry.get("group") or ""),
-            "ladder": str(entry.get("ladder") or ""),
-            "trace_channels": trace_channels,
-            "peak_channels": list(trace_channels),
-            "primary_peak_channel": primary_peak_channel,
-            "sample_channel": primary_peak_channel,
-            "bp_min": float(entry.get("bp_min") or 0.0),
-            "bp_max": float(entry.get("bp_max") or 0.0),
-            "file_path": file_path,
-            "raw": {},
-        }
+        # Phase 12.1 — delegate.
+        from gui_qt.tabs.tab_ladder._summary import metadata_from_entry
+
+        return metadata_from_entry(file_path, entry)
 
     @classmethod
     def _entry_cache_key(cls, entry: dict) -> Path | None:
-        original_path = cls._entry_original_path(entry)
-        if original_path is None:
-            return None
-        return cls._resolve_cache_key(original_path)
+        # Phase 12.1 — delegate.
+        from gui_qt.tabs.tab_ladder._summary import entry_cache_key
+
+        return entry_cache_key(entry)
 
     @staticmethod
     def _review_case_paths_from_bundle(bundle_dir: Path) -> set[Path]:
-        cases_path = bundle_dir / "ladder_review_cases.csv"
-        if not cases_path.exists():
-            return set()
+        # Phase 12.1 — delegate.
+        from gui_qt.tabs.tab_ladder._io import review_case_paths_from_bundle
 
-        paths: set[Path] = set()
-        try:
-            with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
-                reader = csv.DictReader(handle)
-                for row in reader:
-                    raw_path = str(row.get("full_path", "") or "").strip()
-                    if raw_path:
-                        paths.add(TabLadder._resolve_cache_key(Path(raw_path)))
-        except Exception:
-            return set()
-        return paths
+        return review_case_paths_from_bundle(bundle_dir)
 
     def _set_review_runtime_cache(
         self,
@@ -889,43 +836,20 @@ class TabLadder(QWidget):
         patient_regex: str,
         aggregate_outdir_name: str | None,
     ) -> dict:
-        from config import APP_SETTINGS
-        from core.batch import generate_jobs, run_batch_jobs
+        # Phase 12.1 — delegate to the worker module.
+        from gui_qt.tabs.tab_ladder._workers import single_file_rerun_worker
 
-        APP_SETTINGS["active_analysis"] = analysis_id
-        jobs = generate_jobs(
-            [file_path],
-            aggregate_patients=aggregate_by_patient,
-            patient_regex=patient_regex,
+        return single_file_rerun_worker(
+            file_path,
+            output_root,
+            analysis_id,
+            pipeline_scope,
+            assay_filter,
+            aggregate_dit_reports,
+            aggregate_by_patient,
+            patient_regex,
+            aggregate_outdir_name,
         )
-        if not jobs:
-            raise RuntimeError(f"No runnable job could be generated for {file_path.name}.")
-
-        result = run_batch_jobs(
-            jobs=jobs,
-            output_base=output_root,
-            out_folder_tmpl="ASSAY_REPORTS",
-            outfile_html_tmpl="QC_REPORT_{name}.html",
-            excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
-            pipeline_scope=pipeline_scope,
-            assay_filter=assay_filter,
-            aggregate_dit_reports=aggregate_dit_reports,
-            continue_on_error=True,
-            update_callback=None,
-            aggregate_outdir_name=aggregate_outdir_name,
-        )
-        try:
-            report_result = TabLadder._find_report_matches_worker(file_path, str(output_root))
-            matches = report_result.get("matches", [])
-        except Exception:
-            matches = []
-        return {
-            "file_path": file_path,
-            "output_root": output_root,
-            "jobs": jobs,
-            "result": result,
-            "matches": matches,
-        }
 
     def _review_bundle_counts(self) -> tuple[int, int]:
         resolved = 0
@@ -1087,6 +1011,7 @@ class TabLadder(QWidget):
         self.threadpool.start(worker)
 
     @staticmethod
+    @staticmethod
     def _review_bundle_rerun_worker(
         file_paths: list[Path],
         session_entries: list[dict],
@@ -1099,105 +1024,26 @@ class TabLadder(QWidget):
         patient_regex: str,
         aggregate_outdir_name: str | None,
     ) -> dict:
-        from config import APP_SETTINGS
-        from core.batch import generate_jobs, run_batch_jobs
+        """Phase 12.1 — body lives in `_workers.py`.
 
-        APP_SETTINGS["active_analysis"] = analysis_id
-        jobs = generate_jobs(
+        Kept as a static method on the class so the GUI worker
+        connection at line 997 (`Worker(self._review_bundle_rerun_worker, ...)`)
+        keeps working unchanged. The body delegates to the helper.
+        """
+        from gui_qt.tabs.tab_ladder._workers import review_bundle_rerun_worker
+
+        return review_bundle_rerun_worker(
             file_paths,
-            aggregate_patients=aggregate_by_patient,
-            patient_regex=patient_regex,
+            session_entries,
+            output_root,
+            analysis_id,
+            pipeline_scope,
+            assay_filter,
+            aggregate_dit_reports,
+            aggregate_by_patient,
+            patient_regex,
+            aggregate_outdir_name,
         )
-        if not jobs:
-            raise RuntimeError("No runnable jobs could be generated for the reviewed files.")
-
-        has_session_cache = bool(session_entries) and aggregate_dit_reports and analysis_id == "clonality"
-        result = run_batch_jobs(
-            jobs=jobs,
-            output_base=output_root,
-            out_folder_tmpl="ASSAY_REPORTS",
-            outfile_html_tmpl="QC_REPORT_{name}.html",
-            excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
-            pipeline_scope=pipeline_scope,
-            assay_filter=assay_filter,
-            aggregate_dit_reports=aggregate_dit_reports,
-            continue_on_error=True,
-            update_callback=None,
-            aggregate_outdir_name=aggregate_outdir_name,
-            defer_tracking_workbook_refresh=has_session_cache,
-            defer_dit_html_reports=has_session_cache,
-            preserve_deferred_entries=has_session_cache,
-        )
-
-        final_session_reports_built = False
-        final_session_entry_count = 0
-        gate = result.get("ladder_review_gate") or {}
-        review_count = int(gate.get("review_case_count") or 0) if isinstance(gate, dict) else 0
-
-        combined_entries: list[dict] = []
-        if has_session_cache:
-            combined_by_path: dict[Path, dict] = {}
-            for entry in session_entries:
-                cache_key = TabLadder._entry_cache_key(entry)
-                if cache_key is not None:
-                    combined_by_path[cache_key] = entry
-            for entry in result.get("collected_entries") or []:
-                cache_key = TabLadder._entry_cache_key(entry)
-                if cache_key is not None:
-                    combined_by_path[cache_key] = entry
-
-            combined_entries = list(combined_by_path.values())
-            if combined_entries:
-                result["collected_entries"] = combined_entries
-
-        if has_session_cache and review_count <= 0 and not result.get("failed_jobs"):
-            if combined_entries:
-                from core.assay_config import OUTDIR_NAME
-                from core.html_reports import build_dit_html_reports
-                from core.analyses.clonality.tracking_excel import (
-                    CLONALITY_TRACKING_FILENAME,
-                    update_global_clonality_tracking_workbook,
-                    update_clonality_tracking_workbook,
-                )
-                from config import resolve_analysis_excel_output_path
-
-                agg_outdir = output_root / (aggregate_outdir_name or OUTDIR_NAME)
-                agg_outdir.mkdir(parents=True, exist_ok=True)
-                build_dit_html_reports(combined_entries, agg_outdir)
-                update_clonality_tracking_workbook(
-                    resolve_analysis_excel_output_path(
-                        "clonality",
-                        agg_outdir,
-                        CLONALITY_TRACKING_FILENAME,
-                    ),
-                    combined_entries,
-                )
-                try:
-                    update_global_clonality_tracking_workbook(combined_entries)
-                except Exception:
-                    pass
-                result["final_session_reports_built"] = True
-                result["final_session_entry_count"] = len(combined_entries)
-                final_session_reports_built = True
-                final_session_entry_count = len(combined_entries)
-
-        matches_by_file: dict[str, list[Path]] = {}
-        for file_path in file_paths:
-            try:
-                report_result = TabLadder._find_report_matches_worker(file_path, str(output_root))
-                matches_by_file[str(file_path)] = list(report_result.get("matches", []))
-            except Exception:
-                matches_by_file[str(file_path)] = []
-
-        return {
-            "file_paths": file_paths,
-            "output_root": output_root,
-            "jobs": jobs,
-            "result": result,
-            "matches_by_file": matches_by_file,
-            "final_session_reports_built": final_session_reports_built,
-            "final_session_entry_count": final_session_entry_count,
-        }
 
     def _on_single_rerun_finished(self, request_id: int, payload: dict) -> None:
         if request_id != self._single_rerun_request_id:
@@ -1467,121 +1313,39 @@ class TabLadder(QWidget):
 
     @staticmethod
     def _scan_fsa_files_worker(source: Path) -> list[Path]:
-        return sorted(source.rglob("*.fsa"), key=lambda p: p.name.lower())
+        # Phase 12.1 — delegate.
+        from gui_qt.tabs.tab_ladder._workers import scan_fsa_files_worker
+
+        return scan_fsa_files_worker(source)
 
     @staticmethod
     def _load_review_bundle_worker(bundle_dir: Path) -> dict:
-        cases_path = bundle_dir / "ladder_review_cases.csv"
-        if not cases_path.exists():
-            raise FileNotFoundError(f"Missing review bundle file: {cases_path.name}")
+        # Phase 12.1 — delegate. The Phase 12.0 fix lives in
+        # _io.load_review_bundle_worker.
+        from gui_qt.tabs.tab_ladder._io import load_review_bundle_worker
 
-        # Phase 12.0 — preserve every bundled row whose `full_path`
-        # is non-empty, even when the FSA is not currently reachable
-        # on disk. The previous implementation silently dropped
-        # unreachable rows so the editor would "kinda work" (load 0
-        # cases) without warning the chemist. We now tag unreachable
-        # rows (so the GUI can surface them) and surface the count
-        # via a separate `missing_paths` field.
-        rows: list[dict] = []
-        missing_paths: list[str] = []
-        with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                raw_path = str(row.get("full_path", "") or "").strip()
-                if not raw_path:
-                    continue
-                full_path = Path(raw_path).expanduser()
-                if not full_path.exists():
-                    missing_paths.append(raw_path)
-                    row["_path_unreachable"] = "true"
-                else:
-                    row["_path_unreachable"] = "false"
-                row["full_path"] = raw_path
-                rows.append(row)
-
-        return {
-            "bundle_dir": bundle_dir,
-            "cases_path": cases_path,
-            "rows": rows,
-            "missing_paths": missing_paths,
-        }
+        return load_review_bundle_worker(bundle_dir)
 
     @staticmethod
     def _load_metadata_worker(file_path: Path, analysis_id: str | None) -> dict:
-        meta = detect_fsa_for_ladder(file_path, preferred_analysis=analysis_id)
-        if not meta:
-            return {"file_path": file_path, "meta": None, "fsa": None}
-        fsa, refreshed_meta = load_adjustable_fsa(file_path, preferred_analysis=analysis_id, metadata=meta)
-        return {"file_path": file_path, "meta": refreshed_meta, "fsa": fsa}
+        # Phase 12.1 — delegate.
+        from gui_qt.tabs.tab_ladder._workers import load_metadata_worker
+
+        return load_metadata_worker(file_path, analysis_id)
 
     @staticmethod
     def _find_report_matches_worker(file_path: Path, root_text: str) -> dict:
-        root = Path(root_text).expanduser()
-        if not root.exists():
-            raise FileNotFoundError("Report root does not exist.")
+        # Phase 12.1 — delegate.
+        from gui_qt.tabs.tab_ladder._workers import find_report_matches_worker
 
-        dit = extract_dit_from_name(file_path.name)
-        stem = file_path.stem.lower()
-        tokens = [token for token in [dit, stem] if token]
-
-        html_matches = []
-        for path in root.rglob("*.html"):
-            lower = path.name.lower()
-            if any(token.lower() in lower for token in tokens):
-                html_matches.append(path)
-
-        return {"root": root, "matches": sorted(set(html_matches))}
+        return find_report_matches_worker(file_path, root_text)
 
     @staticmethod
     def _save_review_bundle_annotation_worker(bundle_dir: Path, full_path: Path, annotation: dict) -> dict:
-        cases_path = bundle_dir / "ladder_review_cases.csv"
-        if not cases_path.exists():
-            raise FileNotFoundError(f"Missing review bundle file: {cases_path.name}")
+        # Phase 12.1 — delegate.
+        from gui_qt.tabs.tab_ladder._io import save_review_bundle_annotation_worker
 
-        with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
-            reader = csv.DictReader(handle)
-            fieldnames = list(reader.fieldnames or [])
-            rows = list(reader)
-
-        for field in ("label", "label_note", "reviewed_at_utc", "adjustment_path"):
-            if field not in fieldnames:
-                fieldnames.append(field)
-
-        updated = False
-        full_path_text = str(full_path)
-        full_path_key = TabLadder._resolve_cache_key(full_path)
-        for row in rows:
-            row_path_text = str(row.get("full_path", "") or "")
-            row_matches = row_path_text == full_path_text
-            if not row_matches and row_path_text:
-                row_matches = TabLadder._resolve_cache_key(Path(row_path_text)) == full_path_key
-            if not row_matches:
-                continue
-            row["label"] = annotation.get("label", "")
-            row["label_note"] = annotation.get("label_note", "")
-            row["reviewed_at_utc"] = annotation.get("reviewed_at_utc", "")
-            row["adjustment_path"] = annotation.get("adjustment_path", "")
-            updated = True
-            break
-
-        if not updated:
-            raise FileNotFoundError(f"Could not find review bundle row for {full_path_text}")
-
-        with cases_path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-
-        annotations_path = bundle_dir / "ladder_review_annotations.json"
-        existing: dict[str, dict] = {}
-        if annotations_path.exists():
-            try:
-                existing = json.loads(annotations_path.read_text(encoding="utf-8"))
-            except Exception:
-                existing = {}
-        existing[full_path_text] = annotation
-        annotations_path.write_text(json.dumps(existing, indent=2, ensure_ascii=True), encoding="utf-8")
-        return annotation
+        return save_review_bundle_annotation_worker(bundle_dir, full_path, annotation)
 
     def _on_scan_result(self, request_id: int, source: Path, files: list[Path]) -> None:
         if request_id != self._scan_request_id:
