@@ -29,8 +29,11 @@ from gui_qt.tabs.tab_ladder._summary import (
     NEVER_SAVED_LABEL,
     REVIEWED_NO_CHANGE_LABEL,
     RELEVANT_CHIP_STATES,
+    RERUN_RATIONALE_LOG_FILENAME,
     apply_filter_rows,
+    append_rerun_rationale,
     bulk_mark_reviewed_no_change,
+    build_rerun_rationale,
     chip_state,
     count_chip_states,
     count_states,
@@ -39,11 +42,13 @@ from gui_qt.tabs.tab_ladder._summary import (
     entry_original_path,
     extract_dit_candidates,
     format_file_item,
+    format_rerun_rationale_line,
     format_summary_banner,
     is_chip_state_allowed,
     metadata_from_entry,
     most_recent_save_timestamp,
     next_chip_index,
+    read_rerun_rationales,
     resolve_cache_key,
 )
 from gui_qt.tabs.tab_ladder._workers import (
@@ -1104,6 +1109,91 @@ class FormatSummaryBannerTests(unittest.TestCase):
         ]
         out = format_summary_banner(rows)
         self.assertIn("last saved: 2026-07-08T13:30:00+00:00", out)
+
+
+class RerunRationaleHelperTests(unittest.TestCase):
+    """Phase 12.15 — `build_rerun_rationale` + IO helpers."""
+
+    def test_build_pure_shape(self) -> None:
+        event = build_rerun_rationale(
+            rerun_kind="single",
+            file_paths=["/p/a.fsa", Path("/p/b.fsa")],
+            failed_jobs=["job1"],
+            reason="manual rerun",
+            extra={"matches": 3},
+        )
+        self.assertEqual(event["rerun_kind"], "single")
+        self.assertEqual(event.get("file_paths"), ["/p/a.fsa", "/p/b.fsa"])
+        self.assertEqual(event.get("failed_jobs"), ["job1"])
+        self.assertEqual(event.get("reason"), "manual rerun")
+        self.assertEqual(event.get("matches"), 3)
+        self.assertIn("timestamp_utc", event)
+
+    def test_build_drops_none_paths(self) -> None:
+        # None entries in the iterable are silently dropped so
+        # the helper tolerates missing bundle paths.
+        event = build_rerun_rationale(
+            rerun_kind="bundle",
+            file_paths=[None, "/p/a.fsa", None],
+        )
+        self.assertEqual(event.get("file_paths"), ["/p/a.fsa"])
+
+    def test_extra_garbage_does_not_crash(self) -> None:
+        try:
+            build_rerun_rationale("x", extra=None)
+        except Exception:
+            self.fail("extra=None should not raise")
+
+    def test_log_filename_constant(self) -> None:
+        self.assertEqual(
+            RERUN_RATIONALE_LOG_FILENAME,
+            "ladder_review_rationale.jsonl",
+        )
+
+    def test_append_then_read_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            event = build_rerun_rationale(
+                rerun_kind="single", file_paths=["/p/a.fsa"],
+                reason="rerun done"
+            )
+            self.assertTrue(append_rerun_rationale(bundle, event))
+            log = read_rerun_rationales(bundle)
+            self.assertEqual(len(log), 1)
+            self.assertEqual(log[0]["rerun_kind"], "single")
+            self.assertEqual(log[0]["file_paths"], ["/p/a.fsa"])
+            self.assertEqual(log[0]["reason"], "rerun done")
+
+    def test_append_with_none_bundle_does_not_crash(self) -> None:
+        event = build_rerun_rationale("single")
+        result = append_rerun_rationale(None, event)
+        self.assertIsInstance(result, bool)
+
+    def test_read_missing_log_returns_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(read_rerun_rationales(Path(td)), [])
+
+    def test_format_rerun_rationale_line_shape(self) -> None:
+        event = build_rerun_rationale(
+            rerun_kind="bundle",
+            file_paths=["/p/a.fsa", "/p/b.fsa"],
+            reason="still flagged",
+        )
+        line = format_rerun_rationale_line(event)
+        # All three sections present in the canonical shape.
+        self.assertIn("rerun:bundle", line)
+        self.assertIn("2 file(s)", line)
+        self.assertIn("still flagged", line)
+        # Timestamp appears somewhere in the line.
+        self.assertIn(event["timestamp_utc"], line)
+
+    def test_format_rerun_rationale_line_placeholders(self) -> None:
+        line = format_rerun_rationale_line({})
+        # Empty event yields our placeholder strings.
+        self.assertIn("<no-time>", line)
+        self.assertIn("<no-kind>", line)
+        self.assertIn("0 file(s)", line)
+        self.assertIn("<no-reason>", line)
 
 
 if __name__ == "__main__":

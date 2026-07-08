@@ -80,6 +80,10 @@ fraggler-v2/target/
 # file is committed by mistake.
 ladder_review_audit.jsonl
 
+# Plan 12 Phase 12.15 — rerun rationale JSONL landed at cwd by
+# stray tests with bundle_dir=None.
+ladder_review_rationale.jsonl
+
 # Windows things .NET-style
 Thumbs.db
 *.lnk

@@ -9,6 +9,7 @@ Pure functions only; no Qt widgets, no instance-state reads/writes.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -556,3 +557,146 @@ def format_summary_banner(
         f"last saved: {ts}",
     ]
     return " | ".join(parts)
+
+
+# Phase 12.15 — rerun-rationale JSONL stream.
+# -----------------------------------------------------------------------
+#
+# Plan 11 trainers correlate audit-stream emits with rerun
+# rationale to learn *why* the chemist re-ran a file or
+# bundle — was it incomplete HTML, was the previous run
+# crashed mid-render, did a tool version roll forward,
+# etc. The audit channel (Phase 12.9) covers save / drop /
+# locate_file / bulk_review; this channel covers *rerun*
+# events specifically.
+#
+# Decorators:
+#   build_rerun_rationale(...) — pure helper that shapes
+#     an event with the canonical fields (rerun_kind,
+#     file_paths, failed_jobs, reason). Pure: no Qt / no IO.
+#   append_rerun_rationale(bundle_dir, event) — appends one
+#     JSONL line. Returns True/False; never raises.
+#   read_rerun_rationales(bundle_dir) — chronological read.
+#   format_rerun_rationale_line(event) — single-line render
+#     (used by the audit panel in Phase 12.17).
+
+RERUN_RATIONALE_LOG_FILENAME = "ladder_review_rationale.jsonl"
+
+
+def build_rerun_rationale(
+    rerun_kind: str,
+    *,
+    file_paths=None,
+    failed_jobs=None,
+    reason: str = "",
+    extra: dict | None = None,
+) -> dict:
+    """Build a canonical rerun-rationale event dict.
+
+    ``rerun_kind`` is one of "single" or "bundle" — the
+    handler that emitted it. ``file_paths`` is an iterable
+    of str / Path objects; ``failed_jobs`` follows the same
+    shape (`build_rerun_rationale` does not constrain it).
+    Returned dict is JSON-serializable. ``timestamp_utc``
+    is filled at build time, ``reason`` is free-form
+    chemist-visible text.
+    """
+    paths = []
+    for raw in file_paths or []:
+        if raw is None:
+            continue
+        try:
+            paths.append(str(raw))
+        except Exception:
+            continue
+
+    failed = []
+    for raw in failed_jobs or []:
+        try:
+            failed.append(str(raw))
+        except Exception:
+            continue
+
+    event: dict = {
+        "rerun_kind": str(rerun_kind or ""),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "file_paths": paths,
+        "failed_jobs": failed,
+        "reason": str(reason or ""),
+    }
+    if extra:
+        try:
+            for k, v in extra.items():
+                event[k] = v
+        except Exception:
+            pass
+    return event
+
+
+def append_rerun_rationale(bundle_dir, event: dict) -> bool:
+    """Append one JSON line to the rationale log.
+
+    ``bundle_dir`` may be a Path or ``None`` (cwd anchor).
+    Returns True on success, False on any failure.
+    Never raises.
+    """
+    try:
+        if bundle_dir is None:
+            base = Path.cwd()
+        else:
+            base = Path(bundle_dir)
+        log_path = base / RERUN_RATIONALE_LOG_FILENAME
+        line = json.dumps(event, ensure_ascii=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        return True
+    except Exception:
+        return False
+
+
+def read_rerun_rationales(bundle_dir) -> list[dict]:
+    """Read all rerun rationale events chronologically.
+
+    Missing log → []. Bad lines silently skipped.
+    """
+    out: list[dict] = []
+    try:
+        if bundle_dir is None:
+            base = Path.cwd()
+        else:
+            base = Path(bundle_dir)
+        log_path = base / RERUN_RATIONALE_LOG_FILENAME
+        if not log_path.exists():
+            return out
+        with log_path.open("r", encoding="utf-8", errors="replace") as h:
+            for line in h:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        return out
+    return out
+
+
+def format_rerun_rationale_line(event: dict) -> str:
+    """Render one rationale event as a single line.
+
+    Format: ``<ts> -- rerun:<kind> -- <N> file(s) -- <reason>``.
+
+    Falls back to "<no-time>" / "<no-kind>" / "<no-reason>"
+    placeholders when the underlying fields are empty.
+    Used by the audit panel (Phase 12.17).
+    """
+    ts = str(event.get("timestamp_utc") or "").strip() or "<no-time>"
+    kind = str(event.get("rerun_kind") or "").strip() or "<no-kind>"
+    paths = event.get("file_paths") or []
+    try:
+        n_files = len(paths)
+    except Exception:
+        n_files = 0
+    reason = str(event.get("reason") or "").strip() or "<no-reason>"
+    return f"{ts} -- rerun:{kind} -- {n_files} file(s) -- {reason}"

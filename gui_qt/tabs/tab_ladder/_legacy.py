@@ -1179,7 +1179,48 @@ class TabLadder(QWidget):
                 "Ladder Review Still Needed",
                 f"The rerun completed, but {review_count} ladder review case(s) were still flagged.",
             )
+            # Phase 12.15 — emit a rerun-rationale event with
+            # the still-flagged reason so Plan 11 trainers can
+            # later correlate audit (Phase 12.9) with rerun.
+            try:
+                from gui_qt.tabs.tab_ladder._summary import (
+                    append_rerun_rationale,
+                    build_rerun_rationale,
+                )
+                event = build_rerun_rationale(
+                    rerun_kind="single",
+                    file_paths=[Path(payload.get("file_path", ""))],
+                    failed_jobs=[],
+                    reason=f"{review_count} ladder review case(s) still flagged",
+                    extra={
+                        "still_needs_review": True,
+                        "review_count": review_count,
+                    },
+                )
+                append_rerun_rationale(self._review_bundle_dir, event)
+            except Exception:
+                pass
             return
+
+        # Phase 12.15 — emit a successful single-file rerun rationale
+        # so trainers see *when* the rerun completed and which
+        # file. Successful runs typically need no per-run
+        # rationale; we emit a short event for traceability.
+        try:
+            from gui_qt.tabs.tab_ladder._summary import (
+                append_rerun_rationale,
+                build_rerun_rationale,
+            )
+            event = build_rerun_rationale(
+                rerun_kind="single",
+                file_paths=[Path(payload.get("file_path", ""))],
+                failed_jobs=[],
+                reason="single-file rerun complete",
+                extra={"matches_found": len(matches)},
+            )
+            append_rerun_rationale(self._review_bundle_dir, event)
+        except Exception:
+            pass
 
         message = QMessageBox(self)
         message.setIcon(QMessageBox.Icon.Information)
@@ -1244,6 +1285,23 @@ class TabLadder(QWidget):
                 "Reviewed File Rerun Failed",
                 f"Rerun finished with failed job(s): {', '.join(map(str, failed_jobs))}",
             )
+            # Phase 12.15 — emit a rerun-rationale event for the
+            # failed-rerun branch.
+            try:
+                from gui_qt.tabs.tab_ladder._summary import (
+                    append_rerun_rationale,
+                    build_rerun_rationale,
+                )
+                event = build_rerun_rationale(
+                    rerun_kind="bundle",
+                    file_paths=file_paths,
+                    failed_jobs=failed_jobs,
+                    reason=f"{len(failed_jobs)} failed job(s)",
+                    extra={"matches_forced": match_count},
+                )
+                append_rerun_rationale(self._review_bundle_dir, event)
+            except Exception:
+                pass
             return
 
         gate = result.get("ladder_review_gate") or {}
