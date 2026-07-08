@@ -161,11 +161,14 @@ Status re-implementation after lost container work:
         rendered as part of `_sync_chip_strip` (single writer) so every existing
         trigger path (load / save / drop / locate / bulk review) drives the banner
         for free.
-- [ ] Phase 12.13 — `Ctrl+R` mark-current-reviewed shortcut. Reuse
-        `_save_review_bundle_annotation(action="note_only")`.
-        Capture `target_name = self._current_file.name` BEFORE the
-        save call so `_rebuild_file_list`'s `_select_file` doesn't
-        transient-None-then-crash the status read.
+- [x] Phase 12.13 — Ctrl+R mark-current-reviewed — commit `eb3e929`.
+        4 new tests + 1 fixup. Suite: 317 → 321 + 1 skipped. GUI: extended
+        `_install_navigation_shortcuts` to bind Ctrl+R alongside Alt+J/K/Ctrl+.,
+        plus the new `_mark_current_file_reviewed_no_change` slot. Reuses
+        `_save_review_bundle_annotation(action="note_only")`; captures
+        `target_name = self._current_file.name` BEFORE the save call so
+        `_rebuild_file_list()`'s `_select_file` transient-null doesn't crash
+        the status string (Plan 12 §13 pitfall).
 - [ ] Phase 12.14 — ladder editor preview header. `compose_dialog_header(file, assay, ladder)`
         + `refresh_dialog_header(dialog, fsa)`. Dialog `__init__`
         swaps `setWindowTitle(...)` → `refresh_dialog_header(self, fsa)`.

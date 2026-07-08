@@ -415,9 +415,41 @@ Suite: 305 (Phase 12.11) → 317 (+12), 1 skipped, 0 regressions.
 
 - **T-12.13.a** — `_mark_current_file_reviewed_no_change` slot using
   the existing `_save_review_bundle_annotation` helper with
-  `action="note_only"`. Capture `target_name` BEFORE the save helper
-  so `_rebuild_file_list()`'s `_select_file` re-select doesn't drop the
-  `_current_file` attribute.
+  `action="note_only"`. Capture `target_name` BEFORE the save
+  helper so `_rebuild_file_list()`'s `_select_file` doesn't
+  transient-None-then-crash the status read.
+
+**LANDED (2026-07-08, branch pre-push):**
+
+Phase 12.13 keyboard-shortcut wiring shipped.
+
+GUI (`gui_qt/tabs/tab_ladder/_legacy.py`):
+- `_install_navigation_shortcuts` extended to bind Ctrl+R
+  alongside Alt+J/K/Ctrl+. — 4 shortcuts total. Listed in
+  `self._nav_shortcuts`.
+- `_mark_current_file_reviewed_no_change` slot:
+  - Safe no-ops: no bundle loaded, no file selected,
+    select file not in loaded bundle (refuse rather than
+    phantom-write).
+  - **Pitfall guard (Plan 12 §13):** captures
+    `target_name = self._current_file.name` BEFORE the
+    save helper runs, since the save helper ends with
+    `_rebuild_file_list()` → `_select_file(...)` which
+    transient-Nones `_current_file`. Status string is
+    safe even when the selection does transient-null.
+  - Reuses `_save_review_bundle_annotation(action="note_only")`
+    so Phase 12.9 audit emission (`stage="review"`),
+    in-memory mirror, chip-strip refresh, and Phase 12.12
+    banner refresh all fire for free.
+
+Tests (4 new + 1 fixup):
+- `test_shortcuts_installed` (renamed from `test_three_…`)
+  expects 4 shortcuts.
+- `TabLadderCtrlRWiringTests` (4): slot method exists,
+  no-bundle safe no-op, no-current-file warns, phantom-
+  write refuses when select is not in loaded bundle.
+
+Suite: 317 (Phase 12.12) → 321 (+4), 1 skipped, 0 regressions.
 
 ## Phase 12.14 — dialog preview header
 
