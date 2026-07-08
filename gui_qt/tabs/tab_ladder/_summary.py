@@ -9,6 +9,7 @@ Pure functions only; no Qt widgets, no instance-state reads/writes.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -392,3 +393,85 @@ def bulk_mark_reviewed_no_change(
             }
         )
     return out
+
+
+# Phase 12.11 — DIT prefix filter helper.
+# -----------------------------------------------------------------------
+#
+# The "Filter by DIT" input above the chip strip dims every chip
+# whose DIT identifier doesn't start with the user's prefix. The
+# helper extracts DITs (\d{2}OUM\d{5}) from `full_path` first,
+# falls back to `source_run_dir` (T7 Shield rename fallback),
+# then matches case-insensitively.
+#
+# Returns the matching indices *and* the matched DITs so the
+# GUI can render the matched prefix set without re-extracting.
+
+_DIT_REGEX = re.compile(r"(\d{2}OUM\d{5})", re.IGNORECASE)
+
+
+def _row_dit(row: dict) -> str:
+    """Best-effort DIT extraction for a bundle row.
+
+    Reads DIT (regex \d{2}OUM\d{5}) from `full_path` first;
+    if that yields nothing, falls back to `source_run_dir`.
+    The returned text is uppercase (DIT convention).
+    Returns "" when no DIT can be extracted.
+    """
+    full_path = str(row.get("full_path", "") or "")
+    dit = _DIT_REGEX.search(full_path)
+    if dit is None:
+        run_dir = str(row.get("source_run_dir", "") or "")
+        dit = _DIT_REGEX.search(run_dir)
+    if dit is None:
+        return ""
+    return dit.group(1).upper()
+
+
+def extract_dit_candidates(
+    rows, prefix: str
+) -> tuple[list[int], list[str]]:
+    """Return ``(indices, dits)`` of rows whose DIT starts with ``prefix``.
+
+    - case-insensitive matching (so "24" hits "24OUM...");
+    - empty prefix returns ([], []) — "no filter applied";
+    - rows where the DIT could not be extracted never match;
+    - the dict order of ``rows`` is preserved in the output.
+
+    The returned DITs are uppercase; the prefix is compared
+    uppercase so the chemist's input is case-tolerant.
+    """
+    if not prefix or not rows:
+        return [], []
+    upper_prefix = prefix.strip().upper()
+    if not upper_prefix:
+        return [], []
+    indices: list[int] = []
+    dits: list[str] = []
+    for i, row in enumerate(rows or []):
+        dit = _row_dit(row)
+        if dit and dit.startswith(upper_prefix):
+            indices.append(i)
+            dits.append(dit)
+    return indices, dits
+
+
+def dit_filter_keep(indices: list[int]) -> set[int] | None:
+    """Convert the helper's index list into the GUI's allowed-set shape.
+
+    Returns ``None`` when no indices (no filter applied / empty
+    prefix / no matches) so the GUI can short-circuit and
+    clear the dim. Otherwise returns a plain ``set[int]`` that
+    the chip strip can pass through to its `set_filter`
+    pathway via AND-composition with `set_filter(allowed_states)`.
+
+    Why the conversion helper: every GUI consumer wants to
+    AND a chip-state filter AND a DIT filter. Returning
+    ``set[int]`` from one helper + ``set[str]`` (states)
+    from another is more expressive than a single combined
+    filter, but only after the third "shader" (indices →
+    set[int]) does the consumer code stay readable.
+    """
+    if not indices:
+        return None
+    return set(indices)

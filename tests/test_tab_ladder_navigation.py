@@ -354,5 +354,71 @@ class TabLadderDropReviewCaseWiringTests(unittest.TestCase):
             self.assertGreaterEqual(len(drop_events), 1)
 
 
+class TabLadderDitFilterWiringTests(unittest.TestCase):
+    """Phase 12.11 — DIT prefix filter GUI wiring."""
+
+    def test_input_and_clear_button_installed(self) -> None:
+        tab = TabLadder(parent=None)
+        self.assertTrue(hasattr(tab, "dit_filter_input"))
+        self.assertTrue(hasattr(tab, "btn_clear_dit"))
+        self.assertTrue(hasattr(tab, "dit_filter_summary_label"))
+
+    def test_dit_changed_slot_updates_summary(self) -> None:
+        tab = TabLadder(parent=None)
+        tab._review_bundle_cases = [
+            {"full_path": "/proj/24OUM20364_a.fsa", "_path_unreachable": "false"},
+            {"full_path": "/proj/26OUM12345_b.fsa", "_path_unreachable": "false"},
+        ]
+        tab._on_dit_filter_changed("24")
+        # Only 1 of 2 rows matches.
+        self.assertIn("1 match", tab.dit_filter_summary_label.text())
+        self.assertIn("24OUM20364", tab.dit_filter_summary_label.text())
+
+    def test_dit_changed_clears_summary_on_empty(self) -> None:
+        tab = TabLadder(parent=None)
+        tab._review_bundle_cases = [
+            {"full_path": "/proj/24OUM20364_a.fsa", "_path_unreachable": "false"},
+        ]
+        # First trigger with a prefix.
+        tab._on_dit_filter_changed("24")
+        self.assertNotEqual(tab.dit_filter_summary_label.text(), "")
+        # Then clear.
+        tab._on_dit_filter_changed("")
+        self.assertEqual(tab.dit_filter_summary_label.text(), "")
+
+    def test_zero_matches_summary(self) -> None:
+        tab = TabLadder(parent=None)
+        tab._review_bundle_cases = [
+            {"full_path": "/proj/26OUM99999_a.fsa", "_path_unreachable": "false"},
+        ]
+        tab._on_dit_filter_changed("24")
+        self.assertIn("0 matches", tab.dit_filter_summary_label.text())
+
+    def test_clear_button_slot_clears_summary(self) -> None:
+        tab = TabLadder(parent=None)
+        tab._review_bundle_cases = [
+            {"full_path": "/proj/24OUM20364_a.fsa", "_path_unreachable": "false"},
+        ]
+        # Type into the line edit (via the slot's pathway).
+        tab.dit_filter_input.setText("24")
+        # Press clear.
+        tab._on_clear_dit_filter_clicked()
+        self.assertEqual(tab.dit_filter_input.text(), "")
+        # Summary is cleared too.
+        self.assertEqual(tab.dit_filter_summary_label.text(), "")
+
+    def test_chip_strip_and_compose_with_state_filter(self) -> None:
+        # Verify the chip-strip widget has dit_filter_keep
+        # attribute and that the AND-composition shape holds.
+        tab = TabLadder(parent=None)
+        # The chip strip widget has both allowed_states (set_filter)
+        # and allowed_indices (dit_filter_keep).
+        self.assertTrue(hasattr(tab._chip_strip, "_allowed_states"))
+        self.assertTrue(hasattr(tab._chip_strip, "_allowed_indices"))
+        # Both start at None / open.
+        self.assertIsNone(tab._chip_strip._allowed_states)
+        self.assertIsNone(tab._chip_strip._allowed_indices)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

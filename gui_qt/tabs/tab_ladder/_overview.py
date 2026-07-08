@@ -101,6 +101,11 @@ class ChipStripOverview(QWidget):
         self._rows: list[dict] = []
         self._labels: list[tuple[Path, str, QLabel]] = []
         self._allowed_states: set[str] | None = None
+        # Phase 12.11 — DIT prefix filter. An AND-composable
+        # filter on top of `_allowed_states`: only chips whose
+        # index is in this set pass through at full opacity.
+        # None = no DIT filter applied.
+        self._allowed_indices: set[int] | None = None
 
     def setRows(self, rows: list[dict]) -> None:
         """Replace the chip set entirely."""
@@ -112,6 +117,24 @@ class ChipStripOverview(QWidget):
         self._allowed_states = (
             set(allowed_states) if allowed_states is not None else None
         )
+        self._refresh()
+
+    def dit_filter_keep(self, kept_indices) -> None:
+        """Phase 12.11 — keep only chips whose index is in ``kept_indices``.
+
+        Pass ``None`` (or empty) to clear the DIT filter.
+        AND-composes with ``set_filter(allowed_states)``: a chip
+        is full opacity only when both filters allow it.
+        Empty input means "no filter" so the GUI can short-circuit
+        the dim path without resetting the chip-state filter.
+        """
+        if kept_indices is None:
+            self._allowed_indices = None
+        else:
+            try:
+                self._allowed_indices = set(kept_indices)
+            except Exception:
+                self._allowed_indices = None
         self._refresh()
 
     def chipCount(self) -> int:
@@ -126,7 +149,7 @@ class ChipStripOverview(QWidget):
                 w.deleteLater()
         self._labels = []
 
-        for row in self._rows:
+        for index, row in enumerate(self._rows):
             try:
                 state = chip_state(row)
             except Exception:
@@ -139,14 +162,18 @@ class ChipStripOverview(QWidget):
 
             chip = QLabel(raw_name, self._chip_host)
             chip.setObjectName(f"Chip_{state}")
-            opacity = (
-                0.35
-                if (
-                    self._allowed_states is not None
-                    and state not in self._allowed_states
-                )
-                else 1.0
+            # AND-compose the chip-state filter and the DIT filter.
+            # A chip passes when: state filter allows OR is None
+            # AND index filter allows OR is None.
+            state_allowed = (
+                self._allowed_states is None
+                or state in self._allowed_states
             )
+            index_allowed = (
+                self._allowed_indices is None
+                or index in self._allowed_indices
+            )
+            opacity = 1.0 if (state_allowed and index_allowed) else 0.35
             chip.setStyleSheet(
                 f"background-color: {color}; color: white; padding: 4px 8px; "
                 f"border-radius: 10px; font-weight: 600; opacity: {opacity};"

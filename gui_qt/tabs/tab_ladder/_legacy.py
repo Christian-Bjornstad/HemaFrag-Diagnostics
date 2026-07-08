@@ -163,6 +163,35 @@ class TabLadder(QWidget):
         layout.addWidget(self._chip_filter_bar)
         self._chip_filter_bar.filterChanged.connect(self._on_chip_filter_changed)
 
+        # Phase 12.11 — DIT prefix filter. A QLineEdit sits below
+        # the chip strip; typing e.g. "24OUM203" dims every chip
+        # whose extracted DIT (\d{2}OUM\d{5}) doesn't start with
+        # that prefix. AND-composes with the chip-state filter.
+        dit_filter_row = QHBoxLayout()
+        dit_filter_row.setContentsMargins(4, 0, 4, 0)
+        dit_filter_row.setSpacing(6)
+
+        dit_filter_label = QLabel("Filter by DIT:")
+        dit_filter_label.setObjectName("DitFilterLabel")
+        dit_filter_row.addWidget(dit_filter_label)
+
+        self.dit_filter_input = QLineEdit()
+        self.dit_filter_input.setObjectName("DitFilterInput")
+        self.dit_filter_input.setPlaceholderText("e.g. 24OUM203")
+        self.dit_filter_input.setClearButtonEnabled(True)
+        self.dit_filter_input.textChanged.connect(self._on_dit_filter_changed)
+        dit_filter_row.addWidget(self.dit_filter_input, stretch=1)
+
+        self.btn_clear_dit = QPushButton("Clear")
+        self.btn_clear_dit.setObjectName("BtnClearDit")
+        self.btn_clear_dit.clicked.connect(self._on_clear_dit_filter_clicked)
+        dit_filter_row.addWidget(self.btn_clear_dit)
+
+        self.dit_filter_summary_label = QLabel("")
+        self.dit_filter_summary_label.setObjectName("DitFilterSummaryLabel")
+        dit_filter_row.addWidget(self.dit_filter_summary_label)
+        layout.addLayout(dit_filter_row)
+
         self._chip_strip = ChipStripOverview(parent=card)
         self._chip_strip.chipActivated.connect(self._on_chip_activated)
         self._chip_strip.chipLocateRequested.connect(self._on_locate_file)
@@ -1825,6 +1854,80 @@ class TabLadder(QWidget):
             # didn't install set_filter (older clone / partial pull),
             # we don't want the filter bar to crash the tab.
             pass
+
+    # ------------------------------------------------------------------
+    # Phase 12.11 — DIT prefix filter slot.
+    # ------------------------------------------------------------------
+
+    def _on_dit_filter_changed(self, text: str) -> None:
+        """Re-extract matching DITs from the bundle rows + apply.
+
+        The chemist types into the QLineEdit; we run the pure
+        ``extract_dit_candidates`` helper, then call the
+        chip strip's ``dit_filter_keep(kept_indices)`` to dim
+        any chip whose index isn't in the kept set. AND-
+        composes with ``set_filter(allowed_states)``.
+
+        Empty input clears the DIT filter. We update a small
+        summary label with the matched count + the first
+        few matched DITs so the chemist sees what survived.
+        """
+        from gui_qt.tabs.tab_ladder._summary import (
+            dit_filter_keep,
+            extract_dit_candidates,
+        )
+
+        strip = getattr(self, "_chip_strip", None)
+        if strip is None:
+            return
+
+        rows = self._review_bundle_cases or []
+        if not text.strip():
+            # Cleared — drop the DIT filter so every chip restores
+            # to whatever the chip-state filter allowed.
+            try:
+                strip.dit_filter_keep(None)
+            except Exception:
+                pass
+            try:
+                self.dit_filter_summary_label.setText("")
+            except Exception:
+                pass
+            return
+
+        indices, dits = extract_dit_candidates(rows, text)
+        try:
+            strip.dit_filter_keep(dit_filter_keep(indices))
+        except Exception:
+            pass
+
+        # Update the summary label.
+        if dits:
+            preview = ", ".join(dits[:3])
+            more = (
+                f" +{len(dits) - 3} more" if len(dits) > 3 else ""
+            )
+            self.dit_filter_summary_label.setText(
+                f"{len(dits)} match(es): {preview}{more}"
+            )
+        else:
+            self.dit_filter_summary_label.setText("0 matches")
+
+    def _on_clear_dit_filter_clicked(self) -> None:
+        """Clear button — clears the QLineEdit which fires textChanged.
+
+        The actual filter reset happens in ``_on_dit_filter_changed``
+        with empty input, so we don't repeat the dim logic here.
+        """
+        # Block the signal so we get a single textChanged emission
+        # with the cleared text rather than two (clear + setText).
+        try:
+            self.dit_filter_input.blockSignals(True)
+            self.dit_filter_input.clear()
+        finally:
+            self.dit_filter_input.blockSignals(False)
+        # Manually fire so the slot updates the chip strip + summary.
+        self._on_dit_filter_changed("")
 
     # ------------------------------------------------------------------
     # Phase 12.8 — "Mark Visible Reviewed (no change)" bulk button slot.

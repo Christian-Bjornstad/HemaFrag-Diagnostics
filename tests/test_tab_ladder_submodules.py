@@ -33,8 +33,10 @@ from gui_qt.tabs.tab_ladder._summary import (
     chip_state,
     count_chip_states,
     count_states,
+    dit_filter_keep,
     entry_cache_key,
     entry_original_path,
+    extract_dit_candidates,
     format_file_item,
     is_chip_state_allowed,
     metadata_from_entry,
@@ -919,6 +921,90 @@ class AppendAuditEventTests(unittest.TestCase):
             import json as _json
             stages = [_json.loads(line)["stage"] for line in lines]
             self.assertEqual(stages, ["a", "b"])
+
+
+class ExtractDitCandidatesTests(unittest.TestCase):
+    """Phase 12.11 — DIT prefix filter pure helper."""
+
+    @staticmethod
+    def _row(full_path: str, source_run_dir: str = "") -> dict:
+        return {"full_path": full_path, "source_run_dir": source_run_dir}
+
+    def test_extracts_dits_from_full_path(self) -> None:
+        rows = [
+            self._row("/proj/24OUM20364_a.fsa"),
+            self._row("/proj/26OUM12345_b.fsa"),
+        ]
+        indices, dits = extract_dit_candidates(rows, "24")
+        self.assertEqual(indices, [0])
+        self.assertEqual(dits, ["24OUM20364"])
+
+    def test_extracts_from_source_run_dir_fallback(self) -> None:
+        # When the FSA filename got renamed and the DIT only
+        # lives in source_run_dir (a common T7 path quirk):
+        rows = [
+            self._row("/proj/renamed_a.fsa",
+                      source_run_dir="2025_24OUM20364_run_xyz"),
+        ]
+        indices, dits = extract_dit_candidates(rows, "24OUM203")
+        self.assertEqual(indices, [0])
+        self.assertEqual(dits, ["24OUM20364"])
+
+    def test_case_insensitive_prefix(self) -> None:
+        rows = [self._row("/proj/24OUM20364_a.fsa")]
+        # Lowercase input still matches uppercase DIT.
+        indices, dits = extract_dit_candidates(rows, "24oum203")
+        self.assertEqual(indices, [0])
+        self.assertEqual(dits, ["24OUM20364"])
+
+    def test_returns_uppercase_dits(self) -> None:
+        # Match shapes are uppercase regardless of input case.
+        rows = [self._row("/proj/24oum20364_a.fsa")]
+        indices, dits = extract_dit_candidates(rows, "24OUM203")
+        self.assertEqual(dits, ["24OUM20364"])
+
+    def test_empty_prefix_returns_empty(self) -> None:
+        rows = [self._row("/proj/24OUM20364_a.fsa")]
+        self.assertEqual(extract_dit_candidates(rows, ""), ([], []))
+        self.assertEqual(extract_dit_candidates(rows, "   "), ([], []))
+
+    def test_empty_rows_returns_empty(self) -> None:
+        self.assertEqual(extract_dit_candidates([], "24"), ([], []))
+
+    def test_no_match_returns_empty(self) -> None:
+        rows = [self._row("/proj/26OUM12345_b.fsa")]
+        self.assertEqual(extract_dit_candidates(rows, "25"), ([], []))
+
+    def test_no_dit_in_row_never_matches(self) -> None:
+        rows = [self._row("/proj/random_filename.fsa")]
+        self.assertEqual(extract_dit_candidates(rows, "24"), ([], []))
+
+    def test_prefix_matches_only_at_start(self) -> None:
+        # `startswith` semantics: the prefix must be at the
+        # *start* of the DIT. Typing "OUM203" cannot match
+        # "24OUM20364" because the DIT starts with "24".
+        rows = [
+            self._row("/proj/24OUM20364_a.fsa"),
+            self._row("/proj/26OUM99999_b.fsa"),
+        ]
+        # Typing a year-only prefix matches the right cohorts.
+        indices, dits = extract_dit_candidates(rows, "24")
+        self.assertEqual(indices, [0])  # only 24OUM20364 starts with 24
+        self.assertEqual(dits, ["24OUM20364"])
+        # Typing "OUM" mid-DIT must not match anything.
+        indices2, dits2 = extract_dit_candidates(rows, "OUM")
+        self.assertEqual(indices2, [])
+        self.assertEqual(dits2, [])
+
+    def test_dit_filter_keep_returns_none_for_empty(self) -> None:
+        # Empty / None index list → filter not active.
+        self.assertIsNone(dit_filter_keep([]))
+        self.assertIsNone(dit_filter_keep(None))
+
+    def test_dit_filter_keep_returns_set_for_indices(self) -> None:
+        kept = dit_filter_keep([0, 2, 4])
+        self.assertIsInstance(kept, set)
+        self.assertEqual(kept, {0, 2, 4})
 
 
 if __name__ == "__main__":
