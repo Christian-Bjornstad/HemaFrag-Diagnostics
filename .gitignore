@@ -75,6 +75,11 @@ target/wheels/*.whl
 # Crate build outputs (avoid touching ~600MB on git status)
 fraggler-v2/target/
 
+# Plan 12 Phase 12.9 — audit JSONL landed at cwd by stray tests
+# that pass bundle_dir=None. Pin here so a real bundle-side
+# file is committed by mistake.
+ladder_review_audit.jsonl
+
 # Windows things .NET-style
 Thumbs.db
 *.lnk
