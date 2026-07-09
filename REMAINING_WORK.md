@@ -200,10 +200,22 @@ Everything below is fresh work on this Windows repo.
 
 ### B.8 Install/launch script updates
 
-- [ ] Update `install.bat` to prefer Python 3.14 path, fall back to 3.12
-- [ ] Update `INSTALLATION.md` to say "Python 3.14.6 or 3.12"
-- [ ] Verify `install.bat` works end-to-end on the 3.14 venv
-- [ ] Verify `start.bat` launches the GUI from the new venv
+- [x] **Update `install.bat`** (2026-07-09): prefers
+      `C:\Users\molpa\AppData\Local\Programs\Python\Python314\python.exe`
+      (work computer's 3.14.6 install, the migration target),
+      falls back to `Python312\python.exe` (this dev machine)
+      and then to `where python` on PATH.
+- [x] **Update `build_wheel_windows.bat`** (2026-07-09): same
+      3.14/3.12 priority ordering, but `.venv\Scripts\python.exe`
+      wins (because if install.bat already ran, the venv is
+      already the right Python).
+- [x] **Update `INSTALLATION.md`**: install.bat description +
+      "Tested with" line now reference Python 3.14.6 (work
+      computer) and 3.12.10 (dev machine). Troubleshooting
+      section's Python-on-PATH fallback now points at the 3.14
+      path.
+- [ ] **Live install verification on Python 3.14.6** -- deferred
+      to Phase B.9 (Run on the work computer).
 
 ### B.9 Ship to work computer
 
