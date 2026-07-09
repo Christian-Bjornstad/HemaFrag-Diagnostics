@@ -82,14 +82,22 @@ restricts calls to the stable C API subset, so the compiled
 `.pyd` should load fine on 3.14.
 
 **Action items for the Rust crate:**
-1. Upgrade `pyo3` from `0.24` to `>=0.26` (adds 3.14 support;
-   Nov 2025 release). Needed if we ever rebuild on a 3.14 host.
+1. Upgrade `pyo3` from `0.24` to `>=0.26,<0.30` (adds 3.14
+   support; Nov 2025 release). Needed if we ever rebuild on a
+   3.14 host.
 2. Keep `abi3-py312` -- 3.12 is our minimum, abi3 covers 3.14.
 3. Bump `requires-python` to `>=3.10,<3.16` in `pyproject.toml`.
-4. **Rebuild the wheel** on this Windows dev machine (which HAS
-   Rust) with the upgraded PyO3, producing a new
-   `fraggler_kernels-0.2.0-cp312-abi3-win_amd64.whl`.
-5. Ship that wheel to the work computer via `wheels/` + `install.bat`.
+4. **Rebuild the wheel** on the dev machine that HAS Rust
+   (`cargo check` then `maturin build --release` with the
+   repo's `.venv` reachable via `VIRTUAL_ENV`). Cargo
+   resolves pyo3 to v0.29.0. The wheel filename stays
+   `fraggler_kernels-0.1.0-cp312-abi3-win_amd64.whl`
+   (no version bump -- the wheel format is identical, only
+   the embedded PyO3 ABI toolchain is newer; bumping to 0.2.0
+   would force callers pinning `fraggler-kernels==0.1.0` to
+   update).
+5. Ship that wheel to the work computer via `wheels/` +
+   `install.bat`.
 
 **Fallback**: if the wheel fails to load on 3.14 for any reason,
 the app already has a pure-Python fallback path
@@ -197,7 +205,9 @@ cd fraggler-v2/crates/fraggler-kernels-py
 .venv-314\Scripts\python.exe -m maturin build --release \
     --interpreter .venv-314\Scripts\python.exe \
     --cargo-extra-args='-C lto=thin'
-# Output: wheels\fraggler_kernels-0.2.0-cp312-abi3-win_amd64.whl
+# Output: wheels\fraggler_kernels-0.1.0-cp312-abi3-win_amd64.whl
+# (version stays 0.1.0; only the embedded PyO3 ABI toolchain
+# is upgraded 0.24 -> 0.29)
 ```
 
 If PyO3 complains even with 0.26, set env var:
@@ -339,8 +349,11 @@ Windows repo. It needs to be re-applied here.
 1. [ ] `requirements.txt` updated with 3.14-compatible floor pins
 2. [ ] `install.bat` updated to prefer Python 3.14.6 path
 3. [ ] `start.bat` unchanged (venv-agnostic)
-4. [ ] `wheels/fraggler_kernels-0.2.0-cp312-abi3-win_amd64.whl`
-      (rebuilt with PyO3 0.26+ on this dev machine)
+4. [x] `wheels/fraggler_kernels-0.1.0-cp312-abi3-win_amd64.whl`
+      rebuilt with PyO3 0.29.0 (was 0.24; abi3-py312 tag and
+      0.1.0 version unchanged, only the embedded PyO3 ABI
+      toolchain upgraded). Hashes match between build dir
+      and `wheels/`.
 5. [ ] `INSTALLATION.md` updated to say "Python 3.14.6 or 3.12"
 6. [ ] QDA GaussianNB fallback code ported from container commit
 7. [ ] All tests green on 3.14.6 venv on this dev machine

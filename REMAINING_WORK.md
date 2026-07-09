@@ -112,14 +112,40 @@ Everything below is fresh work on this Windows repo.
 
 ### B.3 Rust wheel rebuild
 
-- [ ] Upgrade `pyo3` 0.24 -> >=0.26 in
-      `fraggler-v2/crates/fraggler-kernels-py/Cargo.toml`
-- [ ] Bump `requires-python` to `>=3.10,<3.16` in
-      `fraggler-v2/crates/fraggler-kernels-py/pyproject.toml`
-- [ ] Run `cargo check` to catch PyO3 API changes
-- [ ] Rebuild wheel: `maturin build --release` with 3.14 venv
-- [ ] Verify new wheel loads: `python -c "import fraggler_native"`
-- [ ] Copy new wheel to `wheels/` directory
+- [x] **`pyo3` 0.24 -> `>=0.26,<0.30`** (2026-07-09) in
+      `fraggler-v2/crates/fraggler-kernels-py/Cargo.toml`. Cargo
+      resolved to v0.29.0 (the version with full 3.14 build-time
+      support per Nov 2025 release notes).
+- [x] **`requires-python` >=3.9 -> `>=3.10,<3.16`** in the
+      matching `pyproject.toml`. Now encoded in wheel
+      METADATA (`Requires-Python: >=3.10, <3.16`).
+- [x] **`cargo check` against v0.29.0** -- PASS in 40s.
+      `lib.rs` API surface is fully compatible with PyO3 0.29:
+      `Bound<>`, `into_pyobject`, `wrap_pyfunction!`,
+      `PyDict::set_item`, etc. are all current.
+- [x] **`maturin build --release`** -- built
+      `wheels/fraggler_kernels-0.1.0-cp312-abi3-win_amd64.whl`
+      (0.72 MB, PyPI tag `cp312-abi3-win_amd64` per WHEEL file;
+      `Requires-Python: >=3.10, <3.16` per METADATA).
+      Had to use `VIRTUAL_ENV=.venv` env var to override
+      maturin's auto-detection which was picking up Hermes'
+      internal Python 3.11 venv (causing it to build a
+      cp311-cp311 wheel instead of an abi3 wheel). Documented
+      for the next builder.
+- [x] **`pip install + import test`** on Python 3.12:
+      `is_available() -> True`, `version == '0.1.0'`,
+      `analyze_fsa(path, analysis_kind)` callable, signature
+      intact. `fraggler_cli_path() returns None` is expected
+      (no sibling .exe was built in this workspace; the
+      pure-Rust in-process path is what matters).
+- [x] **Wheel copied to repo `wheels/`** -- replaces the 1.5 MB
+      PyO3 0.24 wheel from `c56c723`. New wheel is 0.72 MB
+      (release build, no debug). Hashes verified identical
+      between `C:/tmp/maturin-out/` and `wheels/`.
+- [x] **Runtime forward-compat to 3.14.6**: per PyO3 0.29 /
+      PEP 425 / PEP 652, abi3 wheels load on any cpython >= the
+      abi floor (3.12 here). The 3.14 import-smoke test is
+      deferred to Phase B.6.
 
 ### B.4 QDA fallback port
 
