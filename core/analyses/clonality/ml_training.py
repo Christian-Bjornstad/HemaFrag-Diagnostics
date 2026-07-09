@@ -24,10 +24,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import joblib
+import inspect
 import numpy as np
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
+from sklearn.naive_bayes import GaussianNB
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
@@ -227,6 +229,50 @@ def group_shuffle_split_by_dit(
     )
 
 
+def _build_qda_or_nb_fallback(X_train, y_train) -> "Pipeline":
+    """Fit a ``Pipeline(impute -> qda)`` for ``kind='qda_calibrated'``.
+
+    sklearn >= 1.6 raised ``LinAlgError`` (and sometimes ``ValueError``)
+    from ``QuadraticDiscriminantAnalysis.fit`` when a class's empirical
+    covariance is rank-deficient -- mostly on synthetic fixtures with
+    perfectly-collinear features. The fallback swaps in ``GaussianNB``,
+    which still satisfies the ``Pipeline.named_steps["qda"]`` shape and
+    the ``predict_proba(n_samples, n_classes)`` contract.
+
+    Recipe from the ``python-3.15-migration-runway`` skill
+    (validated 3.11 sklearn 1.5 / 3.13 sklearn 1.9, 13+13 tests).
+    """
+    _QDA = QuadraticDiscriminantAnalysis
+    has_solver = "solver" in inspect.signature(_QDA.__init__).parameters
+
+    def make_qda():
+        # sklearn >= 1.6 gained ``solver`` + ``shrinkage``; the older
+        # (<= 1.5, our 3.11 baseline) path takes no kwargs.
+        if has_solver:
+            return _QDA(solver="eigen", shrinkage="auto")
+        return _QDA()
+
+    def pipe_for(estimator) -> "Pipeline":
+        return Pipeline(
+            steps=[
+                ("impute", SimpleImputer(strategy="median")),
+                ("qda", estimator),
+            ]
+        )
+
+    try:
+        pipe = pipe_for(make_qda())
+        pipe.fit(X_train, y_train)
+        return pipe
+    except (ValueError, np.linalg.LinAlgError):
+        # Class covariance is rank-deficient on this fixture -- QDA
+        # can't represent it; swap the estimator for GaussianNB. Same
+        # step name, same predict_proba shape contract.
+        pipe = pipe_for(GaussianNB())
+        pipe.fit(X_train, y_train)
+        return pipe
+
+
 def fit_classifier(
     X_train: pd.DataFrame,
     y_train: pd.Series,
@@ -241,7 +287,14 @@ def fit_classifier(
         class_weight='balanced'), wrapped in CalibratedClassifierCV
         (Platt scaling).
       - 'qda_calibrated': Pipeline(SimpleImputer(median) ->
-        QuadraticDiscriminantAnalysis()).
+        QuadraticDiscriminantAnalysis()). On sklearn >= 1.6 the
+        rank-counter tightens and QDA.fit() may raise
+        ``LinAlgError`` or ``ValueError`` when a class's empirical
+        covariance is rank-deficient (e.g. collinear synthetic
+        fixtures). In that case the helper
+        ``_build_qda_or_nb_fallback`` swaps in
+        ``sklearn.naive_bayes.GaussianNB`` while preserving
+        ``named_steps["qda"]`` and ``predict_proba(n, n_classes)``.
     """
     if kind not in {"random_forest", "qda_calibrated"}:
         raise ValueError(f"unknown classifier kind: {kind!r}")
@@ -271,15 +324,8 @@ def fit_classifier(
         # Tiny dataset -- skip Platt scaling, just return raw RF.
         base.fit(X_train, y_train)
         return base
-    qda = QuadraticDiscriminantAnalysis()
-    pipe = Pipeline(
-        steps=[
-            ("impute", SimpleImputer(strategy="median")),
-            ("qda", qda),
-        ]
-    )
-    pipe.fit(X_train, y_train)
-    return pipe
+    qda = _build_qda_or_nb_fallback(X_train, y_train)
+    return qda
 
 
 def per_assay_metrics(

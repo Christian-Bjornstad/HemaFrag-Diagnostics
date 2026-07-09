@@ -149,12 +149,32 @@ Everything below is fresh work on this Windows repo.
 
 ### B.4 QDA fallback port
 
-- [ ] Port the GaussianNB fallback code from the container
-      commit `9cfe243` into this Windows repo (it's in the
-      `python-3.15-migration-runway` skill's reference file
-      -- paste the code shape from there).
-- [ ] Verify the fallback triggers on sklearn 1.9 and produces
-      identical `predict_proba` shape.
+- [x] **`_build_qda_or_nb_fallback` helper added to
+      `core/analyses/clonality/ml_training.py`** (2026-07-09):
+      try QDA first; on `ValueError` / `np.linalg.LinAlgError`
+      fall through to `GaussianNB`. Pipeline shape and
+      `predict_proba(n, n_classes)` contract preserved.
+- [x] **`fit_classifier(kind='qda_calibrated')` now routes
+      through the helper.** Removed the inline QDA-Fit, added
+      `import inspect`, `from sklearn.naive_bayes import
+      GaussianNB`. `inspect.signature(_QDA.__init__).parameters`
+      gates the new-path `solver='eigen', shrinkage='auto'`
+      kwargs (sklearn >= 1.6 only); old sklearn (<= 1.5, our
+      3.11 baseline) takes the no-kwarg fallback.
+- [x] **Public docstring updated** -- `fit_classifier` now
+      documents the fallback so the next maintainer finds it.
+- [x] **Ad-hoc verification (2026-07-09):**
+      - happy QDA path returns `QuadraticDiscriminantAnalysis`
+      - forced-failure path (monkey-patched QDA that raises
+        LinAlgError on fit) returns `GaussianNB`, same shape
+      - `fit_classifier('qda_calibrated')` routes through
+        fallback correctly
+      - `tests/test_clonality_interpretation_ml.py` 12/12 PASS
+      - `tests/test_clonality_interp_integration.py` 10/10 PASS
+      - 22/22 total, 0 regressions
+      (Full live 1.9 + Python 3.14 path is verified in Phase B.5
+      on the work computer.)
+
 
 ### B.5 Test suite on 3.14
 
