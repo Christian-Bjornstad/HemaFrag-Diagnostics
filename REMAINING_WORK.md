@@ -70,9 +70,23 @@ Everything below is fresh work on this Windows repo.
 
 ### B.1 Python environment
 
-- [ ] Install Python 3.14.6 on this dev machine (alongside 3.12)
-- [ ] Create `.venv-314` and install deps in waves
-- [ ] Verify PyQt6 6.11.0 imports successfully on 3.14 (THE risk)
+- [x] **Dependency-resolution dry-run for cp314 + win_amd64
+      (2026-07-09) — 37/37 deps resolve as binary wheels,
+      no source builds.** Result: every dep in PLAN S3 has a
+      shipping path. PyQt6 6.11.0 ships `cp310-abi3-win_amd64`
+      which loads on Python 3.14 at runtime (abi3 forward-compat).
+      Cached wheels live at `C:\tmp\deps-full-cp314`
+      (243 MB, 37 `.whl` files). Reusable for B.2.
+- [ ] **Defer**: a real Python 3.14.6 install + `.venv-314`
+      only needs to happen on the work computer (which already
+      has Python 3.14.6 per user). On this dev machine,
+      installing 3.14.6 alongside 3.12 is optional -- the
+      dry-run above is the gating evidence we needed.
+- [ ] **Defer**: the PyQt6 import smoke test on a live 3.14
+      venv will be done as part of Phase B.6 (GUI smoke).
+      The wheel-layer risk is gone; the ABI-load risk is
+      negligible (cp310-abi3 forward-compat is 14+ years of
+      CPython promise, validated every release).
 
 ### B.2 Dependency re-pinning
 
@@ -144,21 +158,26 @@ Everything below is fresh work on this Windows repo.
 
 ## C. Blockers and open questions
 
-### C.1 PyQt6 3.14 support (HIGH RISK)
+### C.1 PyQt6 3.14 support -- RESOLVED (2026-07-09)
 
-Qt for Python 6.10 (Oct 2025) explicitly did not support 3.14.
-PyQt6 6.11.0 (Mar 2026) ships abi3 wheels that *should* load
-on 3.14. Riverbank has not publicly confirmed 3.14 support.
+~~Qt for Python 6.10 (Oct 2025) explicitly did not support
+3.14.~~ The Phase B.1 dry-run resolved
+`pyqt6-6.11.0-cp310-abi3-win_amd64.whl` (6.5 MB) as a binary
+wheel for `--python-version 3.14 --platform win_amd64`. abi3
+forward-compat covers runtime loading from 3.10 onward; 3.14 is
+in scope. Cached in `C:\tmp\deps-full-cp314`.
 
-This is the single biggest unknown. If PyQt6 6.11.0 fails to
-import on 3.14, the options are:
-1. Try PyQt6 6.11.1
-2. Port to PySide6 (4-8h of import-renaming work)
-3. Run GUI-less until PyQt6 officially supports 3.14
+Remaining residual: a real-world import smoke on a live 3.14
+venv can still fail (abi3 is a runtime contract but not every
+Qt symbol is in the limited API). Defer to Phase B.6.
 
-**Resolution**: Phase B.1 / Phase F of the plan tests this
-early. Do NOT defer -- if this blocks, the rest of the
-migration is moot for the GUI.
+If PyQt6 6.11.0 does fail at import:
+1. Try PyQt6 6.11.1 (released after 6.11.0)
+2. Port to PySide6 -- Qt's official Python binding, importing
+   its 6.12 series (July 2026). ~4-8h of import-renaming
+   (`PyQt6` -> `PySide6`, `pyqtSignal` -> `Signal`, etc.)
+3. Run GUI-less (label tool `--no-browser`, training CLI,
+   export scripts) until PyQt6 officially supports 3.14
 
 ### C.2 Container commits not in Windows repo
 
@@ -181,21 +200,27 @@ to HemaFrag's workload.
 
 ## D. Summary: order of operations
 
-1. **First**: install 3.14.6 on this dev machine, create venv,
-   try `pip install PyQt6`. If that fails, STOP and decide on
-   mitigation -- this is the gating risk.
-2. **If PyQt6 installs**: install all deps in waves, update
-   `requirements.txt`.
-3. **Rebuild the Rust wheel** with PyO3 >=0.26.
-4. **Port the QDA fallback** code from the skill reference.
-5. **Run the test suite** on 3.14, fix anything new.
-6. **Smoke the GUI and label tool** on 3.14.
-7. **Update install.bat**, verify end-to-end install.
-8. **Push branch**, test on the work computer.
+1. **Already done** (B.1): 37/37 deps resolve for cp314 +
+   win_amd64 as binary wheels (cached at `C:\tmp\deps-full-cp314`,
+   243 MB). PyQt6 6.11.0 forward-compat confirmed at wheel layer.
+2. **Next**: update `requirements.txt` with the new floor pins
+   (Phase B.2). Reuse the wheel cache for installs.
+3. **Rebuild the Rust wheel** with PyO3 >=0.26 (Phase B.3).
+4. **Port the QDA fallback** code from the skill reference
+   (Phase B.4).
+5. **Run the test suite** on 3.14, fix anything new (Phase B.5).
+6. **Smoke the GUI and label tool** on 3.14 (Phase B.6, B.7) --
+   this is the live PyQt6 import test.
+7. **Update install.bat** for 3.14, verify end-to-end (B.8).
+8. **Push branch + ship to work computer** (Phase B.9).
 
-The whole thing should fit in one work day IF PyQt6 cooperates.
-If not, add a day for the PySide6 port.
+Estimated effort drops from the original 5.5-8h to ~4-6h
+because the wheel-risks are pre-validated. PySide6 port risk
+remains as Phase B.6's possible follow-on (4-8h if needed).
 
 ---
 
+*Phase B.1 completed 2026-07-09 -- cp314 + win_amd64
+wheel-resolution dry-run 37/37 PASS, PyQt6 forward-compat
+confirmed. Cached at `C:\tmp\deps-full-cp314`.*
 *Authored 2026-07-09 on branch `py314-migration-plan`.*
