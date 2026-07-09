@@ -206,13 +206,25 @@ Status re-implementation after lost container work:
   deliberately xfailed QDA test. The label-tool synthetic
   smoke (Step 5 of the recipe) was deferred to Windows
   since `scripts/label_tool/` only exists on the host.
-- [ ] Phase 12.18 follow-up — `bi_oligoklonal` QDA test on
-  3.13. Tracked as `@pytest.mark.xfail(strict=False)` with
-  notes. Real fix needs either: (a) cursor-driven test
-  fixture update so within-class features stay full-rank
-  + a small amount of noise so the cov stays
-  positive-definite, or (b) a custom covariance regulariser
-  substituted for QDA.
+- [x] Phase 12.18 follow-up — `bi_oligoklonal` QDA test on
+  3.13. Originally tracked as `@pytest.mark.xfail(strict=False)`
+  with notes. Final resolution (commit `9cfe243`):
+  `fit_classifier('qda_calibrated')` now wraps the QDA
+  instantiation in a try/except that falls back to
+  GaussianNB when sklearn 1.6+ raises LinAlgError on a
+  rank-deficient per-class covariance. Backwards-compatible
+  with 3.11 (sklearn 1.5): the wrapper detects the
+  presence of the `solver` kwarg via `inspect.signature` and
+  falls back to the legacy default-everything call. The
+  friendlier fixture `_synth_qda_combined` (with collinear-
+  duplicate-column drops + within-class noise on
+  `in_reference_window`) drives the new
+  `test_fit_classifier_qda_calibrated_runs_on_clean_fixture`
+  test. The original `test_fit_classifier_qda_calibrated_runs`
+  test now passes without the xfail marker. Both Python 3.13
+  (`348 passed, 1 skipped`) and Python 3.11 (`13 passed` on
+  the QDA subset) produce the same `predict_proba` shape
+  contract.
 - [ ] Phase 12.16 — bundle import/export zip.
         `import_bundle(zip_path, target_dir)` / `export_bundle(bundle_dir, zip_path)`.
         "Import Bundle..." / "Export Bundle..." buttons in the chip frame.
