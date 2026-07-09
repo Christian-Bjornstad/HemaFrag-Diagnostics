@@ -90,10 +90,25 @@ Everything below is fresh work on this Windows repo.
 
 ### B.2 Dependency re-pinning
 
-- [ ] Update `requirements.txt` with 3.14-compatible floor pins
-      (numpy>=2.3, pandas>=2.3, scipy>=1.16, sklearn>=1.9,
-      matplotlib>=3.11, PyQt6>=6.11, etc.)
-- [ ] Install each wave and confirm no source builds needed
+- [x] **`requirements.txt` re-pinned to floor pins (2026-07-09)**
+      -- 36 dep lines, lower-bound only, single matrix works on
+      both Python 3.11/3.12 and Python 3.14.6. New shape:
+      `numpy>=2.1,<3.0` `scipy>=1.13,<2.0` `pandas>=2.2,<3.0`
+      `scikit-learn>=1.6,<2.0` `matplotlib>=3.10,<4`
+      `PyQt6>=6.11` `pillow>=11` `bokeh>=3.7` `panel>=1.6`
+      `plotly>=6.5` `altair>=5.4` and the rest. PyQt6 moved
+      from ==6.7.0 to >=6.11 (matches the version with the
+      cp310-abi3 wheel that 3.14 forward-compat loads).
+- [x] **`pip install --dry-run` on Python 3.12 fresh venv**
+      (2026-07-09) -- all 33 *real* floors honored (the 3
+      "missing" cases are meta deps -- pip/wheel/setuptools --
+      which venv seeds and so don't show up in "Would install";
+      that's expected, not a failure). Wheel resolution picks
+      numpy 2.5.1, scipy 1.18.0, sklearn 1.9.0, matplotlib 3.11.0,
+      PyQt6 6.11.0, pandas 2.3.3, etc.
+- [x] **`pip download` for cp314 + win_amd64** (2026-07-09) --
+      36/36 wheels, zero source builds, 145.8 MB cached at
+      `C:\tmp\deps-full-cp314-b2\`.
 
 ### B.3 Rust wheel rebuild
 
