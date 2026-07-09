@@ -32,6 +32,22 @@ import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
+# `_constants.py` owns the guarded optional `pyqtgraph` import (`pg`) and the
+# ladder QC thresholds (PASS_R2, CHECK_R2, PASS_MAX_ABS_RESIDUAL,
+# CHECK_MAX_ABS_RESIDUAL). Importing them explicitly here keeps `_legacy.py`'s
+# module namespace self-sufficient: without these lines the dialog crashes with
+#   NameError: name 'pg' is not defined                    (at __init__)
+#   NameError: name 'CHECK_MAX_ABS_RESIDUAL' is not defined  (at _refresh_*/_plot_residuals)
+# because the package `__init__.py`'s `*`-re-export injects them into the package
+# namespace, NOT into this submodule's globals.
+from gui_qt.dialogs.ladder_dialog._constants import (
+    pg,
+    PASS_R2,
+    CHECK_R2,
+    PASS_MAX_ABS_RESIDUAL,
+    CHECK_MAX_ABS_RESIDUAL,
+)
+
 
 
 class LadderAdjustmentDialog(QDialog):
