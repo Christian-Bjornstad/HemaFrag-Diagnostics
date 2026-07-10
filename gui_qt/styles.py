@@ -252,16 +252,19 @@ QScrollArea#TabScrollArea > QWidget > QWidget {
 
 /* Headers */
 #PageTitle {
-    font-size: 27px;
+    font-size: 22px;
     font-weight: 800;
-    color: #0f2539;
-    line-height: 1.2;
+    color: #0f172a;
+    padding: 0;
+    margin: 0;
 }
 
 #PageSubtitle {
-    color: #566f82;
-    font-size: 14px;
-    margin-bottom: 20px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #64748b;
+    padding: 0;
+    margin: 4px 0 18px 0;
 }
 
 QLabel#MutedText {
