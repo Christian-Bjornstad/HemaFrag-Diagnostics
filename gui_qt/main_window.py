@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QPushButton, QLabel, QFrame, QComboBox, QScrollArea
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
 
 from app_meta import APP_VERSION
 from gui_qt.styles import VIBRANT_PRO_QSS
@@ -223,6 +223,39 @@ class MainWindow(QMainWindow):
         self.on_group_clicked(start_group)
         start_group.btn_run.setChecked(True)
         self.stacked_widget.setCurrentIndex(0)
+
+        # --- Keyboard shortcuts ---
+        self._setup_shortcuts()
+
+    def _setup_shortcuts(self) -> None:
+        """Alt+1..N activates each analysis group's Run tab.
+        Ctrl+, opens Settings for the current analysis."""
+        for i in range(min(len(self.groups), 9)):
+            sc = QShortcut(QKeySequence(f"Alt+{i + 1}"), self)
+            sc.activated.connect(lambda idx=i: self._activate_group(idx))
+        sc_settings = QShortcut(QKeySequence("Ctrl+,"), self)
+        sc_settings.activated.connect(self._activate_settings)
+
+    def _activate_group(self, idx: int) -> None:
+        """Keyboard-driven group activation — same path as clicking a sidebar header."""
+        if 0 <= idx < len(self.groups):
+            self.on_group_clicked(self.groups[idx])
+
+    def _activate_settings(self) -> None:
+        """Jump to the Settings page for the current analysis."""
+        active = APP_SETTINGS.get("active_analysis", "clonality")
+        group_map = {
+            "clonality": self.group_clonality,
+            "flt3": self.group_flt3,
+            "general": self.group_general,
+        }
+        group = group_map.get(active, self.group_clonality)
+        # Expand the group so the sidebar reflects the navigation
+        self.on_group_clicked(group)
+        # Click the Settings sub-button (last sub-button)
+        settings_idx = len(group.sub_buttons) - 1
+        group.sub_buttons[settings_idx].setChecked(True)
+        self.on_sub_tab_clicked(group.internal_id, settings_idx)
 
     def _clear_sidebar_selection(self) -> None:
         self.btn_about.setChecked(False)
