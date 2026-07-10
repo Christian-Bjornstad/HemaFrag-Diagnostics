@@ -119,8 +119,10 @@ tr:hover td { background: #f0fdfa; /* Soft teal hover */ transition: background 
 .sample-header { font-size: 0.9rem; font-weight: 700; margin-top: 0.4rem; color: #0f172a; }
 .small { font-size: 0.85rem; color: #64748b; font-weight: 500; }
 .peak-editor-block { margin-top: 0.5rem; margin-bottom: 1.2rem; border-radius: 8px; overflow: hidden; }
-.combo-grid { display: block; }
-.combo-item { margin-bottom: 1.2rem; }
+.combo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 8px; }
+.combo-item { margin: 0; }
+.combo-item .sample-header, .combo-item .rearrangement-info { display: none; }
+@media print { .combo-grid { display: block; } }
 /* ── Floating Print Button ── */
 .print-fab {
     position: fixed;
