@@ -181,52 +181,52 @@ def build_html(rows: Sequence[dict[str, Any]], *, title: str, annotator: str = "
         ident = f"case-{int(row.get('ordinal', 0)):04d}"
         image = str(row.get("image") or "")
         control = str(row.get("control") or "")
-        control_block = f"<div class='flag-row'>{flag_buttons}</div>" if control else ""
         cards.append(
             f"""
 <section class="case" id="{ident}" data-raw-path="{html.escape(str(row.get('raw_path') or ''))}">
   <div class="case-head">
-    <div>
-      <div class="case-title">{int(row.get('ordinal', 0)):03d}. {html.escape(str(row.get('file') or ''))}</div>
-      <div class="meta">
-        {html.escape(str(row.get('assay') or 'UNKNOWN'))} | {html.escape(str(row.get('ladder') or ''))}
-        | {html.escape(str(row.get('sample_kind') or ''))}{' / ' + html.escape(control) if control else ''}
-        | QC {html.escape(str(row.get('ladder_qc_status') or ''))}
-        | fit {html.escape(str(row.get('ladder_fit_strategy') or ''))}
-      </div>
-      <div class="meta">
-        Raw peaks={html.escape(str(row.get('raw_peak_count', row.get('peak_count'))))}
-        | interpreted={html.escape(str(row.get('peak_count')))}
-        | in-range={html.escape(str(row.get('peak_count_in_interpretation_range')))}
-        | outside={html.escape(str(row.get('peak_count_outside_interpretation_range')))}
-        | uspesifikke={html.escape(str(row.get('nonspecific_peak_count') or 0))}
-        | dominant-bp={_fmt(row.get('dominant_peak_basepairs'))}
-        | top={_fmt(row.get('dominant_peak_height'))}
-        | ratio={_fmt(row.get('dominant_to_second_ratio'))}
-        | share={_fmt(row.get('dominant_height_share'))}
-      </div>
-      <div class="meta">
-        Range={_range_text(row)}
-        | outside-share={_fmt(row.get('outside_interpretation_height_share'))}
-        | uspesifikk-share={_fmt(row.get('nonspecific_height_share'))}
-        | uspesifikke-bp={html.escape(str(row.get('nonspecific_peak_basepairs') or ''))}
-        | linear residual mean/max={_fmt(row.get('ladder_linear_mean_residual_bp'))}/{_fmt(row.get('ladder_linear_max_residual_bp'))} bp
-      </div>
-      <div class="suggestion">
-        Suggestion: <strong>{html.escape(str(row.get('suggestion') or ''))}</strong>
-        ({html.escape(str(row.get('confidence') or ''))})
-        {' review needed' if row.get('review_needed') else ''}
-        <span>{html.escape(str(row.get('evidence') or ''))}</span>
-      </div>
-      {_sl_quality_html(row)}
-      {_parallel_html(row)}
-      <div class="path">{html.escape(str(row.get('raw_path') or ''))}</div>
+    <div class="case-title">{int(row.get('ordinal', 0)):03d}. {html.escape(str(row.get('file') or ''))}</div>
+    <div class="meta">
+      {html.escape(str(row.get('assay') or 'UNKNOWN'))} | {html.escape(str(row.get('ladder') or ''))}
+      | {html.escape(str(row.get('sample_kind') or ''))}{' / ' + html.escape(control) if control else ''}
+      | QC {html.escape(str(row.get('ladder_qc_status') or ''))}
+      | fit {html.escape(str(row.get('ladder_fit_strategy') or ''))}
     </div>
+    <div class="meta">
+      Raw peaks={html.escape(str(row.get('raw_peak_count', row.get('peak_count'))))}
+      | interpreted={html.escape(str(row.get('peak_count')))}
+      | in-range={html.escape(str(row.get('peak_count_in_interpretation_range')))}
+      | outside={html.escape(str(row.get('peak_count_outside_interpretation_range')))}
+      | uspesifikke={html.escape(str(row.get('nonspecific_peak_count') or 0))}
+      | dominant-bp={_fmt(row.get('dominant_peak_basepairs'))}
+      | top={_fmt(row.get('dominant_peak_height'))}
+      | ratio={_fmt(row.get('dominant_to_second_ratio'))}
+      | share={_fmt(row.get('dominant_height_share'))}
+    </div>
+    <div class="meta">
+      Range={_range_text(row)}
+      | outside-share={_fmt(row.get('outside_interpretation_height_share'))}
+      | uspesifikk-share={_fmt(row.get('nonspecific_height_share'))}
+      | uspesifikke-bp={html.escape(str(row.get('nonspecific_peak_basepairs') or ''))}
+      | linear residual mean/max={_fmt(row.get('ladder_linear_mean_residual_bp'))}/{_fmt(row.get('ladder_linear_max_residual_bp'))} bp
+    </div>
+    <div class="suggestion">
+      Suggestion: <strong>{html.escape(str(row.get('suggestion') or ''))}</strong>
+      ({html.escape(str(row.get('confidence') or ''))})
+      {' review needed' if row.get('review_needed') else ''}
+      <span>{html.escape(str(row.get('evidence') or ''))}</span>
+    </div>
+    {_sl_quality_html(row)}
+    {_parallel_html(row)}
+    <div class="path">{html.escape(str(row.get('raw_path') or ''))}</div>
   </div>
-  <div class="button-row">{class_buttons}</div>
-  {control_block}
+  <div class="annotate-bar">
+    <span class="bar-label">Label:</span>
+    <div class="button-row">{class_buttons}</div>
+    {f'<span class="bar-label" style="margin-left:8px">Flags:</span><div class="flag-row">{flag_buttons}</div>' if control else ''}
+  </div>
   <div class="plot-scroll">{'<img src="' + html.escape(image) + '" alt="' + html.escape(str(row.get('file') or '')) + '">' if image else '<div class="missing">Image unavailable</div>'}</div>
-  <textarea placeholder="Note"></textarea>
+  <div class="note-row"><textarea placeholder="Note"></textarea></div>
 </section>
 """
         )
@@ -240,23 +240,27 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", s
 header {{ position: sticky; top: 0; z-index: 10; background: #fff; border-bottom: 1px solid #d1d5db; padding: 12px 18px; display: flex; gap: 16px; justify-content: space-between; align-items: center; }}
 h1 {{ margin: 0; font-size: 18px; }}
 .sub {{ color: #475569; font-size: 13px; }}
-main {{ max-width: 1520px; margin: 0 auto; padding: 16px; }}
-.case {{ background: #fff; border: 1px solid #d1d5db; border-radius: 8px; margin-bottom: 18px; padding: 12px; }}
-.plot-scroll {{ overflow-x: auto; }}
-.case-title {{ font-weight: 700; font-size: 15px; }}
-.meta, .path, .suggestion, .sl-quality, .parallel {{ margin-top: 4px; font-size: 13px; color: #374151; }}
+main {{ max-width: 1280px; margin: 0 auto; padding: 16px; }}
+.case {{ background: #fff; border: 1px solid #d1d5db; border-radius: 8px; margin-bottom: 14px; padding: 0; overflow: hidden; }}
+.case-head {{ padding: 10px 14px; border-bottom: 1px solid #f1f5f9; }}
+.case-title {{ font-weight: 700; font-size: 14px; }}
+.meta, .path, .suggestion, .sl-quality, .parallel {{ margin-top: 3px; font-size: 12px; color: #374151; }}
 .path {{ color: #64748b; font-size: 11px; word-break: break-all; }}
 .suggestion span {{ color: #64748b; margin-left: 8px; }}
 .sl-quality span {{ color: #64748b; margin-left: 8px; }}
 .parallel a {{ color: #0f766e; text-decoration: none; margin-right: 8px; }}
-.button-row, .flag-row {{ display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }}
-button {{ border: 1px solid #94a3b8; background: #fff; border-radius: 6px; padding: 6px 9px; cursor: pointer; font-size: 13px; }}
+.annotate-bar {{ position: sticky; top: 52px; z-index: 5; background: #f8fafc; padding: 6px 14px; border-bottom: 1px solid #e2e8f0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }}
+.annotate-bar .bar-label {{ font-size: 11px; color: #64748b; margin-right: 4px; font-weight: 600; }}
+.button-row, .flag-row {{ display: flex; flex-wrap: wrap; gap: 4px; }}
+button {{ border: 1px solid #94a3b8; background: #fff; border-radius: 5px; padding: 5px 8px; cursor: pointer; font-size: 12px; }}
 button.active {{ background: #111827; color: #fff; border-color: #111827; }}
 button.flag.active {{ background: #0f766e; border-color: #0f766e; }}
 #export {{ background: #0f766e; color: #fff; border-color: #0f766e; }}
 #status {{ font-size: 12px; color: #166534; margin-left: 8px; }}
-img {{ width: 100%; min-width: 1120px; height: auto; display: block; border: 1px solid #e5e7eb; border-radius: 4px; background: #fff; }}
-textarea {{ width: 100%; min-height: 72px; margin-top: 10px; box-sizing: border-box; font: 14px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; }}
+.plot-scroll {{ overflow-x: auto; padding: 8px 14px; }}
+img {{ width: 100%; max-width: 880px; height: auto; display: block; border: 1px solid #e5e7eb; border-radius: 4px; background: #fff; }}
+.note-row {{ padding: 0 14px 10px; }}
+textarea {{ width: 100%; min-height: 56px; box-sizing: border-box; font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px; }}
 #export-box {{ display: none; margin: 16px; padding: 12px; background: #ecfeff; border: 1px solid #67e8f9; border-radius: 8px; }}
 #export-box textarea {{ min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }}
 .missing {{ padding: 40px; text-align: center; color: #64748b; border: 1px dashed #cbd5e1; border-radius: 4px; }}
@@ -399,7 +403,7 @@ def _plot_entry(entry: dict[str, Any], *, image_dir: Path, ordinal: int) -> Path
     fsa = entry.get("fsa")
     if fsa is None:
         return None
-    fig, ax = plt.subplots(figsize=(15.0, 5.4), dpi=140)
+    fig, ax = plt.subplots(figsize=(14.0, 5.0), dpi=140)
     try:
         draw_multi_channel_zoom_on_ax(
             ax,
@@ -420,7 +424,9 @@ def _plot_entry(entry: dict[str, Any], *, image_dir: Path, ordinal: int) -> Path
         ymax = float(entry.get("ymax") or 0.0)
         if np.isfinite(ymax) and ymax > 0:
             ax.set_ylim(bottom=min(0.0, ax.get_ylim()[0]), top=max(ymax * 1.18, ax.get_ylim()[1]))
-        ax.legend(loc="upper right", fontsize=7)
+        # Subtitle: assay + sample_kind + channel info for context
+        subtitle = f"assay={entry.get('assay','')}  kind={entry.get('sample_kind','')}  ch={entry.get('primary_peak_channel','')}"
+        ax.set_xlabel(subtitle, fontsize=8, color="#475569")
         fig.tight_layout()
         out = image_dir / f"{ordinal:04d}_{_safe_name(str(entry.get('file_name') or 'case'))}.png"
         fig.savefig(out)
