@@ -229,17 +229,38 @@ class MainWindow(QMainWindow):
 
     def _setup_shortcuts(self) -> None:
         """Alt+1..N activates each analysis group's Run tab.
-        Ctrl+, opens Settings for the current analysis."""
+        Ctrl+, opens Settings for the current analysis.
+        Alt+letter jumps to sub-tabs of the current group:
+          R = Run, L = Ladder, A = Archive Runner, I = Interpretation,
+          G = loG, S = Settings."""
         for i in range(min(len(self.groups), 9)):
             sc = QShortcut(QKeySequence(f"Alt+{i + 1}"), self)
             sc.activated.connect(lambda idx=i: self._activate_group(idx))
         sc_settings = QShortcut(QKeySequence("Ctrl+,"), self)
         sc_settings.activated.connect(self._activate_settings)
+        # Letter shortcuts — sub-tab navigation within the current group
+        for letter, sub_idx in [("R", 0), ("L", 1), ("A", 2), ("I", 3), ("G", 4), ("S", 5)]:
+            sc = QShortcut(QKeySequence(f"Alt+{letter}"), self)
+            sc.activated.connect(lambda idx=sub_idx: self._activate_sub(idx))
 
     def _activate_group(self, idx: int) -> None:
         """Keyboard-driven group activation — same path as clicking a sidebar header."""
         if 0 <= idx < len(self.groups):
             self.on_group_clicked(self.groups[idx])
+
+    def _activate_sub(self, sub_idx: int) -> None:
+        """Jump to a sub-tab within the currently active analysis group.
+        Sub_idx maps to: 0=Run, 1=Ladder, 2=Archive Runner, 3=Interpretation, 4=Log, 5=Settings."""
+        active = APP_SETTINGS.get("active_analysis", "clonality")
+        group_map = {
+            "clonality": self.group_clonality,
+            "flt3": self.group_flt3,
+            "general": self.group_general,
+        }
+        group = group_map.get(active, self.group_clonality)
+        if 0 <= sub_idx < len(group.sub_buttons):
+            group.sub_buttons[sub_idx].setChecked(True)
+            self.on_sub_tab_clicked(group.internal_id, sub_idx)
 
     def _activate_settings(self) -> None:
         """Jump to the Settings page for the current analysis."""
