@@ -252,3 +252,48 @@ def test_roundtrip_serialize_load_and_attach(tmp_path):
     assert pred.accepted
     assert pred.label in ("monoklonal", "polyklonal", "bi_oligoklonal")
     assert pred.confidence >= meta["accept_threshold_tau"]
+
+
+def test_predict_with_rejection_force_review_ladder_qc_fail_short_circuits():
+    """predict_with_rejection must short-circuit on ladder_qc_status='fail'
+    BEFORE attempting numeric coercion. Otherwise string-typed metadata
+    fields (ladder_qc_status, ClonalitySuggestion, control_flag) crash
+    the function even though the entry qualifies for forced review."""
+    calibrated, _ = _make_tiny_rf()
+    entry = {
+        # numeric features (the part the model uses)
+        "f0": 0.5, "f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5,
+        # metadata fields that the predict function must skip/short-circuit on
+        "ladder_qc_status": "fail",        # string! would crash float()
+        "ClonalitySuggestion": "qc_teknisk_fail",
+        "control_flag": "kontroll_avvik",
+    }
+    pred = predict_with_rejection(
+        calibrated, entry,
+        assay="FR1", tau=0.85,
+    )
+    assert pred.label == "usikker_review"
+    assert pred.accepted is False
+    assert "ladder_qc" in pred.reason
+
+
+def test_predict_with_rejection_handles_uncoercible_feature_values():
+    """predict_with_rejection must not crash when feature_row carries
+    non-numeric values that cannot be converted to float. They become
+    NaN and the imputer handles them; we still produce a prediction."""
+    calibrated, _ = _make_tiny_rf()
+    entry = {
+        "f0": 0.5, "f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5,
+        "f5": "not_a_number",    # would crash float(value) pre-fix
+        "f6": None,
+        "metadata_str": "ignored",
+    }
+    pred = predict_with_rejection(
+        calibrated, entry,
+        assay="FR1", tau=0.20,   # low tau so even mediocre confidence accepts
+    )
+    # Whether accepted or rejected, the function must NOT raise.
+    assert pred.label in ("monoklonal", "polyklonal", "bi_oligoklonal",
+                          "irregulaer", "pseudoklonal",
+                          "intet_pcr_produkt_darlig_dna", "qc_teknisk_fail",
+                          "usikker_review")
