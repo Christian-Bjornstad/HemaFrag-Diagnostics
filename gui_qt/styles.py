@@ -271,6 +271,16 @@ QLabel#MutedText {
     color: #6a8091;
 }
 
+/* Empty State */
+QLabel#EmptyStateCard {
+    background: #f8fafc;
+    border: 1px dashed #cbd5e1;
+    border-radius: 12px;
+    padding: 40px;
+    color: #64748b;
+    font-size: 14px;
+}
+
 /* Status Pills */
 QLabel#StatusPill {
     border-radius: 999px;
