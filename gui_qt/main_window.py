@@ -259,7 +259,12 @@ class MainWindow(QMainWindow):
         }
         group = group_map.get(active, self.group_clonality)
         if 0 <= sub_idx < len(group.sub_buttons):
-            group.sub_buttons[sub_idx].setChecked(True)
+            # Clear all other sub-buttons and about-button so the highlight
+            # only follows the just-activated one (mirrors _handle_sub_click).
+            self.btn_about.setChecked(False)
+            for other_group in self.groups:
+                for button in other_group.sub_buttons:
+                    button.setChecked(button is group.sub_buttons[sub_idx])
             self.on_sub_tab_clicked(group.internal_id, sub_idx)
 
     def _activate_settings(self) -> None:
@@ -273,10 +278,13 @@ class MainWindow(QMainWindow):
         group = group_map.get(active, self.group_clonality)
         # Expand the group so the sidebar reflects the navigation
         self.on_group_clicked(group)
-        # Click the Settings sub-button (last sub-button)
-        settings_idx = len(group.sub_buttons) - 1
-        group.sub_buttons[settings_idx].setChecked(True)
-        self.on_sub_tab_clicked(group.internal_id, settings_idx)
+        sub_idx = len(group.sub_buttons) - 1
+        if 0 <= sub_idx < len(group.sub_buttons):
+            self.btn_about.setChecked(False)
+            for other_group in self.groups:
+                for button in other_group.sub_buttons:
+                    button.setChecked(button is group.sub_buttons[sub_idx])
+            self.on_sub_tab_clicked(group.internal_id, sub_idx)
 
     def _clear_sidebar_selection(self) -> None:
         self.btn_about.setChecked(False)
