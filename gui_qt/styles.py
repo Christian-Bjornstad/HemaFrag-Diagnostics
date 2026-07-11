@@ -2,6 +2,32 @@
 HemaFrag Diagnostics — PyQt6 Architecture Stylesheet
 """
 
+# ─────────────────────────────────────────────────────────────────────────────
+# HemaFrag palette — single source of truth for app accent colors.
+# Keep these in sync with any NEW QSS rules added. Use these constants when
+# adding hex codes to dialogs/widgets. (The QSS string itself uses literal
+# hex because QSS does not understand Python f-strings.)
+# ─────────────────────────────────────────────────────────────────────────────
+PALETTE = {
+    "primary":      "#2563eb",   # App accent (blue)
+    "success":      "#16a34a",   # Pass / ok
+    "warning":      "#d97706",   # Check / pending
+    "danger":       "#dc2626",   # Fail / error
+    "neutral_text": "#102235",   # Default body text
+    "muted_text":   "#64748b",   # Secondary text
+    "page_title":   "#0f172a",   # Page titles
+    "page_subtext": "#64748b",   # Page subtitles
+    "background":   "#eef4f8",   # Light content area
+    "sidebar":      "#0b1724",   # Dark sidebar
+    "card_bg":      "#ffffff",   # Card surface
+    "empty_state":  "#f8fafc",   # Empty state card bg
+    "empty_border": "#cbd5e1",   # Empty state card border
+    "pass_bg":      "#dcfce7",   # StatusPill pass background
+    "check_bg":     "#fef3c7",   # StatusPill check background
+    "fail_bg":      "#fee2e2",   # StatusPill fail background
+    "idle_bg":      "#f1f5f9",   # StatusPill idle background
+}
+
 VIBRANT_PRO_QSS = """
 /* Global Application Settings */
 QWidget {
