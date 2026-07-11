@@ -1183,7 +1183,8 @@ def _render_tcrb_rep_block(
         e_combo["forced_ymax"] = group_y
         e_combo["forced_xmin"] = forced_xmin
         e_combo["forced_xmax"] = forced_xmax
-        
+        e_combo["compact"] = True
+
         html_lines.append("<div class='combo-item'>")
         html_lines.append(_build_report_plot_fragment(e_combo, report_metrics))
         html_lines.append("</div>")
@@ -1210,7 +1211,8 @@ def _render_tcrg_combo_block(
         e_combo["forced_ymax"] = group_y
         e_combo["forced_xmin"] = forced_xmin
         e_combo["forced_xmax"] = forced_xmax
-        
+        e_combo["compact"] = True
+
         html_lines.append("<div class='combo-item'>")
         html_lines.append(_build_report_plot_fragment(e_combo, report_metrics))
         html_lines.append("</div>")

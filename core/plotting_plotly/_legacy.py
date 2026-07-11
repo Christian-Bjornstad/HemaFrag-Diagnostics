@@ -509,10 +509,11 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
                     initial_peaks.append(peak)
 
     fig, ymax, peaks_trace_index = _create_plotly_figure(data)
-    
+
     nice_title = f"{data['assay_name']} – {data['sample_id']}" if data["assay_name"] else data["sample_id"]
+    plot_height = 336 if bool(entry.get("compact")) else 420
     fig.update_layout(
-        title=nice_title, xaxis_title="Basepairs (bp)", yaxis_title="RFU", height=420,
+        title=nice_title, xaxis_title="Basepairs (bp)", yaxis_title="RFU", height=plot_height,
         margin=dict(l=60, r=30, t=40, b=40), paper_bgcolor="white", plot_bgcolor="white",
         template="simple_white", font=dict(family="Inter, sans-serif", color="#0f172a"),
         clickmode="event", showlegend=True,
