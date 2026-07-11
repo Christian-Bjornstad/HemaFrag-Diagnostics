@@ -1,0 +1,21 @@
+{
+  "accept_threshold_tau": 0.92,
+  "assay": "DHJH_D",
+  "classifier_kind": "random_forest",
+  "label_order": [
+    "monoklonal",
+    "polyklonal",
+    "bi_oligoklonal",
+    "irregulaer",
+    "pseudoklonal",
+    "intet_pcr_produkt_darlig_dna",
+    "qc_teknisk_fail",
+    "usikker_review"
+  ],
+  "rare_class_counts": {
+    "monoklonal": 112,
+    "polyklonal": 108
+  },
+  "schema_version": "ml_training_pipeline_v1",
+  "trained_at_utc": "2026-07-11"
+}
