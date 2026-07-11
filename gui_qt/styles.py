@@ -271,6 +271,30 @@ QLabel#MutedText {
     color: #6a8091;
 }
 
+/* Status Pills */
+QLabel#StatusPill {
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-weight: 700;
+    font-size: 11px;
+}
+QLabel#StatusPill[state="pass"] {
+    background-color: #dcfce7;
+    color: #16a34a;
+}
+QLabel#StatusPill[state="check"] {
+    background-color: #fef3c7;
+    color: #d97706;
+}
+QLabel#StatusPill[state="fail"] {
+    background-color: #fee2e2;
+    color: #dc2626;
+}
+QLabel#StatusPill[state="idle"] {
+    background-color: #f1f5f9;
+    color: #64748b;
+}
+
 /* Standard Buttons */
 QPushButton {
     background-color: #ffffff;
