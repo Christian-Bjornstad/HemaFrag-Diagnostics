@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import json
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -35,6 +36,12 @@ from gui_qt.tabs.tab_ml_learning._summary import (
 )
 from gui_qt.tabs.tab_ml_learning._io import list_fsa_files, read_json, write_json
 from gui_qt.tabs.tab_ml_learning._render import render_annotation_panel_html
+from gui_qt.tabs.tab_ml_learning._feedback import (
+    annotations_summary,
+    feedback_paths,
+    import_one,
+    load_jsonl_records,
+)
 from gui_qt.tabs.tab_ml_learning._constants import (
     PANEL_ENTRIES_JSON_FILENAME,
     PANEL_HTML_FILENAME,
@@ -144,8 +151,13 @@ class TabMlLearning(QWidget):
         action_row.addWidget(self._open_panel_btn)
 
         self._export_btn = QPushButton("Export annotations JSONL")
-        self._export_btn.setEnabled(False)  # wired in Phase C
+        self._export_btn.setEnabled(True)
+        self._export_btn.clicked.connect(self._export_clicked)
         action_row.addWidget(self._export_btn)
+
+        self._import_btn = QPushButton("Import panel annotations")
+        self._import_btn.clicked.connect(self._import_clicked)
+        action_row.addWidget(self._import_btn)
 
         action_row.addStretch()
         layout.addLayout(action_row)
@@ -308,6 +320,90 @@ class TabMlLearning(QWidget):
             e for e in self._entries
             if str(e.get("raw_path") or "") in wanted
         ]
+
+    # ---- Phase C: import annotations exported by the panel --------------
+
+    def _export_clicked(self) -> None:
+        path = QFileDialog.getSaveFileName(
+            self,
+            "Save annotations JSONL",
+            str(_default_panel_dir() / "annotations" / "learning.jsonl"),
+            "JSONL (*.jsonl)",
+        )[0]
+        if not path:
+            return
+        target = Path(path)
+        records = load_jsonl_records(
+            feedback_paths(_default_panel_dir())["annotations_jsonl"]
+        )
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("w", encoding="utf-8") as fh:
+                for rec in records:
+                    fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            self._status_label.setText(f"Export failed: {exc}")
+            return
+        self._status_label.setText(
+            f"Exported {len(records)} annotations to {target}"
+        )
+
+    def _import_clicked(self) -> None:
+        # Three options:
+        #  (a) user picks a folder (default = ML_Learning/imports)
+        #  (b) user picks a single file
+        #  (c) the tab auto-scans the canonical imports dir regardless.
+        chosen = QFileDialog.getExistingDirectory(
+            self,
+            "Pick annotations-export folder (default = ML_Learning/imports)",
+            str((_default_panel_dir() / "imports")),
+        )
+        folder = Path(chosen) if chosen else _default_panel_dir() / "imports"
+        paths = feedback_paths(_default_panel_dir())
+        paths["imports_dir"].parent.mkdir(parents=True, exist_ok=True)
+        paths["imports_dir"].mkdir(parents=True, exist_ok=True)
+
+        # If the user picked a different folder, symlink/copy its *.json
+        # into the canonical imports dir so the manifest stays canonical.
+        targets: list[Path] = []
+        if folder.is_dir():
+            for src in sorted(folder.glob("*.json")):
+                # Copy into canonical imports dir for simplicity
+                dst = paths["imports_dir"] / src.name
+                try:
+                    dst.write_bytes(src.read_bytes())
+                    targets.append(dst)
+                except Exception as exc:
+                    self._status_label.setText(f"Copy {src.name} failed: {exc}")
+
+        # Process every .json in the canonical imports dir
+        total_imported = 0
+        total_skipped = 0
+        for src in sorted(paths["imports_dir"].glob("*.json")):
+            try:
+                payload = json.loads(src.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            counts = import_one(
+                source_path=src, payload=payload, paths=paths
+            )
+            total_imported += counts["imported"]
+            total_skipped += counts["skipped"]
+
+        summary = annotations_summary(
+            load_jsonl_records(paths["annotations_jsonl"])
+        )
+        status_parts = [
+            f"Imported {total_imported}",
+            f"skipped {total_skipped}",
+            f"total={summary['total']}",
+        ]
+        if summary["by_assay"]:
+            ass = ", ".join(
+                f"{a}={n}" for a, n in summary["by_assay"].items()
+            )
+            status_parts.append(f"by-assay=[{ass}]")
+        self._status_label.setText(" | ".join(status_parts))
 
     def _refresh_table(self) -> None:
         self._table.setRowCount(0)

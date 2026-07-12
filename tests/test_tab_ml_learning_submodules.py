@@ -202,8 +202,9 @@ class TestTabWidget:
         assert w._root is None
         assert w._table.rowCount() == 0
         assert w._assay_combo.count() == len(ASSAY_DISPLAY_ORDER) + 1  # +all
-        assert w._open_panel_btn.isEnabled() is False  # Phase B
-        assert w._export_btn.isEnabled() is False  # Phase C
+        assert w._open_panel_btn.isEnabled() is False
+        assert w._export_btn.isEnabled() is True  # Phase C
+        assert w._import_btn.isEnabled() is True  # Phase C
 
     def test_set_root_populates_table(self, qapp, tmp_path):
         from gui_qt.tabs.tab_ml_learning import TabMlLearning

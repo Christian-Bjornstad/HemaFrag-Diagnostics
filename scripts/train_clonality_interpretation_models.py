@@ -277,7 +277,40 @@ def _assemble_labelled_df_with_labels_csv(xlsx_path, labels_csv_path, entry_meta
     return merged
 
 
-def _ensure_columns_renamed(combined):
+def _load_annotations_jsonl(path: Path) -> tuple[list[dict], dict[str, int], int]:
+    """Read chemist annotations from a JSONL file. Returns:
+      (records, by_assay_counts, total_seen).
+
+    Bad lines are skipped. Records must contain at least
+    ``annotation_class`` + ``assay`` + (either ``dit`` or ``raw_path``).
+    """
+    if not path or not Path(path).exists():
+        return [], {}, 0
+    seen_total = 0
+    by_assay: dict[str, int] = {}
+    records: list[dict] = []
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            seen_total += 1
+            assay = str(obj.get("assay") or "")
+            cls = str(obj.get("annotation_class") or "")
+            if not assay or not cls:
+                continue
+            records.append(obj)
+            by_assay[assay] = by_assay.get(assay, 0) + 1
+    return records, by_assay, seen_total
+
+
+def _ensure_columns_renamed(df):
     """Best-effort column-renaming so DIT/Assay/ClonalitySuggestion exist."""
     renames = {}
     for old, new in (
@@ -352,6 +385,18 @@ def _parse_args(argv=None):
         default=12345,
         help="Random seed for group-split (default 12345).",
     )
+    p.add_argument(
+        "--annotations-jsonl",
+        type=Path,
+        default=None,
+        help=(
+            "Optional JSONL of GUI-tab annotations (one row per chemist-labelled "
+            "case). When provided, the matching (DIT, Assay) rule/auto labels are "
+            "overridden with the annotation_class column from the file. Audited with "
+            "'learning_annotations_total' and 'learning_annotations_by_assay' in the "
+            "summary.json."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -378,6 +423,56 @@ def main(argv=None):
         combined = _assemble_labelled_df(xlsx_path)
     combined = _ensure_columns_renamed(combined)
     print("[train] combined rows: {}".format(len(combined)))
+
+    # Plan 13 / Phase C: overlay chemist annotations on top of rule labels.
+    learning_annotations: list[dict] = []
+    learning_by_assay: dict[str, int] = {}
+    learning_total_seen: int = 0
+    if args.annotations_jsonl:
+        records, by_assay, total_seen = _load_annotations_jsonl(args.annotations_jsonl)
+        learning_annotations = records
+        learning_by_assay = by_assay
+        learning_total_seen = total_seen
+        print(
+            "[train] loaded {} annotation rows from {} (skipped {} bad/blank rows)".format(
+                len(records), args.annotations_jsonl, total_seen - len(records)
+            )
+        )
+        if records:
+            # Match on (DIT, Assay) and overwrite the ClonalitySuggestion column
+            # so the chemist's annotation is the authoritative label during
+            # the next retrain.
+            keys = {
+                (str(rec.get("dit") or ""), str(rec.get("assay") or "")): str(
+                    rec.get("annotation_class") or ""
+                )
+                for rec in records
+                if rec.get("dit")
+            }
+            if "DIT" in combined.columns and "Assay" in combined.columns:
+                annotated = combined.copy()
+                mask = annotated.apply(
+                    lambda row: (
+                        str(row.get("DIT") or ""),
+                        str(row.get("Assay") or ""),
+                    )
+                    in keys,
+                    axis=1,
+                )
+                annotated.loc[mask, "ClonalitySuggestion"] = annotated.loc[mask].apply(
+                    lambda row: keys[
+                        (str(row.get("DIT") or ""), str(row.get("Assay") or ""))
+                    ],
+                    axis=1,
+                )
+                combined = annotated
+                print(
+                    "[train] overlaid {} (DIT, Assay) rows with annotation_class".format(
+                        int(mask.sum())
+                    )
+                )
+    else:
+        print("[train] no --annotations-jsonl provided; rule engine labels only.")
 
     include_assays = None
     if args.assays:
@@ -441,7 +536,14 @@ def main(argv=None):
 
     summary_path = output_dir / "reports" / today / "summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(json.dumps({"date": today, "summaries": summaries}, indent=2), encoding="utf-8")
+    summary_payload = {
+        "date": today,
+        "summaries": summaries,
+        "learning_annotations_total": len(learning_annotations),
+        "learning_annotations_seen_total": learning_total_seen,
+        "learning_annotations_by_assay": learning_by_assay,
+    }
+    summary_path.write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
 
     print("[train] wrote models to: {}".format(output_dir))
     print("[train] wrote reports to: {}".format(report_dir))
