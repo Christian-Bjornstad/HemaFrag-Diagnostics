@@ -10,6 +10,7 @@ from gui_qt.styles import VIBRANT_PRO_QSS
 from gui_qt.tabs.tab_batch import TabBatch
 from gui_qt.tabs.tab_archive_runner import TabArchiveRunner
 from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
+from gui_qt.tabs.tab_ml_learning import TabMlLearning
 from gui_qt.tabs.tab_flt3_validation import TabFlt3Validation
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_log import TabLog
@@ -135,6 +136,7 @@ class MainWindow(QMainWindow):
                 "Ladder",
                 "Archive Runner",
                 "Interpretation",
+                "ML Learning",
                 "Log",
                 "Settings",
             ],
@@ -173,6 +175,7 @@ class MainWindow(QMainWindow):
         self.tab_archive_runner = TabArchiveRunner()
         self.tab_flt3_validation = TabFlt3Validation()
         self.tab_clonality_interpretation = TabClonalityInterpretation()
+        self.tab_ml_learning = TabMlLearning()
         self.tab_log = TabLog()
         self.tab_about = TabAbout()
         self.tab_settings_clonality = TabAnalysisSettings("clonality")
@@ -189,16 +192,17 @@ class MainWindow(QMainWindow):
         qt_log_handler.emitter.log_signal.connect(self.tab_log.append_log)
         
         # Add to stack
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_run))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ladder))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_flt3_validation))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_clonality_interpretation))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_clonality))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_flt3))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_general))
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_run))                     # 0
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ladder))                  # 1
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))          # 2
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_flt3_validation))         # 3
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_clonality_interpretation))  # 4
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ml_learning))             # 5
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))                     # 6
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))                   # 7
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_clonality))     # 8
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_flt3))          # 9
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_general))       # 10
         
         # Content Container (for padding)
         content_container = QWidget()
@@ -291,7 +295,17 @@ class MainWindow(QMainWindow):
             self.tab_flt3_validation.set_analysis(analysis_id)
             
         if analysis_id == "clonality":
-            page_map = {0: 0, 1: 1, 2: 2, 3: 4, 4: 5, 5: 7}
+            # sub-button-order: 0=Run, 1=Ladder, 2=Archive Runner,
+            # 3=Interpretation, 4=ML Learning, 5=Log, 6=Settings
+            page_map = {
+                0: 0,  # Run
+                1: 1,  # Ladder
+                2: 2,  # Archive Runner
+                3: 4,  # Interpretation
+                4: 5,  # ML Learning
+                5: 6,  # Log
+                6: 8,  # Settings
+            }
             page_idx = page_map.get(tab_idx, 0)
         elif analysis_id == "flt3":
             page_map = {0: 0, 1: 1, 2: 3, 3: 5, 4: 8}
