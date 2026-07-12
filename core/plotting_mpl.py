@@ -183,8 +183,8 @@ def draw_multi_channel_zoom_on_ax(
         ax.plot(
             bp,
             y,
-            linewidth=0.6,
-            alpha=0.85,
+            linewidth=1.0,
+            alpha=0.92,
             label=f"{ch} trace",
             color=colors.get(ch, None),
         )
@@ -207,7 +207,8 @@ def draw_multi_channel_zoom_on_ax(
             df["basepairs"],
             df["peaks"],
             color=peak_color_map.get(ch, "k"),
-            s=20,
+            s=36,
+            zorder=4,
             label=f"Detected peaks ({ch})",
         )
 
@@ -226,7 +227,7 @@ def draw_multi_channel_zoom_on_ax(
             y = float(row["peaks"]) * base_factor
 
             # Enkel repel: hvis to labels står veldig tett i x, flytt den ene
-            if last_x is not None and abs(x - last_x) < 2.5:
+            if last_x is not None and abs(x - last_x) < 5.0:
                 y = float(row["peaks"]) * (base_factor + extra_factor)
                 x += x_offset * (1 + (idx % 2))
 
@@ -234,8 +235,8 @@ def draw_multi_channel_zoom_on_ax(
                 x,
                 y,
                 f"{row['basepairs']:.1f}",
-                fontsize=7,
-                rotation=0,
+                fontsize=8,
+                rotation=90,
                 ha="left",
                 va="bottom",
             )
@@ -271,7 +272,8 @@ def draw_multi_channel_zoom_on_ax(
                 ladder_zoom["bp"],
                 ladder_zoom[ladder_height_col],
                 marker="x",
-                s=35,
+                s=50,
+                zorder=3,
                 color="tab:gray",
                 label="Ladder peaks",
             )

@@ -29,6 +29,8 @@ from core.analyses.clonality.config import (
     ROX_LADDER,
     SL_TARGET_FRAGMENTS_BP,
     SL_WINDOW_BP,
+    ABSOLUTE_MIN_PEAK_HEIGHT,
+    MIN_INTERPEAK_DISTANCE_BP,
 )
 from core.analyses.clonality.classification import classify_fsa
 from core.analyses.clonality.tracking_excel import (
@@ -136,6 +138,78 @@ def _rust_worker_batch_mode_available() -> bool:
         return bool(_persistent_rust_worker_supported() and cli_bin is not None and cli_bin.exists())
     except Exception:
         return False
+
+
+def _python_fallback_peaks(
+    fsa,
+    peak_channels: list[str],
+    bp_min: float,
+    bp_max: float,
+    *,
+    min_height: float = 400.0,
+    min_distance_bp: float = 3.0,
+) -> dict[str, pd.DataFrame]:
+    """Detect peaks via scipy.signal.find_peaks when Rust is unavailable.
+
+    Returns a dict {channel: DataFrame[basepairs, peaks, keep]} mirroring
+    the Rust preview format so the plot drawer and feature extractor both
+    work without modification.
+    """
+    from scipy.signal import find_peaks
+
+    sdbp = getattr(fsa, "sample_data_with_basepairs", None)
+    if sdbp is None or not hasattr(sdbp, "columns") or sdbp.empty:
+        return {}
+
+    result: dict[str, pd.DataFrame] = {}
+    bp_col = sdbp["basepairs"].to_numpy(dtype=float)
+    time_col = sdbp["time"].to_numpy(dtype=int) if "time" in sdbp.columns else None
+
+    for ch in peak_channels:
+        trace = fsa.fsa.get(ch)
+        if trace is None or len(trace) == 0:
+            continue
+        # Map bp -> scan-index so we search the raw trace
+        if time_col is not None:
+            mask = (time_col >= 0) & (time_col < len(trace)) & (bp_col >= bp_min) & (bp_col <= bp_max)
+            indices = time_col[mask]
+            segment = np.asarray(trace[indices], dtype=float)
+        else:
+            mask = (bp_col >= bp_min) & (bp_col <= bp_max)
+            segment = np.asarray(trace[mask], dtype=float) if mask.sum() > 0 else np.array([])
+
+        if len(segment) < 5:
+            continue
+
+        # Convert min_distance_bp to scan-index spacing
+        if time_col is not None and len(indices) > 1:
+            median_step = np.median(np.diff(indices[indices.argsort()]))
+            distance = max(1, int(min_distance_bp / max(median_step, 1)))
+        else:
+            distance = 1
+
+        peak_idx, _props = find_peaks(segment, height=min_height, distance=distance)
+        if len(peak_idx) == 0:
+            continue
+
+        # Map back to bp
+        if time_col is not None:
+            scan_idx = indices[peak_idx]
+            bp_vals = bp_col[mask][peak_idx] if mask.sum() == len(indices) else np.interp(scan_idx, time_col[mask], bp_col[mask])
+        else:
+            bp_vals = bp_col[mask][peak_idx]
+
+        heights = segment[peak_idx]
+        result[ch] = pd.DataFrame(
+            {
+                "basepairs": bp_vals,
+                "peaks": heights,
+                "keep": True,
+                "python_fallback": True,
+            }
+        ).sort_values("basepairs").reset_index(drop=True)
+
+    return result
 
 
 def _build_peaks_from_rust_clonality_preview(fsa, assay: str, primary_peak_channel: str) -> dict[str, pd.DataFrame]:
@@ -584,6 +658,15 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
         rust_peaks = _build_peaks_from_rust_clonality_preview(fsa, assay, primary_peak_channel)
         if rust_peaks:
             peaks_by_channel.update(rust_peaks)
+        else:
+            # Python fallback: detect peaks via scipy when Rust is unavailable
+            fallback = _python_fallback_peaks(
+                fsa, peak_channels, bp_min, bp_max,
+                min_height=ABSOLUTE_MIN_PEAK_HEIGHT,
+                min_distance_bp=MIN_INTERPEAK_DISTANCE_BP,
+            )
+            if fallback:
+                peaks_by_channel.update(fallback)
 
     ymax = compute_zoom_ymax(fsa, bp_min, bp_max, trace_channels, assay_name=assay)
 
