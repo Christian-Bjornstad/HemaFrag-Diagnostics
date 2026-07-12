@@ -14,6 +14,7 @@
 | ID  | Date | Driver | Per-assay metrics (acc / mono-F1 / poly-F1) | Accept τ | Calibration hash | Drift | Signoff |
 |-----|------|--------|----------------------------------------------|-----------|---------------------|-------|---------|
 | (template only — first row will arrive after Phase 3 ships) |||||||
+| `clonality-ml-v0.1.0-pa-ml-learning-tab` | 2026-07-12 | GUI workflow landed | — | — | — | New: ML Learning tab in app sidebar + Plotly annotation panel + JSONL → trainer merge. Branch `feat/ml-learning-tab-2026-07-12`. Atomic commits 3ddd93a / a2c966a / 77da89a. | — |
 
 ## Maintenance rules
 

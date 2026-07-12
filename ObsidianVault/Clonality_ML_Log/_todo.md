@@ -241,3 +241,59 @@ wiring + status doc, all in one commit). `git push origin
 ml-clonality-interpretation-2026-06-27` immediately after each
 so a container restart can't lose the work — see Plan 12 §15.
 
+
+
+
+## Plan 13 — ML Learning tab + Plotly annotation workflow
+
+> Branch: `feat/ml-learning-tab-2026-07-12` (in flight from `ml-clonality-interpretation-2026-06-27`).
+> Plan saved at `.hermes/plans/2026-07-12_ml-learning-tab.md`.
+
+### Today's deliveries (2026-07-12)
+
+- [x] Phase A — Klonalitet / ML Learning tab in PyQt6 sidebar (`gui_qt/tabs/tab_ml_learning/`).
+  21 new tests; Browse + Run + assay picker + file-table widget.
+  Commit `3ddd93a`.
+- [x] Phase B — Plotly annotation panel (`_render.py`) with per-case zoom
+  (xrange = assay interpretation range ±18 bp, ymax = trace peak × 1.18),
+  sticky annotate bar, class button per `ANNOTATION_CLASSES`, flag button
+  per `CONTROL_FLAGS` (control rows only), keyboard shortcuts
+  M/P/B/I/Q/N/T/U/Z, in-page Export annotations (download blob).
+  Commit `a2c966a`, 13 new tests.
+- [x] Phase C — JSONL feedback loop (`_feedback.py`) + trainer
+  `--annotations-jsonl` merge. Idempotent import manifest. Annotations
+  overlay the rule-engine labels on next retrain. summary.json now
+  carries `learning_annotations_total` / `_seen_total` / `_by_assay`.
+  Commit `77da89a`, 19 new tests.
+
+### Test results
+
+```
+345 (Phase 0 baseline) + 21 (submodules) + 13 (render) + 14 (feedback) + 6 (trainer merge) - dupes
+= 400 passed, 1 skipped, 0 regressions.
+```
+
+### Next on the chemist's hands
+
+1. Open the HemaFrag app; click **Klonalitet → ML Learning** in the sidebar.
+2. **Browse** an FSA folder (e.g. `C:/HemaFrag/.../Klonalitet_2026/some_run`).
+3. **Run analysis** — workers run sequentially, peaks populated even without
+   the Rust binary (Python fallback). Status bar updates per-file.
+4. **Open annotation panel** opens `ML_Learning/annotation/review_panel.html`
+   in your browser. Zoom / hover / keyboard-labels work natively.
+5. Click **Export annotations** inside the panel — saves
+   `ML_Learning/imports/annotations_<timestamp>.json`.
+6. Back in HemaFrag, click **Import panel annotations** — JSONL rows land
+   in `ML_Learning/annotations/learning.jsonl`. Idempotent re-imports.
+7. Run the trainer with `--annotations-jsonl
+   ML_Learning/annotations/learning.jsonl` — annotations overlay rule
+   labels and the next round of model fitting sees them.
+
+### Pending windows-host QA
+
+- R1 (HIGH): `os.startfile` may not launch the panel on locked-down
+  Windows hosts. Verify on the actual work computer before declaring this
+  a hard feature.
+- The branch lives in `feat/ml-learning-tab-2026-07-12` on the container;
+  the Windows Desktop checkout (per the two-copy Workflow pitfall) needs
+  a `git fetch + checkout` to mirror these three commits.
