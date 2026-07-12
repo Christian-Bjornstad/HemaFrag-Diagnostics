@@ -33,8 +33,23 @@ from gui_qt.tabs.tab_ml_learning._summary import (
     infer_assay,
     summarize_run,
 )
-from gui_qt.tabs.tab_ml_learning._io import list_fsa_files, write_json
+from gui_qt.tabs.tab_ml_learning._io import list_fsa_files, read_json, write_json
+from gui_qt.tabs.tab_ml_learning._render import render_annotation_panel_html
+from gui_qt.tabs.tab_ml_learning._constants import (
+    PANEL_ENTRIES_JSON_FILENAME,
+    PANEL_HTML_FILENAME,
+    SUBDIR_PANEL,
+)
 from gui_qt.tabs.tab_ml_learning._workers import AnalyzeWorker
+
+
+def _default_panel_dir() -> Path:
+    from config import APP_SETTINGS
+
+    base = APP_SETTINGS.get("analyses", {}).get("clonality", {}).get(
+        "learning", {}
+    ).get("output_dir")
+    return Path(base) if base else Path("ML_Learning")
 
 
 class TabMlLearning(QWidget):
@@ -67,6 +82,9 @@ class TabMlLearning(QWidget):
         self._candidate_paths: list[Path] = []
         self._grouped: dict[str, list[Path]] = {}
         self._running = False
+        self._entries: list[dict[str, Any]] = []
+        self._last_panel_path: Path | None = None
+        self._last_panel_entries_path: Path | None = None
         self._build_ui()
 
     # ---- UI --------------------------------------------------------------
@@ -121,7 +139,7 @@ class TabMlLearning(QWidget):
         action_row.addWidget(self._run_btn)
 
         self._open_panel_btn = QPushButton("Open annotation panel")
-        self._open_panel_btn.setEnabled(False)  # wired in Phase B
+        self._open_panel_btn.setEnabled(False)  # enabled after the worker finishes
         self._open_panel_btn.clicked.connect(self._open_panel_clicked)
         action_row.addWidget(self._open_panel_btn)
 
@@ -216,9 +234,12 @@ class TabMlLearning(QWidget):
         self.run_now()
 
     def _open_panel_clicked(self) -> None:
-        # Phase B ships the actual implementation. Placeholder keeps the
-        # button clickable + responsive for headless tests today.
-        self._status_label.setText("Annotation panel: Phase B will wire this.")
+        # Re-render with the *current* selection (no re-persist if entries
+        # unchanged - cheap disk write; alright for repeated clicks).
+        if not self._entries:
+            self._status_label.setText("Run analysis first.")
+            return
+        self._render_panel_now(persist=True)
 
     def _on_progress(self, current: int, total: int) -> None:
         self._status_label.setText(f"Analyzed {current}/{total} files...")
@@ -226,9 +247,67 @@ class TabMlLearning(QWidget):
     def _on_finished(self, entries: list[dict[str, Any]]) -> None:
         self._running = False
         self._run_btn.setEnabled(True)
-        self._status_label.setText(
-            f"Run done. {len(entries)} files annotated. Phase B will open the panel."
-        )
+        self._entries = list(entries)
+        self._render_panel_now(persist=True)
+        self._open_panel_btn.setEnabled(bool(self._last_panel_path))
+        if self._last_panel_path:
+            self._status_label.setText(
+                f"Run done. {len(entries)} cases. Panel at {self._last_panel_path}"
+            )
+
+    def _render_panel_now(self, *, persist: bool) -> None:
+        """Render the single-file Plotly annotation panel and persist it.
+
+        ``persist=True`` writes entries.json + review_panel.html to disk;
+        ``persist=False`` keeps the in-memory data but skips disk (used when
+        the chemist clicks ``Open annotation panel`` a second time).
+        """
+        if not self._entries:
+            self._status_label.setText("Run analysis first; no entries yet.")
+            return
+
+        entries_subset = self._selected_subset() or self._entries
+        try:
+            panel_dir = _default_panel_dir() / "annotation"
+            if persist:
+                panel_dir.mkdir(parents=True, exist_ok=True)
+                entries_path = panel_dir / PANEL_ENTRIES_JSON_FILENAME
+                write_json(entries_path, entries_subset)
+                self._last_panel_entries_path = entries_path
+            panel_path = render_annotation_panel_html(
+                entries_subset,
+                out_dir=panel_dir,
+                title="HemaFrag clone ML annotation",
+                annotator="",
+            )
+            self._last_panel_path = panel_path
+        except Exception as exc:  # pragma: no cover - safe failure
+            self._status_label.setText(f"Panel render failed: {exc}")
+            return
+
+        # Open the panel in the system browser.
+        try:
+            import os
+            import sys
+
+            if sys.platform.startswith("win"):
+                os.startfile(str(panel_path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                os.system(f'open "{panel_path}"')
+            else:
+                os.system(f'xdg-open "{panel_path}"')
+        except Exception:
+            self._status_label.setText(
+                f"Panel written: {panel_path} - open manually."
+            )
+
+    def _selected_subset(self) -> list[dict[str, Any]]:
+        """Subset of _entries that user has *checked* in the table."""
+        wanted = {str(p) for p in self.selected_paths()}
+        return [
+            e for e in self._entries
+            if str(e.get("raw_path") or "") in wanted
+        ]
 
     def _refresh_table(self) -> None:
         self._table.setRowCount(0)
