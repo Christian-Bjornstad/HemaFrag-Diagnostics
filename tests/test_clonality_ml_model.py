@@ -143,3 +143,54 @@ def test_predict_returns_label_confidence_after_threshold(tmp_path):
     assert 0.0 <= result["confidence"] <= 1.0
     # Label is one of the canonical class strings
     assert result["label"] in list(ANNOTATION_CLASSES_ORDER) + [""]
+
+
+# ----- Task 2: feature vector adapter -----------------------------------
+
+
+def test_flatten_handles_unknown_columns(tmp_path):
+    """flattener must pass-through required columns even if missing."""
+    df = pd.DataFrame()
+    flat_clf = ClonalityModelStore
+    # Use the free function
+    from core.analyses.clonality.ml_model import flatten_features_for_inference
+    out = flatten_features_for_inference(
+        {"f_height": 1.0, "f_ratio": 0.5, "f_share": 0.3},
+        columns=["f_height", "f_ratio", "f_share", "extra_col"],
+    )
+    assert list(out.columns) == ["f_height", "f_ratio", "f_share", "extra_col"]
+    assert out["f_height"].iloc[0] == 1.0
+    assert out["extra_col"].iloc[0] == 0.0  # default to 0.0
+
+
+def test_flatten_expands_per_channel_dicts():
+    """Nested per-channel dicts expand to flat columns with a prefix."""
+    from core.analyses.clonality.ml_model import flatten_features_for_inference
+    out = flatten_features_for_inference(
+        {
+            "peak_count_per_channel": {"DATA1": 3, "DATA2": 5},
+            "peak_variance_per_channel": {"DATA1": 1.0, "DATA2": 2.0},
+            "f_height": 100.0,
+        },
+        columns=[
+            "f_height",
+            "trace_peak_count_DATA1",
+            "trace_peak_count_DATA2",
+            "trace_peak_variance_DATA1",
+            "trace_peak_variance_DATA2",
+        ],
+    )
+    assert out["trace_peak_count_DATA1"].iloc[0] == 3
+    assert out["trace_peak_count_DATA2"].iloc[0] == 5
+    assert out["trace_peak_variance_DATA1"].iloc[0] == 1.0
+
+
+def test_flatten_coerces_non_numeric_to_numeric():
+    from core.analyses.clonality.ml_model import flatten_features_for_inference
+    out = flatten_features_for_inference(
+        {"f_height": "100", "f_ratio": True, "f_share": None},
+        columns=["f_height", "f_ratio", "f_share", "inf"],
+    )
+    assert out["f_height"].iloc[0] == 100.0
+    assert out["f_ratio"].iloc[0] == 1.0
+    assert out["f_share"].iloc[0] == 0.0  # None/NaN -> 0.0
