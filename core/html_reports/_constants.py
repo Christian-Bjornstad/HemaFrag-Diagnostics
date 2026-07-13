@@ -296,6 +296,50 @@ tr:hover td { background: #f0fdfa; /* Soft teal hover */ transition: background 
     .comment-body { display: block !important; padding: 0; }
     .report-comment { border: none; padding: 0; resize: none; overflow: hidden; background: transparent; }
 }
+
+/* ── Clonality ML badges (in-app ML assistant) ── */
+.clonality-ml-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    margin: 8px 0;
+    background: linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%);
+    border: 1px solid #a78bfa;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    color: #3b1f70;
+    box-shadow: 0 1px 3px rgba(67, 56, 202, 0.12);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.clonality-ml-badge[data-state="dismissed"] {
+    display: none;
+}
+.clonality-ml-badge .ml-badge-label strong { color: #1e1b4b; }
+.ml-rule-gloss { color: #4338ca; opacity: 0.85; font-size: 0.72rem; }
+.ml-review-tag {
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(245, 158, 11, 0.15);
+    color: #b45309;
+    font-weight: 600;
+    font-size: 0.7rem;
+}
+.ml-dismiss, .ml-restore {
+    background: white;
+    border: 1px solid #c4b5fd;
+    color: #4338ca;
+    padding: 3px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 0.7rem;
+    font-weight: 600;
+    transition: background 0.15s ease;
+}
+.ml-dismiss:hover, .ml-restore:hover { background: #ede9fe; }
+@media print {
+    .clonality-ml-badge .ml-dismiss, .clonality-ml-badge .ml-restore { display: none; }
+}
 </style>
 """
 

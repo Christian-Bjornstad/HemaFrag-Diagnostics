@@ -565,6 +565,7 @@ def _create_html_header(
     html_lines.append(REPORT_STYLE)
     html_lines.append('<script id="peak-data" type="application/json">{}</script>')
     html_lines.append('<script id="plot-state" type="application/json">{}</script>')
+    html_lines.append('<script id="clonality-decisions" type="application/json">{}</script>')
     html_lines.append(r"""
 <script>
 // Toggle comment boxes
@@ -1109,6 +1110,88 @@ def _build_flt3_summary_table(e: dict) -> str:
 
     return ""
 
+
+def _clonality_ml_label_for_entry(entry: dict) -> str:
+    """Return the ML suggestion label for an entry, or '' if absent.
+
+    Pure helper — no HTML, no I/O. Used by the badge renderer and
+    by the JS dismissal serialiser so they share a single source
+    of truth for what counts as 'present'.
+    """
+    label = str(entry.get("ClonalityMLSuggestion") or "").strip()
+    return label
+
+
+def _clonality_ml_confidence_for_entry(entry: dict) -> str:
+    raw = entry.get("ClonalityMLConfidence", "")
+    if raw in (None, "", 0):
+        return ""
+    try:
+        return f"{float(raw):.2f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _render_clonality_ml_badge(entry: dict, html_lines: list[str]) -> None:
+    """Render a dismissible ML badge for a single sample.
+
+    No-op when ``entry['ClonalityMLSuggestion']`` is empty. Otherwise
+    the badge carries:
+        - the label (e.g. "monoklonal") and confidence
+        - a "Skjul for patolog" button that hides the badge from the
+          pathologist's view without re-running the pipeline
+        - a hidden "Gjenopprett" button that pops back when dismissed
+        - dataset attributes the JS uses to persist dismissal state
+          when the chemist presses Save Peaks.
+
+    ID is keyed on identity_key + assay + file_name so re-running
+    the same sample lands on the same badge after the chart re-render.
+    """
+    label = _clonality_ml_label_for_entry(entry)
+    if not label:
+        return
+    confidence = _clonality_ml_confidence_for_entry(entry)
+    review_needed = entry.get("ClonalityMLReviewNeeded", False)
+    rule_label = str(entry.get("ClonalitySuggestion") or "").strip()
+    identity_key = (
+        str(entry.get("dit") or entry.get("DIT") or "")
+        or str(getattr(entry.get("fsa"), "file_name", "") or entry.get("file_name") or "")
+    )
+    assay = str(entry.get("assay") or "")
+    file_name = str(getattr(entry.get("fsa"), "file_name", "") or entry.get("file_name") or "")
+    import hashlib
+    badge_id_src = f"{identity_key}|{assay}|{file_name}".encode("utf-8")
+    badge_id = "ml-" + hashlib.md5(badge_id_src).hexdigest()[:16]
+    rule_gloss = (
+        f"<span class='ml-rule-gloss'>regel: {escape(rule_label or 'ukjent')}</span>"
+        if rule_label
+        else ""
+    )
+    review_gloss = (
+        "<span class='ml-review-tag ml-review-flagged' "
+        "title='Lav konfidens eller uenighet med regellaget'>&#9888; vurder</span>"
+        if review_needed
+        else ""
+    )
+    confidence_text = f" ({confidence})" if confidence else ""
+    html_lines.append(
+        f"<div class='clonality-ml-badge' "
+        f"id='{badge_id}' data-state='active' "
+        f"data-dit='{escape(identity_key)}' data-assay='{escape(assay)}' "
+        f"data-file='{escape(file_name)}' data-ml-label='{escape(label)}' "
+        f"data-ml-review='{1 if review_needed else 0}'>"
+        f"<span class='ml-badge-label'>ML: <strong>{escape(label)}</strong>"
+        f"{escape(confidence_text)}</span>"
+        f"{review_gloss}"
+        f"{rule_gloss}"
+        f"<button class='ml-dismiss no-print' type='button' "
+        f"onclick='ClonalityDecisionLog.dismiss(this)'>Skjul for patolog</button>"
+        f"<button class='ml-restore no-print' type='button' hidden "
+        f"onclick='ClonalityDecisionLog.restore(this)'>Gjenopprett</button>"
+        f"</div>"
+    )
+
+
 def _render_assay_block(
     assay_name: str,
     assay_entries: list[dict],
@@ -1141,7 +1224,12 @@ def _render_assay_block(
             ]
             html_lines.append(f"<p class='small'>{escape(' | '.join(sub))}</p>")
         html_lines.append(_build_report_plot_fragment(e, report_metrics))
-            
+        # ML badge (clonality only) — inserts before the FLT3 summary
+        # table so the dismiss buttons line up vertically. We also call
+        # this for FLT3 entries; they just won't render anything since
+        # the entry has no ClonalityML* keys.
+        _render_clonality_ml_badge(e, html_lines)
+
         if reference_assay in {"FLT3-ITD", "FLT3-D835", "NPM1"}:
             html_lines.append(_build_flt3_summary_table(e))
 
