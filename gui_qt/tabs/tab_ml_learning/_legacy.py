@@ -232,15 +232,20 @@ class TabMlLearning(QWidget):
     # ---- internal slots --------------------------------------------------
 
     def _browse_clicked(self) -> None:
-        folder = QFileDialog.getExistingDirectory(
-            self, "Pick FSA folder", str(self._root or Path.cwd())
-        )
-        if not folder:
-            return
-        count = self.set_root(folder)
-        self._refresh_summary(n_files=count)
-        self._refresh_table()
-        self._root_label.setText(str(self._root))
+        try:
+            folder = QFileDialog.getExistingDirectory(
+                self, "Pick FSA folder", str(self._root or Path.cwd())
+            )
+            if not folder:
+                return
+            count = self.set_root(folder)
+            self._refresh_summary(n_files=count)
+            self._refresh_table()
+            self._root_label.setText(str(self._root))
+        except Exception as exc:  # pragma: no cover - safe failure
+            # Surface every browse-time error in the status bar so the
+            # chemist doesn't see a silent stack-trace.
+            self._status_label.setText(f"Folder open failed: {exc}")
 
     def _run_clicked(self) -> None:
         self.run_now()

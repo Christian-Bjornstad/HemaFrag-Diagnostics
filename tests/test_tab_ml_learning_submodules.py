@@ -250,6 +250,39 @@ class TestTabWidget:
         assert len(sel) == 1
         assert sel[0].name == "a_FR1.fsa"
 
+    def test_browse_clicked_surfaces_exceptions_in_status_bar(self, qapp, tmp_path, monkeypatch):
+        """Browse-time failures must not crash the slot silently.
+
+        Patches QFileDialog.getExistingDirectory to return a path that
+        triggers a downstream error, and asserts the exception is
+        captured into _status_label instead of bubbling up.
+        """
+        from gui_qt.tabs.tab_ml_learning import TabMlLearning
+        from PyQt6.QtWidgets import QFileDialog
+
+        # A folder that exists but raises during set_root so we can pin
+        # the safe-failure path.  We make set_root throw by feeding it
+        # a non-string-like Path (note: set_root signature accepts
+        # Path|str|None - so we monkeypatch list_fsa_files instead).
+        from gui_qt.tabs.tab_ml_learning import _legacy as ml_legacy
+        boom = RuntimeError("simulated scan failure")
+
+        def boom_scan(_folder):
+            raise boom
+
+        monkeypatch.setattr(
+            ml_legacy, "list_fsa_files", boom_scan
+        )
+        monkeypatch.setattr(
+            QFileDialog, "getExistingDirectory",
+            staticmethod(lambda *a, **kw: str(tmp_path)),
+        )
+
+        w = TabMlLearning()
+        w._browse_clicked()
+        assert "Folder open failed" in w._status_label.text()
+        assert "simulated scan failure" in w._status_label.text()
+
 
 # ---- Constants expose ---------------------------------------------------
 
