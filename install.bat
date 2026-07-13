@@ -3,9 +3,10 @@ REM ============================================================
 REM HemaFrag Diagnostics — first-time install (Windows / cmd.exe)
 REM
 REM Behaviour:
-REM   - Uses C:\Users\molpa\AppData\Local\Programs\Python\Python312\python.exe
-REM     as the launcher (matches Christian's setup; falls back to 'python'
-REM     on PATH if not found).
+REM   - Prefers C:\Users\molpa\AppData\Local\Programs\Python\Python314\python.exe
+REM     (the 3.14.6 work-computer interpreter -- the migration target).
+REM   - Falls back to Python312\python.exe (this dev machine) and
+REM     finally to whatever `where python` resolves on PATH.
 REM   - Creates .venv at the repo root.
 REM   - pip install --upgrade pip wheel setuptools in the venv.
 REM   - pip install -r requirements.txt in the venv.
@@ -23,9 +24,15 @@ if "%REPO_ROOT:~-1%"=="\" set "REPO_ROOT=%REPO_ROOT:~0,-1%"
 echo [install] repo root:  %REPO_ROOT%
 echo [install] python exe:
 set "PYTHON_EXE="
-if exist "C:\Users\molpa\AppData\Local\Programs\Python\Python312\python.exe" (
+REM Prefer Python 3.14.6 (work computer's interpreter -- the 3.14
+REM migration target). Falls back to 3.12 (this dev machine) and then
+REM to whatever `where python` finds on PATH.
+if exist "C:\Users\molpa\AppData\Local\Programs\Python\Python314\python.exe" (
+    set "PYTHON_EXE=C:\Users\molpa\AppData\Local\Programs\Python\Python314\python.exe"
+    echo [install]   - using 3.14 path: %PYTHON_EXE%
+) else if exist "C:\Users\molpa\AppData\Local\Programs\Python\Python312\python.exe" (
     set "PYTHON_EXE=C:\Users\molpa\AppData\Local\Programs\Python\Python312\python.exe"
-    echo [install]   - using %PYTHON_EXE%
+    echo [install]   - using 3.12 path: %PYTHON_EXE%
 ) else (
     where python >nul 2>&1
     if errorlevel 1 (

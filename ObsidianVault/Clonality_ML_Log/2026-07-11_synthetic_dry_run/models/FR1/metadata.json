@@ -1,0 +1,23 @@
+{
+  "accept_threshold_tau": 0.85,
+  "assay": "FR1",
+  "classifier_kind": "random_forest",
+  "label_order": [
+    "monoklonal",
+    "polyklonal",
+    "bi_oligoklonal",
+    "irregulaer",
+    "pseudoklonal",
+    "intet_pcr_produkt_darlig_dna",
+    "qc_teknisk_fail",
+    "usikker_review"
+  ],
+  "rare_class_counts": {
+    "bi_oligoklonal": 35,
+    "irregulaer": 64,
+    "monoklonal": 60,
+    "polyklonal": 61
+  },
+  "schema_version": "ml_training_pipeline_v1",
+  "trained_at_utc": "2026-07-11"
+}

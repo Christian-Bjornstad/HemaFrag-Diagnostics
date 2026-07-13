@@ -2,6 +2,32 @@
 HemaFrag Diagnostics — PyQt6 Architecture Stylesheet
 """
 
+# ─────────────────────────────────────────────────────────────────────────────
+# HemaFrag palette — single source of truth for app accent colors.
+# Keep these in sync with any NEW QSS rules added. Use these constants when
+# adding hex codes to dialogs/widgets. (The QSS string itself uses literal
+# hex because QSS does not understand Python f-strings.)
+# ─────────────────────────────────────────────────────────────────────────────
+PALETTE = {
+    "primary":      "#2563eb",   # App accent (blue)
+    "success":      "#16a34a",   # Pass / ok
+    "warning":      "#d97706",   # Check / pending
+    "danger":       "#dc2626",   # Fail / error
+    "neutral_text": "#102235",   # Default body text
+    "muted_text":   "#64748b",   # Secondary text
+    "page_title":   "#0f172a",   # Page titles
+    "page_subtext": "#64748b",   # Page subtitles
+    "background":   "#eef4f8",   # Light content area
+    "sidebar":      "#0b1724",   # Dark sidebar
+    "card_bg":      "#ffffff",   # Card surface
+    "empty_state":  "#f8fafc",   # Empty state card bg
+    "empty_border": "#cbd5e1",   # Empty state card border
+    "pass_bg":      "#dcfce7",   # StatusPill pass background
+    "check_bg":     "#fef3c7",   # StatusPill check background
+    "fail_bg":      "#fee2e2",   # StatusPill fail background
+    "idle_bg":      "#f1f5f9",   # StatusPill idle background
+}
+
 VIBRANT_PRO_QSS = """
 /* Global Application Settings */
 QWidget {
@@ -252,20 +278,57 @@ QScrollArea#TabScrollArea > QWidget > QWidget {
 
 /* Headers */
 #PageTitle {
-    font-size: 27px;
+    font-size: 22px;
     font-weight: 800;
-    color: #0f2539;
-    line-height: 1.2;
+    color: #0f172a;
+    padding: 0;
+    margin: 0;
 }
 
 #PageSubtitle {
-    color: #566f82;
-    font-size: 14px;
-    margin-bottom: 20px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #64748b;
+    padding: 0;
+    margin: 4px 0 18px 0;
 }
 
 QLabel#MutedText {
     color: #6a8091;
+}
+
+/* Empty State */
+QLabel#EmptyStateCard {
+    background: #f8fafc;
+    border: 1px dashed #cbd5e1;
+    border-radius: 12px;
+    padding: 40px;
+    color: #64748b;
+    font-size: 14px;
+}
+
+/* Status Pills */
+QLabel#StatusPill {
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-weight: 700;
+    font-size: 11px;
+}
+QLabel#StatusPill[state="pass"] {
+    background-color: #dcfce7;
+    color: #16a34a;
+}
+QLabel#StatusPill[state="check"] {
+    background-color: #fef3c7;
+    color: #d97706;
+}
+QLabel#StatusPill[state="fail"] {
+    background-color: #fee2e2;
+    color: #dc2626;
+}
+QLabel#StatusPill[state="idle"] {
+    background-color: #f1f5f9;
+    color: #64748b;
 }
 
 /* Standard Buttons */

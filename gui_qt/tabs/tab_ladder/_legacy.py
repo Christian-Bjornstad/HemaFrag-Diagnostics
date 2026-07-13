@@ -87,8 +87,21 @@ class TabLadder(QWidget):
         main_layout.addLayout(header)
 
         main_layout.addWidget(self._build_source_card(), stretch=1)
-        main_layout.addWidget(self._build_details_card())
-        main_layout.addWidget(self._build_report_card(), stretch=1)
+
+        self._empty_state = QLabel("Pick one .fsa file to inspect its ladder.")
+        self._empty_state.setObjectName("EmptyStateCard")
+        self._empty_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(self._empty_state)
+
+        self._details_card = self._build_details_card()
+        self._report_card = self._build_report_card()
+        main_layout.addWidget(self._details_card)
+        main_layout.addWidget(self._report_card, stretch=1)
+
+        # Initially no file loaded — show empty state, hide details + report
+        self._empty_state.setVisible(True)
+        self._details_card.setVisible(False)
+        self._report_card.setVisible(False)
 
         self.status_lbl = QLabel("Ready — scan a folder or browse directly to a single .fsa file.")
         self.status_lbl.setStyleSheet("color: #64748b; font-weight: 500;")
@@ -578,6 +591,10 @@ class TabLadder(QWidget):
             self.btn_open_file_folder,
         ]:
             btn.setEnabled(enabled)
+
+        self._empty_state.setVisible(not enabled)
+        self._details_card.setVisible(enabled)
+        self._report_card.setVisible(enabled)
 
         if not file_path:
             self.report_list.clear()

@@ -1,63 +1,67 @@
-altair>=6.2.2
-asteval>=1.0.9
-attrs>=26.1.0
-biopython>=1.87
-bleach>=6.4.0
-bokeh>=3.9.1
-build>=1.5.0
-certifi>=2026.6.17
-charset-normalizer>=3.4.9
-contourpy>=1.3.3
-cycler>=0.12.1
-dill>=0.4.1
-et_xmlfile>=2.0.0
-fonttools>=4.63.0
-idna>=3.18
-Jinja2>=3.1.6
-joblib>=1.5.3
-jsonschema>=4.26.0
-jsonschema-specifications>=2025.9.1
-kiwisolver>=1.5.0
-linkify-it-py>=2.1.0
-lmfit>=1.3.4
-Markdown>=3.10.2
-markdown-it-py>=4.2.0
-MarkupSafe>=3.0.3
-matplotlib>=3.11.0
-numpy>=2.5.1
+# HemaFrag Diagnostics -- runtime deps for Python 3.11 / 3.12 / 3.14.6
+#
+# Floor pins (lower bound only). Lets pip pick a single matrix that
+# works on:
+#   - Python 3.11 / 3.12 (this dev machine)
+#   - Python 3.14.6 (the work computer)
+#
+# Last validated:
+#   - 3.12 venv install: 2026-07-09 (37/37 deps resolve)
+#   - cp314 + win_amd64 dry-run: 2026-07-09 (37/37 PASS, no sdist)
+#
+# Migration docs:
+#   PLAN_PY314_MIGRATION.md  -- rationale, risks, recipe
+#   REMAINING_WORK.md        -- phase-by-phase status
+
+# Scientific / data / ML core (HemaFrag must-haves)
+numpy>=2.1,<3.0
+scipy>=1.13,<2.0
+pandas>=2.2,<3.0
+pandas_flavor>=0.6,<1.0
+scikit-learn>=1.6,<2.0
+matplotlib>=3.10,<4
+pillow>=11
 openpyxl>=3.1.5
-packaging>=26.2
-pandas>=2.3.3
-pandas-flavor>=0.8.1
-panel>=1.9.3
-param>=2.4.1
-pillow>=12.3.0
-plotly>=6.8.0
-pyarrow>=24.0.0
-PyQt6>=6.11.0
-PyQt6-Qt6>=6.11.1
-PyQt6_sip>=13.11.1
-pyqtgraph>=0.14.0
-pytest>=9.1.1
-pytest-cov>=7.1.0
-pytest-xdist>=3.8.0
-python-dateutil>=2.9.0.post0
-pytz>=2026.2
-pyviz_comms>=3.0.6
-PyYAML>=6.0.3
-referencing>=0.37.0
-requests>=2.34.2
-rich>=15.0.0
-scikit-learn>=1.9.0
-scipy>=1.18.0
-setuptools>=83.0.0
-six>=1.17.0
-tomli>=2.4.1
-tornado>=6.5.7
-uncertainties>=3.2.3
-urllib3>=2.7.0
-webencodings>=0.5.1
-wheel>=0.47.0
-xarray>=2025.6.1
-xlsxwriter>=3.2.9
-xyzservices>=2026.3.0
+xlsxwriter>=3.2
+
+# ML interpretability / auto-ML / viz extras
+joblib>=1.4
+lmfit>=1.3.4
+biopython>=1.84
+xarray>=2024
+uncertainties>=3.2
+contourpy>=1.3
+kiwisolver>=1.4
+
+# Plotting / dashboard
+plotly>=6.5
+altair>=5.4
+bokeh>=3.7
+panel>=1.6
+param>=2.3
+pyviz_comms>=3.0
+xyzservices>=2025.1
+pyqtgraph>=0.13.7
+
+# Qt GUI -- install via pip wheels (work computer has no Rust toolchain)
+PyQt6>=6.11
+
+# Web / data transport
+Jinja2>=3.1.6
+requests>=2.32
+urllib3>=2.2
+
+# Validation / config
+jsonschema>=4.21
+pytz>=2024
+tzdata>=2023
+PyYAML>=6.0
+packaging>=23
+
+# Operator UX
+tqdm>=4.66
+
+# Meta (the install script upgrades pip; keep them pinned)
+pip>=24
+wheel>=0.43
+setuptools>=66

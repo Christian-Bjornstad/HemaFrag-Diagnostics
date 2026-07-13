@@ -656,10 +656,10 @@ window.PeakManager = {
         var currentHtml = document.documentElement.outerHTML;
         var peakDataStr = JSON.stringify(allPeaks);
         var plotStateStr = JSON.stringify(allPlotStates);
-        var pattern = /<script id="peak-data" type="application\/json">[\\s\\S]*?</script>/;
-        var newTag = '<script id="peak-data" type="application/json">\n' + peakDataStr + '\n</script>';
-        var plotPattern = /<script id="plot-state" type="application\/json">[\\s\\S]*?</script>/;
-        var newPlotTag = '<script id="plot-state" type="application/json">\n' + plotStateStr + '\n</script>';
+        var pattern = /<script id="peak-data" type="application\/json">[\s\S]*?<\/script>/;
+        var newTag = '<script id="peak-data" type="application/json">\n' + peakDataStr + '\n<\/script>';
+        var plotPattern = /<script id="plot-state" type="application\/json">[\s\S]*?<\/script>/;
+        var newPlotTag = '<script id="plot-state" type="application/json">\n' + plotStateStr + '\n<\/script>';
         var updatedHtml = currentHtml.replace(pattern, newTag).replace(plotPattern, newPlotTag);
         var blob = new Blob(['<!DOCTYPE html>\n' + updatedHtml], {type: 'text/html'});
         var url = URL.createObjectURL(blob);
@@ -1183,12 +1183,9 @@ def _render_tcrb_rep_block(
         e_combo["forced_ymax"] = group_y
         e_combo["forced_xmin"] = forced_xmin
         e_combo["forced_xmax"] = forced_xmax
-        
+        e_combo["compact"] = True
+
         html_lines.append("<div class='combo-item'>")
-        html_lines.append(f"<p class='sample-header'>{escape(e_combo['assay'])} – {escape(fsa.file_name)}</p>")
-        rearrangement_html = _render_rearrangement_info_html(e_combo['assay'])
-        if rearrangement_html:
-            html_lines.append(rearrangement_html)
         html_lines.append(_build_report_plot_fragment(e_combo, report_metrics))
         html_lines.append("</div>")
     html_lines.append("</div></div>")
@@ -1214,12 +1211,9 @@ def _render_tcrg_combo_block(
         e_combo["forced_ymax"] = group_y
         e_combo["forced_xmin"] = forced_xmin
         e_combo["forced_xmax"] = forced_xmax
-        
+        e_combo["compact"] = True
+
         html_lines.append("<div class='combo-item'>")
-        html_lines.append(f"<p class='sample-header'>{escape(e_combo['assay'])} – {escape(fsa.file_name)}</p>")
-        rearrangement_html = _render_rearrangement_info_html(e_combo['assay'])
-        if rearrangement_html:
-            html_lines.append(rearrangement_html)
         html_lines.append(_build_report_plot_fragment(e_combo, report_metrics))
         html_lines.append("</div>")
     html_lines.append("</div></div>")
@@ -1277,11 +1271,14 @@ def _is_dit_qc_control(entry: dict) -> bool:
     return _control_id_for_entry(entry) in DIT_QC_CONTROL_IDS
 
 
-def _qc_entry_sort_key(entry: dict) -> tuple[str, str, str]:
+_QC_CONTROL_RANK = {"PK": 0, "PK1": 0, "PK2": 0, "RK": 1, "NK": 2}
+
+
+def _qc_entry_sort_key(entry: dict) -> tuple[str, int, str]:
     fsa = entry.get("fsa")
     return (
         normalize_assay_qc(str(entry.get("assay") or "")),
-        _control_id_for_entry(entry),
+        _QC_CONTROL_RANK.get(_control_id_for_entry(entry), 99),
         str(getattr(fsa, "file_name", "") or entry.get("file_name") or ""),
     )
 

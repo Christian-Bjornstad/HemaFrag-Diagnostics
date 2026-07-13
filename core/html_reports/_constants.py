@@ -121,6 +121,7 @@ tr:hover td { background: #f0fdfa; /* Soft teal hover */ transition: background 
 .peak-editor-block { margin-top: 0.5rem; margin-bottom: 1.2rem; border-radius: 8px; overflow: hidden; }
 .combo-grid { display: block; }
 .combo-item { margin-bottom: 1.2rem; }
+.combo-item .sample-header, .combo-item .rearrangement-info { display: none; }
 /* ── Floating Print Button ── */
 .print-fab {
     position: fixed;

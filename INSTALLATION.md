@@ -20,8 +20,11 @@ wheel scaffold, and the single-shot "[RUST ERROR]" logger are in.
 ```
 
 The `install.bat` script:
-- finds `C:\Users\molpa\AppData\Local\Programs\Python\Python312\python.exe`
-  (your real Python 3.12 install)
+- prefers `C:\Users\molpa\AppData\Local\Programs\Python\Python314\python.exe`
+  (the 3.14.6 install; this is the migration target)
+- falls back to `C:\Users\molpa\AppData\Local\Programs\Python\Python312\python.exe`
+  if 3.14 isn't installed (dev machine / older workstations)
+- falls back to whatever `where python` resolves on PATH
 - creates a `.venv` next to the repo
 - installs every line of `requirements.txt` into the venv
 - installs the prebuilt `fraggler_kernels` wheel IF it's in the
@@ -50,7 +53,8 @@ if you've already built it once or downloaded one.
 | Rust toolchain      | NO       | only needed if you want to *rebuild* the optional Rust wheel   |
 | ~1.5 GB disk        | yes      | venv + docs + (optional) wheel                                 |
 
-Tested with: Python 3.12.10 on Windows 10/11 (PowerShell).
+Tested with: Python 3.14.6 (work computer) and 3.12.10 (dev machine)
+on Windows 10/11 (PowerShell / cmd.exe).
 
 ---
 
@@ -186,7 +190,7 @@ Rust" below.
 Your install of Python isn't on PATH. Either:
 - Re-install Python with "Add to PATH" ticked (recommended), or
 - Use the absolute path:
-  `C:\Users\molpa\AppData\Local\Programs\Python\Python312\python.exe install.bat`
+  `C:\Users\molpa\AppData\Local\Programs\Python\Python314\python.exe install.bat`
 
 ### "ModuleNotFoundError: No module named 'PyQt6'"
 

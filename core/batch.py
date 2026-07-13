@@ -1114,6 +1114,8 @@ def run_batch_jobs(
         "completed_jobs": completed_jobs,
         "failed_jobs": failed_jobs,
         "collected_entries": deferred_tracking_entries if defer_tracking_workbook_refresh else all_collected_entries,
+        "dit_report_entries": dit_report_entries,
+        "qc_report_entries": qc_report_entries,
         "ladder_review_gate": ladder_review_gate,
         "dit_reports_blocked": block_dit_for_ladder_review,
         "learning_annotation_seed": learning_annotation_seed,

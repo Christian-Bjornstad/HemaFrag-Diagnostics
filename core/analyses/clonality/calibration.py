@@ -204,20 +204,47 @@ def predict_with_rejection(
     Args:
       estimator: fitted classifier with predict_proba() method.
       feature_row: a Mapping where each value is coercible to a float
-        via features_from_entry's output shape.
+        via features_from_entry's output shape. May also carry
+        metadata fields (ladder_qc_status, control_flag, ClonalitySuggestion)
+        -- those are routed through forced-review gating and never reach
+        the classifier.
       assay: assay name, used to look up tau override if not provided.
 
     Returns:
       CalibratedMLPrediction with label, confidence, accepted, reason.
     """
     tau = float(tau if tau is not None else per_assay_threshold(assay))
-
-    import numpy as np
-    import pandas as pd
     if not isinstance(feature_row, Mapping):
         feature_row = dict(feature_row)
-    row = pd.Series({k: float(v) if v is not None else float("nan")
-                      for k, v in feature_row.items()}).to_frame().T
+
+    # Forced-review gating first: if any rule-derived flag forces
+    # usikker_review, skip inference entirely (matches the module-level
+    # contract documented in the calibration.py docstring).
+    forced_reasons = _forced_review_reasons(feature_row)
+    if forced_reasons:
+        return CalibratedMLPrediction(
+            label="usikker_review",
+            confidence=0.0,
+            accepted=False,
+            reason=forced_reasons[0],
+            artifact_path=artifact_path,
+        )
+
+    # Numeric coercion: keep only values that convertible to float;
+    # strings / mixed types -> NaN so the imputer in the pipeline can
+    # handle them. Don't let string-typed metadata crash the function.
+    import numpy as np
+    import pandas as pd
+    cleaned: dict[str, float] = {}
+    for k, v in feature_row.items():
+        if v is None:
+            cleaned[k] = float("nan")
+            continue
+        try:
+            cleaned[k] = float(v)
+        except (TypeError, ValueError):
+            cleaned[k] = float("nan")
+    row = pd.Series(cleaned).to_frame().T
     try:
         proba = estimator.predict_proba(row.to_numpy())
     except Exception:

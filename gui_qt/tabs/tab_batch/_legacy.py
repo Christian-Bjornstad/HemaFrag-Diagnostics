@@ -1292,7 +1292,9 @@ class TabBatch(QWidget):
         self._review_session_output_root = output_root
         self._review_session_aggregate_outdir_name = aggregate_outdir_name
         self._review_corrected_paths = set()
-        self._set_review_session_entries(list((result or {}).get("collected_entries") or []))
+        self._set_review_session_entries(
+            list((result or {}).get("dit_report_entries") or (result or {}).get("collected_entries") or [])
+        )
         self._refresh_review_finalize_button()
 
     def _linked_jobs_for_corrected_files(self, corrected_paths: set[Path]) -> list[dict]:
@@ -1427,6 +1429,10 @@ class TabBatch(QWidget):
             if cache_key is not None:
                 combined_by_path[cache_key] = entry
         for entry in result.get("collected_entries") or []:
+            cache_key = TabBatch._entry_cache_key(entry)
+            if cache_key is not None:
+                combined_by_path[cache_key] = entry
+        for entry in result.get("qc_report_entries") or []:
             cache_key = TabBatch._entry_cache_key(entry)
             if cache_key is not None:
                 combined_by_path[cache_key] = entry

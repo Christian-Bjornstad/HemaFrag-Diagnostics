@@ -32,6 +32,22 @@ import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
+# `_constants.py` owns the guarded optional `pyqtgraph` import (`pg`) and the
+# ladder QC thresholds (PASS_R2, CHECK_R2, PASS_MAX_ABS_RESIDUAL,
+# CHECK_MAX_ABS_RESIDUAL). Importing them explicitly here keeps `_legacy.py`'s
+# module namespace self-sufficient: without these lines the dialog crashes with
+#   NameError: name 'pg' is not defined                    (at __init__)
+#   NameError: name 'CHECK_MAX_ABS_RESIDUAL' is not defined  (at _refresh_*/_plot_residuals)
+# because the package `__init__.py`'s `*`-re-export injects them into the package
+# namespace, NOT into this submodule's globals.
+from gui_qt.dialogs.ladder_dialog._constants import (
+    pg,
+    PASS_R2,
+    CHECK_R2,
+    PASS_MAX_ABS_RESIDUAL,
+    CHECK_MAX_ABS_RESIDUAL,
+)
+
 
 # Phase 12.14 — dialog preview header.
 # -----------------------------------------------------------------------
@@ -700,8 +716,9 @@ class LadderAdjustmentDialog(QDialog):
         qc_layout.addWidget(qc_title)
 
         qc_header = QHBoxLayout()
-        self.qc_grade_label = QLabel("UNKNOWN")
-        self.qc_grade_label.setStyleSheet("font-size: 16px; font-weight: 800; color: #64748b;")
+        from gui_qt.widgets.status_pill import StatusPill
+        self.qc_grade_label = StatusPill("UNKNOWN")
+        self.qc_grade_label.set_state("idle")
         self.qc_summary_label = QLabel("Preview not run")
         self.qc_summary_label.setWordWrap(True)
         self.qc_summary_label.setStyleSheet("color: #475569; font-weight: 600;")
@@ -1358,7 +1375,7 @@ class LadderAdjustmentDialog(QDialog):
         current_linear = self._current_linear_fit()
         label = self._fit_grade.upper()
         self.qc_grade_label.setText(label)
-        self.qc_grade_label.setStyleSheet(f"font-size: 16px; font-weight: 800; color: {color_map.get(self._fit_grade, '#64748b')};")
+        self.qc_grade_label.set_state(self._fit_grade if self._fit_grade in ("pass", "check", "fail") else "idle")
 
         missing_count = sum(1 for row in self._fit_rows if row["status"] == "Missing")
         extra_count = max(len(self.candidates) - len(self.mapping), 0)

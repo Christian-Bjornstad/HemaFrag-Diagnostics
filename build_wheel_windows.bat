@@ -16,13 +16,17 @@ set "REPO_ROOT=%~dp0"
 if "%REPO_ROOT:~-1%"=="\" set "REPO_ROOT=%REPO_ROOT:~0,-1%"
 cd /d "%REPO_ROOT%"
 
-REM Pick Python: prefer the venv from install.bat, fall back to
-REM the AppData Python 3.12, fall back to PATH python.
+REM Pick Python: prefer the venv from install.bat (its Python
+REM was chosen to match this repo, might be 3.14 or 3.12), then
+REM fall back to system 3.14 (work computer), 3.12 (dev machine),
+REM then PATH python.
 set "PYTHON_EXE="
 if exist "%REPO_ROOT%\.venv\Scripts\python.exe" (
     set "PYTHON_EXE=%REPO_ROOT%\.venv\Scripts\python.exe"
+) else if exist "C:\Users\molpa\AppData\Local\Programs\Python\Python314\python.exe" (
+    set "PYTHON_EXE=C:\Users\molpa\AppData\Local\Programs\Python\Python314\python.exe"
 ) else if exist "C:\Users\molpa\AppData\Local\Programs\Python\Python312\python.exe" (
-    set "C:\Users\molpa\AppData\Local\Programs\Python\Python312\python.exe"
+    set "PYTHON_EXE=C:\Users\molpa\AppData\Local\Programs\Python\Python312\python.exe"
 ) else (
     for /f "delims=" %%i in ('where python') do (
         if not defined PYTHON_EXE set "PYTHON_EXE=%%i"
