@@ -144,13 +144,20 @@ class TabAnalysisSettings(QWidget):
         layout.addRow("", self.chk_clonality_interpretation)
 
         self.clonality_model_path = QLineEdit()
-        self.clonality_model_path.setPlaceholderText("Optional offline model.joblib path")
+        self.clonality_model_path.setPlaceholderText(
+            "Directory of <assay>/<*.joblib — leave blank to disable ML"
+        )
         row_model = QHBoxLayout()
         btn_browse_model = QPushButton("Browse...")
         btn_browse_model.clicked.connect(self._browse_clonality_model_path)
         row_model.addWidget(self.clonality_model_path, stretch=1)
         row_model.addWidget(btn_browse_model)
-        layout.addRow("Experimental Model:", row_model)
+        layout.addRow("ML Model Directory:", row_model)
+
+        self._ml_status_label = QLabel("")
+        self._ml_status_label.setStyleSheet("color: #475569; font-size: 0.8rem;")
+        layout.addRow("", self._ml_status_label)
+        self.clonality_model_path.textChanged.connect(self._refresh_ml_status)
 
         note = QLabel(
             "When enabled, HemaFrag adds experimental interpretation columns to clonality tracking output. "
@@ -247,6 +254,8 @@ class TabAnalysisSettings(QWidget):
             self.clonality_learning_output_dir.setText(str(learning_settings.get("output_dir", "") or ""))
         self._sync_patient_regex_enabled()
         self._sync_scope_controls()
+        if self.analysis_id == "clonality":
+            self._refresh_ml_status()
 
         self.author.setText(general_settings.get("author", "OUS"))
         self.d_min_r2_ok.setValue(float(qc_settings.get("min_r2_ok", 0.995)))
@@ -310,15 +319,57 @@ class TabAnalysisSettings(QWidget):
             self.tracking_excel_path.setText(selected)
 
     def _browse_clonality_model_path(self) -> None:
-        start_path = self.clonality_model_path.text().strip() or self.default_output.text().strip() or str(Path.home())
-        selected, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Clonality Interpretation Model",
-            start_path,
-            "Joblib Model (*.joblib);;All Files (*)",
+        start_path = (
+            self.clonality_model_path.text().strip()
+            or self.default_output.text().strip()
+            or str(Path.home())
         )
-        if selected:
-            self.clonality_model_path.setText(selected)
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select ML Model Directory",
+            start_path,
+        )
+        if folder:
+            self.clonality_model_path.setText(folder)
+            self._refresh_ml_status()
+
+    def _refresh_ml_status(self) -> None:
+        """Show a quick pill: how many assay models are present under the chosen dir."""
+        from core.analyses.clonality.ml_runtime import (
+            is_ml_enabled,
+            ml_model_dir_for_settings,
+        )
+        text = self.clonality_model_path.text().strip()
+        if not text:
+            self._ml_status_label.setText("ML off (no directory set).")
+            self._ml_status_label.setStyleSheet("color: #64748b; font-size: 0.8rem;")
+            return
+        path = Path(text)
+        if not path.exists() or not path.is_dir():
+            self._ml_status_label.setText(
+                f"Path does not exist: {path}"
+            )
+            self._ml_status_label.setStyleSheet("color: #ef4444; font-size: 0.8rem;")
+            return
+        # Quick listing — subdirectories with metadata.json
+        assays: list[str] = []
+        try:
+            for child in sorted(path.iterdir()):
+                if child.is_dir() and (child / "metadata.json").exists():
+                    assays.append(child.name)
+        except OSError:
+            assays = []
+        if assays:
+            joined = " · ".join(assays)
+            self._ml_status_label.setText(
+                f"OK — {len(assays)} assay model(s): {joined}"
+            )
+            self._ml_status_label.setStyleSheet("color: #22c55e; font-size: 0.8rem;")
+        else:
+            self._ml_status_label.setText(
+                "Directory is empty of <assay>/metadata.json pairs."
+            )
+            self._ml_status_label.setStyleSheet("color: #b45309; font-size: 0.8rem;")
 
     def _sync_patient_regex_enabled(self) -> None:
         self.patient_regex.setEnabled(self.chk_agg_pat.isChecked())
