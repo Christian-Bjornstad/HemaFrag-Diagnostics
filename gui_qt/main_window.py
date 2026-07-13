@@ -10,6 +10,7 @@ from gui_qt.styles import VIBRANT_PRO_QSS
 from gui_qt.tabs.tab_batch import TabBatch
 from gui_qt.tabs.tab_archive_runner import TabArchiveRunner
 from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
+from gui_qt.tabs.tab_ml_training import TabMlTraining
 from gui_qt.tabs.tab_flt3_validation import TabFlt3Validation
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_log import TabLog
@@ -173,6 +174,7 @@ class MainWindow(QMainWindow):
         self.tab_archive_runner = TabArchiveRunner()
         self.tab_flt3_validation = TabFlt3Validation()
         self.tab_clonality_interpretation = TabClonalityInterpretation()
+        self.tab_ml_training = TabMlTraining()
         self.tab_log = TabLog()
         self.tab_about = TabAbout()
         self.tab_settings_clonality = TabAnalysisSettings("clonality")
@@ -194,6 +196,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_flt3_validation))
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_clonality_interpretation))
+        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ml_training))
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))
         self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_clonality))

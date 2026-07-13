@@ -352,6 +352,15 @@ def _parse_args(argv=None):
         default=12345,
         help="Random seed for group-split (default 12345).",
     )
+    p.add_argument(
+        "--accept-threshold-tau",
+        type=float,
+        default=None,
+        help=(
+            "Override per-assay acceptance threshold τ (0..1). If omitted, "
+            "the value is read from APP_SETTINGS.analyses.clonality.interpretation.thresholds."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -399,9 +408,15 @@ def main(argv=None):
         len(datasets), ", ".join(sorted(datasets.keys()))))
 
     summaries = []
+    # Optional CLI override of per-assay tau — defaults to settings lookup.
+    override_tau = getattr(args, "accept_threshold_tau", None)
     for assay_name in sorted(datasets.keys()):
         ds = datasets[assay_name]
-        tau = _per_assay_threshold_default(assay_name)
+        tau = (
+            float(override_tau)
+            if override_tau is not None
+            else _per_assay_threshold_default(assay_name)
+        )
         print("[train] assay={}: n_samples={}, tau={}".format(
             assay_name, ds.n_samples, tau))
         try:
