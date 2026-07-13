@@ -38,6 +38,7 @@ from core.analyses.clonality.tracking_excel import (
     update_clonality_tracking_workbook,
 )
 from core.analyses.clonality.interpretation import attach_interpretation_if_enabled
+from core.analyses.clonality.ml_runtime import attach_ml_prediction_if_enabled
 from core.analysis import (
     LADDER_FIT_PROFILE_CLONALITY_LIZ500,
     LADDER_FIT_PROFILE_CLONALITY_ROX400HD,
@@ -727,7 +728,7 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
         else np.nan,
         "sl_metrics": sl_metrics,
     }
-    return attach_interpretation_if_enabled(entry)
+    return attach_ml_prediction_if_enabled(attach_interpretation_if_enabled(entry))
 
 
 def _run_analyze_single_file_child(fsa_path: Path, queue) -> None:
