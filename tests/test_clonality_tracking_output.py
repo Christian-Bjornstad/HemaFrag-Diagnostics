@@ -73,6 +73,65 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             self.assertEqual(controls.iloc[0]["Control"], "PK")
             self.assertEqual(len(peaks), 1)
 
+    def test_tracking_workbook_writes_ml_columns_when_present(self) -> None:
+        import math
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook = Path(tmp) / "Clonality_Tracking.xlsx"
+            patient_entry = _entry(
+                "26OUM00001_FR1__220526_A01_H9TEST01.fsa", dit="26OUM00001"
+            )
+            # Stamp ML fields onto the entry
+            patient_entry["ClonalitySuggestion"] = "monoklonal"
+            patient_entry["ClonalityConfidence"] = 0.93
+            patient_entry["ClonalityReviewNeeded"] = False
+            patient_entry["ClonalityMLSuggestion"] = "monoklonal"
+            patient_entry["ClonalityMLConfidence"] = 0.86
+            patient_entry["ClonalityMLReviewNeeded"] = False
+            patient_entry["ClonalityMLModelVersion"] = "ml_training_pipeline_v1"
+            entries = [
+                patient_entry,
+                # Control entry does NOT carry ML fields (chemist usually
+                # only stamps ML onto patient samples). The Tracking
+                # Excel writer must not invent values for absent ML keys.
+                _entry("PK_FR1__220526_E08_H9TEST01.fsa"),
+            ]
+            marker = {
+                "name": "FR1_PK",
+                "kind": "sample",
+                "channel": "DATA1",
+                "expected_bp": 100.0,
+                "window_bp": 3.0,
+            }
+            with patch(
+                "core.analyses.clonality.tracking_excel.markers_for_entry",
+                return_value=[marker],
+            ):
+                update_clonality_tracking_workbook(workbook, entries)
+            patients = pd.read_excel(workbook, sheet_name="Patient_Runs", engine="openpyxl")
+            self.assertEqual(len(patients), 1)
+            # All four ML columns are present and round-trip
+            self.assertIn("ClonalityMLSuggestion", patients.columns)
+            self.assertIn("ClonalityMLConfidence", patients.columns)
+            self.assertIn("ClonalityMLReviewNeeded", patients.columns)
+            self.assertIn("ClonalityMLModelVersion", patients.columns)
+            self.assertEqual(patients.iloc[0]["ClonalityMLSuggestion"], "monoklonal")
+            self.assertEqual(float(patients.iloc[0]["ClonalityMLConfidence"]), 0.86)
+            # Control row: nothing was stamped ⇒ empty cell (Excel NaN read is fine)
+            controls = pd.read_excel(workbook, sheet_name="Control_Runs", engine="openpyxl")
+            self.assertEqual(len(controls), 1)
+            for col in (
+                "ClonalityMLSuggestion",
+                "ClonalityMLConfidence",
+                "ClonalityMLReviewNeeded",
+                "ClonalityMLModelVersion",
+            ):
+                val = controls.iloc[0][col]
+                # Empty string OR NaN both acceptable — both signal "no ML".
+                if isinstance(val, float):
+                    self.assertTrue(math.isnan(val), f"{col} expected empty, got {val!r}")
+                else:
+                    self.assertEqual(val, "")
+
     def test_aggregated_batch_uses_one_local_tracking_workbook_and_global_dashboard(self) -> None:
         import core.batch as batch
 

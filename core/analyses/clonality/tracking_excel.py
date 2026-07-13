@@ -65,6 +65,12 @@ RUN_SHEET_COLUMNS = [
     "LadderCurvature",
 ]
 RUN_SHEET_COLUMNS_WITH_INTERPRETATION = RUN_SHEET_COLUMNS + CLONALITY_INTERPRETATION_COLUMNS
+RUN_SHEET_COLUMNS_WITH_ML = RUN_SHEET_COLUMNS_WITH_INTERPRETATION + [
+    "ClonalityMLSuggestion",
+    "ClonalityMLConfidence",
+    "ClonalityMLReviewNeeded",
+    "ClonalityMLModelVersion",
+]
 PEAK_SHEET_COLUMNS = [
     "Month",
     "IdentityKey",
@@ -401,6 +407,10 @@ def _build_run_row(entry: dict) -> dict:
         "ClonalitySLFragmentedPercent": entry.get("ClonalitySLFragmentedPercent", ""),
         "ClonalitySLQualityPhrase": entry.get("ClonalitySLQualityPhrase", ""),
         "ClonalityModelVersion": entry.get("ClonalityModelVersion", ""),
+        "ClonalityMLSuggestion": entry.get("ClonalityMLSuggestion", ""),
+        "ClonalityMLConfidence": entry.get("ClonalityMLConfidence", ""),
+        "ClonalityMLReviewNeeded": entry.get("ClonalityMLReviewNeeded", ""),
+        "ClonalityMLModelVersion": entry.get("ClonalityMLModelVersion", ""),
     }
 
 
@@ -661,12 +671,31 @@ def _month_bucket(run_date: str) -> str:
     return ""
 
 
+_ML_INTERPRETATION_COLUMNS = (
+    "ClonalityMLSuggestion",
+    "ClonalityMLConfidence",
+    "ClonalityMLReviewNeeded",
+    "ClonalityMLModelVersion",
+)
+
+
+def _has_ml_interpretation(entries: list[dict] | None) -> bool:
+    if not entries:
+        return False
+    for entry in entries:
+        if any(column in entry for column in _ML_INTERPRETATION_COLUMNS):
+            return True
+    return False
+
+
 def _run_sheet_columns_for_entries(entries: list[dict] | None = None) -> list[str]:
+    has_ml = _has_ml_interpretation(entries)
     if interpretation_enabled():
-        return RUN_SHEET_COLUMNS_WITH_INTERPRETATION
-    for entry in entries or []:
-        if any(column in entry for column in CLONALITY_INTERPRETATION_COLUMNS):
-            return RUN_SHEET_COLUMNS_WITH_INTERPRETATION
+        # Rule layer is on — always include interpretation cols.
+        return RUN_SHEET_COLUMNS_WITH_ML if has_ml else RUN_SHEET_COLUMNS_WITH_INTERPRETATION
+    if has_ml:
+        # Rule layer disabled but ML fields came in (rare but supported).
+        return RUN_SHEET_COLUMNS_WITH_ML
     return RUN_SHEET_COLUMNS
 
 
