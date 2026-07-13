@@ -424,6 +424,7 @@ def main(argv=None):
             rare_class_counts=ds.rare_class_counts,
             trained_at_utc=today,
             output_dir=output_dir,
+            feature_columns=list(ds.X.columns),
         )
         report_path = report_dir / "report_{}.md".format(assay_name)
         report_path.write_text(

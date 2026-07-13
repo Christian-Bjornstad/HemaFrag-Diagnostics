@@ -392,8 +392,16 @@ def serialize_model(
     schema_version: str = "ml_training_pipeline_v1",
     trained_at_utc: str = "",
     output_dir: Path | None = None,
+    feature_columns: Sequence[str] | None = None,
 ) -> dict[str, Path]:
-    """Persist a trained estimator and metadata. Returns paths dict."""
+    """Persist a trained estimator and metadata. Returns paths dict.
+
+    ``feature_columns``: optional list of the input feature column names
+    (in the order the estimator was fitted on). When present, downstream
+    ``ClonalityModelStore.predict`` uses this list to slice the runtime
+    feature dict into the exact column contract the estimator expects.
+    Cheap to populate; recommended.
+    """
     if output_dir is None:
         output_dir = Path.cwd() / "models"
     out_dir = Path(output_dir) / assay
@@ -412,6 +420,8 @@ def serialize_model(
         "rare_class_counts": dict({str(k): int(v) for k, v in rare_class_counts.items()}),
         "trained_at_utc": trained_at_utc,
     }
+    if feature_columns is not None:
+        metadata["feature_columns"] = [str(c) for c in feature_columns]
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
     return {"joblib": joblib_path, "metadata": metadata_path}
 

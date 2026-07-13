@@ -282,3 +282,51 @@ def test_serialize_model_writes_joblib_and_metadata(tmp_path):
     # Smoke: predict on the same X
     preds = roundtrip_model.predict(ds.X.iloc[:5])
     assert len(preds) == 5
+
+
+def test_serialize_model_persists_feature_columns(tmp_path):
+    """When feature_columns is passed, it lands in metadata.json round-trip."""
+    df = _synth_combined()
+    ds = build_per_assay_datasets(df, min_samples_per_assay=100)["FR1"]
+    train_idx, _ = group_shuffle_split_by_dit(ds.X, ds.y, ds.dit, random_state=12345)
+    estimator = fit_classifier(ds.X.iloc[train_idx], ds.y.iloc[train_idx],
+                               kind="random_forest")
+    cols = ["f_height", "f_ratio", "f_share"]
+    paths = serialize_model(
+        estimator,
+        label_order=list(ANNOTATION_CLASSES_ORDER),
+        assay="FR1",
+        accept_threshold_tau=0.85,
+        classifier_kind="random_forest",
+        rare_class_counts={"monoklonal": 100, "polyklonal": 100},
+        output_dir=tmp_path,
+        feature_columns=cols,
+    )
+    meta = json.loads(Path(paths["metadata"]).read_text(encoding="utf-8"))
+    assert meta["feature_columns"] == cols
+    # Roundtrip through deserialize_model
+    _, meta2 = deserialize_model(
+        joblib_path=paths["joblib"], metadata_path=paths["metadata"]
+    )
+    assert meta2["feature_columns"] == cols
+
+
+def test_serialize_model_omits_feature_columns_when_unset(tmp_path):
+    """Backwards compat: existing callers that don't pass feature_columns
+    should still produce a metadata.json keyed on the original schema."""
+    df = _synth_combined()
+    ds = build_per_assay_datasets(df, min_samples_per_assay=100)["FR1"]
+    train_idx, _ = group_shuffle_split_by_dit(ds.X, ds.y, ds.dit, random_state=12345)
+    estimator = fit_classifier(ds.X.iloc[train_idx], ds.y.iloc[train_idx],
+                               kind="random_forest")
+    paths = serialize_model(
+        estimator,
+        label_order=list(ANNOTATION_CLASSES_ORDER),
+        assay="FR1",
+        accept_threshold_tau=0.85,
+        classifier_kind="random_forest",
+        rare_class_counts={"monoklonal": 100, "polyklonal": 100},
+        output_dir=tmp_path,
+    )
+    meta = json.loads(Path(paths["metadata"]).read_text(encoding="utf-8"))
+    assert "feature_columns" not in meta
