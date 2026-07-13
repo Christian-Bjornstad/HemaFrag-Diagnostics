@@ -657,16 +657,103 @@ window.PeakManager = {
         var currentHtml = document.documentElement.outerHTML;
         var peakDataStr = JSON.stringify(allPeaks);
         var plotStateStr = JSON.stringify(allPlotStates);
+        var decisionsStr = (window.ClonalityDecisionLog && window.ClonalityDecisionLog.serializeDecisions)
+            ? JSON.stringify(window.ClonalityDecisionLog.serializeDecisions())
+            : '{}';
         var pattern = /<script id="peak-data" type="application\/json">[\s\S]*?<\/script>/;
         var newTag = '<script id="peak-data" type="application/json">\n' + peakDataStr + '\n<\/script>';
         var plotPattern = /<script id="plot-state" type="application\/json">[\s\S]*?<\/script>/;
         var newPlotTag = '<script id="plot-state" type="application/json">\n' + plotStateStr + '\n<\/script>';
-        var updatedHtml = currentHtml.replace(pattern, newTag).replace(plotPattern, newPlotTag);
+        var decisionsPattern = /<script id="clonality-decisions" type="application\/json">[\s\S]*?<\/script>/;
+        var newDecisionsTag = '<script id="clonality-decisions" type="application/json">\n' + decisionsStr + '\n<\/script>';
+        var updatedHtml = currentHtml
+            .replace(pattern, newTag)
+            .replace(plotPattern, newPlotTag)
+            .replace(decisionsPattern, newDecisionsTag);
         var blob = new Blob(['<!DOCTYPE html>\n' + updatedHtml], {type: 'text/html'});
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a'); a.href = url; a.download = document.title + '.html'; a.click(); URL.revokeObjectURL(url);
     }
 };
+
+// Clonality ML badge dismissal — chemist-presses-button to hide a
+// single ML badge from the printed page.  Restore is the inverse.
+window.ClonalityDecisionLog = {
+    _store: {},
+    _readSaved: function() {
+        try {
+            var tag = document.getElementById('clonality-decisions');
+            var saved = tag ? JSON.parse(tag.textContent || '{}') : {};
+            return (saved && typeof saved === 'object') ? saved : {};
+        } catch(e) { return {}; }
+    },
+    applySaved: function() {
+        var saved = this._readSaved();
+        var nodes = document.querySelectorAll('.clonality-ml-badge');
+        for (var i = 0; i < nodes.length; i++) {
+            var node = nodes[i];
+            var id = node.id;
+            if (!id) continue;
+            var entry = saved[id];
+            if (entry && entry.dismissed) {
+                node.dataset.state = 'dismissed';
+                var dismissBtn = node.querySelector('.ml-dismiss');
+                var restoreBtn = node.querySelector('.ml-restore');
+                if (dismissBtn) dismissBtn.hidden = true;
+                if (restoreBtn) restoreBtn.hidden = false;
+            }
+        }
+    },
+    dismiss: function(btn) {
+        var badge = btn.closest('.clonality-ml-badge');
+        if (!badge) return;
+        badge.dataset.state = 'dismissed';
+        var dismissBtn = badge.querySelector('.ml-dismiss');
+        var restoreBtn = badge.querySelector('.ml-restore');
+        if (dismissBtn) dismissBtn.hidden = true;
+        if (restoreBtn) restoreBtn.hidden = false;
+    },
+    restore: function(btn) {
+        var badge = btn.closest('.clonality-ml-badge');
+        if (!badge) return;
+        badge.dataset.state = 'active';
+        var dismissBtn = badge.querySelector('.ml-dismiss');
+        var restoreBtn = badge.querySelector('.ml-restore');
+        if (dismissBtn) dismissBtn.hidden = false;
+        if (restoreBtn) restoreBtn.hidden = true;
+    },
+    serializeDecisions: function() {
+        var decisions = {};
+        var nodes = document.querySelectorAll('.clonality-ml-badge');
+        for (var i = 0; i < nodes.length; i++) {
+            var node = nodes[i];
+            if (!node.id) continue;
+            decisions[node.id] = {
+                dit: node.dataset.dit || '',
+                assay: node.dataset.assay || '',
+                file: node.dataset.file || '',
+                ml_label: node.dataset.mlLabel || '',
+                dismissed: node.dataset.state === 'dismissed'
+            };
+        }
+        return decisions;
+    }
+};
+
+// On load, reapply any previously-saved dismissal state
+(function() {
+    function ready() {
+        if (window.ClonalityDecisionLog) {
+            window.ClonalityDecisionLog.applySaved();
+        }
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', ready);
+    } else {
+        ready();
+    }
+})();
+
 function printReport() { window.print(); }
 </script>
 """)
