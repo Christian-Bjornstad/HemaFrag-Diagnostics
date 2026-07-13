@@ -1,0 +1,191 @@
+"""Tests for ``core.analyses.clonality.ml_runtime`` — the runtime hook."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pytest
+from sklearn.dummy import DummyClassifier
+
+from core.analyses.clonality import ml_runtime
+from core.analyses.clonality.ml_runtime import (
+    attach_ml_prediction_if_enabled,
+    is_ml_enabled,
+    ml_model_dir_for_settings,
+    reset_model_store_cache,
+)
+
+
+# --- fixtures ------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    """Each test starts with a clean model-store cache."""
+    reset_model_store_cache()
+    yield
+    reset_model_store_cache()
+
+
+def _make_model_dir(p: Path) -> Path:
+    (p / "FR1").mkdir(parents=True, exist_ok=True)
+    X = np.zeros((20, 3))
+    y = np.array(["monoklonal"] * 10 + ["polyklonal"] * 10)
+    clf = DummyClassifier(strategy="most_frequent").fit(X, y)
+    joblib.dump(clf, p / "FR1" / "random_forest.joblib")
+    joblib.dump(clf, p / "FR1" / "dummy.joblib")
+    (p / "FR1" / "metadata.json").write_text(
+        json.dumps({
+            "schema_version": "ml_training_pipeline_v1",
+            "assay": "FR1",
+            "label_order": ["monoklonal", "polyklonal"],
+            "accept_threshold_tau": 0.80,
+            "classifier_kind": "random_forest",
+            "rare_class_counts": {},
+            "trained_at_utc": "",
+            "feature_columns": ["dominant_peak_height", "dominant_to_second_ratio", "dominant_height_share"],
+        }),
+        encoding="utf-8",
+    )
+    return p
+
+
+def _settings_with_dir(model_dir: Path) -> dict:
+    return {
+        "analyses": {
+            "clonality": {
+                "interpretation": {
+                    "enabled": True,
+                    "model_path": str(model_dir),
+                }
+            }
+        }
+    }
+
+
+# --- tests ---------------------------------------------------------------
+
+
+def test_is_ml_enabled_when_dir_set(tmp_path):
+    _make_model_dir(tmp_path)
+    settings = _settings_with_dir(tmp_path)
+    assert is_ml_enabled(settings) is True
+    assert ml_model_dir_for_settings(settings) == tmp_path
+
+
+def test_is_ml_disabled_when_dir_missing_setting(tmp_path):
+    settings = {"analyses": {"clonality": {"interpretation": {}}}}
+    assert is_ml_enabled(settings) is False
+    assert ml_model_dir_for_settings(settings) is None
+
+
+def test_is_ml_disabled_when_dir_does_not_exist(tmp_path):
+    settings = _settings_with_dir(tmp_path / "nope")
+    assert is_ml_enabled(settings) is False
+
+
+def test_attach_is_noop_when_settings_off(tmp_path):
+    """Without ``model_path`` set, no ML columns are stamped on entry."""
+    entry = {"assay": "FR1", "sample_kind": "patient"}
+    settings = {"analyses": {"clonality": {"interpretation": {}}}}
+    out = attach_ml_prediction_if_enabled(entry)
+    # Original entry untouched
+    assert "ClonalityMLSuggestion" not in out
+    # Idempotent in the sense of not altering unrelated fields
+    assert out.get("assay") == "FR1"
+
+
+def test_attach_does_not_crash_on_bad_features(tmp_path):
+    """Even on a pathological entry, this must not raise."""
+    _make_model_dir(tmp_path)
+    settings = _settings_with_dir(tmp_path)
+    # monkeypatch the global APP_SETTINGS via ml_model_dir_for_settings shim
+    monkeypatch = pytest.MonkeyPatch()
+    import core.analyses.clonality.ml_runtime as rt_mod
+    monkeypatch.setattr(rt_mod, "ml_model_dir_for_settings",
+                        lambda _=None: tmp_path)
+    try:
+        # entry that lacks both 'assay' and features
+        bad_entry = {"features": {"not_a_real_feature": 1}}
+        out = attach_ml_prediction_if_enabled(bad_entry)
+        assert isinstance(out, dict)
+        # ML suggestion should be empty since assay='UNKNOWN'
+        assert out.get("ClonalityMLSuggestion", "") == ""
+    finally:
+        monkeypatch.undo()
+
+
+def test_attach_stamps_ml_columns_when_assay_known(tmp_path):
+    _make_model_dir(tmp_path)
+    settings = _settings_with_dir(tmp_path)
+    import core.analyses.clonality.ml_runtime as rt_mod
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(rt_mod, "ml_model_dir_for_settings",
+                        lambda _=None: tmp_path)
+    try:
+        entry = {
+            "assay": "FR1",
+            "sample_kind": "patient",
+            "ClonalitySuggestion": "polyklonal",
+            "ClonalityConfidence": 0.66,
+            "ClonalityReviewNeeded": False,
+            "features": {
+                "dominant_peak_height": 100.0,
+                "dominant_to_second_ratio": 0.5,
+                "dominant_height_share": 0.3,
+            },
+        }
+        out = attach_ml_prediction_if_enabled(entry)
+        assert out.get("ClonalityMLSuggestion") in {"monoklonal", "polyklonal"}
+        assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
+        assert out.get("ClonalityMLReviewNeeded") in {True, False}
+        # Model version stamped
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v1"
+    finally:
+        monkeypatch.undo()
+
+
+def test_attach_marks_review_when_disagreement(tmp_path):
+    """Rule=polyklonal + ML=monoklonal ⇒ review_needed=True."""
+    _make_model_dir(tmp_path)
+    import core.analyses.clonality.ml_runtime as rt_mod
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(rt_mod, "ml_model_dir_for_settings",
+                        lambda _=None: tmp_path)
+    try:
+        # Build a real RF so we can force the prediction
+        import numpy as np
+        from sklearn.ensemble import RandomForestClassifier
+        X = np.array([
+            [50.0, 0.9, 0.7], [120.0, 1.0, 0.6], [60.0, 0.8, 0.5],
+            [40.0, 0.85, 0.7], [10.0, 0.95, 0.8],
+            [1.0, 0.6, 0.1], [2.0, 0.5, 0.1], [3.0, 0.55, 0.1],
+            [4.0, 0.45, 0.05], [5.0, 0.7, 0.05],
+        ])
+        y = np.array(["monoklonal"] * 5 + ["polyklonal"] * 5)
+        clf = RandomForestClassifier(n_estimators=20, random_state=0).fit(X, y)
+        # Overwrite fixture joblib with this one
+        joblib.dump(clf, tmp_path / "FR1" / "random_forest.joblib")
+
+        # Force the predict to be 'monoklonal' (point 0) when rule is polyklonal
+        entry = {
+            "assay": "FR1",
+            "sample_kind": "patient",
+            "ClonalitySuggestion": "polyklonal",
+            "ClonalityConfidence": 0.66,
+            "ClonalityReviewNeeded": False,
+            "features": {
+                "dominant_peak_height": 50.0,
+                "dominant_to_second_ratio": 0.9,
+                "dominant_height_share": 0.7,
+            },
+        }
+        out = attach_ml_prediction_if_enabled(entry)
+        # ML should be monoklonal for this point (high ratio + share => strong)
+        assert out["ClonalityMLSuggestion"] == "monoklonal"
+        # Disagreement ⇒ review flag flipped true
+        assert out["ClonalityMLReviewNeeded"] is True
+    finally:
+        monkeypatch.undo()
