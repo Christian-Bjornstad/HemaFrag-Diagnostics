@@ -59,7 +59,8 @@ from core.html_reports import extract_dit_from_name
 
 from core.analyses.flt3.pipeline._constants import *
 
-__all__ = ['FLT3_ACCEPTABLE_RESCUE_SHAPE_PENALTY', 'FLT3_EMPIRICAL_GAP_PROFILE', 'FLT3_EMPIRICAL_INTENSITY_PROFILE', 'FLT3_EMPIRICAL_WIDTH_PROFILE', 'FLT3_INVALID_SHAPE_PENALTY', 'FLT3_MIN_LADDER_PEAK_INTENSITY', 'FLT3_SHAPE_GAP_RULES', 'FLT3_SHAPE_INTENSITY_STEPS', 'FLT3_SHAPE_TIME_WEIGHTS', 'FLT3_TEMPLATE_STEPS', 'FLT3_TEMPLATE_STEP_INDEX', 'FLT3_TEMPLATE_TIMES', 'flt3_size_standard_mode', 'generate_flt3_bp_validation_report', 'generate_flt3_peak_report', 'run_pipeline', 'update_flt3_npm1_qc_tracker_workbook', 'update_flt3_qc_trends', '_accept_lenient_raw_flt3_fit', '_analyse_fsa_candidate', '_apply_bp_offset', '_apply_gs500rox_start_family_prior_if_review_band', '_assay_positive_ratio', '_attempt_flt3_bootstrap_template_fit', '_attempt_flt3_d835_family_bootstrap_fit', '_attempt_flt3_short_trace_partial_fit', '_attempt_flt3_template_fit', '_attempt_lenient_rox_fit', '_bootstrap_trace_peak_candidates', '_bp_in_ranges', '_build_control_qc_row', '_build_entry_from_candidate', '_build_flt3_npm1_tracker_frames', '_build_flt3_qc_trend_frames', '_build_peaks_from_rust_flt3_preview', '_calculate_auc', '_calculate_peak_area', '_calculate_peak_area_fast', '_calculate_peak_area_local_baseline', '_calculate_ratios', '_candidate_audit_record', '_candidate_flt3_template_keys', '_candidate_index_for_time', '_candidate_sort_key', '_choose_flt3_forward_candidate_time', '_choose_template_candidate_time', '_choose_template_trace_peak', '_combine_peak_traces', '_combine_raw_peak_traces', '_correct_peak_channel_traces', '_default_manual_ratio_selection', '_detect_peaks', '_empty_manual_ratio_resolution', '_ensure_peak_ids', '_entry_ranking_key', '_fallback_entry_ranking_key', '_fit_flt3_template_affine_alignment', '_flt3_candidate_pool', '_flt3_control_entries', '_flt3_expected_ladder_steps', '_flt3_fit_is_geometrically_invalid', '_flt3_gs500rox_rust_only_ladder_mode', '_flt3_high_end_anchors_are_plausible', '_flt3_ladder_intensity_penalty', '_flt3_ladder_intensity_penalty_array', '_flt3_ladder_intensity_reference', '_flt3_ladder_only_qc_mode', '_flt3_legacy_python_ladder_rescue_enabled', '_flt3_mapping_shape_penalty', '_flt3_peak_meets_min_intensity', '_flt3_requested_ladder', '_flt3_short_trace_missing_steps', '_flt3_template_key', '_flt3_template_key_allowed_for_fsa', '_flt3_template_rescue_trace_min_intensity', '_flt3_template_rescue_trace_min_prominence', '_flt3_template_window', '_flt3_trace_peak_candidates', '_flt3_uses_liz_ladder', '_gs500rox_current_start_is_preferred', '_gs500rox_current_start_is_stable', '_gs500rox_current_start_suppresses_start_block', '_gs500rox_current_suppresses_35_earlier_noise', '_gs500rox_curved_review_band', '_gs500rox_expected_peak', '_gs500rox_late_first_35_right_shift_trials', '_gs500rox_late_first_anchor_guardrail_can_pass', '_gs500rox_learned_right_shift_apply_band', '_gs500rox_learned_start_gap_family', '_gs500rox_peak_candidates', '_gs500rox_peak_signal_height', '_gs500rox_projection_peak_scans', '_gs500rox_ranked_peak', '_gs500rox_reverse_pair_has_peak_support', '_gs500rox_reverse_projection_pair_trials', '_gs500rox_review_band', '_gs500rox_right_shifted_35_50_75_trials', '_gs500rox_right_shifted_start_trials', '_gs500rox_simple_shift_curved_apply_band', '_gs500rox_start_block_trials', '_gs500rox_start_cleanup_reason', '_gs500rox_start_family_review_reason', '_gs500rox_start_prior_apply_band', '_gs500rox_start_prior_requires_review', '_gs500rox_start_prior_trials', '_gs500rox_supported_35_near_fixed50_gap_family', '_gs500rox_supported_35_near_fixed50_trials', '_gs500rox_top_peak_scans', '_infer_flt3_instrument', '_infer_sizing_method', '_interpret_entry', '_late_trace_peak_candidates', '_linear_ladder_metrics', '_lookup_peak_row', '_low_end_trace_peak_candidates', '_mapped_peak_time_for_step', '_mapping_times_from_fsa', '_mark_flt3_short_trace_if_needed', '_merge_supplemental_flt3_peaks', '_merged_anchor_candidates', '_normalize_manual_peak_spec', '_normalize_manual_ratio_selection', '_peak_area_for_channel', '_peak_area_half_width_bp', '_peak_height_from_trace', '_peak_id_for_row', '_peak_qc_status', '_peak_row_payload', '_peak_source_channel', '_poly_ladder_metrics', '_preferred_injection_time', '_rank_flt3_high_end_anchor_combos', '_rank_flt3_short_trace_triads', '_rank_flt3_template_keys_for_fsa', '_raw_peak_channel_traces', '_reportable_itd_mut_rows', '_resolve_auto_ratio_selection', '_resolve_flt3_ratio_selection', '_resolve_manual_ratio_selection', '_resolve_peak_area', '_resolved_flt3_template_key', '_scan_files', '_score_flt3_template_peak_choice', '_select_best_entry', '_select_flt3_high_end_anchor_combo', '_should_attempt_flt3_template_rescue', '_should_use_multiprocessing', '_snap_trace_peak', '_summarize_detected_peaks', '_summarize_peak_areas', '_template_mapping_payload', '_template_mapping_payload_for_anchors', '_template_mapping_payload_for_reference_times', '_template_mapping_payloads_for_scaled_endpoints', '_template_review_scaffold_payload', '_trace_intensity_at_time', '_trace_peak_width_points', '_tracker_control_marker_row', '_tracker_ladder_marker_row', '_tracker_peak_row', '_tracker_run_row', '_wt_candidates_for_assay']
+__all__ = ['FLT3_ACCEPTABLE_RESCUE_SHAPE_PENALTY', 'FLT3_EMPIRICAL_GAP_PROFILE', 'FLT3_EMPIRICAL_INTENSITY_PROFILE', 'FLT3_EMPIRICAL_WIDTH_PROFILE', 'FLT3_INVALID_SHAPE_PENALTY', 'FLT3_MIN_LADDER_PEAK_INTENSITY', 'FLT3_SHAPE_GAP_RULES', 'FLT3_SHAPE_INTENSITY_STEPS', 'FLT3_SHAPE_TIME_WEIGHTS', 'FLT3_TEMPLATE_STEPS', 'FLT3_TEMPLATE_STEP_INDEX', 'FLT3_TEMPLATE_TIMES', 'flt3_size_standard_mode', 'generate_flt3_bp_validation_report', 'generate_flt3_peak_report', 'run_pipeline', 'update_flt3_npm1_qc_tracker_workbook', 'update_flt3_qc_trends', '_accept_lenient_raw_flt3_fit', '_analyse_fsa_candidate', '_apply_bp_offset', '_apply_gs500rox_start_family_prior_if_review_band', '_assay_positive_ratio', '_attempt_flt3_bootstrap_template_fit', '_attempt_flt3_d835_family_bootstrap_fit', '_attempt_flt3_short_trace_partial_fit', '_attempt_flt3_template_fit', '_attempt_lenient_rox_fit', '_bootstrap_trace_peak_candidates', '_bp_in_ranges', '_build_control_qc_row', '_build_entry_from_candidate', '_build_flt3_npm1_tracker_frames', '_build_flt3_qc_trend_frames', '_build_peaks_from_rust_flt3_preview', '_calculate_auc', '_calculate_peak_area', '_calculate_peak_area_fast', '_calculate_peak_area_local_baseline',
+    '_local_baseline_rfu_at_bp', '_calculate_ratios', '_candidate_audit_record', '_candidate_flt3_template_keys', '_candidate_index_for_time', '_candidate_sort_key', '_choose_flt3_forward_candidate_time', '_choose_template_candidate_time', '_choose_template_trace_peak', '_combine_peak_traces', '_combine_raw_peak_traces', '_correct_peak_channel_traces', '_default_manual_ratio_selection', '_detect_peaks', '_empty_manual_ratio_resolution', '_ensure_peak_ids', '_entry_ranking_key', '_fallback_entry_ranking_key', '_fit_flt3_template_affine_alignment', '_flt3_candidate_pool', '_flt3_control_entries', '_flt3_expected_ladder_steps', '_flt3_fit_is_geometrically_invalid', '_flt3_gs500rox_rust_only_ladder_mode', '_flt3_high_end_anchors_are_plausible', '_flt3_ladder_intensity_penalty', '_flt3_ladder_intensity_penalty_array', '_flt3_ladder_intensity_reference', '_flt3_ladder_only_qc_mode', '_flt3_legacy_python_ladder_rescue_enabled', '_flt3_mapping_shape_penalty', '_flt3_peak_meets_min_intensity', '_flt3_requested_ladder', '_flt3_short_trace_missing_steps', '_flt3_template_key', '_flt3_template_key_allowed_for_fsa', '_flt3_template_rescue_trace_min_intensity', '_flt3_template_rescue_trace_min_prominence', '_flt3_template_window', '_flt3_trace_peak_candidates', '_flt3_uses_liz_ladder', '_gs500rox_current_start_is_preferred', '_gs500rox_current_start_is_stable', '_gs500rox_current_start_suppresses_start_block', '_gs500rox_current_suppresses_35_earlier_noise', '_gs500rox_curved_review_band', '_gs500rox_expected_peak', '_gs500rox_late_first_35_right_shift_trials', '_gs500rox_late_first_anchor_guardrail_can_pass', '_gs500rox_learned_right_shift_apply_band', '_gs500rox_learned_start_gap_family', '_gs500rox_peak_candidates', '_gs500rox_peak_signal_height', '_gs500rox_projection_peak_scans', '_gs500rox_ranked_peak', '_gs500rox_reverse_pair_has_peak_support', '_gs500rox_reverse_projection_pair_trials', '_gs500rox_review_band', '_gs500rox_right_shifted_35_50_75_trials', '_gs500rox_right_shifted_start_trials', '_gs500rox_simple_shift_curved_apply_band', '_gs500rox_start_block_trials', '_gs500rox_start_cleanup_reason', '_gs500rox_start_family_review_reason', '_gs500rox_start_prior_apply_band', '_gs500rox_start_prior_requires_review', '_gs500rox_start_prior_trials', '_gs500rox_supported_35_near_fixed50_gap_family', '_gs500rox_supported_35_near_fixed50_trials', '_gs500rox_top_peak_scans', '_infer_flt3_instrument', '_infer_sizing_method', '_interpret_entry', '_late_trace_peak_candidates', '_linear_ladder_metrics', '_lookup_peak_row', '_low_end_trace_peak_candidates', '_mapped_peak_time_for_step', '_mapping_times_from_fsa', '_mark_flt3_short_trace_if_needed', '_merge_supplemental_flt3_peaks', '_merged_anchor_candidates', '_normalize_manual_peak_spec', '_normalize_manual_ratio_selection', '_peak_area_for_channel', '_peak_area_half_width_bp', '_peak_height_from_trace', '_peak_id_for_row', '_peak_qc_status', '_peak_row_payload', '_peak_source_channel', '_poly_ladder_metrics', '_preferred_injection_time', '_rank_flt3_high_end_anchor_combos', '_rank_flt3_short_trace_triads', '_rank_flt3_template_keys_for_fsa', '_raw_peak_channel_traces', '_reportable_itd_mut_rows', '_resolve_auto_ratio_selection', '_resolve_flt3_ratio_selection', '_resolve_manual_ratio_selection', '_resolve_peak_area', '_resolved_flt3_template_key', '_scan_files', '_score_flt3_template_peak_choice', '_select_best_entry', '_select_flt3_high_end_anchor_combo', '_should_attempt_flt3_template_rescue', '_should_use_multiprocessing', '_snap_trace_peak', '_summarize_detected_peaks', '_summarize_peak_areas', '_template_mapping_payload', '_template_mapping_payload_for_anchors', '_template_mapping_payload_for_reference_times', '_template_mapping_payloads_for_scaled_endpoints', '_template_review_scaffold_payload', '_trace_intensity_at_time', '_trace_peak_width_points', '_tracker_control_marker_row', '_tracker_ladder_marker_row', '_tracker_peak_row', '_tracker_run_row', '_wt_candidates_for_assay']
 
 def _flt3_requested_ladder() -> str:
     raw = (
@@ -392,6 +393,15 @@ def _peak_area_half_width_bp(assay: str, label: str, center_bp: float) -> float:
         if label in {"ITD", "MUT"} or center_bp >= 335.0:
             return 1.0
         return 2.0
+    if assay == "NPM1":
+        # NPM1's WT (299-301) and MUT (303-305) ranges are 2 bp wide each,
+        # peaks are sharp. Default 1.0 bp matches GeneMapper's tight
+        # Gaussian; tunable live from
+        # analyses.flt3.peak_window.npm1_half_width_bp (clamped to
+        # [0.3, 5.0] inside the accessor).
+        from core.analyses.flt3.config import get_flt3_npm1_half_width_bp
+
+        return get_flt3_npm1_half_width_bp()
     return 5.0
 
 
@@ -861,8 +871,13 @@ def _calculate_peak_area_local_baseline(
         return 0.0
 
     y = np.asarray(trace[local_idx], dtype=float)
-    sideband_width = max(half_width_bp * 1.25, 0.6)
-    gap = max(half_width_bp * 0.20, 0.1)
+    # Floor the sideband width at 1.5 bp so a tight half-width (e.g. NPM1
+    # 1.0 bp from `get_flt3_npm1_half_width_bp`) cannot collapse the
+    # sideband closer than the peak itself -- otherwise the local-baseline
+    # control samples would sit inside the integration window and the
+    # baseline would track the peak shoulder, defeating the subtraction.
+    sideband_width = max(half_width_bp * 1.25, 1.5)
+    gap = max(half_width_bp * 0.20, 0.3)
     left_mask = (
         (bp_all >= center_bp - half_width_bp - gap - sideband_width)
         & (bp_all <= center_bp - half_width_bp - gap)
@@ -883,6 +898,58 @@ def _calculate_peak_area_local_baseline(
     right_level = local_level(right_mask, y[-edge_n:])
     baseline = np.linspace(left_level, right_level, y.size)
     return float(np.maximum(y - baseline, 0.0).sum())
+
+
+def _local_baseline_rfu_at_bp(
+    trace: np.ndarray,
+    time_all: np.ndarray,
+    bp_all: np.ndarray,
+    center_bp: float,
+    half_width_bp: float,
+) -> float:
+    """Return the local-sideband baseline's *RFU at the peak center*.
+
+    Mirrors the same linspace interpolation used inside
+    ``_calculate_peak_area_local_baseline`` but returns just the
+    interpolated y (not the area). Used by the FLT3-NPM1 plot to draw
+    the dashed baseline beneath the shading overlay so the chemist
+    can see at-a-glance what was subtracted from a peak.
+    """
+    if trace.size == 0 or time_all.size == 0 or bp_all.size == 0:
+        return 0.0
+
+    local_mask = (bp_all >= center_bp - half_width_bp) & (bp_all <= center_bp + half_width_bp)
+    if not np.any(local_mask):
+        return 0.0
+
+    local_idx = time_all[local_mask].astype(int, copy=False)
+    local_idx = local_idx[(local_idx >= 0) & (local_idx < trace.size)]
+    if local_idx.size < 3:
+        return 0.0
+
+    y = np.asarray(trace[local_idx], dtype=float)
+    sideband_width = max(half_width_bp * 1.25, 1.5)
+    gap = max(half_width_bp * 0.20, 0.3)
+    left_mask = (
+        (bp_all >= center_bp - half_width_bp - gap - sideband_width)
+        & (bp_all <= center_bp - half_width_bp - gap)
+    )
+    right_mask = (
+        (bp_all >= center_bp + half_width_bp + gap)
+        & (bp_all <= center_bp + half_width_bp + gap + sideband_width)
+    )
+
+    def local_level(mask: np.ndarray, fallback: np.ndarray) -> float:
+        idx = time_all[mask].astype(int, copy=False)
+        idx = idx[(idx >= 0) & (idx < trace.size)]
+        values = np.asarray(trace[idx], dtype=float) if idx.size else fallback
+        return float(np.percentile(values, 20))
+
+    edge_n = max(1, min(max(int(round(y.size * 0.15)), 1), y.size // 2))
+    left_level = local_level(left_mask, y[:edge_n])
+    right_level = local_level(right_mask, y[-edge_n:])
+    # match _calculate_peak_area_local_baseline's interpolation
+    return float(np.linspace(left_level, right_level, y.size)[y.size // 2])
 
 
 def _calculate_peak_area_fast(
