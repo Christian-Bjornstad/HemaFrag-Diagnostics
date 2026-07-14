@@ -47,8 +47,6 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 
 logger = logging.getLogger(__name__)
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 # Lazy import to avoid hard dependency in headless tests
 def _import_pyqtgraph():
     import pyqtgraph as pg
