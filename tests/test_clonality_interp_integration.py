@@ -198,18 +198,22 @@ def test_clonality_sidebar_has_interpretation_button(qapp):
     # Find clonality group's sub_buttons
     clonality_group = w.group_clonality
     sub_labels = list(clonality_group.sub_button_labels)
-    assert "Interpretation" in sub_labels, (
-        "Klonalitet sidebar must include an 'Interpretation' sub-button; "
-        "the tab is otherwise unreachable. sub_labels=%r" % sub_labels
+    # 2026-07-13: the in-app interpretation was replaced by the ML Training tab,
+    # so the sidebar now exposes Run / Ladder / Archive Runner / ML Training /
+    # Log / Settings — the TabClonalityInterpretation widget still exists
+    # but is no longer in the sidebar.
+    assert "ML Training" in sub_labels, (
+        "Klonalitet sidebar must include 'ML Training' (in-app interpreter). "
+        "sub_labels=%r" % sub_labels
     )
-    # Find index of interpretation and verify it maps to a non-zero stack page
-    interp_idx = sub_labels.index("Interpretation")
+    assert "Interpretation" not in sub_labels, (
+        "Single Interpretation sidebar tab was removed in v0.2.0; got sub_labels=%r"
+        % sub_labels
+    )
+    # Verify ML Training routes to the TabMlTraining widget
+    training_idx = sub_labels.index("ML Training")
     w._activate_analysis("clonality")
-    w.on_sub_tab_clicked("clonality", interp_idx)
-    assert w.stacked_widget.currentIndex() == 4, (
-        f"Interpretation should default to stack[4]; got {w.stacked_widget.currentIndex()}"
-    )
-    # Confirm the page shown is the actual interpreter widget
-    page = w.stacked_widget.widget(4).widget()
-    from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
-    assert isinstance(page, TabClonalityInterpretation)
+    w.on_sub_tab_clicked("clonality", training_idx)
+    page = w.stacked_widget.currentWidget().widget()
+    from gui_qt.tabs.tab_ml_training import TabMlTraining
+    assert isinstance(page, TabMlTraining)

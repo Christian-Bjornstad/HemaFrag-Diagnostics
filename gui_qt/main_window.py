@@ -135,7 +135,7 @@ class MainWindow(QMainWindow):
                 "Run",
                 "Ladder",
                 "Archive Runner",
-                "Interpretation",
+                "ML Training",
                 "Log",
                 "Settings",
             ],
@@ -173,7 +173,8 @@ class MainWindow(QMainWindow):
         self.tab_ladder = TabLadder()
         self.tab_archive_runner = TabArchiveRunner()
         self.tab_flt3_validation = TabFlt3Validation()
-        self.tab_clonality_interpretation = TabClonalityInterpretation()
+        # ML Training replaces the standalone Interpretation tab —
+        # the chemist trains straight from the sidebar now.
         self.tab_ml_training = TabMlTraining()
         self.tab_log = TabLog()
         self.tab_about = TabAbout()
@@ -190,18 +191,49 @@ class MainWindow(QMainWindow):
         from gui_qt.log_handler import qt_log_handler
         qt_log_handler.emitter.log_signal.connect(self.tab_log.append_log)
         
-        # Add to stack
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_run))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ladder))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_flt3_validation))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_clonality_interpretation))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ml_training))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_clonality))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_flt3))
-        self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_general))
+        # Add to stack. NOTE: indices must match the per-analysis
+        # ``sub_to_stack_index_map`` dicts further below. If you add or
+        # remove a tab here, update those maps too.
+        self.tab_run_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_run))
+        self.tab_ladder_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ladder))
+        self.tab_archive_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))
+        self.tab_flt3_validation_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_flt3_validation))
+        self.tab_ml_training_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ml_training))
+        self.tab_log_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
+        self.tab_about_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))
+        self.tab_settings_clonality_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_clonality))
+        self.tab_settings_flt3_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_flt3))
+        self.tab_settings_general_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_general))
+
+        # Per-analysis sub-button → stack index. Scoped by analysis_id so a
+        # single ``tab_run_idx`` index can be shared cleanly. Built from a
+        # structured schema instead of a hardcoded page_map dict to avoid
+        # the off-by-one drift we just fixed.
+        sub_button_map: dict[str, dict[str, int]] = {
+            "clonality": {
+                "Run": self.tab_run_idx,
+                "Ladder": self.tab_ladder_idx,
+                "Archive Runner": self.tab_archive_idx,
+                "ML Training": self.tab_ml_training_idx,
+                "Log": self.tab_log_idx,
+                "Settings": self.tab_settings_clonality_idx,
+            },
+            "flt3": {
+                "Run": self.tab_run_idx,
+                "Ladder": self.tab_ladder_idx,
+                "Archive Runner": self.tab_archive_idx,
+                "Log": self.tab_log_idx,
+                "Settings": self.tab_settings_flt3_idx,
+            },
+            "general": {
+                "Run": self.tab_run_idx,
+                "Ladder": self.tab_ladder_idx,
+                "Archive Runner": self.tab_archive_idx,
+                "Log": self.tab_log_idx,
+                "Settings": self.tab_settings_general_idx,
+            },
+        }
+        self._sub_button_map = sub_button_map
         
         # Content Container (for padding)
         content_container = QWidget()
@@ -225,7 +257,7 @@ class MainWindow(QMainWindow):
         self.tab_ladder.set_analysis(active_ana)
         self.on_group_clicked(start_group)
         start_group.btn_run.setChecked(True)
-        self.stacked_widget.setCurrentIndex(0)
+        self.stacked_widget.setCurrentIndex(self.tab_run_idx)
 
         # --- Keyboard shortcuts ---
         self._setup_shortcuts()
@@ -298,7 +330,7 @@ class MainWindow(QMainWindow):
     def on_about_clicked(self) -> None:
         self._clear_sidebar_selection()
         self.btn_about.setChecked(True)
-        self.stacked_widget.setCurrentIndex(6)
+        self.stacked_widget.setCurrentIndex(self.tab_about_idx)
 
     def _wrap_scroll_page(self, page: QWidget) -> QScrollArea:
         scroll = QScrollArea()
@@ -354,23 +386,20 @@ class MainWindow(QMainWindow):
             self.tab_archive_runner.set_analysis(analysis_id)
         if changed or getattr(self.tab_flt3_validation, "_current_analysis_id", None) != analysis_id:
             self.tab_flt3_validation.set_analysis(analysis_id)
-            
-        if analysis_id == "clonality":
-            page_map = {0: 0, 1: 1, 2: 2, 3: 4, 4: 5, 5: 7}
-            page_idx = page_map.get(tab_idx, 0)
-        elif analysis_id == "flt3":
-            page_map = {0: 0, 1: 1, 2: 3, 3: 5, 4: 8}
-            page_idx = page_map.get(tab_idx, 0)
-        else:
-            if tab_idx == 3:
-                page_map = {
-                    "general": 8,
-                }
-                page_idx = page_map.get(analysis_id, 8)
-            elif tab_idx == 2:
-                page_idx = 4
-            else:
-                page_idx = tab_idx
+
+        analysis_sub_map = self._sub_button_map.get(analysis_id, {})
+        group_lookup = {
+            "clonality": self.group_clonality,
+            "flt3": self.group_flt3,
+            "general": self.group_general,
+        }
+        group = group_lookup.get(analysis_id)
+        if group is None:
+            return
+        label = group.sub_button_labels[tab_idx] if 0 <= tab_idx < len(group.sub_button_labels) else None
+        if label is None or label not in analysis_sub_map:
+            return
+        page_idx = analysis_sub_map[label]
         self.btn_about.setChecked(False)
         self.stacked_widget.setCurrentIndex(page_idx)
 
