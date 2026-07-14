@@ -527,6 +527,80 @@ def _create_plotly_figure(data: dict) -> tuple[go.Figure, float, int]:
     return fig, ymax, len(channels_to_plot)
 
 
+def _selected_peak_area_shape(
+    peak: dict,
+    *,
+    half_width_bp: float,
+    baseline_rfu: float | None,
+    ymax: float,
+    accent_hex: str,
+) -> list[dict]:
+    """Return the Plotly shape dicts for a single FLT3-selected peak.
+
+    Two shapes:
+
+    * translucent fill rectangle over ``[peak.x - hw, peak.x + hw] x [0, ymax]``
+      so the chemist sees the integration window,
+    * dashed baseline line at ``baseline_rfu`` across that window so the
+      baseline subtraction is visible at a glance.
+
+    The fill alpha is 0.18; pass an explicit accent hex so the visual ties
+    to the channel color (DATA1=blue, DATA2=green, DATA3=orange).
+    """
+    out: list[dict] = []
+    x = float(peak.get("x", float("nan")))
+    if not (x == x and half_width_bp > 0):
+        return out
+    fillcolor = _hex_to_rgba(accent_hex, 0.18)
+    out.append({
+        "type": "rect",
+        "xref": "x", "yref": "y",
+        "x0": x - half_width_bp,
+        "x1": x + half_width_bp,
+        "y0": 0.0,
+        "y1": float(ymax),
+        "fillcolor": fillcolor,
+        "line": {"color": accent_hex, "width": 0.8},
+        "layer": "above",
+        "opacity": 1.0,
+    })
+    if baseline_rfu is not None and baseline_rfu == baseline_rfu:
+        out.append({
+            "type": "line",
+            "xref": "x", "yref": "y",
+            "x0": x - half_width_bp,
+            "x1": x + half_width_bp,
+            "y0": float(baseline_rfu),
+            "y1": float(baseline_rfu),
+            "line": {"color": accent_hex, "width": 1.5, "dash": "dash"},
+            "layer": "above",
+        })
+    return out
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    """Convert '#rrggbb' -> 'rgba(r,g,b,alpha)' for Plotly shape fillcolor.
+
+    Used by ``_selected_peak_area_shape`` and any future FLT3 visual that
+    needs a translucent channel-accent color. Accepts odd lengths by
+    padding; falls back to opaque black on bad input.
+    """
+    if not isinstance(hex_color, str):
+        return f"rgba(0,0,0,{alpha:g})"
+    raw = hex_color.lstrip("#")
+    if len(raw) == 3:
+        raw = "".join(ch * 2 for ch in raw)
+    if len(raw) != 6:
+        return f"rgba(0,0,0,{alpha:g})"
+    try:
+        r = int(raw[0:2], 16)
+        g = int(raw[2:4], 16)
+        b = int(raw[4:6], 16)
+    except ValueError:
+        return f"rgba(0,0,0,{alpha:g})"
+    return f"rgba({r},{g},{b},{alpha:g})"
+
+
 def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
     """Main entry point for building an interactive peak plot."""
     data = _prepare_plot_data(entry)
@@ -586,6 +660,15 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
     div_id = f"peakplot_{data['sample_id'].replace('.','_')}_{uuid.uuid4().hex}"
     entry["_report_plot_id"] = div_id
     fig_json = _json_dumps_compact(fig.to_plotly_json())
+    # Phase 15.3: thread the per-entry ymax + the live half-width into
+    # the JS bootstrap so the selected-peak area shading covers the
+    # visible window and uses the same HW as the integration math.
+    _peak_ymax_for_js = float(ymax) * YMAX_PADDING_FACTOR
+    try:
+        from core.analyses.flt3.config import get_flt3_npm1_half_width_bp
+        _npm1_hw = float(get_flt3_npm1_half_width_bp())
+    except Exception:
+        _npm1_hw = 1.0
     initial_peaks_json = _json_dumps_compact(initial_peaks)
     manual_ratio_assays = {"FLT3-ITD", "FLT3-D835"}
     is_manual_ratio_assay = data["assay_name"] in manual_ratio_assays
@@ -685,6 +768,15 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
   if (!gd) return;
 
   var areaWindowBp = (assayName === "SL") ? 20.0 : 5.0;
+  // ymax is the Python-computed plot upper bound for *this* entry.
+  // Surfaced into the JS so the selected-peak area shading covers the
+  // window a chemist can actually see, not the whole Plotly paper.
+  var peakYMax = {_peak_ymax_for_js};
+  // The FLT3 settings accessor lets live slider edits drive the JS-side
+  // half-width used to draw the shaded integration window. Set on the
+  // Python side at entry-render time so the same value feeds both the
+  // numerical integration and the visible rectangle.
+  var npm1HalfWidthBp = {_npm1_hw};
   var peaksTraceIndex = {final_peaks_trace_index};
   var primaryTraceIndex = {primary_trace_index};
   var assayName = {json.dumps(data["assay_name"])};
@@ -771,7 +863,89 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
         if (xCenter >= 335.0) return 1.0;
         return 2.0;
       }}
+      if (assayName === "NPM1") {{
+        // Half-width comes from the FLT3 settings block; defaults to 1.0 bp
+        // (GeneMapper tight Gaussian). The slider on the FLT3 settings tab
+        // lives at analyses.flt3.peak_window.npm1_half_width_bp. We mirror
+        // the same value the Python pipeline uses so the visible integration
+        // window in the plot matches the numerical integration in the area
+        // table.
+        return (typeof npm1HalfWidthBp === "number" && isFinite(npm1HalfWidthBp)) ? npm1HalfWidthBp : 1.0;
+      }}
       return areaWindowBp;
+    }}
+
+    function hexToRgba(hex, alpha) {{
+      if (typeof hex !== "string") return "rgba(0,0,0," + alpha + ")";
+      var raw = hex.charAt(0) === "#" ? hex.slice(1) : hex;
+      if (raw.length === 3) raw = raw.split("").map(function(c) {{ return c+c; }}).join("");
+      if (raw.length !== 6) return "rgba(0,0,0," + alpha + ")";
+      var r = parseInt(raw.slice(0,2), 16);
+      var g = parseInt(raw.slice(2,4), 16);
+      var b = parseInt(raw.slice(4,6), 16);
+      if (!isFinite(r) || !isFinite(g) || !isFinite(b)) return "rgba(0,0,0," + alpha + ")";
+      return "rgba(" + r + "," + g + "," + b + "," + alpha + ")";
+    }}
+
+    function baselineRfuForPeak(xCenter, halfWidth) {{
+      // Approximate the *local-sideband* baseline beneath the peak: take
+      // the closest trace points just past the half-width window on each
+      // side, average them. Mirrors the Python
+      // _local_baseline_rfu_at_bp helper shipped in Phase 15.2.
+      var channel = arguments.length > 2 && typeof arguments[2] === "string" ? arguments[2] : null;
+      var traceIdx = traceIndexForChannel(channel || "DATA1");
+      var traceData = traceXYCache[traceIdx] || {{}};
+      var tx = Array.isArray(traceData.x) ? traceData.x : [];
+      var ty = Array.isArray(traceData.y) ? traceData.y : [];
+      if (!tx.length || !ty.length) return null;
+      var leftY = null, rightY = null;
+      var leftBp = xCenter - halfWidth - 0.3;
+      var rightBp = xCenter + halfWidth + 0.3;
+      for (var i = 0; i < tx.length; i++) {{
+        var dx = Number(tx[i]);
+        var yy = Number(ty[i]);
+        if (!isFinite(dx) || !isFinite(yy)) continue;
+        if (leftY === null && dx <= leftBp) leftY = yy;
+        if (dx >= rightBp) {{ rightY = yy; break; }}
+      }}
+      if (!isFinite(leftY) && !isFinite(rightY)) return null;
+      if (!isFinite(leftY)) return rightY;
+      if (!isFinite(rightY)) return leftY;
+      return 0.5 * (leftY + rightY);
+    }}
+
+    function computeSelectedAreaShapes() {{
+      var out = [];
+      for (var i = 0; i < peaks.length; i++) {{
+        var p = peaks[i];
+        if (!p || !p.active) continue;
+        var hw = peakHalfWidthBp(p.x);
+        var accent = (typeof p.source_channel === "string" && channelAccent) ? channelAccent(p.source_channel) : "#dc2626";
+        if (!hw || hw <= 0) continue;
+        // translucent fill rectangle over the integration window
+        out.push({{
+          type: "rect",
+          xref: "x", yref: "y",
+          x0: p.x - hw, x1: p.x + hw,
+          y0: 0, y1: peakYMax,
+          fillcolor: hexToRgba(accent, 0.18),
+          line: {{ color: accent, width: 0.8 }},
+          layer: "above",
+          opacity: 1.0
+        }});
+        var baselineY = baselineRfuForPeak(p.x, hw, p.source_channel);
+        if (isFinite(baselineY)) {{
+          out.push({{
+            type: "line",
+            xref: "x", yref: "y",
+            x0: p.x - hw, x1: p.x + hw,
+            y0: baselineY, y1: baselineY,
+            line: {{ color: accent, width: 1.5, dash: "dash" }},
+            layer: "above"
+          }});
+        }}
+      }}
+      return out;
     }}
 
     function solve3x3(mat, vec) {{
@@ -1396,8 +1570,12 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
         tableHtml += "<tr><td>" + p.x.toFixed(1) + "</td><td>" + p.y.toFixed(0) + "</td><td>" + p.area.toFixed(0) + "</td></tr>";
       }}
 
-      Plotly.relayout(g, {{ shapes: baseShapes, annotations: baseAnnots.concat(ann) }});
-      
+      var selectedAreaShapes = computeSelectedAreaShapes();
+      Plotly.relayout(g, {{
+        shapes: baseShapes.concat(selectedAreaShapes),
+        annotations: baseAnnots.concat(ann)
+      }});
+
       // Update Table
       if (tbody) tbody.innerHTML = tableHtml;
       var tCont = document.getElementById("{div_id}_table_container");
