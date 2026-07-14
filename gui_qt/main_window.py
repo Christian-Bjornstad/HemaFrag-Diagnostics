@@ -11,6 +11,7 @@ from gui_qt.tabs.tab_batch import TabBatch
 from gui_qt.tabs.tab_archive_runner import TabArchiveRunner
 from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
 from gui_qt.tabs.tab_ml_training import TabMlTraining
+from gui_qt.tabs.tab_labeling import TabLabeling
 from gui_qt.tabs.tab_flt3_validation import TabFlt3Validation
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_log import TabLog
@@ -137,6 +138,7 @@ class MainWindow(QMainWindow):
                 "Archive Runner",
                 "ML Training",
                 "Log",
+                "Labeling",
                 "Settings",
             ],
         )
@@ -176,6 +178,7 @@ class MainWindow(QMainWindow):
         # ML Training replaces the standalone Interpretation tab —
         # the chemist trains straight from the sidebar now.
         self.tab_ml_training = TabMlTraining()
+        self.tab_labeling = TabLabeling()
         self.tab_log = TabLog()
         self.tab_about = TabAbout()
         self.tab_settings_clonality = TabAnalysisSettings("clonality")
@@ -199,6 +202,7 @@ class MainWindow(QMainWindow):
         self.tab_archive_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))
         self.tab_flt3_validation_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_flt3_validation))
         self.tab_ml_training_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ml_training))
+        self.tab_labeling_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_labeling))
         self.tab_log_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
         self.tab_about_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))
         self.tab_settings_clonality_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_clonality))
@@ -216,6 +220,7 @@ class MainWindow(QMainWindow):
                 "Archive Runner": self.tab_archive_idx,
                 "ML Training": self.tab_ml_training_idx,
                 "Log": self.tab_log_idx,
+                "Labeling": self.tab_labeling_idx,
                 "Settings": self.tab_settings_clonality_idx,
             },
             "flt3": {
