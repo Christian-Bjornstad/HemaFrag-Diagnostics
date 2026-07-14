@@ -53,12 +53,15 @@ class TabAnalysisSettings(QWidget):
         self.paths_card = self._build_paths_card()
         self.run_card = self._build_run_card()
         self.interpretation_card = self._build_interpretation_card()
+        self.peak_window_card = self._build_peak_window_card()
         self.shared_card = self._build_shared_card()
 
         main_layout.addWidget(self.paths_card)
         main_layout.addWidget(self.run_card)
         if self.analysis_id == "clonality":
             main_layout.addWidget(self.interpretation_card)
+        if self.analysis_id == "flt3":
+            main_layout.addWidget(self.peak_window_card)
         main_layout.addWidget(self.shared_card)
         main_layout.addStretch()
 
@@ -180,11 +183,96 @@ class TabAnalysisSettings(QWidget):
         layout.addRow("", learning_note)
         return card
 
-    def _build_shared_card(self) -> QWidget:
+    def _build_peak_window_card(self) -> QWidget:
+        """FLT3 peak-area window card — only rendered for the FLT3 analysis."""
         card = QWidget()
         card.setObjectName("Card")
         layout = QFormLayout(card)
 
+        layout.addRow(QLabel("<b>FLT3 Peak-Area Window (NPM1)</b>"))
+
+        # Defaults pulled from the FLT3 config so the card surfaces the
+        # current backend values rather than hardcoded mirrors.
+        try:
+            from core.analyses.flt3.config import (
+                FLT3_NPM1_DEFAULT_HALF_WIDTH_BP,
+                FLT3_PLOT_BP_WINDOWS,
+                get_flt3_peak_window_settings,
+            )
+            default_bundle = get_flt3_peak_window_settings()
+            default_x_min, default_x_max = FLT3_PLOT_BP_WINDOWS.get("NPM1", (290.0, 330.0))
+            default_half = FLT3_NPM1_DEFAULT_HALF_WIDTH_BP
+        except Exception:
+            default_bundle = {"npm1_half_width_bp": 1.0, "npm1_x_min": 290.0, "npm1_x_max": 330.0}
+            default_x_min, default_x_max = 290.0, 330.0
+            default_half = 1.0
+
+        self.npm1_half_width = QDoubleSpinBox()
+        self.npm1_half_width.setRange(0.3, 5.0)
+        self.npm1_half_width.setSingleStep(0.1)
+        self.npm1_half_width.setDecimals(2)
+        self.npm1_half_width.setValue(float(default_bundle.get("npm1_half_width_bp", default_half)))
+        self.npm1_half_width.setToolTip(
+            "Half-width (bp) of the local-sideband integration window used for NPM1 peak areas.\n"
+            "1.0 bp matches GeneMapper's tight Gaussian; widen if shoulders leak into the reference range."
+        )
+        layout.addRow("NPM1 Half-width (bp):", self.npm1_half_width)
+
+        self.npm1_x_min = QDoubleSpinBox()
+        self.npm1_x_min.setRange(0.0, 999.0)
+        self.npm1_x_min.setSingleStep(1.0)
+        self.npm1_x_min.setDecimals(2)
+        self.npm1_x_min.setValue(float(default_bundle.get("npm1_x_min", default_x_min)))
+        self.npm1_x_min.setToolTip(
+            f"Initial x-axis lower bound for the NPM1 plot (default {default_x_min:.1f} bp)."
+        )
+        layout.addRow("NPM1 X-axis lower bound (bp):", self.npm1_x_min)
+
+        self.npm1_x_max = QDoubleSpinBox()
+        self.npm1_x_max.setRange(1.0, 2000.0)
+        self.npm1_x_max.setSingleStep(1.0)
+        self.npm1_x_max.setDecimals(2)
+        self.npm1_x_max.setValue(float(default_bundle.get("npm1_x_max", default_x_max)))
+        self.npm1_x_max.setToolTip(
+            f"Initial x-axis upper bound for the NPM1 plot (default {default_x_max:.1f} bp)."
+        )
+        layout.addRow("NPM1 X-axis upper bound (bp):", self.npm1_x_max)
+
+        # keep upper bound > lower bound as the chemist edits
+        self.npm1_x_min.valueChanged.connect(self._sync_npm1_window_bounds)
+        self.npm1_x_max.valueChanged.connect(self._sync_npm1_window_bounds)
+
+        note = QLabel(
+            "These knobs only apply to NPM1 plots in the FLT3 analysis. "
+            "The half-width affects area integration (peak area used in classification). "
+            "The x-axis bounds set the report's *initial* zoom; you can still widen the "
+            "view by zoom/pan or double-click reset inside the Plotly chart."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #64748b;")
+        layout.addRow("", note)
+        return card
+
+    def _sync_npm1_window_bounds(self) -> None:
+        """Enforce xmax > xmin + 1 bp while the chemist is editing the spinboxes."""
+        xmin_value = float(self.npm1_x_min.value())
+        xmax_value = float(self.npm1_x_max.value())
+        if xmax_value - xmin_value < 1.0:
+            # nudge the just-edited one back to keep at least 1 bp of window
+            sender = self.sender()
+            if sender is self.npm1_x_min:
+                self.npm1_x_min.blockSignals(True)
+                self.npm1_x_min.setValue(max(0.0, xmax_value - 1.0))
+                self.npm1_x_min.blockSignals(False)
+            elif sender is self.npm1_x_max:
+                self.npm1_x_max.blockSignals(True)
+                self.npm1_x_max.setValue(xmin_value + 1.0)
+                self.npm1_x_max.blockSignals(False)
+
+    def _build_shared_card(self) -> QWidget:
+        card = QWidget()
+        card.setObjectName("Card")
+        layout = QFormLayout(card)
         layout.addRow(QLabel("<b>Shared App Settings & Engine</b>"))
 
         self.author = QLineEdit()
@@ -245,6 +333,18 @@ class TabAnalysisSettings(QWidget):
             self.clonality_model_path.setText(str(interpretation_settings.get("model_path", "") or ""))
             self.chk_clonality_learning.setChecked(bool(learning_settings.get("enabled", False)))
             self.clonality_learning_output_dir.setText(str(learning_settings.get("output_dir", "") or ""))
+        if self.analysis_id == "flt3":
+            # FLT3 peak-window block — pulled straight from the FLT3 accessor
+            # so the GUI surfaces the *current* backend defaults if the
+            # settings dict never bore a `peak_window` key.
+            try:
+                from core.analyses.flt3.config import get_flt3_peak_window_settings
+                bundle = get_flt3_peak_window_settings()
+            except Exception:
+                bundle = {"npm1_half_width_bp": 1.0, "npm1_x_min": 290.0, "npm1_x_max": 330.0}
+            self.npm1_half_width.setValue(float(bundle["npm1_half_width_bp"]))
+            self.npm1_x_min.setValue(float(bundle["npm1_x_min"]))
+            self.npm1_x_max.setValue(float(bundle["npm1_x_max"]))
         self._sync_patient_regex_enabled()
         self._sync_scope_controls()
 
@@ -275,6 +375,11 @@ class TabAnalysisSettings(QWidget):
             interpretation_settings["model_path"] = self.clonality_model_path.text().strip()
             learning_settings["enabled"] = self.chk_clonality_learning.isChecked()
             learning_settings["output_dir"] = self.clonality_learning_output_dir.text().strip()
+        if self.analysis_id == "flt3":
+            peak_window_settings = profile.setdefault("peak_window", {})
+            peak_window_settings["npm1_half_width_bp"] = float(self.npm1_half_width.value())
+            peak_window_settings["npm1_x_min"] = float(self.npm1_x_min.value())
+            peak_window_settings["npm1_x_max"] = float(self.npm1_x_max.value())
 
         if APP_SETTINGS.get("active_analysis") == self.analysis_id:
             APP_SETTINGS.setdefault("batch", {}).update(batch_settings)

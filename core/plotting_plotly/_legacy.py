@@ -400,8 +400,8 @@ def _prepare_plot_data(entry: dict) -> dict | None:
         "assay_name": entry.get("assay"),
         "group": entry.get("group"),
         "forced_ymax": entry.get("forced_ymax") or entry.get("force_ymax"),
-        "forced_xmin": entry.get("forced_xmin"),
-        "forced_xmax": entry.get("forced_xmax"),
+        "forced_xmin": _resolved_plot_xmin(entry),
+        "forced_xmax": _resolved_plot_xmax(entry),
         "peaks_by_channel": entry["peaks_by_channel"],
         "wt_bp": entry.get("wt_bp"),
         "mut_bp": entry.get("mut_bp"),
@@ -409,6 +409,43 @@ def _prepare_plot_data(entry: dict) -> dict | None:
         "sample_id": f"{fsa.file_name}_{primary_ch}",
         "entry_ref": entry,
     }
+
+
+def _resolved_plot_xmin(entry: dict) -> float | None:
+    """Resolve the plot's *initial* x-min for the entry.
+
+    Honours an explicit entry override first; otherwise consults the
+    FLT3 plot-window settings (e.g. NPM1 zoom to 290 bp by default,
+    app-tunable via `analyses.flt3.peak_window.npm1_x_min`).
+    Falls back to ``None`` so the figure builder keeps using the
+    detector-driven ``bp_min``.
+    """
+    author = entry.get("forced_xmin")
+    if author is not None:
+        return float(author)
+    assay = entry.get("assay")
+    if not assay:
+        return None
+    from core.analyses.flt3.config import get_flt3_plot_window  # lazy; avoid import cycle
+    window = get_flt3_plot_window(assay)
+    if window is None:
+        return None
+    return float(window[0])
+
+
+def _resolved_plot_xmax(entry: dict) -> float | None:
+    """Resolve the plot's *initial* x-max; same precedence as ``_resolved_plot_xmin``."""
+    author = entry.get("forced_xmax")
+    if author is not None:
+        return float(author)
+    assay = entry.get("assay")
+    if not assay:
+        return None
+    from core.analyses.flt3.config import get_flt3_plot_window  # lazy; avoid import cycle
+    window = get_flt3_plot_window(assay)
+    if window is None:
+        return None
+    return float(window[1])
 
 
 def _create_plotly_figure(data: dict) -> tuple[go.Figure, float, int]:
