@@ -63,7 +63,7 @@ ANNOTATION_CLASSES_ORDER: tuple[str, ...] = (
     "qc_teknisk_fail",
     "usikker_review",
 )
-RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v7"
+RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v8"
 TREE_CLASSIFIER_KINDS = {"random_forest", "extra_trees"}
 CALIBRATION_FOLDS = 3
 CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT = 2
@@ -131,7 +131,7 @@ def summarize_class_support(
     y: pd.Series,
     dit: pd.Series,
     rows: pd.DataFrame,
-) -> dict[str, dict[str, int]]:
+) -> dict[str, dict[str, int | float]]:
     """Count independent patient and run support for every observed label."""
     labels = pd.Series(y).fillna("").astype(str).str.strip().reset_index(drop=True)
     dits = pd.Series(dit).fillna("").astype(str).str.strip().reset_index(drop=True)
@@ -149,13 +149,26 @@ def summarize_class_support(
     else:
         source_runs = pd.Series([""] * len(labels), dtype=str)
 
-    support: dict[str, dict[str, int]] = {}
+    support: dict[str, dict[str, int | float]] = {}
     for label in sorted(set(labels.loc[labels.ne("")])):
         mask = labels.eq(label)
         label_runs = source_runs.loc[mask]
+        dit_counts = dits.loc[mask & dits.ne("")].value_counts()
+        dit_rows = int(dit_counts.sum())
+        max_dit_rows = int(dit_counts.max()) if not dit_counts.empty else 0
+        effective_dits = (
+            float(dit_rows**2 / np.square(dit_counts.to_numpy()).sum())
+            if dit_rows
+            else 0.0
+        )
         support[label] = {
             "rows": int(mask.sum()),
-            "unique_dit_groups": int(dits.loc[mask & dits.ne("")].nunique()),
+            "unique_dit_groups": int(len(dit_counts)),
+            "effective_dit_groups": effective_dits,
+            "max_rows_per_dit": max_dit_rows,
+            "max_dit_row_fraction": (
+                float(max_dit_rows / dit_rows) if dit_rows else 0.0
+            ),
             "unique_source_run_groups": int(
                 label_runs.loc[label_runs.ne("")].nunique()
             ),
@@ -174,6 +187,8 @@ class PerAssayDataset:
     assay: str -- the assay tube (e.g., "FR1").
     n_samples: int -- populated post-init from len(X).
     rare_class_counts: dict[str, int] -- ANNOTATION_CLASSES -> row counts.
+    class_support: per-label independent DIT/run and repeat-concentration
+        evidence computed after content deduplication.
     """
 
     X: pd.DataFrame
@@ -181,7 +196,9 @@ class PerAssayDataset:
     dit: pd.Series
     assay: str
     rare_class_counts: dict[str, int] = field(default_factory=dict)
-    class_support: dict[str, dict[str, int]] = field(default_factory=dict)
+    class_support: dict[str, dict[str, int | float]] = field(
+        default_factory=dict
+    )
     data_provenance: dict[str, Any] = field(default_factory=dict)
     n_samples: int = 0
     rows: pd.DataFrame = field(default_factory=pd.DataFrame)

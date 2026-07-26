@@ -55,7 +55,7 @@ def _calibration_manifest(fold_count: int, unique_groups: int) -> dict:
 
 def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = None) -> dict:
     return {
-        "schema_version": "ml_training_pipeline_v7",
+        "schema_version": "ml_training_pipeline_v8",
         "assay": assay,
         "label_order": list(ANNOTATION_CLASSES_ORDER),
         "accept_threshold_tau": float(tau),
@@ -80,12 +80,18 @@ def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = No
             "monoklonal": {
                 "rows": 25,
                 "unique_dit_groups": 25,
+                "effective_dit_groups": 25.0,
+                "max_rows_per_dit": 1,
+                "max_dit_row_fraction": 0.04,
                 "unique_source_run_groups": 3,
                 "rows_missing_source_run": 0,
             },
             "polyklonal": {
                 "rows": 25,
                 "unique_dit_groups": 25,
+                "effective_dit_groups": 25.0,
+                "max_rows_per_dit": 1,
+                "max_dit_row_fraction": 0.04,
                 "unique_source_run_groups": 3,
                 "rows_missing_source_run": 0,
             },
@@ -102,7 +108,10 @@ def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = No
                 "method": "dit_fsa_content_connected_components",
                 "content_hash_coverage": 1.0,
             },
-            "class_support_gate": {"passed": True},
+            "class_support_gate": {
+                "passed": True,
+                "thresholds": {"max_class_dit_row_fraction": 0.10},
+            },
             "calibration_gate": {"passed": True},
             "calibration": _calibration_manifest(5, 40),
             "class_fold_support": {
@@ -282,6 +291,18 @@ def test_store_ignores_artifact_without_class_support_evidence(tmp_path):
     metadata["training_class_support"]["monoklonal"][
         "unique_source_run_groups"
     ] = 0
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_with_concentrated_class_support(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    support = metadata["training_class_support"]["monoklonal"]
+    support["max_rows_per_dit"] = 13
+    support["max_dit_row_fraction"] = 13.0 / 25.0
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
     assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False

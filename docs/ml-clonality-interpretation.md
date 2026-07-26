@@ -17,6 +17,9 @@ remains the report source of truth.
 - Within each assay, one FSA content hash contributes one training vote.
   Conflicting chemist labels or source-run assignments for identical bytes
   stop training.
+- Distinct physical replicate traces remain distinct reportable observations,
+  but promotion is blocked when one DIT contributes more than the configured
+  fraction of any class. Reports include both unique and effective DIT support.
 - Every modeled label must have configurable independent DIT and source-run
   support. `monoklonal` and `polyklonal` are required classes.
 - Every label must occur in enough held-out folds, remain present in every
@@ -28,7 +31,7 @@ remains the report source of truth.
 - Replicate and panel context is limited to the same DIT and sanitized source
   run, and controls/SL are excluded from patient context.
 - Training produces runtime-ineligible candidates by default.
-- Runtime only discovers explicitly promoted `ml_training_pipeline_v7`
+- Runtime only discovers explicitly promoted `ml_training_pipeline_v8`
   artifacts whose metadata proves complete DIT/content- and source-run-grouped
   out-of-fold validation, per-class support and fold coverage, and complete
   grouped calibration for every fold plus the final refit.
@@ -147,6 +150,7 @@ python -m scripts.train_clonality_interpretation_models `
   --min-class-source-run-groups 3 `
   --min-class-evaluation-folds 2 `
   --min-class-training-rows-per-fold 6 `
+  --max-class-dit-row-fraction 0.10 `
   --min-accepted-accuracy 0.95 `
   --min-accepted-coverage 0.10 `
   --max-calibration-error 0.10 `
@@ -264,6 +268,8 @@ Every candidate stores:
 
 - feature columns plus trace and cohort schemas;
 - label order, class counts, and per-class DIT/source-run support;
+- per-class effective DIT count, largest repeat count, and maximum DIT row
+  fraction;
 - training row, unique-DIT, and independent DIT/content-group counts;
 - raw labeled rows, unique physical traces, removed duplicate copies, content
   hash coverage, and duplicate label/run conflict counts;
@@ -289,13 +295,13 @@ never from the refitted candidate.
 ML stays off unless both conditions are true:
 
 1. `analyses.clonality.interpretation.enabled` is true.
-2. `model_path` contains at least one eligible validated v7 assay artifact.
+2. `model_path` contains at least one eligible validated v8 assay artifact.
 
-Runtime rejects v1-v6 artifacts and v7 artifacts lacking complete content-hash
+Runtime rejects v1-v7 artifacts and v8 artifacts lacking complete content-hash
 deduplication/grouping, per-class independent support and fold coverage,
-grouped OOF/final-fit calibration, or a complete passing `SourceRunKey` stress
-test. This deliberately requires retraining before an older model can be
-enabled.
+acceptable per-class DIT concentration, grouped OOF/final-fit calibration, or
+a complete passing `SourceRunKey` stress test. This deliberately requires
+retraining before an older model can be enabled.
 
 The batch pipeline attaches rule results first, computes same-run patient
 context across the completed batch, and only then invokes ML. The runtime
@@ -339,6 +345,8 @@ scripts/train_clonality_interpretation_models.py
 - Inspect per-assay label support, review panels, and run-date drift.
 - Confirm every modeled label meets independent-patient, source-run, fold
   coverage, and calibration-row gates; merge or review-route unsupported labels.
+- Review per-class effective DIT count and repeat concentration before deciding
+  whether future training should use patient-balanced weights.
 - Decide assay-specific promotion thresholds with the chemist.
 - Review whether the automatic RandomForest/ExtraTrees ranking is stable
   across run-date cohorts and an external holdout.

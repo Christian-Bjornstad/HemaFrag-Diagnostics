@@ -303,10 +303,10 @@ def _render_per_assay_markdown(
     out_lines.append("## Independent class support")
     out_lines.append("")
     out_lines.append(
-        "| Class | Rows | DIT groups | Source runs | DIT test folds | "
-        "Run test folds |"
+        "| Class | Rows | DIT groups | Effective DITs | Max DIT share | "
+        "Source runs | DIT test folds | Run test folds |"
     )
-    out_lines.append("|---|---:|---:|---:|---:|---:|")
+    out_lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
     primary_fold_support = validation.split_manifest.get(
         "class_fold_support", {}
     )
@@ -316,10 +316,12 @@ def _render_per_assay_markdown(
             continue
         support = class_support[cls]
         out_lines.append(
-            "| {} | {} | {} | {} | {} | {} |".format(
+            "| {} | {} | {} | {:.1f} | {:.1%} | {} | {} | {} |".format(
                 cls,
                 support["rows"],
                 support["unique_dit_groups"],
+                support["effective_dit_groups"],
+                support["max_dit_row_fraction"],
                 support["unique_source_run_groups"],
                 primary_fold_support.get(cls, {}).get(
                     "evaluation_folds_with_examples", 0
@@ -725,6 +727,7 @@ def _class_support_gate(dataset, validation, source_run_validation, args):
         min_class_training_rows_per_fold=(
             args.min_class_training_rows_per_fold
         ),
+        max_class_dit_row_fraction=args.max_class_dit_row_fraction,
     )
 
 
@@ -957,6 +960,15 @@ def _parse_args(argv=None):
         ),
     )
     p.add_argument(
+        "--max-class-dit-row-fraction",
+        type=float,
+        default=0.10,
+        help=(
+            "Maximum fraction of any class contributed by one DIT "
+            "(default 0.10)."
+        ),
+    )
+    p.add_argument(
         "--min-accepted-accuracy",
         type=float,
         default=0.95,
@@ -1012,6 +1024,10 @@ def main(argv=None):
     if args.min_class_source_run_groups < 2:
         raise ValueError(
             "--min-class-source-run-groups cannot be below 2"
+        )
+    if not 0.0 < args.max_class_dit_row_fraction <= 1.0:
+        raise ValueError(
+            "--max-class-dit-row-fraction must be in (0, 1]"
         )
     if args.classifier_kind == "auto" and args.promote_if_passes:
         raise ValueError(

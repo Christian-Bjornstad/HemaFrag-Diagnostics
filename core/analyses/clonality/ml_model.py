@@ -326,6 +326,9 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
     class_support_gate = validation.get("class_support_gate")
     if not isinstance(class_support_gate, Mapping):
         return False
+    class_support_thresholds = class_support_gate.get("thresholds")
+    if not isinstance(class_support_thresholds, Mapping):
+        return False
     calibration_gate = validation.get("calibration_gate")
     if not isinstance(calibration_gate, Mapping):
         return False
@@ -377,6 +380,9 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         conflicting_run_hashes = int(
             data_provenance.get("conflicting_source_run_content_hashes") or 0
         )
+        max_class_dit_row_fraction = float(
+            class_support_thresholds.get("max_class_dit_row_fraction")
+        )
     except (TypeError, ValueError):
         return False
     requires_cohort_context = any(
@@ -407,7 +413,8 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         and conflicting_run_hashes == 0
     )
     class_support_compatible = _valid_training_class_support(
-        training_class_support
+        training_class_support,
+        max_dit_row_fraction=max_class_dit_row_fraction,
     )
     primary_fold_support_compatible = _valid_class_fold_support(validation)
     run_fold_support_compatible = _valid_class_fold_support(run_stress)
@@ -449,8 +456,14 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
     )
 
 
-def _valid_training_class_support(support: Mapping[str, Any]) -> bool:
+def _valid_training_class_support(
+    support: Mapping[str, Any],
+    *,
+    max_dit_row_fraction: float,
+) -> bool:
     if not support:
+        return False
+    if not 0.0 < float(max_dit_row_fraction) <= 1.0:
         return False
     for label, values in support.items():
         if not str(label) or not isinstance(values, Mapping):
@@ -458,11 +471,28 @@ def _valid_training_class_support(support: Mapping[str, Any]) -> bool:
         try:
             rows = int(values.get("rows") or 0)
             dit_groups = int(values.get("unique_dit_groups") or 0)
+            effective_dits = float(
+                values.get("effective_dit_groups") or 0.0
+            )
+            max_dit_rows = int(values.get("max_rows_per_dit") or 0)
+            max_dit_fraction = float(
+                values.get("max_dit_row_fraction") or 0.0
+            )
             run_groups = int(values.get("unique_source_run_groups") or 0)
             missing_runs = int(values.get("rows_missing_source_run") or 0)
         except (TypeError, ValueError):
             return False
-        if rows <= 0 or dit_groups <= 0 or run_groups <= 0 or missing_runs:
+        if (
+            rows <= 0
+            or dit_groups <= 0
+            or not 0.0 < effective_dits <= dit_groups
+            or not 0 < max_dit_rows <= rows
+            or not 0.0 < max_dit_fraction <= 1.0
+            or max_dit_fraction > float(max_dit_row_fraction)
+            or abs(max_dit_fraction - max_dit_rows / rows) > 1e-9
+            or run_groups <= 0
+            or missing_runs
+        ):
             return False
     return all(label in support for label in ("monoklonal", "polyklonal"))
 

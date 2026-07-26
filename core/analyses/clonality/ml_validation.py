@@ -473,6 +473,7 @@ def assess_class_support_gate(
     min_class_source_run_groups: int,
     min_class_evaluation_folds: int,
     min_class_training_rows_per_fold: int,
+    max_class_dit_row_fraction: float,
 ) -> PromotionGate:
     """Require each modeled label to have independent, evaluable support."""
     thresholds: dict[str, float | int] = {
@@ -482,6 +483,9 @@ def assess_class_support_gate(
         "min_class_evaluation_folds": int(min_class_evaluation_folds),
         "min_class_training_rows_per_fold": int(
             min_class_training_rows_per_fold
+        ),
+        "max_class_dit_row_fraction": float(
+            max_class_dit_row_fraction
         ),
     }
     support = dataset.class_support
@@ -513,6 +517,9 @@ def assess_class_support_gate(
         run_groups = int(
             label_support.get("unique_source_run_groups") or 0
         )
+        max_dit_fraction = float(
+            label_support.get("max_dit_row_fraction") or 0.0
+        )
         if dit_groups < required_dits:
             reasons.append(
                 f"class_support[{label}].unique_dit_groups={dit_groups} "
@@ -522,6 +529,12 @@ def assess_class_support_gate(
             reasons.append(
                 f"class_support[{label}].unique_source_run_groups="
                 f"{run_groups} below {int(min_class_source_run_groups)}"
+            )
+        if max_dit_fraction > float(max_class_dit_row_fraction):
+            reasons.append(
+                f"class_support[{label}].max_dit_row_fraction="
+                f"{max_dit_fraction:.3f} above "
+                f"{float(max_class_dit_row_fraction):.3f}"
             )
         missing_runs = int(label_support.get("rows_missing_source_run") or 0)
         if missing_runs:

@@ -295,6 +295,7 @@ def test_class_support_gate_requires_independent_patients_runs_and_folds(
         min_class_source_run_groups=3,
         min_class_evaluation_folds=2,
         min_class_training_rows_per_fold=6,
+        max_class_dit_row_fraction=0.10,
     )
     assert passing.passed is True
 
@@ -310,6 +311,7 @@ def test_class_support_gate_requires_independent_patients_runs_and_folds(
         min_class_source_run_groups=3,
         min_class_evaluation_folds=2,
         min_class_training_rows_per_fold=6,
+        max_class_dit_row_fraction=0.10,
     )
     assert any(
         "source_run_oof.class[monoklonal].min_train_rows=5 below 6"
@@ -322,6 +324,7 @@ def test_class_support_gate_requires_independent_patients_runs_and_folds(
 
     dataset.class_support["monoklonal"]["unique_dit_groups"] = 1
     dataset.class_support["monoklonal"]["unique_source_run_groups"] = 1
+    dataset.class_support["monoklonal"]["max_dit_row_fraction"] = 0.5
     blocked = assess_class_support_gate(
         dataset,
         dit_validation,
@@ -331,6 +334,7 @@ def test_class_support_gate_requires_independent_patients_runs_and_folds(
         min_class_source_run_groups=3,
         min_class_evaluation_folds=2,
         min_class_training_rows_per_fold=6,
+        max_class_dit_row_fraction=0.10,
     )
 
     assert blocked.passed is False
@@ -338,6 +342,10 @@ def test_class_support_gate_requires_independent_patients_runs_and_folds(
     assert any("unique_dit_groups=1" in reason for reason in blocked.reasons)
     assert any(
         "unique_source_run_groups=1" in reason
+        for reason in blocked.reasons
+    )
+    assert any(
+        "max_dit_row_fraction=0.500 above 0.100" in reason
         for reason in blocked.reasons
     )
 

@@ -194,10 +194,31 @@ def test_per_assay_dataset_reports_independent_class_support():
     assert dataset.class_support["monoklonal"] == {
         "rows": 12,
         "unique_dit_groups": 12,
+        "effective_dit_groups": 12.0,
+        "max_rows_per_dit": 1,
+        "max_dit_row_fraction": pytest.approx(1.0 / 12.0),
         "unique_source_run_groups": 3,
         "rows_missing_source_run": 0,
     }
     assert dataset.class_support["polyklonal"]["unique_dit_groups"] == 12
+
+
+def test_per_assay_dataset_reports_repeat_concentration_by_class():
+    df = _synth_combined(n_per_assay={"FR1": 20})
+    df["ClonalitySuggestion"] = ["monoklonal"] * 10 + ["polyklonal"] * 10
+    df.loc[:4, "DIT"] = "REPEATED-DIT"
+    df["SourceRunKey"] = [f"run-{index % 3}" for index in range(len(df))]
+
+    support = build_per_assay_datasets(
+        df,
+        min_samples_per_assay=20,
+    )["FR1"].class_support["monoklonal"]
+
+    assert support["rows"] == 10
+    assert support["unique_dit_groups"] == 6
+    assert support["max_rows_per_dit"] == 5
+    assert support["max_dit_row_fraction"] == 0.5
+    assert support["effective_dit_groups"] == pytest.approx(100.0 / 30.0)
 
 
 def test_build_per_assay_datasets_deduplicates_identical_trace_votes():

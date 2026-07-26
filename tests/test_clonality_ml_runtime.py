@@ -71,7 +71,7 @@ def _make_model_dir(p: Path) -> Path:
     joblib.dump(clf, p / "FR1" / "dummy.joblib")
     (p / "FR1" / "metadata.json").write_text(
         json.dumps({
-            "schema_version": "ml_training_pipeline_v7",
+            "schema_version": "ml_training_pipeline_v8",
             "assay": "FR1",
             "label_order": ["monoklonal", "polyklonal"],
             "accept_threshold_tau": 0.80,
@@ -96,12 +96,18 @@ def _make_model_dir(p: Path) -> Path:
                 "monoklonal": {
                     "rows": 10,
                     "unique_dit_groups": 10,
+                    "effective_dit_groups": 10.0,
+                    "max_rows_per_dit": 1,
+                    "max_dit_row_fraction": 0.1,
                     "unique_source_run_groups": 3,
                     "rows_missing_source_run": 0,
                 },
                 "polyklonal": {
                     "rows": 10,
                     "unique_dit_groups": 10,
+                    "effective_dit_groups": 10.0,
+                    "max_rows_per_dit": 1,
+                    "max_dit_row_fraction": 0.1,
                     "unique_source_run_groups": 3,
                     "rows_missing_source_run": 0,
                 },
@@ -118,7 +124,10 @@ def _make_model_dir(p: Path) -> Path:
                     "method": "dit_fsa_content_connected_components",
                     "content_hash_coverage": 1.0,
                 },
-                "class_support_gate": {"passed": True},
+                "class_support_gate": {
+                    "passed": True,
+                    "thresholds": {"max_class_dit_row_fraction": 0.10},
+                },
                 "calibration_gate": {"passed": True},
                 "calibration": _calibration_manifest(5, 16),
                 "class_fold_support": {
@@ -278,7 +287,7 @@ def test_attach_stamps_ml_columns_when_assay_known(tmp_path):
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
         # Model version stamped
-        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v7"
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v8"
         assert out.get("ClonalityMLThreshold") == 0.8
         assert out.get("ClonalityMLEvidence")
     finally:

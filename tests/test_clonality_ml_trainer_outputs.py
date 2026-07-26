@@ -166,7 +166,7 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
     metadata = json.loads(
         (output / "FR1" / "metadata.json").read_text(encoding="utf-8")
     )
-    assert metadata["schema_version"] == "ml_training_pipeline_v7"
+    assert metadata["schema_version"] == "ml_training_pipeline_v8"
     assert metadata["deployment_status"] == "candidate"
     assert metadata["runtime_eligible"] is False
     assert metadata["training_rows"] == 36
@@ -279,6 +279,30 @@ def test_trainer_blocks_promotion_when_class_support_is_too_low(
         for reason in support_gate["reasons"]
     )
     assert metadata["runtime_eligible"] is False
+
+
+def test_trainer_blocks_promotion_when_one_dit_share_is_too_high(
+    tmp_path,
+    monkeypatch,
+):
+    exit_code, output = _run(
+        tmp_path,
+        monkeypatch,
+        promote=True,
+        extra_args=("--max-class-dit-row-fraction", "0.01"),
+    )
+
+    metadata = json.loads(
+        (output / "FR1" / "metadata.json").read_text(encoding="utf-8")
+    )
+    support_gate = metadata["validation"]["class_support_gate"]
+
+    assert exit_code == 2
+    assert support_gate["passed"] is False
+    assert any(
+        "max_dit_row_fraction=0.056 above 0.010" in reason
+        for reason in support_gate["reasons"]
+    )
 
 
 def test_trainer_refuses_existing_model_output_directory(tmp_path, monkeypatch):
