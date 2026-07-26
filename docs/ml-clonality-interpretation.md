@@ -11,12 +11,14 @@ remains the report source of truth.
 - `ClonalitySuggestion` is the independent rule output and is never used as
   accidental ground truth.
 - Models train and validate per assay.
-- Validation groups by `DIT`; the same patient cannot occur in train and test.
+- Primary validation groups by `DIT`; the same patient cannot occur in train
+  and test. Explicit classifier runs also hold out complete source runs.
 - Replicate and panel context is limited to the same DIT and sanitized source
   run, and controls/SL are excluded from patient context.
 - Training produces runtime-ineligible candidates by default.
-- Runtime only discovers explicitly promoted `ml_training_pipeline_v2`
-  artifacts whose metadata proves complete grouped out-of-fold validation.
+- Runtime only discovers explicitly promoted `ml_training_pipeline_v3`
+  artifacts whose metadata proves complete DIT- and source-run-grouped
+  out-of-fold validation.
 - Controls, SL, unavailable traces, failed quality gates, disagreement,
   low confidence, and rare-label predictions are never silently accepted.
 
@@ -49,13 +51,15 @@ revalidation.
 5. In auto mode, compare calibrated RandomForest and ExtraTrees candidates
    on identical grouped folds and select one using the recorded safety-first
    ranking.
-6. Export row-level out-of-fold predictions, disagreements, review cases,
+6. Rerun the selected explicit classifier with complete source runs held out
+   and require its separate promotion thresholds to pass.
+7. Export row-level out-of-fold predictions, disagreements, review cases,
    drift summaries, held-out feature importance, split provenance, metrics,
    and a local HTML review panel.
-7. Refit the selected candidate estimator on all labeled rows.
-8. Keep the artifact candidate-only unless explicit promotion was requested
+8. Refit the selected candidate estimator on all labeled rows.
+9. Keep the artifact candidate-only unless explicit promotion was requested
    and every configured metric gate passed.
-9. At runtime, show eligible ML output as a second-opinion badge without
+10. At runtime, show eligible ML output as a second-opinion badge without
    replacing the rule interpretation.
 
 ## Commands
@@ -119,7 +123,11 @@ python -m scripts.train_clonality_interpretation_models `
   --min-dit-groups 50 `
   --min-accepted-accuracy 0.95 `
   --min-accepted-coverage 0.10 `
-  --max-calibration-error 0.10
+  --max-calibration-error 0.10 `
+  --source-run-validation-folds 3 `
+  --min-source-run-groups 3 `
+  --min-source-run-macro-f1 0.65 `
+  --min-source-run-monoklonal-precision 0.85
 ```
 
 Exit code `2` means explicit promotion was blocked. Candidate models and
@@ -132,6 +140,8 @@ with current candidates.
 `--classifier-kind auto` is comparison-only and cannot be promoted directly.
 Review `model_comparison_<assay>.json`, then rerun the selected explicit
 classifier in a fresh directory with the promotion gates.
+Auto comparison defers the source-run stress test; an explicit classifier run
+must complete it before promotion can succeed.
 
 ## Feature Artifact
 
@@ -175,7 +185,13 @@ splits_<assay>.json
 model_comparison_<assay>.json
 model_comparison_<assay>.csv
 feature_importance_<assay>.csv
+source_run_predictions_<assay>.csv
+source_run_metrics_<assay>.json
+source_run_splits_<assay>.json
 ```
+
+The three `source_run_*` files are written for explicit classifier runs. They
+prove that all rows from each sanitized source run stayed in one fold.
 
 The predictions file has one out-of-fold row per labeled sample. It includes
 chemist, rule, and ML labels; confidence; fold; rule/ML agreement; chemist/ML
@@ -214,6 +230,7 @@ Every candidate stores:
 - training row and unique-DIT counts;
 - privacy-preserving training-data fingerprint;
 - grouped validation strategy, fold count, random state, and metrics;
+- source-run stress metrics, split provenance, thresholds, and pass/fail state;
 - held-out feature-importance method and the top 20 aggregated features;
 - requested and selected classifier plus every comparison candidate's metrics;
 - promotion thresholds, pass/fail state, and blocking reasons;
@@ -230,7 +247,11 @@ never from the refitted candidate.
 ML stays off unless both conditions are true:
 
 1. `analyses.clonality.interpretation.enabled` is true.
-2. `model_path` contains at least one eligible validated v2 assay artifact.
+2. `model_path` contains at least one eligible validated v3 assay artifact.
+
+Runtime rejects v1/v2 artifacts and v3 artifacts lacking a complete, passing
+`SourceRunKey` stress test. This deliberately requires retraining before an
+older model can be enabled.
 
 The batch pipeline attaches rule results first, computes same-run patient
 context across the completed batch, and only then invokes ML. The runtime

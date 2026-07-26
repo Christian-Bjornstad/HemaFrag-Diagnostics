@@ -38,7 +38,7 @@ def _make_model_dir(p: Path) -> Path:
     joblib.dump(clf, p / "FR1" / "dummy.joblib")
     (p / "FR1" / "metadata.json").write_text(
         json.dumps({
-            "schema_version": "ml_training_pipeline_v2",
+            "schema_version": "ml_training_pipeline_v3",
             "assay": "FR1",
             "label_order": ["monoklonal", "polyklonal"],
             "accept_threshold_tau": 0.80,
@@ -54,6 +54,15 @@ def _make_model_dir(p: Path) -> Path:
                 "every_row_oof_once": True,
                 "effective_splits": 5,
                 "promotion_gate": {"passed": True},
+                "source_run_stress": {
+                    "status": "complete",
+                    "strategy": "StratifiedGroupKFold",
+                    "group_column": "SourceRunKey",
+                    "every_row_oof_once": True,
+                    "effective_splits": 3,
+                    "unique_groups": 3,
+                    "promotion_gate": {"passed": True},
+                },
             },
         }),
         encoding="utf-8",
@@ -171,7 +180,7 @@ def test_attach_stamps_ml_columns_when_assay_known(tmp_path):
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
         # Model version stamped
-        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v2"
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v3"
         assert out.get("ClonalityMLThreshold") == 0.8
         assert out.get("ClonalityMLEvidence")
     finally:

@@ -23,7 +23,7 @@ from core.analyses.clonality.ml_training import ANNOTATION_CLASSES_ORDER
 
 def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = None) -> dict:
     return {
-        "schema_version": "ml_training_pipeline_v2",
+        "schema_version": "ml_training_pipeline_v3",
         "assay": assay,
         "label_order": list(ANNOTATION_CLASSES_ORDER),
         "accept_threshold_tau": float(tau),
@@ -39,6 +39,15 @@ def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = No
             "every_row_oof_once": True,
             "effective_splits": 5,
             "promotion_gate": {"passed": True},
+            "source_run_stress": {
+                "status": "complete",
+                "strategy": "StratifiedGroupKFold",
+                "group_column": "SourceRunKey",
+                "every_row_oof_once": True,
+                "effective_splits": 3,
+                "unique_groups": 3,
+                "promotion_gate": {"passed": True},
+            },
         },
     }
 
@@ -109,6 +118,28 @@ def test_store_ignores_artifact_without_grouped_validation(tmp_path):
     metadata_path = tmp_path / "FR1" / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["validation"]["every_row_oof_once"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_v2_artifact_without_source_run_contract(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["schema_version"] = "ml_training_pipeline_v2"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_without_passing_source_run_stress(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["validation"]["source_run_stress"]["promotion_gate"][
+        "passed"
+    ] = False
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
     assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False

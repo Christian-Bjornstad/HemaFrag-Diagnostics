@@ -33,7 +33,10 @@ from core.analyses.clonality.cohort_features import (
     COHORT_FEATURE_SCHEMA_VERSION,
 )
 from core.analyses.clonality.ml_data_contract import is_raw_trace_feature
-from core.analyses.clonality.ml_training import deserialize_model
+from core.analyses.clonality.ml_training import (
+    RUNTIME_MODEL_SCHEMA_VERSION,
+    deserialize_model,
+)
 
 
 __all__ = [
@@ -318,11 +321,19 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
     promotion_gate = validation.get("promotion_gate")
     if not isinstance(promotion_gate, Mapping):
         return False
+    run_stress = validation.get("source_run_stress")
+    if not isinstance(run_stress, Mapping):
+        return False
+    run_gate = run_stress.get("promotion_gate")
+    if not isinstance(run_gate, Mapping):
+        return False
     feature_columns = metadata.get("feature_columns")
     if not isinstance(feature_columns, list):
         return False
     try:
         effective_splits = int(validation.get("effective_splits") or 0)
+        run_effective_splits = int(run_stress.get("effective_splits") or 0)
+        unique_run_groups = int(run_stress.get("unique_groups") or 0)
     except (TypeError, ValueError):
         return False
     requires_cohort_context = any(
@@ -334,7 +345,7 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         == COHORT_FEATURE_SCHEMA_VERSION
     )
     return bool(
-        metadata.get("schema_version") == "ml_training_pipeline_v2"
+        metadata.get("schema_version") == RUNTIME_MODEL_SCHEMA_VERSION
         and metadata.get("deployment_status") == "validated"
         and metadata.get("runtime_eligible") is True
         and metadata.get("trace_feature_schema_version")
@@ -345,6 +356,13 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         and validation.get("every_row_oof_once") is True
         and effective_splits >= 2
         and promotion_gate.get("passed") is True
+        and run_stress.get("status") == "complete"
+        and run_stress.get("strategy") == "StratifiedGroupKFold"
+        and run_stress.get("group_column") == "SourceRunKey"
+        and run_stress.get("every_row_oof_once") is True
+        and run_effective_splits >= 2
+        and unique_run_groups >= 2
+        and run_gate.get("passed") is True
     )
 
 

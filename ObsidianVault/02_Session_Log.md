@@ -1225,3 +1225,10 @@ Verification:
 - Added per-assay feature-importance artifacts measured on untouched DIT groups: each fold model uses native importance only to shortlist features, then reports balanced-accuracy impact after held-out permutation.
 - Reports and model metadata now include ranked mean impact, cross-fold variability, fold coverage, and positive-impact fold fraction. Explicit classifier runs default to at most 25 features and one permutation per fold; automatic two-model comparison skips this extra work.
 - Verification: focused validation/trainer tests passed (`33`, then `11` after cost bounding); full suite passed (`340 passed, 3 skipped`, with seven known pytest/sklearn/scipy warnings). Real importance results remain pending until the private corpus is mounted.
+
+## 2026-07-26 - Clonality Source-Run Stress Gate
+
+- Added a second per-assay grouped OOF validation that holds complete sanitized `SourceRunKey` groups out. Explicit classifier runs now export source-run predictions, metrics, and split provenance alongside the existing DIT-grouped evidence.
+- Promotion requires minimum source-run support, macro F1, and monoklonal precision in addition to every existing DIT/calibration gate. Missing or single-run provenance writes an inspectable candidate but blocks promotion with exit code `2`.
+- Bumped runtime eligibility to `ml_training_pipeline_v3`. Runtime independently requires complete passing DIT and source-run validation metadata, so v1/v2 artifacts and incomplete v3 artifacts cannot load.
+- Verification: focused runtime/trainer/validation integration passed (`55`); full suite passed (`345 passed, 3 skipped`, with seven known pytest/sklearn/scipy warnings). Real source-run performance remains pending until the private corpus is mounted.

@@ -7,8 +7,10 @@ from sklearn.ensemble import RandomForestClassifier
 from core.analyses.clonality.ml_training import PerAssayDataset
 from core.analyses.clonality.ml_validation import (
     assess_promotion_gate,
+    assess_source_run_gate,
     grouped_oof_validate,
     render_review_panel_html,
+    source_run_grouped_validate,
 )
 
 
@@ -183,3 +185,44 @@ def test_grouped_validation_can_disable_feature_importance(monkeypatch):
         "FoldCoverage",
         "PositiveImpactFoldFraction",
     ]
+
+
+def test_source_run_stress_holds_complete_runs_out(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+
+    result = source_run_grouped_validate(
+        _dataset(),
+        classifier_kind="random_forest",
+        n_splits=3,
+        random_state=44,
+    )
+    gate = assess_source_run_gate(
+        result,
+        min_run_groups=3,
+        min_macro_f1=0.5,
+        min_monoklonal_precision=0.5,
+    )
+
+    assert result.split_manifest["group_column"] == "SourceRunKey"
+    assert result.split_manifest["unique_groups"] == 3
+    assert result.predictions.groupby("SourceRunKey")["Fold"].nunique().eq(1).all()
+    assert result.feature_importance.empty
+    assert gate.passed is True
+
+
+def test_source_run_stress_rejects_missing_run_provenance(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+    dataset.rows.loc[0, "SourceRunKey"] = ""
+
+    with np.testing.assert_raises_regex(ValueError, "non-empty group"):
+        source_run_grouped_validate(
+            dataset,
+            classifier_kind="random_forest",
+        )

@@ -60,6 +60,9 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
    - [Completed 2026-07-26] fold-held-out permutation feature importance
 2. [Completed 2026-07-26] Generate local review HTML panels for disagreement and low-confidence cases.
 3. [Partially completed 2026-07-26] Track performance by run date and sanitized run folder. Instrument-specific drift awaits a reliable instrument field.
+4. [Completed 2026-07-26] Require an explicit-classifier stress test that
+   holds complete `SourceRunKey` groups out and gates promotion on run support,
+   macro F1, and monoklonal precision.
 
 ## Phase 5 - Runtime Integration
 
@@ -75,6 +78,9 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
    - ladder/control/DNA quality gates pass
    - assay validation report meets minimum monoklonal and macro-F1 thresholds
 4. [Completed 2026-07-26] Always route disagreement, rare-label predictions, low-confidence rows, and unavailable traces to review.
+5. [Completed 2026-07-26] Runtime accepts only
+   `ml_training_pipeline_v3` artifacts with passing DIT-grouped and
+   source-run-grouped validation evidence.
 
 ## Phase 6 - Learning Loop
 
@@ -166,7 +172,8 @@ After chemist review, rerun with `--promote-if-passes` and explicit
 `--min-macro-f1`, `--min-monoklonal-f1`,
 `--min-monoklonal-precision`, `--min-dit-groups`,
 `--min-accepted-accuracy`, `--min-accepted-coverage`, and
-`--max-calibration-error` gates. Exit code `2` means promotion was blocked;
+`--max-calibration-error` gates, plus source-run group, macro-F1, and
+monoklonal-precision gates. Exit code `2` means promotion was blocked;
 the candidate and validation reports remain available for inspection.
 
 The feature CSV stores numeric summaries, source hashes, chemist labels, and

@@ -139,7 +139,7 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
     metadata = json.loads(
         (output / "FR1" / "metadata.json").read_text(encoding="utf-8")
     )
-    assert metadata["schema_version"] == "ml_training_pipeline_v2"
+    assert metadata["schema_version"] == "ml_training_pipeline_v3"
     assert metadata["deployment_status"] == "candidate"
     assert metadata["runtime_eligible"] is False
     assert metadata["training_rows"] == 36
@@ -149,6 +149,10 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
         == "held_out_permutation_balanced_accuracy"
     )
     assert metadata["validation"]["feature_importance"]["top_features"]
+    assert metadata["validation"]["source_run_stress"]["status"] == "complete"
+    assert metadata["validation"]["source_run_stress"]["promotion_gate"][
+        "passed"
+    ] is True
     assert ClonalityModelStore(model_dir=output).is_enabled("FR1") is False
 
     report_dir = output / "reports" / "2026-07-26"
@@ -159,6 +163,9 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
     assert (report_dir / "review_panel_FR1.html").is_file()
     assert (report_dir / "drift_FR1.csv").is_file()
     assert (report_dir / "feature_importance_FR1.csv").is_file()
+    assert (report_dir / "source_run_predictions_FR1.csv").is_file()
+    assert (report_dir / "source_run_metrics_FR1.json").is_file()
+    assert (report_dir / "source_run_splits_FR1.json").is_file()
     assert (report_dir / "splits_FR1.json").is_file()
 
 
@@ -235,6 +242,7 @@ def test_trainer_auto_compares_baselines_and_selects_candidate(
     assert selection["requested_classifier_kind"] == "auto"
     assert selection["selected_classifier_kind"] == "random_forest"
     assert metadata["validation"]["feature_importance"]["top_features"] == []
+    assert metadata["validation"]["source_run_stress"]["status"] == "deferred"
     assert {
         row["classifier_kind"] for row in selection["candidates"]
     } == {"random_forest", "extra_trees"}
@@ -261,3 +269,62 @@ def test_trainer_rejects_auto_selection_for_direct_promotion(tmp_path):
                 "--promote-if-passes",
             ]
         )
+
+
+def test_trainer_blocks_promotion_when_source_runs_cannot_be_held_out(
+    tmp_path,
+    monkeypatch,
+):
+    workbook, features = _inputs(tmp_path)
+    feature_frame = pd.read_csv(features)
+    feature_frame["SourceRunKey"] = "only-run"
+    feature_frame.to_csv(features, index=False)
+    output = tmp_path / "single-run"
+    monkeypatch.setattr(
+        "scripts.train_clonality_interpretation_models.fit_classifier",
+        _fast_fit,
+    )
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+
+    exit_code = main(
+        [
+            "--xls",
+            str(workbook),
+            "--features-csv",
+            str(features),
+            "--output-dir",
+            str(output),
+            "--date",
+            "2026-07-26",
+            "--min-samples",
+            "20",
+            "--validation-folds",
+            "3",
+            "--classifier-kind",
+            "random_forest",
+            "--min-dit-groups",
+            "20",
+            "--min-macro-f1",
+            "0.5",
+            "--min-monoklonal-f1",
+            "0.5",
+            "--min-monoklonal-precision",
+            "0.5",
+            "--promote-if-passes",
+        ]
+    )
+
+    metadata = json.loads(
+        (output / "FR1" / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert exit_code == 2
+    assert metadata["deployment_status"] == "candidate"
+    assert metadata["runtime_eligible"] is False
+    assert metadata["validation"]["source_run_stress"]["status"] == "failed"
+    assert "fewer than two unique SourceRunKey groups" in metadata[
+        "validation"
+    ]["source_run_stress"]["error"]
+    assert metadata["validation"]["promotion_gate"]["passed"] is False

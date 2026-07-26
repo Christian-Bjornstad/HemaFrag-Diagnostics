@@ -14,7 +14,7 @@
    plus evidence strings.
 4. Optional ML second-opinion: when interpretation is enabled,
    `ml_runtime.attach_ml_prediction_if_enabled(...)` loads only an explicitly
-   promoted, grouped-validated v2 per-assay artifact. It recomputes raw trace
+   promoted, dual-group-validated v3 per-assay artifact. It recomputes raw trace
    features when needed and leaves the rule output unchanged.
 5. Tracking Excel writer (`tracking_excel.py::update_clonality_tracking_workbook`) writes
    the rule columns by default, plus ML columns when enabled.
@@ -48,7 +48,7 @@
 | `trace_features.py` | deterministic scalar and per-channel raw FSA trace geometry |
 | `ml_feature_dataset.py` | resumable, content-hashed local feature artifact |
 | `ml_training.py` | per-assay RandomForest/ExtraTrees/QDA datasets, estimators, metrics, serialization |
-| `ml_validation.py` | DIT-grouped OOF predictions, promotion gates, review/drift outputs |
+| `ml_validation.py` | DIT/source-run-grouped OOF predictions, promotion gates, review/drift outputs |
 | `ml_model.py` | validated-v2 artifact discovery and inference contract |
 | `ml_runtime.py` | default-off second-opinion attachment and quality/review routing |
 
@@ -125,7 +125,7 @@ Validated ML adds `ClonalityMLSuggestion`, `ClonalityMLConfidence`,
 - `INTERPRETATION_RULE_VERSION = "clonality_interpretation_rules_v1"`
 - `MODEL_VERSION = "clonality_interpretation_quick_model_v1"`
 - `TRACE_FEATURE_SCHEMA_VERSION = "clonality_trace_features_v1"`
-- validated runtime model schema: `ml_training_pipeline_v2`
+- validated runtime model schema: `ml_training_pipeline_v3`
 
 Keep all three under versioned definitions; bumping either triggers:
 - Tracking-column metadata update
@@ -137,7 +137,7 @@ Keep all three under versioned definitions; bumping either triggers:
 | File | Function | Why here | Phase |
 |------|----------|----------|-------|
 | `core/analyses/clonality/interpretation.py` | `features_from_entry` | shared scalar plus optional raw-trace feature contract | 2 |
-| `core/analyses/clonality/ml_validation.py` | `grouped_oof_validate` | patient-safe validation and disagreement evidence | 4 |
+| `core/analyses/clonality/ml_validation.py` | `grouped_oof_validate`, `source_run_grouped_validate` | patient/run-safe validation and disagreement evidence | 6 |
 | `core/analyses/clonality/ml_model.py` | `_runtime_eligible_metadata` | candidate/validated deployment boundary | 5 |
 | `core/analyses/clonality/ml_runtime.py` | `attach_ml_prediction_if_enabled` | second-opinion and review routing | 5 |
 | `core/analyses/clonality/tracking_excel.py` | `update_clonality_tracking_workbook` | rule and ML tracking columns | 5 |

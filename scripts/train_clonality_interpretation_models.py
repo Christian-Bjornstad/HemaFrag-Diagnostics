@@ -42,15 +42,19 @@ from core.analyses.clonality.ml_data_contract import (
 )
 from core.analyses.clonality.ml_training import (
     ANNOTATION_CLASSES_ORDER,
+    RUNTIME_MODEL_SCHEMA_VERSION,
     build_per_assay_datasets,
     fit_classifier,
     serialize_model,
 )
 from core.analyses.clonality.ml_validation import (
+    PromotionGate,
     assess_promotion_gate,
+    assess_source_run_gate,
     grouped_oof_validate,
     metrics_as_dict,
     render_review_panel_html,
+    source_run_grouped_validate,
 )
 from config import APP_SETTINGS
 
@@ -128,6 +132,7 @@ def _render_per_assay_markdown(
     promotion_gate,
     runtime_eligible,
     model_comparison,
+    source_run_stress,
 ):
     """Emit a single markdown file per assay."""
     out_lines = []
@@ -166,7 +171,7 @@ def _render_per_assay_markdown(
     out_lines.append("## Model comparison")
     out_lines.append("")
     out_lines.append(
-        "| Classifier | Selected | Gate | Macro F1 | Mono precision | "
+        "| Classifier | Selected | DIT gate | Macro F1 | Mono precision | "
         "Mono F1 | Accepted accuracy | Coverage | ECE |"
     )
     out_lines.append("|---|---|---|---:|---:|---:|---:|---:|---:|")
@@ -189,6 +194,36 @@ def _render_per_assay_markdown(
             "{accepted_accuracy:.3f} | {accepted_coverage:.3f} | "
             "{expected_calibration_error:.3f} |".format(**display)
         )
+    out_lines.append("")
+    out_lines.append("## Source-run stress test")
+    out_lines.append("")
+    run_status = str(source_run_stress.get("status") or "unavailable")
+    out_lines.append(f"- Status: **{run_status}**")
+    if run_status == "complete":
+        run_metrics = source_run_stress["metrics"]
+        out_lines.append(
+            "- Held-out source runs: **{}**".format(
+                source_run_stress["unique_groups"]
+            )
+        )
+        out_lines.append(
+            "- Source-run folds: **{}**".format(
+                source_run_stress["effective_splits"]
+            )
+        )
+        out_lines.append(
+            "- Macro F1: **{:.3f}**".format(run_metrics["macro_f1"])
+        )
+        out_lines.append(
+            "- Monoklonal precision: **{:.3f}**".format(
+                run_metrics["classification_report"]
+                .get("monoklonal", {})
+                .get("precision", 0.0)
+            )
+        )
+    run_gate = source_run_stress.get("promotion_gate") or {}
+    for reason in run_gate.get("reasons") or []:
+        out_lines.append(f"- Blocked: {reason}")
     out_lines.append("")
     out_lines.append("## Held-out feature importance")
     out_lines.append("")
@@ -521,6 +556,73 @@ def _candidate_gate(validation, args):
     )
 
 
+def _source_run_gate_thresholds(args):
+    return {
+        "min_source_run_groups": int(args.min_source_run_groups),
+        "min_source_run_macro_f1": float(args.min_source_run_macro_f1),
+        "min_source_run_monoklonal_precision": float(
+            args.min_source_run_monoklonal_precision
+        ),
+    }
+
+
+def _blocked_source_run_gate(args, reason):
+    return PromotionGate(
+        passed=False,
+        reasons=[str(reason)],
+        thresholds=_source_run_gate_thresholds(args),
+    )
+
+
+def _merge_promotion_gates(*gates):
+    reasons = [
+        reason
+        for gate in gates
+        for reason in gate.reasons
+    ]
+    thresholds = {
+        name: value
+        for gate in gates
+        for name, value in gate.thresholds.items()
+    }
+    return PromotionGate(
+        passed=all(gate.passed for gate in gates),
+        reasons=reasons,
+        thresholds=thresholds,
+    )
+
+
+def _source_run_stress_metadata(validation, gate, *, status, error=""):
+    metadata = {
+        "status": str(status),
+        "required_for_promotion": True,
+        "strategy": "StratifiedGroupKFold",
+        "group_column": "SourceRunKey",
+        "promotion_gate": {
+            "passed": gate.passed,
+            "reasons": gate.reasons,
+            "thresholds": gate.thresholds,
+        },
+    }
+    if error:
+        metadata["error"] = str(error)
+    if validation is not None:
+        metadata.update(
+            {
+                "effective_splits": validation.split_manifest[
+                    "effective_splits"
+                ],
+                "random_state": validation.split_manifest["random_state"],
+                "unique_groups": validation.split_manifest["unique_groups"],
+                "every_row_oof_once": validation.split_manifest[
+                    "every_row_oof_once"
+                ],
+                "metrics": metrics_as_dict(validation.aggregate_metrics),
+            }
+        )
+    return metadata
+
+
 def _candidate_record(kind, validation, gate):
     metrics = validation.aggregate_metrics
     return {
@@ -634,6 +736,12 @@ def _parse_args(argv=None):
         help="Patient-grouped out-of-fold validation folds (default 5).",
     )
     p.add_argument(
+        "--source-run-validation-folds",
+        type=int,
+        default=3,
+        help="SourceRunKey-grouped stress-test folds (default 3).",
+    )
+    p.add_argument(
         "--importance-max-features",
         type=int,
         default=25,
@@ -715,6 +823,27 @@ def _parse_args(argv=None):
         type=float,
         default=0.10,
         help="Maximum expected calibration error (default 0.10).",
+    )
+    p.add_argument(
+        "--min-source-run-groups",
+        type=int,
+        default=3,
+        help="Minimum distinct source runs required for promotion (default 3).",
+    )
+    p.add_argument(
+        "--min-source-run-macro-f1",
+        type=float,
+        default=0.65,
+        help="Minimum source-run-held-out macro F1 (default 0.65).",
+    )
+    p.add_argument(
+        "--min-source-run-monoklonal-precision",
+        type=float,
+        default=0.85,
+        help=(
+            "Minimum monoklonal precision with whole source runs held out "
+            "(default 0.85)."
+        ),
     )
     return p.parse_args(argv)
 
@@ -888,9 +1017,67 @@ def main(argv=None):
                 selected_kind,
             )
         )
+        source_run_validation = None
+        if args.classifier_kind == "auto":
+            source_run_gate = _blocked_source_run_gate(
+                args,
+                "source_run_validation_deferred_until_explicit_classifier",
+            )
+            source_run_stress = _source_run_stress_metadata(
+                None,
+                source_run_gate,
+                status="deferred",
+            )
+        else:
+            try:
+                print(
+                    "[train] assay={} stress-testing unseen source runs".format(
+                        assay_name
+                    )
+                )
+                source_run_validation = source_run_grouped_validate(
+                    ds,
+                    classifier_kind=selected_kind,
+                    n_splits=args.source_run_validation_folds,
+                    random_state=args.random_state,
+                    accept_threshold_tau=tau,
+                )
+                source_run_gate = assess_source_run_gate(
+                    source_run_validation,
+                    min_run_groups=args.min_source_run_groups,
+                    min_macro_f1=args.min_source_run_macro_f1,
+                    min_monoklonal_precision=(
+                        args.min_source_run_monoklonal_precision
+                    ),
+                )
+                source_run_stress = _source_run_stress_metadata(
+                    source_run_validation,
+                    source_run_gate,
+                    status="complete",
+                )
+            except Exception as exc:
+                source_run_gate = _blocked_source_run_gate(
+                    args,
+                    f"source_run_validation_failed: {exc}",
+                )
+                source_run_stress = _source_run_stress_metadata(
+                    None,
+                    source_run_gate,
+                    status="failed",
+                    error=str(exc),
+                )
+                print(
+                    "[train] assay={} source-run stress FAILED: {}".format(
+                        assay_name,
+                        exc,
+                    )
+                )
+        deployment_gate = _merge_promotion_gates(gate, source_run_gate)
         try:
-            runtime_eligible = bool(args.promote_if_passes and gate.passed)
-            if args.promote_if_passes and not gate.passed:
+            runtime_eligible = bool(
+                args.promote_if_passes and deployment_gate.passed
+            )
+            if args.promote_if_passes and not deployment_gate.passed:
                 promotion_failures.append(assay_name)
             estimator = fit_classifier(
                 ds.X,
@@ -912,10 +1099,11 @@ def main(argv=None):
             "every_row_oof_once": validation.split_manifest["every_row_oof_once"],
             "metrics": metrics_as_dict(metrics),
             "promotion_gate": {
-                "passed": gate.passed,
-                "reasons": gate.reasons,
-                "thresholds": gate.thresholds,
+                "passed": deployment_gate.passed,
+                "reasons": deployment_gate.reasons,
+                "thresholds": deployment_gate.thresholds,
             },
+            "source_run_stress": source_run_stress,
             "model_selection": {
                 "requested_classifier_kind": args.classifier_kind,
                 "selected_classifier_kind": selected_kind,
@@ -946,7 +1134,7 @@ def main(argv=None):
             trained_at_utc=today,
             output_dir=output_dir,
             feature_columns=list(ds.X.columns),
-            schema_version="ml_training_pipeline_v2",
+            schema_version=RUNTIME_MODEL_SCHEMA_VERSION,
             extra_metadata={
                 "deployment_status": (
                     "validated" if runtime_eligible else "candidate"
@@ -974,9 +1162,10 @@ def main(argv=None):
                 metrics,
                 who_called="train_clonality_interpretation_models",
                 validation=validation,
-                promotion_gate=gate,
+                promotion_gate=deployment_gate,
                 runtime_eligible=runtime_eligible,
                 model_comparison=model_comparison,
+                source_run_stress=source_run_stress,
             ),
             encoding="utf-8",
         )
@@ -995,11 +1184,23 @@ def main(argv=None):
         importance_path = report_dir / "feature_importance_{}.csv".format(
             report_stem
         )
+        source_run_predictions_path = (
+            report_dir / f"source_run_predictions_{report_stem}.csv"
+        )
+        source_run_metrics_path = (
+            report_dir / f"source_run_metrics_{report_stem}.json"
+        )
+        source_run_splits_path = (
+            report_dir / f"source_run_splits_{report_stem}.json"
+        )
         validation.predictions.to_csv(predictions_path, index=False)
         validation.review_cases.to_csv(review_path, index=False)
         validation.drift_summary.to_csv(drift_path, index=False)
         review_html_path.write_text(
-            render_review_panel_html(validation, promotion_gate=gate),
+            render_review_panel_html(
+                validation,
+                promotion_gate=deployment_gate,
+            ),
             encoding="utf-8",
         )
         split_path.write_text(
@@ -1016,6 +1217,27 @@ def main(argv=None):
         )
         pd.DataFrame(model_comparison).to_csv(comparison_csv_path, index=False)
         validation.feature_importance.to_csv(importance_path, index=False)
+        if source_run_validation is not None:
+            source_run_validation.predictions.to_csv(
+                source_run_predictions_path,
+                index=False,
+            )
+            source_run_metrics_path.write_text(
+                json.dumps(
+                    metrics_as_dict(source_run_validation.aggregate_metrics),
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            source_run_splits_path.write_text(
+                json.dumps(
+                    source_run_validation.split_manifest,
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
         summaries.append({
             "assay": assay_name,
             "training_samples": metrics.training_samples,
@@ -1029,12 +1251,15 @@ def main(argv=None):
             "accepted_accuracy": metrics.accepted_accuracy,
             "accepted_coverage": metrics.accepted_coverage,
             "expected_calibration_error": metrics.expected_calibration_error,
+            "source_run_stress_status": source_run_stress["status"],
+            "source_run_stress_gate_passed": source_run_gate.passed,
+            "source_run_stress_gate_reasons": source_run_gate.reasons,
             "requested_classifier_kind": args.classifier_kind,
             "selected_classifier_kind": selected_kind,
             "runtime_eligible": runtime_eligible,
             "deployment_status": "validated" if runtime_eligible else "candidate",
-            "promotion_gate_passed": gate.passed,
-            "promotion_gate_reasons": gate.reasons,
+            "promotion_gate_passed": deployment_gate.passed,
+            "promotion_gate_reasons": deployment_gate.reasons,
             "model_path": str(paths["joblib"]),
             "report_path": str(report_path),
             "predictions_path": str(predictions_path),
@@ -1044,6 +1269,21 @@ def main(argv=None):
             "splits_path": str(split_path),
             "model_comparison_path": str(comparison_path),
             "feature_importance_path": str(importance_path),
+            "source_run_predictions_path": (
+                str(source_run_predictions_path)
+                if source_run_validation is not None
+                else ""
+            ),
+            "source_run_metrics_path": (
+                str(source_run_metrics_path)
+                if source_run_validation is not None
+                else ""
+            ),
+            "source_run_splits_path": (
+                str(source_run_splits_path)
+                if source_run_validation is not None
+                else ""
+            ),
         })
 
     summary_path = output_dir / "reports" / today / "summary.json"

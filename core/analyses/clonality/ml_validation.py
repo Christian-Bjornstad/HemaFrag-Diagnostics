@@ -55,13 +55,30 @@ def grouped_oof_validate(
     accept_threshold_tau: float = 0.85,
     importance_max_features: int = 25,
     importance_repeats: int = 1,
+    validation_groups: pd.Series | None = None,
+    group_column: str = "DIT",
 ) -> GroupedValidationResult:
-    """Evaluate every row out of fold while keeping each DIT in one fold."""
-    unique_groups = int(dataset.dit.nunique())
+    """Evaluate every row out of fold while keeping each group in one fold."""
+    groups = (
+        dataset.dit.reset_index(drop=True).copy()
+        if validation_groups is None
+        else pd.Series(validation_groups).reset_index(drop=True)
+    )
+    if len(groups) != dataset.n_samples:
+        raise ValueError(
+            f"{group_column} validation groups do not match assay rows"
+        )
+    groups = groups.fillna("").astype(str).str.strip()
+    if groups.eq("").any():
+        raise ValueError(
+            f"{group_column} validation requires a non-empty group for every row"
+        )
+    unique_groups = int(groups.nunique())
     effective_splits = min(max(2, int(n_splits)), unique_groups)
     if unique_groups < 2:
         raise ValueError(
-            f"assay {dataset.assay!r} has fewer than two unique DIT groups"
+            f"assay {dataset.assay!r} has fewer than two unique "
+            f"{group_column} groups"
         )
     if dataset.y.nunique() < 2:
         raise ValueError(
@@ -79,13 +96,15 @@ def grouped_oof_validate(
     importance_records: list[dict[str, Any]] = []
 
     for fold, (train_idx, test_idx) in enumerate(
-        splitter.split(dataset.X, dataset.y, groups=dataset.dit),
+        splitter.split(dataset.X, dataset.y, groups=groups),
         start=1,
     ):
-        train_groups = set(dataset.dit.iloc[train_idx].astype(str))
-        test_groups = set(dataset.dit.iloc[test_idx].astype(str))
+        train_groups = set(groups.iloc[train_idx])
+        test_groups = set(groups.iloc[test_idx])
         if train_groups & test_groups:
-            raise AssertionError("DIT leakage detected in grouped validation")
+            raise AssertionError(
+                f"{group_column} leakage detected in grouped validation"
+            )
 
         estimator = fit_classifier(
             dataset.X.iloc[train_idx],
@@ -126,8 +145,9 @@ def grouped_oof_validate(
                 "Fold": fold,
                 "TrainRows": int(len(train_idx)),
                 "TestRows": int(len(test_idx)),
-                "TrainDITGroups": int(len(train_groups)),
-                "TestDITGroups": int(len(test_groups)),
+                "ValidationGroupColumn": str(group_column),
+                "TrainGroups": int(len(train_groups)),
+                "TestGroups": int(len(test_groups)),
                 "MacroF1": fold_metric.macro_f1,
                 "BalancedAccuracy": fold_metric.balanced_accuracy,
                 "MonoklonalF1": fold_metric.monoklonal_f1,
@@ -144,8 +164,8 @@ def grouped_oof_validate(
                 "fold": fold,
                 "train_rows": int(len(train_idx)),
                 "test_rows": int(len(test_idx)),
-                "train_dit_groups": int(len(train_groups)),
-                "test_dit_groups": int(len(test_groups)),
+                "train_groups": int(len(train_groups)),
+                "test_groups": int(len(test_groups)),
                 "test_label_counts": {
                     str(key): int(value)
                     for key, value in y_test.value_counts().sort_index().items()
@@ -198,12 +218,13 @@ def grouped_oof_validate(
     )
     split_manifest = {
         "strategy": "StratifiedGroupKFold",
-        "group_column": "DIT",
+        "group_column": str(group_column),
         "requested_splits": int(n_splits),
         "effective_splits": effective_splits,
         "random_state": int(random_state),
         "row_count": dataset.n_samples,
-        "unique_dit_groups": unique_groups,
+        "unique_groups": unique_groups,
+        "unique_dit_groups": int(dataset.dit.nunique()),
         "every_row_oof_once": True,
         "feature_importance": {
             "method": "held_out_permutation_balanced_accuracy",
@@ -226,6 +247,30 @@ def grouped_oof_validate(
         ),
         aggregate_metrics=aggregate,
         split_manifest=split_manifest,
+    )
+
+
+def source_run_grouped_validate(
+    dataset: PerAssayDataset,
+    *,
+    classifier_kind: str,
+    n_splits: int = 3,
+    random_state: int = 12345,
+    accept_threshold_tau: float = 0.85,
+) -> GroupedValidationResult:
+    """Stress-test an assay while holding complete source runs out."""
+    if "SourceRunKey" not in dataset.rows.columns:
+        raise ValueError("SourceRunKey is required for source-run validation")
+    return grouped_oof_validate(
+        dataset,
+        classifier_kind=classifier_kind,
+        n_splits=n_splits,
+        random_state=random_state,
+        accept_threshold_tau=accept_threshold_tau,
+        importance_max_features=0,
+        importance_repeats=0,
+        validation_groups=dataset.rows["SourceRunKey"],
+        group_column="SourceRunKey",
     )
 
 
@@ -290,6 +335,48 @@ def assess_promotion_gate(
             "expected_calibration_error="
             f"{metrics.expected_calibration_error:.3f} above "
             f"{float(max_expected_calibration_error):.3f}"
+        )
+    return PromotionGate(
+        passed=not reasons,
+        reasons=reasons,
+        thresholds=thresholds,
+    )
+
+
+def assess_source_run_gate(
+    validation: GroupedValidationResult,
+    *,
+    min_run_groups: int,
+    min_macro_f1: float,
+    min_monoklonal_precision: float,
+) -> PromotionGate:
+    """Require generalization to laboratory runs unseen during fitting."""
+    metrics = validation.aggregate_metrics
+    mono = metrics.classification_report.get("monoklonal", {})
+    mono_precision = float(mono.get("precision", 0.0))
+    groups = int(validation.split_manifest.get("unique_groups") or 0)
+    thresholds: dict[str, float | int] = {
+        "min_source_run_groups": int(min_run_groups),
+        "min_source_run_macro_f1": float(min_macro_f1),
+        "min_source_run_monoklonal_precision": float(
+            min_monoklonal_precision
+        ),
+    }
+    reasons: list[str] = []
+    if groups < int(min_run_groups):
+        reasons.append(
+            f"source_run_groups={groups} below {int(min_run_groups)}"
+        )
+    if metrics.macro_f1 < float(min_macro_f1):
+        reasons.append(
+            "source_run_macro_f1="
+            f"{metrics.macro_f1:.3f} below {float(min_macro_f1):.3f}"
+        )
+    if mono_precision < float(min_monoklonal_precision):
+        reasons.append(
+            "source_run_monoklonal_precision="
+            f"{mono_precision:.3f} below "
+            f"{float(min_monoklonal_precision):.3f}"
         )
     return PromotionGate(
         passed=not reasons,
@@ -711,7 +798,9 @@ __all__ = [
     "PromotionGate",
     "REVIEW_ROUTED_LABELS",
     "assess_promotion_gate",
+    "assess_source_run_gate",
     "grouped_oof_validate",
     "metrics_as_dict",
     "render_review_panel_html",
+    "source_run_grouped_validate",
 ]
