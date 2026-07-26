@@ -36,8 +36,9 @@ if str(ROOT) not in sys.path:
 import numpy as np
 import pandas as pd
 
-from core.analyses.clonality.feature_artifacts import (
-    build_clonality_feature_tables,
+from core.analyses.clonality.ml_data_contract import (
+    CHEMIST_LABEL_COLUMN,
+    load_tracking_run_table,
 )
 from core.analyses.clonality.ml_training import (
     ANNOTATION_CLASSES_ORDER,
@@ -69,31 +70,34 @@ def _per_assay_threshold_default(assay):
     return float(tau.get(assay, tau.get("_default", 0.85)))
 
 
-def _assemble_labelled_df(xlsx_path):
+def _assemble_labelled_df(xlsx_path, *, source_label_col=CHEMIST_LABEL_COLUMN):
     """Read a tracking XLSX and return the labelled combined frame.
 
-    Tracks the convention established by today's tracking Excel
-    workflow: a single workbook with sheets Patient_Runs,
-    Control_Runs, PK_Peaks. `build_clonality_feature_tables`
-    reads all three and emits a dict{combined, ladder, pk}.
+    Current ``Runs`` workbooks are preferred. Legacy ``Run`` and split
+    ``Patient_Runs``/``Control_Runs`` layouts remain supported.
 
-    Requires ClonalitySuggestion to already be present (typically
-    populated by interpret_entry during the pipeline batch run).
+    Requires a separate chemist-reviewed label column. Rule-based
+    ``ClonalitySuggestion`` values are retained only as comparison data.
     """
-    tables = build_clonality_feature_tables(xlsx_path)
-    combined = tables["combined"]
+    combined = load_tracking_run_table(
+        xlsx_path,
+        include_controls=False,
+    ).frame
     if combined.empty:
         raise ValueError(f"no combined rows found in {xlsx_path}")
-    for col, name in (
-        (LABEL_COL, "ClonalitySuggestion"),
+    required = (
+        (source_label_col, source_label_col),
         (DIR_COL, "DIT"),
         (ASSAY_COL, "Assay"),
-    ):
+    )
+    for col, name in required:
         if col not in combined.columns:
             raise KeyError(
                 f"workbook {xlsx_path} has no {name!r} column; "
-                "run a batch with interpretation.enabled=True first."
+                "label samples in the Clonality Labeling tab first."
             )
+    if source_label_col != LABEL_COL:
+        combined[LABEL_COL] = combined[source_label_col]
     return combined
 
 
@@ -227,25 +231,34 @@ def _render_per_assay_markdown(metrics, who_called):
     return chr(10).join(out_lines)
 
 
-def _assemble_labelled_df_with_labels_csv(xlsx_path, labels_csv_path, entry_metadata_path=None):
+def _assemble_labelled_df_with_labels_csv(
+    xlsx_path,
+    labels_csv_path,
+    entry_metadata_path=None,
+    *,
+    source_label_col=CHEMIST_LABEL_COLUMN,
+):
     """Variant that joins labels from a separate CSV.
 
-    The CSV must have columns: DIT, Assay, ClonalitySuggestion.
-    Useful when `build_clonality_feature_tables` doesn't surface
-    the label column directly (the case before today's orchestrator
-    exposes interpretation columns in tracking exports).
+    The CSV must have Assay, a chemist label, and either IdentityKey
+    (preferred) or DIT. IdentityKey avoids spreading one label across
+    multiple same-assay injections.
     """
-    tables = build_clonality_feature_tables(xlsx_path)
-    combined = tables["combined"]
+    combined = load_tracking_run_table(
+        xlsx_path,
+        include_controls=False,
+    ).frame
     if combined.empty:
         raise ValueError("no combined rows found in {}".format(xlsx_path))
     labels = pd.read_csv(labels_csv_path)
-    # accept canonical (DIT/Assay/ClonalitySuggestion) or
-    # feature-artifacts-derived (identity_key/assay/ClonalitySuggestion)
+    label_aliases = (
+        (CHEMIST_LABEL_COLUMN, "label", "y")
+        if source_label_col == CHEMIST_LABEL_COLUMN
+        else (source_label_col,)
+    )
     column_aliases = {
-        DIR_COL: ("identity_key",),
         ASSAY_COL: ("assay",),
-        LABEL_COL: (LABEL_COL,),
+        source_label_col: label_aliases,
     }
     for col, aliases in column_aliases.items():
         if col in labels.columns:
@@ -260,20 +273,37 @@ def _assemble_labelled_df_with_labels_csv(xlsx_path, labels_csv_path, entry_meta
                     labels_csv_path, col,
                 )
             )
-    # Outer-merge so every (DIT, Assay) pair in `combined` either gets a
-    # label or remains unlabelled (dropped from training).
-    if DIR_COL not in combined.columns:
-        combined = combined.rename(columns={"identity_key": DIR_COL})
-    if ASSAY_COL not in combined.columns:
-        if "assay" in combined.columns and ASSAY_COL not in combined.columns:
-            combined = combined.rename(columns={"assay": ASSAY_COL})
+    if "identity_key" in labels.columns and "IdentityKey" not in labels.columns:
+        labels = labels.rename(columns={"identity_key": "IdentityKey"})
+    if DIR_COL not in labels.columns and "dit" in labels.columns:
+        labels = labels.rename(columns={"dit": DIR_COL})
+
+    if "IdentityKey" in labels.columns and "IdentityKey" in combined.columns:
+        join_columns = ["IdentityKey", ASSAY_COL]
+    elif DIR_COL in labels.columns:
+        join_columns = [DIR_COL, ASSAY_COL]
+    else:
+        raise KeyError(
+            "labels csv must contain IdentityKey (preferred) or DIT for a leakage-safe join"
+        )
+    duplicate_labels = labels.duplicated(subset=join_columns, keep=False)
+    if duplicate_labels.any():
+        raise ValueError(
+            "{} labels CSV row(s) duplicate join key {}".format(
+                int(duplicate_labels.sum()), ", ".join(join_columns)
+            )
+        )
+    combined = combined.drop(columns=[source_label_col], errors="ignore")
     merged = combined.merge(
-        labels[[DIR_COL, ASSAY_COL, LABEL_COL]],
-        on=[DIR_COL, ASSAY_COL],
+        labels[join_columns + [source_label_col]],
+        on=join_columns,
         how="inner",
+        validate="many_to_one",
     )
     if merged.empty:
         raise ValueError("overlap between tracking features and labels was empty")
+    if source_label_col != LABEL_COL:
+        merged[LABEL_COL] = merged[source_label_col]
     return merged
 
 
@@ -296,7 +326,7 @@ def _parse_args(argv=None):
         "--xls",
         type=Path,
         required=True,
-        help="Path to Clonality_Tracking.xlsx with ClonalitySuggestion column populated.",
+        help="Path to Clonality_Tracking.xlsx with chemist labels populated.",
     )
     p.add_argument(
         "--output-dir",
@@ -332,7 +362,16 @@ def _parse_args(argv=None):
         "--labels-csv",
         type=Path,
         default=None,
-        help="Optional CSV with columns DIT,Assay,ClonalitySuggestion. Required when the tracking workbook does not already include the label column.",
+        help="Optional chemist-label CSV keyed by IdentityKey+Assay or DIT+Assay.",
+    )
+    p.add_argument(
+        "--label-column",
+        default=CHEMIST_LABEL_COLUMN,
+        help=(
+            "Chemist-reviewed label column. Defaults to "
+            f"{CHEMIST_LABEL_COLUMN!r}; use ClonalitySuggestion only for "
+            "explicitly reviewed legacy workbooks."
+        ),
     )
     p.add_argument(
         "--entry-metadata",
@@ -382,9 +421,13 @@ def main(argv=None):
         combined = _assemble_labelled_df_with_labels_csv(
             xlsx_path, Path(args.labels_csv),
             entry_metadata_path=args.entry_metadata,
+            source_label_col=args.label_column,
         )
     else:
-        combined = _assemble_labelled_df(xlsx_path)
+        combined = _assemble_labelled_df(
+            xlsx_path,
+            source_label_col=args.label_column,
+        )
     combined = _ensure_columns_renamed(combined)
     print("[train] combined rows: {}".format(len(combined)))
 
@@ -467,5 +510,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
-
-

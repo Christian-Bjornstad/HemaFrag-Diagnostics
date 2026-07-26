@@ -9,7 +9,9 @@ from unittest.mock import patch
 import pandas as pd
 
 from config import APP_SETTINGS
+from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
 from core.analyses.clonality.tracking_excel import update_clonality_tracking_workbook
+from core.labeling.labeling_session import LabelingSession
 
 
 def _entry(file_name: str, *, assay: str = "FR1", dit: str = "") -> dict:
@@ -132,6 +134,31 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
                     self.assertTrue(math.isnan(val), f"{col} expected empty, got {val!r}")
                 else:
                     self.assertEqual(val, "")
+
+    def test_batch_refresh_preserves_chemist_label(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook = Path(tmp) / "Clonality_Tracking.xlsx"
+            entry = _entry(
+                "26OUM00001_FR1__220526_A01_H9TEST01.fsa",
+                dit="26OUM00001",
+            )
+            update_clonality_tracking_workbook(workbook, [entry])
+
+            session = LabelingSession(excel_path=str(workbook))
+            session.load()
+            session.label_sample(0, "monoklonal")
+            self.assertEqual(session.save_to_excel(), 1)
+
+            update_clonality_tracking_workbook(workbook, [entry])
+
+            runs = pd.read_excel(workbook, sheet_name="Runs", engine="openpyxl")
+            patients = pd.read_excel(
+                workbook,
+                sheet_name="Patient_Runs",
+                engine="openpyxl",
+            )
+            self.assertEqual(runs.iloc[0][CHEMIST_LABEL_COLUMN], "monoklonal")
+            self.assertEqual(patients.iloc[0][CHEMIST_LABEL_COLUMN], "monoklonal")
 
     def test_aggregated_batch_uses_one_local_tracking_workbook_and_global_dashboard(self) -> None:
         import core.batch as batch

@@ -85,7 +85,7 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
 
 ## Immediate Next Tasks
 
-1. Build a real-data feature audit script that reads a tracking workbook plus raw `.fsa` root and reports:
+1. [Completed 2026-07-26] Build a real-data feature audit script that reads a tracking workbook plus raw `.fsa` root and reports:
    - rows with missing raw files
    - assay/label counts
    - DIT grouping quality
@@ -94,3 +94,24 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
 3. Train one first real per-assay model on the best labelled workbook and generate disagreement panels.
 4. Decide threshold gates from the first validation report before enabling anything in normal reports.
 
+## Real-Data Audit Command
+
+Chemist labels live in `ClonalityChemistLabel`. The existing
+`ClonalitySuggestion` remains the rule-based output so it can be compared with
+ML without becoming accidental training ground truth.
+
+```powershell
+python -m scripts.audit_clonality_ml_data `
+  --xls "C:\path\to\Clonality_Tracking.xlsx" `
+  --fsa-root "D:\path\to\raw-fsa" `
+  --output-dir "C:\local\clonality-ml-audit" `
+  --strict
+```
+
+The command understands current `Runs` workbooks, legacy `Run` workbooks, and
+split `Patient_Runs`/`Control_Runs` workbooks. It writes a JSON summary plus
+local row, missing-file, and feature-quality CSVs. These outputs can contain
+clinical identifiers and local paths; keep them outside Git.
+
+`--strict` exits with code 2 for blocking issues such as missing FSA files,
+invalid labels, duplicate identities, empty files, or missing DIT values.

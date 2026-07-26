@@ -59,6 +59,15 @@ Phase 1 (delete-not-archive, per user):
 - Cleaned clonality ML inference edges: separator-free assay lookup (`TCRGA` -> `TCRG-A`), dotted per-channel feature expansion, and sklearn named-feature input handling for calibration/runtime.
 - Fixed Windows/Pandas hygiene exposed by full tests: closed Excel workbook/test handles and kept GUI labeling `ClonalitySuggestion` writable as string/object dtype. Verification: `python -m pytest tests -q` passed (`276 passed, 3 skipped`).
 
+## 2026-07-26 - Real-Data ML Contract and Audit
+
+- Added a shared loader for current `Runs`, legacy `Run`, and split tracking workbook layouts.
+- Separated chemist ground truth (`ClonalityChemistLabel`) from the existing rule output (`ClonalitySuggestion`).
+- Updated labeling saves to edit workbook cells in place and synchronize `Runs` with patient/control mirror sheets.
+- Added `scripts/audit_clonality_ml_data.py` for local FSA resolution, label validation, DIT grouping checks, and feature null/zero-rate reporting.
+- Training now ignores unlabelled rows, rejects unknown labels or missing DITs, and automatically selects only numeric/bool features.
+- Verification: `python -m pytest tests -q` passed (`288 passed, 3 skipped`).
+
 ## 2026-06-04 - Assay-Specific Clonality Interpretation Dispatch
 
 - Refactored `interpret_entry` in `core/analyses/clonality/interpretation.py` to dispatch patient samples to assay-specific helpers via `_ASSAY_DISPATCH` map.

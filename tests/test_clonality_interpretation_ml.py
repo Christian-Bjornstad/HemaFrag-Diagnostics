@@ -126,6 +126,40 @@ def test_build_per_assay_datasets_empty_dataframe_returns_empty_dict():
     assert out == {}
 
 
+def test_build_per_assay_datasets_drops_unlabelled_rows_and_uses_numeric_features_only():
+    df = _synth_combined(n_per_assay={"FR1": 12})
+    df.loc[0, "ClonalitySuggestion"] = ""
+    df["File"] = [f"sample-{index}.fsa" for index in range(len(df))]
+    df["ClonalityConfidence"] = 0.99
+    df["ClonalityMLConfidence"] = 0.98
+    out = build_per_assay_datasets(df, min_samples_per_assay=10)
+    ds = out["FR1"]
+    assert ds.n_samples == 11
+    assert "File" not in ds.X.columns
+    assert "ClonalityConfidence" not in ds.X.columns
+    assert "ClonalityMLConfidence" not in ds.X.columns
+
+
+def test_build_per_assay_datasets_rejects_unknown_chemist_label():
+    df = _synth_combined(n_per_assay={"FR1": 12})
+    df.loc[0, "ClonalitySuggestion"] = "definitely_clonal"
+    with pytest.raises(ValueError, match="unknown clonality training labels"):
+        build_per_assay_datasets(df, min_samples_per_assay=10)
+
+
+def test_build_per_assay_datasets_rejects_ladder_only_features():
+    frame = pd.DataFrame(
+        {
+            "DIT": [f"DIT-{index}" for index in range(12)],
+            "Assay": ["FR1"] * 12,
+            "ClonalitySuggestion": ["monoklonal", "polyklonal"] * 6,
+            "LadderR2": [0.999] * 12,
+        }
+    )
+    with pytest.raises(ValueError, match="no raw FSA trace features"):
+        build_per_assay_datasets(frame, min_samples_per_assay=10)
+
+
 def test_per_assay_dataset_rare_class_counts_non_empty_for_FR1():
     df = _synth_combined()
     out = build_per_assay_datasets(df, min_samples_per_assay=100)

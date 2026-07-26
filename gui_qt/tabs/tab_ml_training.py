@@ -124,7 +124,7 @@ class TabMlTraining(QWidget):
 
         self._xlsx_edit = QLineEdit()
         self._xlsx_edit.setPlaceholderText(
-            "Path to Clonality_Tracking_All_*.xlsx (must contain ClonalitySuggestion column)"
+            "Path to Clonality_Tracking_All_*.xlsx (must contain ClonalityChemistLabel)"
         )
         xlsx_row = QHBoxLayout()
         xlsx_row.addWidget(self._xlsx_edit, stretch=1)
@@ -310,20 +310,8 @@ class TabMlTraining(QWidget):
         self._open_folder_btn.setEnabled(True)
         if ok:
             self._status_label.setText(
-                f"Done — models in {output_dir}."
+                f"Training complete — validation models are in {output_dir}."
             )
-            # Auto-publish path back into Settings → interpretation.model_path
-            try:
-                APP_SETTINGS.setdefault("analyses", {})
-                APP_SETTINGS["analyses"].setdefault("clonality", {})
-                APP_SETTINGS["analyses"]["clonality"].setdefault("interpretation", {})
-                APP_SETTINGS["analyses"]["clonality"]["interpretation"]["model_path"] = (
-                    output_dir
-                )
-                from config import save_settings
-                save_settings(APP_SETTINGS)
-            except Exception:
-                pass
         else:
             self._status_label.setText(
                 f"FAILED — see log. Output dir kept at {output_dir}."

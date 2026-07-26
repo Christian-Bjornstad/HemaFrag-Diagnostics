@@ -140,8 +140,39 @@ def test_missing_run_sheet_raises(tmp_path):
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         df.to_excel(w, sheet_name="WrongSheet", index=False)
     session = LabelingSession(excel_path=path)
-    with pytest.raises(ValueError, match="no 'Run' sheet"):
+    with pytest.raises(ValueError, match="no tracking run sheet"):
         session.load()
+
+
+def test_current_runs_sheet_saves_chemist_label_and_preserves_rule_output(tmp_path):
+    path = tmp_path / "tracking-current.xlsx"
+    frame = pd.DataFrame(
+        {
+            "IdentityKey": ["ID1"],
+            "DIT": ["26A01"],
+            "Assay": ["FR1"],
+            "Well": ["A01"],
+            "File": ["sample1.fsa"],
+            "SourceRunDir": ["run-a"],
+            "SampleKind": ["patient"],
+            "Control": [""],
+            "ClonalitySuggestion": ["polyklonal"],
+        }
+    )
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        frame.to_excel(writer, sheet_name="Runs", index=False)
+        frame.to_excel(writer, sheet_name="Patient_Runs", index=False)
+
+    session = LabelingSession(excel_path=str(path))
+    session.load()
+    session.label_sample(0, "monoklonal")
+    assert session.save_to_excel() == 1
+
+    runs = pd.read_excel(path, sheet_name="Runs", engine="openpyxl")
+    patients = pd.read_excel(path, sheet_name="Patient_Runs", engine="openpyxl")
+    assert runs.loc[0, LABEL_COLUMN] == "monoklonal"
+    assert patients.loc[0, LABEL_COLUMN] == "monoklonal"
+    assert runs.loc[0, "ClonalitySuggestion"] == "polyklonal"
 
 
 def test_fsa_path_resolution(tmp_path):

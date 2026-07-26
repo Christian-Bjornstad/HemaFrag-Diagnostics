@@ -42,6 +42,11 @@ from sklearn.metrics import (
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.pipeline import Pipeline
 
+from core.analyses.clonality.ml_data_contract import (
+    CHEMIST_LABEL_COLUMN,
+    is_trace_feature,
+)
+
 
 # Frozen label order. Training pipeline always produces a PerAssayMetrics
 # dict keyed on these. Caller may extend this list once chemist signs
@@ -56,6 +61,37 @@ ANNOTATION_CLASSES_ORDER: tuple[str, ...] = (
     "qc_teknisk_fail",
     "usikker_review",
 )
+
+DEFAULT_NON_FEATURE_COLUMNS = {
+    "Month",
+    "IdentityKey",
+    "File",
+    "SourceRunDir",
+    "DIT",
+    "Assay",
+    "SampleKind",
+    "Group",
+    "Control",
+    "RunDate",
+    "RunCode",
+    "Well",
+    "Batch",
+    "Ladder",
+    "RawPath",
+    CHEMIST_LABEL_COLUMN,
+    "ClonalityInterpretationEnabled",
+    "ClonalitySuggestion",
+    "ClonalityConfidence",
+    "ClonalityReviewNeeded",
+    "ClonalityEvidence",
+    "ClonalitySLQualityClass",
+    "ClonalitySLQualityPhrase",
+    "ClonalityModelVersion",
+    "ClonalityMLSuggestion",
+    "ClonalityMLConfidence",
+    "ClonalityMLReviewNeeded",
+    "ClonalityMLModelVersion",
+}
 
 __all__ = [
     "ANNOTATION_CLASSES_ORDER",
@@ -179,13 +215,44 @@ def build_per_assay_datasets(
         raise KeyError(f"column {assay_col!r} not in dataframe")
     if label_col not in combined_df.columns:
         raise KeyError(f"column {label_col!r} not in dataframe")
+    if dit_col not in combined_df.columns:
+        raise KeyError(f"column {dit_col!r} not in dataframe")
+
+    labels = combined_df[label_col].fillna("").astype(str).str.strip()
+    combined_df = combined_df.loc[labels.ne("")].copy()
+    combined_df[label_col] = labels.loc[labels.ne("")]
+    invalid_labels = sorted(
+        set(combined_df[label_col].unique()) - set(ANNOTATION_CLASSES_ORDER)
+    )
+    if invalid_labels:
+        raise ValueError(
+            "unknown clonality training labels: {}".format(", ".join(invalid_labels))
+        )
+    missing_dit = combined_df[dit_col].fillna("").astype(str).str.strip().eq("")
+    if missing_dit.any():
+        raise ValueError(
+            f"{int(missing_dit.sum())} labelled row(s) have no {dit_col}; "
+            "grouped validation would leak patients"
+        )
 
     if feature_cols is None:
         feature_cols = [
             c for c in combined_df.columns
-            if c not in (label_col, dit_col, assay_col, "Group", "RawPath")
+            if c not in DEFAULT_NON_FEATURE_COLUMNS
+            and c not in (label_col, dit_col, assay_col)
+            and (
+                pd.api.types.is_numeric_dtype(combined_df[c])
+                or pd.api.types.is_bool_dtype(combined_df[c])
+            )
         ]
     feature_cols = [c for c in feature_cols if c in combined_df.columns]
+    if not feature_cols:
+        raise ValueError("no numeric feature columns were available for training")
+    if not any(is_trace_feature(column) for column in feature_cols):
+        raise ValueError(
+            "no raw FSA trace features were available for training; "
+            "refusing to fit a ladder/QC-only clonality model"
+        )
 
     out: dict[str, PerAssayDataset] = {}
     for assay_name, group in combined_df.groupby(assay_col, sort=True):

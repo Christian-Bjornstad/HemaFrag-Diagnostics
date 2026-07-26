@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """scripts/export_clonality_labels_csv.py
 
-Walk a clonality tracking Excel workbook, run interpret_entry over each
-entry, and emit a flat labels CSV with one row per (DIT, Assay) pair:
-  identity_key, assay, ClonalitySuggestion, evidence, control_flag, ladder_qc
-
-The output CSV is what `scripts/train_clonality_interpretation_models.py
---labels-csv` consumes.
+Walk a clonality tracking Excel workbook, run the rule interpreter over each
+entry, and emit a flat comparison CSV. This is not a chemist-label export and
+must not be used as supervised ML ground truth.
 
 CLI:
   python scripts/export_clonality_labels_csv.py \\
       --xls /path/to/Clonality_Tracking.xlsx \\
-      --out  /path/to/labels.csv \\
+      --out  /path/to/rule_suggestions.csv \\
       [--entry-metadata /path/to/identity_key_lookup.json]
 
-Reasonable defaults: --out writes to ./labels.csv next to --xls.
+Reasonable defaults: --out writes to ./rule_suggestions.csv next to --xls.
 """
 from __future__ import annotations
 
@@ -91,10 +88,10 @@ def _labels_csv_for(df):
             {
                 "identity_key": str(entry.get("identity_key") or ""),
                 "assay": str(minimal["assay"] or ""),
-                "ClonalitySuggestion": result.get("ClonalitySuggestion", ""),
-                "ClonalityConfidence": result.get("ClonalityConfidence", 0.0),
-                "ClonalityReviewNeeded": result.get("ClonalityReviewNeeded", False),
-                "ClonalityEvidence": result.get("ClonalityEvidence", ""),
+                "ClonalityRuleSuggestion": result.get("ClonalitySuggestion", ""),
+                "ClonalityRuleConfidence": result.get("ClonalityConfidence", 0.0),
+                "ClonalityRuleReviewNeeded": result.get("ClonalityReviewNeeded", False),
+                "ClonalityRuleEvidence": result.get("ClonalityEvidence", ""),
                 "control_flag": str(entry.get("control") or ""),
                 "ladder_qc": str(entry.get("ladder_qc") or ""),
             }
@@ -103,7 +100,9 @@ def _labels_csv_for(df):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="Walk a clonality tracking xlsx, emit labels.csv.")
+    p = argparse.ArgumentParser(
+        description="Walk a clonality tracking xlsx and emit rule suggestions for comparison."
+    )
     p.add_argument(
         "--xls",
         type=Path,
@@ -114,7 +113,7 @@ def main(argv=None):
         "--out",
         type=Path,
         default=None,
-        help="Output labels CSV path. Default: ./labels.csv next to --xls.",
+        help="Output comparison CSV path. Default: ./rule_suggestions.csv next to --xls.",
     )
     p.add_argument(
         "--entry-metadata",
@@ -125,7 +124,7 @@ def main(argv=None):
     args = p.parse_args(argv)
     if not args.xls.exists():
         raise FileNotFoundError("--xls %s not found" % args.xls)
-    out = args.out if args.out else args.xls.parent / "labels.csv"
+    out = args.out if args.out else args.xls.parent / "rule_suggestions.csv"
     entry_metadata = _load_entry_metadata(args.entry_metadata) if args.entry_metadata else None
     df = _resolve_columns(args.xls, entry_metadata=entry_metadata)
     rows = _labels_csv_for(df)

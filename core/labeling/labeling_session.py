@@ -19,12 +19,17 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from openpyxl import load_workbook
 
 logger = logging.getLogger(__name__)
 
 # Re-export the canonical label order so the GUI and the trainer never
 # drift. These are Norwegian — the chemist's working language.
 from core.analyses.clonality.ml_training import ANNOTATION_CLASSES_ORDER
+from core.analyses.clonality.ml_data_contract import (
+    CHEMIST_LABEL_COLUMN,
+    load_tracking_run_table,
+)
 
 # Keyboard shortcut map — number key → label string.
 # Mirrors the order in ANNOTATION_CLASSES_ORDER.
@@ -42,8 +47,8 @@ LABEL_KEYS: dict[str, str] = {
 # Reverse lookup: label → shortcut key.
 LABEL_TO_KEY: dict[str, str] = {v: k for k, v in LABEL_KEYS.items()}
 
-# The Excel column that stores the chemist's label.
-LABEL_COLUMN = "ClonalitySuggestion"
+# Keep the chemist annotation separate from the rule-based suggestion.
+LABEL_COLUMN = CHEMIST_LABEL_COLUMN
 
 
 @dataclass
@@ -59,6 +64,8 @@ class LabelingSample:
     identity_key: str = ""
     sample_kind: str = ""
     group: str = ""
+    tracking_sheet: str = ""
+    tracking_row_number: int = 0
 
     @property
     def is_labeled(self) -> bool:
@@ -75,18 +82,19 @@ class LabelingSession:
     samples: list[LabelingSample] = field(default_factory=list)
     _df: pd.DataFrame | None = None
     _dirty: bool = False
+    _primary_sheet: str = ""
+    _available_sheets: tuple[str, ...] = field(default_factory=tuple)
 
     def load(self) -> None:
-        """Load the Run sheet from the tracking Excel into ``samples``."""
-        with pd.ExcelFile(self.excel_path, engine="openpyxl") as xls:
-            if "Run" not in xls.sheet_names:
-                raise ValueError(
-                    f"Excel '{self.excel_path}' has no 'Run' sheet. "
-                    f"Sheets found: {xls.sheet_names}"
-                )
-            df = xls.parse("Run")
+        """Load tracked injections from current or legacy workbook sheets."""
+        table = load_tracking_run_table(self.excel_path, include_controls=True)
+        df = table.frame
+        self._primary_sheet = table.primary_sheet
+        self._available_sheets = table.available_sheets
         if LABEL_COLUMN in df.columns:
             df[LABEL_COLUMN] = df[LABEL_COLUMN].where(pd.notna(df[LABEL_COLUMN]), "").astype(object)
+        else:
+            df[LABEL_COLUMN] = ""
         self._df = df
 
         self.samples = []
@@ -105,6 +113,8 @@ class LabelingSession:
                 identity_key=_str("IdentityKey"),
                 sample_kind=_str("SampleKind"),
                 group=_str("Group"),
+                tracking_sheet=_str("_TrackingSheet"),
+                tracking_row_number=int(row.get("_TrackingRowNumber", idx + 2) or idx + 2),
             )
             self.samples.append(sample)
 
@@ -143,14 +153,13 @@ class LabelingSession:
         if self._df is None:
             raise RuntimeError("No Excel loaded — call load() first")
 
-        # Ensure the label column exists
         if LABEL_COLUMN not in self._df.columns:
             self._df[LABEL_COLUMN] = ""
         self._df[LABEL_COLUMN] = self._df[LABEL_COLUMN].where(
             pd.notna(self._df[LABEL_COLUMN]), ""
         ).astype(object)
 
-        written = 0
+        changed: list[LabelingSample] = []
         for sample in self.samples:
             if 0 <= sample.index < len(self._df):
                 old_raw = self._df.at[self._df.index[sample.index], LABEL_COLUMN]
@@ -158,28 +167,55 @@ class LabelingSession:
                 new_val = sample.current_label
                 if old_val != new_val:
                     self._df.at[self._df.index[sample.index], LABEL_COLUMN] = new_val
-                    written += 1
+                    changed.append(sample)
 
-        if written > 0:
-            # Determine which columns to write — preserve the widest set
-            # of columns the Excel already had.
-            from core.analyses.clonality.tracking_excel import (
-                RUN_SHEET_COLUMNS,
-                RUN_SHEET_COLUMNS_WITH_INTERPRETATION,
-            )
-            if all(c in self._df.columns for c in RUN_SHEET_COLUMNS_WITH_INTERPRETATION):
-                write_cols = RUN_SHEET_COLUMNS_WITH_INTERPRETATION
-            elif all(c in self._df.columns for c in RUN_SHEET_COLUMNS):
-                write_cols = RUN_SHEET_COLUMNS
-            else:
-                write_cols = list(self._df.columns)
-
-            with pd.ExcelWriter(self.excel_path, engine="openpyxl", mode="a", if_sheet_exists="overlay") as writer:
-                self._df[write_cols].to_excel(writer, sheet_name="Run", index=False, startrow=0)
+        if changed:
+            self._write_changed_labels(changed)
 
         self._dirty = False
-        logger.info("Wrote %d labels to %s", written, self.excel_path)
-        return written
+        logger.info("Wrote %d labels to %s", len(changed), self.excel_path)
+        return len(changed)
+
+    def _write_changed_labels(self, changed: list[LabelingSample]) -> None:
+        """Update label cells in-place so workbook formatting is preserved."""
+        wb = load_workbook(self.excel_path)
+        try:
+            target_names = {sample.tracking_sheet for sample in changed if sample.tracking_sheet}
+            target_names.add(self._primary_sheet)
+            if self._primary_sheet == "Runs":
+                target_names.update({"Patient_Runs", "Control_Runs"})
+
+            for sheet_name in sorted(target_names):
+                if not sheet_name or sheet_name not in wb.sheetnames:
+                    continue
+                ws = wb[sheet_name]
+                headers = {
+                    str(cell.value or "").strip(): cell.column
+                    for cell in ws[1]
+                    if str(cell.value or "").strip()
+                }
+                label_col = headers.get(LABEL_COLUMN)
+                if label_col is None:
+                    label_col = ws.max_column + 1
+                    ws.cell(1, label_col, LABEL_COLUMN)
+                identity_col = headers.get("IdentityKey")
+
+                identity_rows: dict[str, list[int]] = {}
+                if identity_col is not None:
+                    for row_number in range(2, ws.max_row + 1):
+                        identity = str(ws.cell(row_number, identity_col).value or "").strip()
+                        if identity:
+                            identity_rows.setdefault(identity, []).append(row_number)
+
+                for sample in changed:
+                    row_numbers = identity_rows.get(sample.identity_key, []) if sample.identity_key else []
+                    if not row_numbers and sheet_name == sample.tracking_sheet and sample.tracking_row_number >= 2:
+                        row_numbers = [sample.tracking_row_number]
+                    for row_number in row_numbers:
+                        ws.cell(row_number, label_col, sample.current_label)
+            wb.save(self.excel_path)
+        finally:
+            wb.close()
 
     def filter_unlabeled(self) -> list[int]:
         """Return the indices (into ``self.samples``) of unlabeled samples."""

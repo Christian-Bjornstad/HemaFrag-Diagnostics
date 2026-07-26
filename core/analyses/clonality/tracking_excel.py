@@ -14,6 +14,7 @@ from core.analyses.clonality.interpretation import (
     TRACKING_COLUMNS as CLONALITY_INTERPRETATION_COLUMNS,
     interpretation_enabled,
 )
+from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
 from fraggler.fraggler import print_green
 from core.analyses.clonality.tracking_dashboard import refresh_clonality_tracking_dashboard
 from core.qc.qc_markers import (
@@ -63,6 +64,7 @@ RUN_SHEET_COLUMNS = [
     "LadderLinearMeanResidualBp",
     "LadderLinearMaxResidualBp",
     "LadderCurvature",
+    CHEMIST_LABEL_COLUMN,
 ]
 RUN_SHEET_COLUMNS_WITH_INTERPRETATION = RUN_SHEET_COLUMNS + CLONALITY_INTERPRETATION_COLUMNS
 RUN_SHEET_COLUMNS_WITH_ML = RUN_SHEET_COLUMNS_WITH_INTERPRETATION + [
@@ -197,6 +199,7 @@ def update_clonality_tracking_workbook(
 
         old_runs = _normalize_run_frame(old_runs, run_columns=run_columns)
         old_peaks = _reindex_columns(old_peaks, PEAK_SHEET_COLUMNS)
+        df_runs = _carry_forward_chemist_labels(old_runs, df_runs)
 
         if not df_runs.empty and "IdentityKey" in old_runs.columns:
             old_runs = old_runs[~old_runs["IdentityKey"].isin(df_runs["IdentityKey"])]
@@ -577,6 +580,44 @@ def _normalize_run_frame(df: pd.DataFrame, *, run_columns: list[str] | None = No
     normalized["IdentityKey"] = normalized_identity
     normalized["SourceRunDir"] = source_run_dir
     return _reindex_columns(normalized, run_columns)
+
+
+def _carry_forward_chemist_labels(
+    old_runs: pd.DataFrame,
+    new_runs: pd.DataFrame,
+) -> pd.DataFrame:
+    """Preserve reviewed labels when a batch refresh replaces an injection."""
+    if (
+        old_runs.empty
+        or new_runs.empty
+        or "IdentityKey" not in old_runs.columns
+        or "IdentityKey" not in new_runs.columns
+        or CHEMIST_LABEL_COLUMN not in old_runs.columns
+    ):
+        return new_runs
+
+    old_labels = old_runs[["IdentityKey", CHEMIST_LABEL_COLUMN]].copy()
+    old_labels["IdentityKey"] = old_labels["IdentityKey"].fillna("").astype(str)
+    old_labels[CHEMIST_LABEL_COLUMN] = (
+        old_labels[CHEMIST_LABEL_COLUMN].fillna("").astype(str).str.strip()
+    )
+    old_labels = old_labels.loc[
+        old_labels["IdentityKey"].str.strip().ne("")
+        & old_labels[CHEMIST_LABEL_COLUMN].ne("")
+    ].drop_duplicates(subset=["IdentityKey"], keep="last")
+    if old_labels.empty:
+        return new_runs
+
+    label_by_identity = old_labels.set_index("IdentityKey")[CHEMIST_LABEL_COLUMN]
+    carried = new_runs.copy()
+    if CHEMIST_LABEL_COLUMN not in carried.columns:
+        carried[CHEMIST_LABEL_COLUMN] = ""
+    current = carried[CHEMIST_LABEL_COLUMN].fillna("").astype(str).str.strip()
+    inherited = (
+        carried["IdentityKey"].fillna("").astype(str).map(label_by_identity).fillna("")
+    )
+    carried[CHEMIST_LABEL_COLUMN] = current.where(current.ne(""), inherited)
+    return carried
 
 
 def _split_run_frames(runs: pd.DataFrame, *, run_columns: list[str] | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
