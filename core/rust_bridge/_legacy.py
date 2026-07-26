@@ -42,6 +42,7 @@ from core.rust_bridge._constants import (
     _RUST_RESULT_CACHE_MAX,
     _RUST_ENGINE_STATS,
     _RUST_ENGINE_STATS_LOCK,
+    _windows_subprocess_kwargs,
     GS500ROX_PREFERRED_TIME_MIN,
     GS500ROX_PREFERRED_TIME_MAX,
     GS500ROX_ABSOLUTE_TIME_MIN,
@@ -237,7 +238,7 @@ def _resolve_cli_bin() -> Path | None:
         return _CLI_BIN_CACHE
 
     cli_names = ["fraggler-cli.exe", "fraggler-cli"] if sys.platform == "win32" else ["fraggler-cli"]
-    root = Path(__file__).resolve().parent.parent
+    repo_root = Path(__file__).resolve().parents[2]
     if getattr(sys, 'frozen', False):
         bundle_dirs = [
             Path(getattr(sys, "_MEIPASS", "")),
@@ -258,9 +259,9 @@ def _resolve_cli_bin() -> Path | None:
     for cli_name in cli_names:
         preferred_paths.extend(
             [
-                root / "fraggler-v2" / "target" / "release" / cli_name,
-                root / "fraggler-v2" / "target" / "debug" / cli_name,
-                root / "bin" / cli_name,
+                repo_root / "fraggler-v2" / "target" / "release" / cli_name,
+                repo_root / "fraggler-v2" / "target" / "debug" / cli_name,
+                repo_root / "bin" / cli_name,
             ]
         )
     cli_bin = next((p for p in preferred_paths if p.exists()), None)

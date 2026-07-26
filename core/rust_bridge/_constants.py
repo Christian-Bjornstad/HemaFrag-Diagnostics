@@ -8,11 +8,11 @@ facade unchanged.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
-import sys
 import threading
 
 

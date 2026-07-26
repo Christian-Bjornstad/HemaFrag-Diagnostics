@@ -1,4 +1,28 @@
 from pathlib import Path
+import sys
+
+
+def test_cli_resolver_searches_from_repository_root(monkeypatch):
+    from core.rust_bridge import _legacy as rust_bridge
+
+    cli_name = "fraggler-cli.exe" if sys.platform == "win32" else "fraggler-cli"
+    expected = (
+        Path(rust_bridge.__file__).resolve().parents[2]
+        / "fraggler-v2"
+        / "target"
+        / "release"
+        / cli_name
+    )
+    monkeypatch.setattr(rust_bridge, "_CLI_BIN_CACHE", None)
+    monkeypatch.setattr(Path, "exists", lambda path: path == expected)
+
+    assert rust_bridge._resolve_cli_bin() == expected
+
+
+def test_rust_subprocess_options_are_available_after_module_split():
+    from core.rust_bridge import _legacy as rust_bridge
+
+    assert isinstance(rust_bridge._windows_subprocess_kwargs(), dict)
 
 
 def test_cached_rust_result_is_reusable(monkeypatch):
