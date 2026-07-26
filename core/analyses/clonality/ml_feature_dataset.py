@@ -28,7 +28,8 @@ from core.analyses.clonality.trace_features import (
 )
 
 
-ML_FEATURE_DATASET_VERSION = "clonality_ml_feature_dataset_v2"
+ML_FEATURE_DATASET_VERSION = "clonality_ml_feature_dataset_v3"
+_LEGACY_FEATURE_DATASET_VERSION = "clonality_ml_feature_dataset_v2"
 FEATURE_DATASET_FILENAMES = {
     "features": "clonality_ml_trace_features.csv",
     "errors": "clonality_ml_trace_errors.csv",
@@ -95,7 +96,16 @@ def build_clonality_trace_feature_dataset(
     if limit is not None:
         candidates = candidates.head(max(0, int(limit)))
 
-    records = _existing_feature_records(existing_features)
+    candidate_identities = {
+        _clean_text(value)
+        for value in candidates["IdentityKey"].tolist()
+        if _clean_text(value)
+    }
+    records = [
+        record
+        for record in _existing_feature_records(existing_features)
+        if _clean_text(record.get("IdentityKey")) in candidate_identities
+    ]
     completed_records = {
         (
             str(record.get("IdentityKey") or ""),
@@ -271,7 +281,11 @@ def load_resumable_feature_artifact(output_dir: Path | str) -> pd.DataFrame:
     if not features_path.is_file() or not manifest_path.is_file():
         return pd.DataFrame()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("dataset_version") != ML_FEATURE_DATASET_VERSION:
+    dataset_version = manifest.get("dataset_version")
+    if dataset_version not in {
+        ML_FEATURE_DATASET_VERSION,
+        _LEGACY_FEATURE_DATASET_VERSION,
+    }:
         raise ValueError("existing feature artifact uses a different dataset version")
     if manifest.get("trace_feature_schema_version") != TRACE_FEATURE_SCHEMA_VERSION:
         raise ValueError("existing feature artifact uses a different trace feature schema")
@@ -280,9 +294,56 @@ def load_resumable_feature_artifact(output_dir: Path | str) -> pd.DataFrame:
     if manifest.get("settings_fingerprint") != _settings_fingerprint():
         raise ValueError("existing feature artifact uses different clonality settings")
     try:
-        return pd.read_csv(features_path)
+        frame = pd.read_csv(features_path)
     except pd.errors.EmptyDataError:
         return pd.DataFrame()
+    if dataset_version == _LEGACY_FEATURE_DATASET_VERSION:
+        frame = _upgrade_v2_feature_artifact(frame)
+    return frame
+
+
+def _upgrade_v2_feature_artifact(frame: pd.DataFrame) -> pd.DataFrame:
+    """Migrate derived scalar/context fields without reading raw traces again."""
+    upgraded = frame.copy()
+    required = {
+        "dominant_peak_basepairs",
+        "interpretation_range_min_bp",
+        "interpretation_range_max_bp",
+    }
+    if required.issubset(upgraded.columns):
+        dominant = pd.to_numeric(
+            upgraded["dominant_peak_basepairs"],
+            errors="coerce",
+        )
+        range_min = pd.to_numeric(
+            upgraded["interpretation_range_min_bp"],
+            errors="coerce",
+        )
+        range_max = pd.to_numeric(
+            upgraded["interpretation_range_max_bp"],
+            errors="coerce",
+        )
+        width = range_max - range_min
+        valid = dominant.notna() & range_min.notna() & range_max.notna() & width.gt(0)
+        in_window = valid & dominant.ge(range_min) & dominant.le(range_max)
+        upgraded["dom_distance_to_ref_window_center_bp"] = (
+            dominant - ((range_min + range_max) / 2.0)
+        ).where(valid)
+        upgraded["ref_window_coverage_fraction"] = (
+            (3.0 / width).where(in_window, 0.0)
+        )
+        upgraded["in_reference_window"] = in_window.astype(int)
+
+    cohort_aliases = {
+        "patient_assays_run_count": "cohort_patient_assay_count",
+        "assay_panel_completeness_pct": "cohort_panel_completeness",
+        "patient_entry_count": "cohort_patient_entry_count",
+    }
+    for legacy_column, cohort_column in cohort_aliases.items():
+        if cohort_column in upgraded.columns:
+            upgraded[legacy_column] = upgraded[cohort_column]
+    upgraded["FeatureDatasetVersion"] = ML_FEATURE_DATASET_VERSION
+    return upgraded
 
 
 def _metadata_record(

@@ -339,6 +339,10 @@ def features_from_entry(
     if not isinstance(tracking_stats, dict):
         tracking_stats = {}
     sl_quality = sl_quality_from_metrics(entry.get("sl_metrics") or {})
+    reference_entry = {
+        **entry,
+        "dominant_peak_basepairs": peak_context["dominant_peak_basepairs"],
+    }
 
     return {
         "file": file_name,
@@ -396,7 +400,7 @@ def features_from_entry(
         "annotation_schema_version": ANNOTATION_SCHEMA_VERSION,
         **per_channel_trace_summary(entry),
         **raw_trace_features,
-        **reference_window_features(entry),
+        **reference_window_features(reference_entry),
         **compute_patient_panel_features(entry),
     }
 

@@ -96,6 +96,19 @@ def _rows():
             "LadderR2": 0.999,
             "PeakCount": 1,
         },
+        {
+            "IdentityKey": "ladder-1",
+            "File": "ladder.fsa",
+            "SourceRunDir": "run-a",
+            "DIT": "26A",
+            "Assay": "SL",
+            "SampleKind": "patient",
+            "Control": "",
+            CHEMIST_LABEL_COLUMN: "",
+            "ClonalitySuggestion": "",
+            "LadderR2": 0.999,
+            "PeakCount": 16,
+        },
     ]
 
 
@@ -117,7 +130,11 @@ def test_tracking_loader_preserves_unassigned_rows_only_for_full_inventory(tmp_p
     _write_tracking_workbook(workbook, _rows())
 
     model_rows = load_tracking_run_table(workbook)
-    all_rows = load_tracking_run_table(workbook, include_controls=True)
+    all_rows = load_tracking_run_table(
+        workbook,
+        include_controls=True,
+        include_size_ladders=True,
+    )
 
     assert "unassigned-1" not in set(model_rows.frame["IdentityKey"])
     assert set(all_rows.frame["SampleKind"]) == {
@@ -125,6 +142,8 @@ def test_tracking_loader_preserves_unassigned_rows_only_for_full_inventory(tmp_p
         "control",
         "unassigned",
     }
+    assert "ladder-1" not in set(model_rows.frame["IdentityKey"])
+    assert "ladder-1" in set(all_rows.frame["IdentityKey"])
 
 
 def test_tracking_loader_preserves_source_rows_for_split_only_workbook(tmp_path):

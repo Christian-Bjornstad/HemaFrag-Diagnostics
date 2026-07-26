@@ -66,6 +66,7 @@ def load_tracking_run_table(
     workbook_path: Path | str,
     *,
     include_controls: bool = False,
+    include_size_ladders: bool = False,
 ) -> TrackingRunTable:
     """Load one canonical row per tracked FSA injection.
 
@@ -108,6 +109,9 @@ def load_tracking_run_table(
 
     if not include_controls:
         frame = frame.loc[_model_row_mask(frame)].reset_index(drop=True)
+    if not include_size_ladders and "Assay" in frame.columns:
+        assay = frame["Assay"].fillna("").astype(str).str.strip().str.upper()
+        frame = frame.loc[assay.ne("SL")].reset_index(drop=True)
 
     return TrackingRunTable(
         frame=frame,

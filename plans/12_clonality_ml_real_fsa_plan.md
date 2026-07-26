@@ -11,7 +11,9 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
 
 - Raw `.fsa` files stay local and out of Git.
 - The rule-based interpreter remains the clinical source of truth until validation proves otherwise.
-- Models train and report per assay because FR, IGK/KDE, TCRG, TCRB, DHJH, and SL have different signal shapes and interpretation ranges.
+- Models train and report per clonality assay because FR, IGK/KDE, TCRG,
+  TCRB, and DHJH have different signal shapes and interpretation ranges.
+  `SL` remains ladder/QC context and is not a chemist-label or model target.
 - Evaluation must split by patient/DIT or run folder, never random rows only.
 - Rare classes matter. Macro F1, monoklonal F1, and review routing are more important than plain accuracy.
 
@@ -104,7 +106,7 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
 
 ## Immediate Next Tasks
 
-1. Complete and inspect the full local trace-feature extraction. Require zero
+1. [Completed 2026-07-26] Complete and inspect the full local trace-feature extraction. Require zero
    unresolved files, no raw paths in the feature CSV, and a documented error
    review before using the artifact.
 2. Run a chemist-labeling pilot from the clean tracking workbook. Sample across
@@ -125,14 +127,19 @@ Completed on 2026-07-26 against the private January-April 2026 corpus:
 
 - 5,280 local `.fsa` files inventoried across 55 source-run folders.
 - A clean tracking rebuild completed all 55 folders with zero failed folders.
-- The inventory contains 3,103 analyzed rows: 2,402 model-eligible patient
-  injections, 700 controls, and one safely unassigned injection.
-- Strict audit resolved all 2,402 patient injections uniquely, with zero
+- The inventory contains 3,103 analyzed rows: 2,263 model-eligible clonality
+  injections, 139 size-ladder/QC rows, 700 controls, and one safely unassigned
+  injection.
+- Strict audit resolved all 2,263 clonality injections uniquely, with zero
   missing FSA files, zero duplicate identities, and all 55 source runs retained.
 - No chemist labels were present in the available tracking workbooks. Rule
   suggestions remain comparison data only and must not become training truth.
-- Full trace-feature extraction was started from the audited workbook as a
-  resumable, local-only artifact.
+- Full trace-feature extraction completed for all 2,263 audited injections:
+  zero errors, 154 numeric features, 121 trace-derived features, no raw traces,
+  and no local raw paths in the feature CSV.
+- The feature artifact was migrated to dataset schema v3 so derived
+  reference-window and cohort-panel fields are populated consistently without
+  re-reading raw traces.
 
 ## Real-Data Audit Command
 

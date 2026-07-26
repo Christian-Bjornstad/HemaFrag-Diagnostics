@@ -114,7 +114,7 @@ def test_build_feature_dataset_exports_flat_trace_features_without_raw_paths(tmp
     assert "trace_signal_to_noise_per_channel.DATA1" in dataset.features.columns
     assert dataset.features["FsaContentHash"].str.len().eq(64).all()
     assert dataset.features["FeatureDatasetVersion"].eq(
-        "clonality_ml_feature_dataset_v2"
+        "clonality_ml_feature_dataset_v3"
     ).all()
     assert dataset.features["CohortFeatureSchemaVersion"].eq(
         "clonality_cohort_features_v1"
@@ -147,6 +147,26 @@ def test_feature_dataset_resume_skips_matching_schema_and_source(tmp_path):
     assert resumed.processed_count == 0
     assert resumed.skipped_existing_count == 2
     assert len(resumed.features) == 2
+
+
+def test_feature_dataset_resume_prunes_rows_outside_current_audit(tmp_path):
+    rows = _audit_rows(tmp_path)
+    first = build_clonality_trace_feature_dataset(
+        rows,
+        analyze_file=lambda path: _entry(path),
+    )
+    stale = first.features.iloc[[0]].copy()
+    stale["IdentityKey"] = "stale-id"
+    existing = pd.concat([first.features, stale], ignore_index=True)
+
+    resumed = build_clonality_trace_feature_dataset(
+        rows,
+        analyze_file=lambda path: pytest.fail(f"unexpected analysis: {path}"),
+        existing_features=existing,
+    )
+
+    assert resumed.skipped_existing_count == 2
+    assert set(resumed.features["IdentityKey"]) == {"id-1", "id-2"}
 
 
 def test_feature_dataset_resume_reprocesses_changed_fsa_content(tmp_path):
@@ -230,6 +250,41 @@ def test_load_resumable_feature_artifact_accepts_empty_checkpoint(tmp_path):
     )
 
     assert load_resumable_feature_artifact(output).empty
+
+
+def test_load_resumable_feature_artifact_migrates_v2_derived_fields(tmp_path):
+    rows = _audit_rows(tmp_path)
+    dataset = build_clonality_trace_feature_dataset(
+        rows,
+        analyze_file=lambda path: _entry(path),
+    )
+    output = tmp_path / "artifact"
+    paths = write_clonality_trace_feature_artifact(
+        dataset,
+        output,
+        workbook_path=tmp_path / "tracking.xlsx",
+        fsa_root=tmp_path,
+    )
+    legacy = pd.read_csv(paths["features"])
+    legacy["FeatureDatasetVersion"] = "clonality_ml_feature_dataset_v2"
+    legacy["ref_window_coverage_fraction"] = 0.0
+    legacy["in_reference_window"] = 0
+    legacy["patient_assays_run_count"] = 0
+    legacy.to_csv(paths["features"], index=False)
+    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+    manifest["dataset_version"] = "clonality_ml_feature_dataset_v2"
+    paths["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+
+    migrated = load_resumable_feature_artifact(output)
+
+    assert migrated["FeatureDatasetVersion"].eq(
+        "clonality_ml_feature_dataset_v3"
+    ).all()
+    assert migrated["in_reference_window"].eq(1).all()
+    assert migrated["ref_window_coverage_fraction"].gt(0).all()
+    assert migrated["patient_assays_run_count"].eq(
+        migrated["cohort_patient_assay_count"]
+    ).all()
 
 
 def test_load_resumable_feature_artifact_rejects_changed_settings(tmp_path):

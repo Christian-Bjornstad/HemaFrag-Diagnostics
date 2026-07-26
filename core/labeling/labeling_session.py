@@ -94,11 +94,9 @@ class LabelingSession:
         table = load_tracking_run_table(
             self.excel_path,
             include_controls=self.include_controls,
+            include_size_ladders=self.include_size_ladders,
         )
         df = table.frame
-        if not self.include_size_ladders and "Assay" in df.columns:
-            assay = df["Assay"].fillna("").astype(str).str.strip().str.upper()
-            df = df.loc[assay.ne("SL")].reset_index(drop=True)
         self._primary_sheet = table.primary_sheet
         self._available_sheets = table.available_sheets
         if LABEL_COLUMN in df.columns:

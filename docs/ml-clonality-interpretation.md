@@ -341,7 +341,10 @@ scripts/train_clonality_interpretation_models.py
 
 ## Remaining Real-Data Work
 
-- Run the audit and extraction against the private mounted corpus.
+- [Completed 2026-07-26] Run the audit and extraction against the private
+  January-April 2026 corpus; retain all generated artifacts outside Git.
+- Populate `ClonalityChemistLabel` through the patient-only labeling queue;
+  current rule suggestions are comparison data, not training truth.
 - Inspect per-assay label support, review panels, and run-date drift.
 - Confirm every modeled label meets independent-patient, source-run, fold
   coverage, and calibration-row gates; merge or review-route unsupported labels.
