@@ -17,6 +17,7 @@ from core.analyses.clonality.interpretation import (
 from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
 from fraggler.fraggler import print_green
 from core.analyses.clonality.tracking_dashboard import refresh_clonality_tracking_dashboard
+from core.html_reports import extract_dit_from_name
 from core.qc.qc_markers import (
     control_id_from_filename,
     find_peak_near_bp,
@@ -216,7 +217,7 @@ def update_clonality_tracking_workbook(
         if not all_peaks.empty and {"IdentityKey", "MarkerName"}.issubset(all_peaks.columns):
             all_peaks = all_peaks.drop_duplicates(subset=["IdentityKey", "MarkerName"], keep="last")
 
-        all_runs = _reindex_columns(all_runs, run_columns)
+        all_runs = _normalize_run_frame(all_runs, run_columns=run_columns)
         all_peaks = _reindex_columns(all_peaks, PEAK_SHEET_COLUMNS)
 
         writer_kwargs = {"engine": "openpyxl"}
@@ -583,6 +584,14 @@ def _normalize_run_frame(df: pd.DataFrame, *, run_columns: list[str] | None = No
             
     normalized["IdentityKey"] = normalized_identity
     normalized["SourceRunDir"] = source_run_dir
+    dit = (
+        normalized.get("DIT", pd.Series("", index=normalized.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    derived_dit = file_name.map(lambda value: extract_dit_from_name(value) or "")
+    normalized["DIT"] = dit.where(dit.ne(""), derived_dit)
     return _reindex_columns(normalized, run_columns)
 
 

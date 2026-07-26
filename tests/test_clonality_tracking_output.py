@@ -168,6 +168,19 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             self.assertEqual(runs.iloc[0][CHEMIST_LABEL_COLUMN], "monoklonal")
             self.assertEqual(patients.iloc[0][CHEMIST_LABEL_COLUMN], "monoklonal")
 
+    def test_tracking_workbook_derives_missing_dit_case_insensitively(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook = Path(tmp) / "Clonality_Tracking.xlsx"
+            entry = _entry(
+                "25oum12345_FR1__220526_A01_H9TEST01.fsa",
+                dit="",
+            )
+
+            update_clonality_tracking_workbook(workbook, [entry])
+
+            runs = pd.read_excel(workbook, sheet_name="Runs", engine="openpyxl")
+            self.assertEqual(runs.iloc[0]["DIT"], "25OUM12345")
+
     def test_aggregated_batch_uses_one_local_tracking_workbook_and_global_dashboard(self) -> None:
         import core.batch as batch
 
