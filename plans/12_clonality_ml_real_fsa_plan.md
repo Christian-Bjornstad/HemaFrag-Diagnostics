@@ -105,8 +105,11 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
    feature-diverse labeling batches that open directly in the Qt app.
 3. [Completed 2026-07-26] Add conflict-safe merge-back from reviewed batches
    to the full tracking workbook.
-4. Export new labelled batches after each chemist session.
-5. Re-train, compare against previous model, and only promote if validation improves or review burden drops without harming monoklonal precision.
+4. [Completed 2026-07-26] Add aggregate per-assay/class readiness reports
+   aligned with the trainer's DIT, source-run, calibration, and concentration
+   gates.
+5. Export new labelled batches after each chemist session.
+6. Re-train, compare against previous model, and only promote if validation improves or review burden drops without harming monoklonal precision.
 
 ## Immediate Next Tasks
 
@@ -117,9 +120,9 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
    from the clean tracking workbook. Sample across assays, source runs, rule
    suggestions, and review-needed cases; do not copy the rule suggestion into
    the chemist label.
-3. Re-run the audit after each labeling batch and report class support by
-   independent DIT and source run. Do not train an assay with one class or
-   inadequate grouped-fold support.
+3. [Tooling completed 2026-07-26; labels pending] Re-run the audit and
+   readiness report after each labeling batch. Do not train an assay with one
+   class or inadequate grouped-fold support.
 4. Train candidate-only per-assay RandomForest and ExtraTrees models once label
    support passes those gates, then generate grouped out-of-fold disagreement
    panels.
@@ -149,6 +152,9 @@ Completed on 2026-07-26 against the private January-April 2026 corpus:
   assays, 126 distinct DITs, and all 55 source runs. It contains 204
   rule-review rows and zero prefilled chemist labels; all 300 raw FSA files
   resolve from the local corpus.
+- The readiness baseline marks all 14 assays `awaiting_labels`, with zero
+  candidate-ready or promotion-preflight-ready assays. Requiring a candidate
+  exits with code 2 until real chemist support satisfies the configured gates.
 
 ## Real-Data Audit Command
 

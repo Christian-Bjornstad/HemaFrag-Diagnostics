@@ -363,11 +363,31 @@ Remove `--dry-run` to write non-conflicting labels. Existing target labels are
 never overwritten by default; conflicts return exit code `2` and remain in the
 local report. Use `--allow-overwrite` only after explicit chemist resolution.
 
+After every merge, assess whether any assay is ready for grouped candidate
+training:
+
+```powershell
+python -m scripts.assess_clonality_ml_readiness `
+  --xls "C:\local\Clonality_Tracking.xlsx" `
+  --features-csv "C:\local\features\clonality_ml_trace_features.csv" `
+  --output-dir "C:\local\readiness" `
+  --require-candidate
+```
+
+The readiness report is aggregate-only. It records label coverage plus
+per-assay and per-class row, DIT, effective-DIT, source-run, and concentration
+support. Defaults mirror the trainer's static gates: 200 rows per assay, both
+core classes, 50 total DIT groups, 20 DIT groups for each core class, 10 for
+other observed classes, at least three source runs per class, and no class
+dominated by one DIT. Exit code `2` means no assay is ready; it is not a reason
+to lower validation gates.
+
 ## Main Modules
 
 ```text
 core/analyses/clonality/labeling_batch.py
 core/analyses/clonality/ml_data_audit.py
+core/analyses/clonality/ml_readiness.py
 core/analyses/clonality/trace_features.py
 core/analyses/clonality/cohort_features.py
 core/analyses/clonality/ml_feature_dataset.py
@@ -376,6 +396,7 @@ core/analyses/clonality/ml_validation.py
 core/analyses/clonality/ml_model.py
 core/analyses/clonality/ml_runtime.py
 scripts/audit_clonality_ml_data.py
+scripts/assess_clonality_ml_readiness.py
 scripts/build_clonality_ml_features.py
 scripts/prepare_clonality_labeling_batch.py
 scripts/merge_clonality_labeling_batch.py
@@ -388,6 +409,8 @@ scripts/train_clonality_interpretation_models.py
   January-April 2026 corpus; retain all generated artifacts outside Git.
 - Populate `ClonalityChemistLabel` through the patient-only labeling queue;
   current rule suggestions are comparison data, not training truth.
+- Re-run label readiness after every reviewed batch and train only assays
+  marked `candidate_ready`.
 - Inspect per-assay label support, review panels, and run-date drift.
 - Confirm every modeled label meets independent-patient, source-run, fold
   coverage, and calibration-row gates; merge or review-route unsupported labels.
