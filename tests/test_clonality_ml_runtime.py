@@ -21,6 +21,38 @@ from core.analyses.clonality.ml_runtime import (
 # --- fixtures ------------------------------------------------------------
 
 
+def _calibration_record(unique_groups: int) -> dict:
+    return {
+        "status": "complete",
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "strategy": "StratifiedGroupKFold",
+        "group_column": "DITContentComponent",
+        "grouped": True,
+        "folds": 3,
+        "unique_groups": unique_groups,
+        "minimum_train_class_rows": 6,
+        "minimum_test_class_rows": 3,
+        "every_group_held_out_once": True,
+        "reason": "",
+    }
+
+
+def _calibration_manifest(fold_count: int, unique_groups: int) -> dict:
+    return {
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "group_column": "DITContentComponent",
+        "fold_count": fold_count,
+        "every_fold_complete": True,
+        "every_fold_grouped": True,
+        "folds": [
+            _calibration_record(unique_groups)
+            for _ in range(fold_count)
+        ],
+    }
+
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     """Each test starts with a clean model-store cache."""
@@ -34,11 +66,12 @@ def _make_model_dir(p: Path) -> Path:
     X = np.zeros((20, 3))
     y = np.array(["monoklonal"] * 10 + ["polyklonal"] * 10)
     clf = DummyClassifier(strategy="most_frequent").fit(X, y)
+    clf.hemafrag_calibration_ = _calibration_record(20)
     joblib.dump(clf, p / "FR1" / "random_forest.joblib")
     joblib.dump(clf, p / "FR1" / "dummy.joblib")
     (p / "FR1" / "metadata.json").write_text(
         json.dumps({
-            "schema_version": "ml_training_pipeline_v6",
+            "schema_version": "ml_training_pipeline_v7",
             "assay": "FR1",
             "label_order": ["monoklonal", "polyklonal"],
             "accept_threshold_tau": 0.80,
@@ -73,6 +106,7 @@ def _make_model_dir(p: Path) -> Path:
                     "rows_missing_source_run": 0,
                 },
             },
+            "final_fit_calibration": _calibration_record(20),
             "validation": {
                 "strategy": "StratifiedGroupKFold",
                 "group_column": "DITContentComponent",
@@ -85,6 +119,8 @@ def _make_model_dir(p: Path) -> Path:
                     "content_hash_coverage": 1.0,
                 },
                 "class_support_gate": {"passed": True},
+                "calibration_gate": {"passed": True},
+                "calibration": _calibration_manifest(5, 16),
                 "class_fold_support": {
                     "monoklonal": {
                         "total_folds": 5,
@@ -122,6 +158,7 @@ def _make_model_dir(p: Path) -> Path:
                             "min_train_rows": 6,
                         },
                     },
+                    "calibration": _calibration_manifest(3, 12),
                     "promotion_gate": {"passed": True},
                 },
             },
@@ -241,7 +278,7 @@ def test_attach_stamps_ml_columns_when_assay_known(tmp_path):
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
         # Model version stamped
-        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v6"
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v7"
         assert out.get("ClonalityMLThreshold") == 0.8
         assert out.get("ClonalityMLEvidence")
     finally:
@@ -429,6 +466,7 @@ def test_attach_marks_review_when_disagreement(tmp_path):
         ])
         y = np.array(["monoklonal"] * 5 + ["polyklonal"] * 5)
         clf = RandomForestClassifier(n_estimators=20, random_state=0).fit(X, y)
+        clf.hemafrag_calibration_ = _calibration_record(20)
         # Overwrite fixture joblib with this one
         joblib.dump(clf, tmp_path / "FR1" / "random_forest.joblib")
 

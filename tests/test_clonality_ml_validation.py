@@ -6,9 +6,11 @@ from sklearn.ensemble import RandomForestClassifier
 
 from core.analyses.clonality.ml_training import PerAssayDataset
 from core.analyses.clonality.ml_validation import (
+    assess_calibration_gate,
     assess_class_support_gate,
     assess_promotion_gate,
     assess_source_run_gate,
+    dit_content_validation_groups,
     dit_content_grouped_validate,
     grouped_oof_validate,
     render_review_panel_html,
@@ -66,14 +68,37 @@ def _dataset() -> PerAssayDataset:
     )
 
 
-def _fast_fit(X, y, *, kind, random_state):
+def _fast_fit(
+    X,
+    y,
+    *,
+    kind,
+    random_state,
+    calibration_groups=None,
+    calibration_group_column="DITContentComponent",
+):
     del kind
-    return RandomForestClassifier(
+    estimator = RandomForestClassifier(
         n_estimators=20,
         max_depth=4,
         random_state=random_state,
         n_jobs=1,
     ).fit(X, y)
+    estimator.hemafrag_calibration_ = {
+        "status": "complete",
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "strategy": "StratifiedGroupKFold",
+        "group_column": calibration_group_column,
+        "grouped": True,
+        "folds": 3,
+        "unique_groups": int(pd.Series(calibration_groups).nunique()),
+        "minimum_train_class_rows": 4,
+        "minimum_test_class_rows": 2,
+        "every_group_held_out_once": True,
+        "reason": "",
+    }
+    return estimator
 
 
 def test_grouped_oof_validation_predicts_every_row_without_dit_leakage(monkeypatch):
@@ -102,6 +127,8 @@ def test_grouped_oof_validation_predicts_every_row_without_dit_leakage(monkeypat
     assert result.split_manifest["class_fold_support"]["monoklonal"][
         "evaluation_folds_with_examples"
     ] >= 2
+    assert result.split_manifest["calibration"]["every_fold_complete"] is True
+    assert result.split_manifest["calibration"]["every_fold_grouped"] is True
     assert len(result.fold_metrics) == 5
     assert set(result.drift_summary["Dimension"]) == {"SourceRunKey", "RunDate"}
     assert not result.feature_importance.empty
@@ -311,6 +338,56 @@ def test_class_support_gate_requires_independent_patients_runs_and_folds(
     assert any("unique_dit_groups=1" in reason for reason in blocked.reasons)
     assert any(
         "unique_source_run_groups=1" in reason
+        for reason in blocked.reasons
+    )
+
+
+def test_calibration_gate_requires_grouped_oof_and_final_fit(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+    dit_validation = dit_content_grouped_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=3,
+        importance_max_features=0,
+    )
+    run_validation = source_run_grouped_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=3,
+    )
+    groups, _ = dit_content_validation_groups(dataset)
+    final_estimator = _fast_fit(
+        dataset.X,
+        dataset.y,
+        kind="random_forest",
+        random_state=123,
+        calibration_groups=groups,
+    )
+
+    passing = assess_calibration_gate(
+        dit_validation,
+        source_run_validation=run_validation,
+        final_estimator=final_estimator,
+        classifier_kind="random_forest",
+    )
+    assert passing.passed is True
+
+    final_estimator.hemafrag_calibration_["status"] = "skipped"
+    final_estimator.hemafrag_calibration_["reason"] = "insufficient groups"
+    blocked = assess_calibration_gate(
+        dit_validation,
+        source_run_validation=run_validation,
+        final_estimator=final_estimator,
+        classifier_kind="random_forest",
+    )
+
+    assert blocked.passed is False
+    assert any(
+        "final_fit.calibration_status=insufficient groups" in reason
         for reason in blocked.reasons
     )
 

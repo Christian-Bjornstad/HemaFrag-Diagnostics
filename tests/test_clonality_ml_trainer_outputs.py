@@ -72,13 +72,36 @@ def _inputs(tmp_path):
     return workbook, features
 
 
-def _fast_fit(X, y, *, kind, random_state):
+def _fast_fit(
+    X,
+    y,
+    *,
+    kind,
+    random_state,
+    calibration_groups=None,
+    calibration_group_column="DITContentComponent",
+):
     del kind
-    return RandomForestClassifier(
+    estimator = RandomForestClassifier(
         n_estimators=20,
         random_state=random_state,
         n_jobs=1,
     ).fit(X, y)
+    estimator.hemafrag_calibration_ = {
+        "status": "complete",
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "strategy": "StratifiedGroupKFold",
+        "group_column": calibration_group_column,
+        "grouped": True,
+        "folds": 3,
+        "unique_groups": int(pd.Series(calibration_groups).nunique()),
+        "minimum_train_class_rows": 4,
+        "minimum_test_class_rows": 2,
+        "every_group_held_out_once": True,
+        "reason": "",
+    }
+    return estimator
 
 
 def test_threshold_lookup_normalizes_assay_spelling():
@@ -143,7 +166,7 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
     metadata = json.loads(
         (output / "FR1" / "metadata.json").read_text(encoding="utf-8")
     )
-    assert metadata["schema_version"] == "ml_training_pipeline_v6"
+    assert metadata["schema_version"] == "ml_training_pipeline_v7"
     assert metadata["deployment_status"] == "candidate"
     assert metadata["runtime_eligible"] is False
     assert metadata["training_rows"] == 36
@@ -169,6 +192,18 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
         "passed"
     ] is True
     assert metadata["validation"]["class_support_gate"]["passed"] is True
+    assert metadata["validation"]["calibration_gate"]["passed"] is True
+    assert metadata["validation"]["calibration"][
+        "every_fold_grouped"
+    ] is True
+    assert metadata["validation"]["source_run_stress"]["calibration"][
+        "every_fold_complete"
+    ] is True
+    assert metadata["final_fit_calibration"]["status"] == "complete"
+    assert (
+        metadata["final_fit_calibration"]["strategy"]
+        == "StratifiedGroupKFold"
+    )
     assert metadata["validation"]["class_fold_support"]["monoklonal"][
         "evaluation_folds_with_examples"
     ] >= 2

@@ -261,6 +261,8 @@ class ClonalityModelStore:
             return None
         if str(metadata.get("classifier_kind") or "") != joblib_path.stem:
             return None
+        if not _estimator_calibration_matches_metadata(estimator, metadata):
+            return None
         artifact = _AssayArtifact(estimator=estimator, metadata=metadata)
         self._cache[norm_assay] = artifact
         return artifact
@@ -324,6 +326,9 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
     class_support_gate = validation.get("class_support_gate")
     if not isinstance(class_support_gate, Mapping):
         return False
+    calibration_gate = validation.get("calibration_gate")
+    if not isinstance(calibration_gate, Mapping):
+        return False
     run_stress = validation.get("source_run_stress")
     if not isinstance(run_stress, Mapping):
         return False
@@ -338,6 +343,9 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         return False
     training_class_support = metadata.get("training_class_support")
     if not isinstance(training_class_support, Mapping):
+        return False
+    final_fit_calibration = metadata.get("final_fit_calibration")
+    if not isinstance(final_fit_calibration, Mapping):
         return False
     try:
         effective_splits = int(validation.get("effective_splits") or 0)
@@ -403,6 +411,12 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
     )
     primary_fold_support_compatible = _valid_class_fold_support(validation)
     run_fold_support_compatible = _valid_class_fold_support(run_stress)
+    calibration_compatible = _valid_calibration_provenance(
+        classifier_kind=str(metadata.get("classifier_kind") or ""),
+        validation=validation,
+        run_stress=run_stress,
+        final_fit=final_fit_calibration,
+    )
     return bool(
         metadata.get("schema_version") == RUNTIME_MODEL_SCHEMA_VERSION
         and metadata.get("deployment_status") == "validated"
@@ -422,6 +436,8 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         and primary_fold_support_compatible
         and run_fold_support_compatible
         and class_support_gate.get("passed") is True
+        and calibration_compatible
+        and calibration_gate.get("passed") is True
         and promotion_gate.get("passed") is True
         and run_stress.get("status") == "complete"
         and run_stress.get("strategy") == "StratifiedGroupKFold"
@@ -485,6 +501,117 @@ def _valid_class_fold_support(container: Mapping[str, Any]) -> bool:
         ):
             return False
     return True
+
+
+def _valid_calibration_provenance(
+    *,
+    classifier_kind: str,
+    validation: Mapping[str, Any],
+    run_stress: Mapping[str, Any],
+    final_fit: Mapping[str, Any],
+) -> bool:
+    if classifier_kind not in {"random_forest", "extra_trees"}:
+        return final_fit.get("status") == "native_probability"
+    try:
+        primary_folds = int(validation.get("effective_splits") or 0)
+        run_folds = int(run_stress.get("effective_splits") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        _valid_calibration_manifest(
+            validation.get("calibration"),
+            expected_folds=primary_folds,
+        )
+        and _valid_calibration_manifest(
+            run_stress.get("calibration"),
+            expected_folds=run_folds,
+        )
+        and _valid_calibration_record(final_fit)
+    )
+
+
+def _valid_calibration_manifest(
+    value: Any,
+    *,
+    expected_folds: int,
+) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    folds = value.get("folds")
+    if not isinstance(folds, list) or not folds:
+        return False
+    try:
+        fold_count = int(value.get("fold_count") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        value.get("required_for_runtime") is True
+        and value.get("method") == "sigmoid"
+        and value.get("group_column") == "DITContentComponent"
+        and value.get("every_fold_complete") is True
+        and value.get("every_fold_grouped") is True
+        and fold_count == expected_folds == len(folds)
+        and all(
+            _valid_calibration_record(fold)
+            for fold in folds
+            if isinstance(fold, Mapping)
+        )
+        and all(isinstance(fold, Mapping) for fold in folds)
+    )
+
+
+def _valid_calibration_record(value: Mapping[str, Any]) -> bool:
+    try:
+        folds = int(value.get("folds") or 0)
+        unique_groups = int(value.get("unique_groups") or 0)
+        min_train = int(value.get("minimum_train_class_rows") or 0)
+        min_test = int(value.get("minimum_test_class_rows") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        value.get("status") == "complete"
+        and value.get("required_for_runtime") is True
+        and value.get("method") == "sigmoid"
+        and value.get("strategy") == "StratifiedGroupKFold"
+        and value.get("group_column") == "DITContentComponent"
+        and value.get("grouped") is True
+        and value.get("every_group_held_out_once") is True
+        and folds == 3
+        and unique_groups >= 3
+        and min_train >= 2
+        and min_test >= 2
+    )
+
+
+def _estimator_calibration_matches_metadata(
+    estimator: Any,
+    metadata: Mapping[str, Any],
+) -> bool:
+    actual = getattr(estimator, "hemafrag_calibration_", None)
+    expected = metadata.get("final_fit_calibration")
+    if not isinstance(actual, Mapping) or not isinstance(expected, Mapping):
+        return False
+    classifier_kind = str(metadata.get("classifier_kind") or "")
+    if classifier_kind in {"random_forest", "extra_trees"}:
+        if not _valid_calibration_record(actual):
+            return False
+        fields = (
+            "status",
+            "method",
+            "strategy",
+            "group_column",
+            "grouped",
+            "folds",
+            "unique_groups",
+            "minimum_train_class_rows",
+            "minimum_test_class_rows",
+            "every_group_held_out_once",
+        )
+        return all(actual.get(field) == expected.get(field) for field in fields)
+    return (
+        actual.get("status") == "native_probability"
+        and expected.get("status") == "native_probability"
+    )
 
 
 def flatten_features_for_inference(

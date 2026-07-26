@@ -21,9 +21,41 @@ from core.analyses.clonality.ml_training import ANNOTATION_CLASSES_ORDER
 # --- helpers -------------------------------------------------------------
 
 
+def _calibration_record(unique_groups: int) -> dict:
+    return {
+        "status": "complete",
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "strategy": "StratifiedGroupKFold",
+        "group_column": "DITContentComponent",
+        "grouped": True,
+        "folds": 3,
+        "unique_groups": unique_groups,
+        "minimum_train_class_rows": 8,
+        "minimum_test_class_rows": 4,
+        "every_group_held_out_once": True,
+        "reason": "",
+    }
+
+
+def _calibration_manifest(fold_count: int, unique_groups: int) -> dict:
+    return {
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "group_column": "DITContentComponent",
+        "fold_count": fold_count,
+        "every_fold_complete": True,
+        "every_fold_grouped": True,
+        "folds": [
+            _calibration_record(unique_groups)
+            for _ in range(fold_count)
+        ],
+    }
+
+
 def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = None) -> dict:
     return {
-        "schema_version": "ml_training_pipeline_v6",
+        "schema_version": "ml_training_pipeline_v7",
         "assay": assay,
         "label_order": list(ANNOTATION_CLASSES_ORDER),
         "accept_threshold_tau": float(tau),
@@ -58,6 +90,7 @@ def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = No
                 "rows_missing_source_run": 0,
             },
         },
+        "final_fit_calibration": _calibration_record(50),
         "validation": {
             "strategy": "StratifiedGroupKFold",
             "group_column": "DITContentComponent",
@@ -70,6 +103,8 @@ def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = No
                 "content_hash_coverage": 1.0,
             },
             "class_support_gate": {"passed": True},
+            "calibration_gate": {"passed": True},
+            "calibration": _calibration_manifest(5, 40),
             "class_fold_support": {
                 "monoklonal": {
                     "total_folds": 5,
@@ -107,6 +142,7 @@ def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = No
                         "min_train_rows": 16,
                     },
                 },
+                "calibration": _calibration_manifest(3, 30),
                 "promotion_gate": {"passed": True},
             },
         },
@@ -125,6 +161,7 @@ def _train_dummy_model(*, seed: int = 0) -> RandomForestClassifier:
     y = np.array(["monoklonal"] * 30 + ["polyklonal"] * 30)
     clf = RandomForestClassifier(n_estimators=20, random_state=seed, n_jobs=1)
     clf.fit(X, y)
+    clf.hemafrag_calibration_ = _calibration_record(50)
     return clf
 
 
@@ -260,6 +297,40 @@ def test_store_ignores_artifact_without_core_class_fold_coverage(tmp_path):
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
     assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_without_grouped_calibration(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["final_fit_calibration"]["strategy"] = "StratifiedKFold"
+    metadata["final_fit_calibration"]["grouped"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_with_incomplete_oof_calibration(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["validation"]["calibration"]["every_fold_complete"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_refuses_loaded_estimator_with_mismatched_calibration(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    model_path = tmp_path / "FR1" / "random_forest.joblib"
+    estimator = joblib.load(model_path)
+    estimator.hemafrag_calibration_["grouped"] = False
+    joblib.dump(estimator, model_path)
+    store = ClonalityModelStore(model_dir=tmp_path)
+
+    assert store.is_enabled("FR1") is True
+    assert store.required_feature_columns("FR1") == []
+    assert store.predict("FR1", {"trace_runtime_signal": 1.0}) is None
 
 
 def test_store_ignores_classifier_filename_metadata_mismatch(tmp_path):

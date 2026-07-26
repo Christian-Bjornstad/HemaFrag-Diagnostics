@@ -41,7 +41,7 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
 )
-from sklearn.model_selection import GroupShuffleSplit
+from sklearn.model_selection import GroupShuffleSplit, StratifiedGroupKFold
 from sklearn.pipeline import Pipeline
 
 from core.analyses.clonality.ml_data_contract import (
@@ -63,7 +63,10 @@ ANNOTATION_CLASSES_ORDER: tuple[str, ...] = (
     "qc_teknisk_fail",
     "usikker_review",
 )
-RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v6"
+RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v7"
+TREE_CLASSIFIER_KINDS = {"random_forest", "extra_trees"}
+CALIBRATION_FOLDS = 3
+CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT = 2
 
 DEFAULT_NON_FEATURE_COLUMNS = {
     "Month",
@@ -531,6 +534,8 @@ def fit_classifier(
     *,
     kind: str = "random_forest",
     random_state: int = 12345,
+    calibration_groups: pd.Series | Sequence[str] | None = None,
+    calibration_group_column: str = "DITContentComponent",
 ) -> Any:
     """Fit a per-assay classifier.
 
@@ -554,7 +559,7 @@ def fit_classifier(
         raise ValueError(f"unknown classifier kind: {kind!r}")
     X_train = _ensure_numeric_X(X_train)
     y_train = y_train.astype(str)
-    if kind in {"random_forest", "extra_trees"}:
+    if kind in TREE_CLASSIFIER_KINDS:
         estimator_type = (
             RandomForestClassifier
             if kind == "random_forest"
@@ -566,25 +571,213 @@ def fit_classifier(
             random_state=random_state,
             n_jobs=-1,
         )
-        # Minimum per-class count for 3-fold CV.
         class_counts = y_train.value_counts()
         min_class_count = int(class_counts.min()) if len(class_counts) else 0
         if min_class_count >= 6:
+            calibration_cv, calibration_metadata = _calibration_cv(
+                y_train,
+                groups=calibration_groups,
+                group_column=calibration_group_column,
+                random_state=random_state,
+            )
+        else:
+            calibration_cv = None
+            calibration_metadata = {
+                "status": "skipped",
+                "required_for_runtime": True,
+                "method": "sigmoid",
+                "strategy": "",
+                "grouped": False,
+                "folds": CALIBRATION_FOLDS,
+                "reason": (
+                    f"minimum_class_rows={min_class_count} below 6"
+                ),
+            }
+        if calibration_cv is not None:
             try:
                 calibrated = CalibratedClassifierCV(
-                    estimator=base, method="sigmoid", cv=3
+                    estimator=base,
+                    method="sigmoid",
+                    cv=calibration_cv,
                 )
             except TypeError:
                 calibrated = CalibratedClassifierCV(
-                    base_estimator=base, method="sigmoid", cv=3
+                    base_estimator=base,
+                    method="sigmoid",
+                    cv=calibration_cv,
                 )
             calibrated.fit(X_train, y_train)
+            calibrated.hemafrag_calibration_ = calibration_metadata
             return calibrated
-        # Tiny dataset -- skip Platt scaling, just return raw RF.
         base.fit(X_train, y_train)
+        base.hemafrag_calibration_ = calibration_metadata
         return base
     qda = _build_qda_or_nb_fallback(X_train, y_train)
+    qda.hemafrag_calibration_ = {
+        "status": "native_probability",
+        "required_for_runtime": False,
+        "method": "native_probability",
+        "strategy": "",
+        "grouped": False,
+        "folds": 0,
+        "reason": "",
+    }
     return qda
+
+
+def _calibration_cv(
+    y: pd.Series,
+    *,
+    groups: pd.Series | Sequence[str] | None,
+    group_column: str,
+    random_state: int,
+) -> tuple[list[tuple[np.ndarray, np.ndarray]] | int | None, dict[str, Any]]:
+    if groups is None:
+        return CALIBRATION_FOLDS, {
+            "status": "complete",
+            "required_for_runtime": True,
+            "method": "sigmoid",
+            "strategy": "StratifiedKFold",
+            "group_column": "",
+            "grouped": False,
+            "folds": CALIBRATION_FOLDS,
+            "unique_groups": 0,
+            "minimum_train_class_rows": 0,
+            "minimum_test_class_rows": 0,
+            "every_group_held_out_once": False,
+            "reason": "",
+        }
+
+    labels = pd.Series(y).astype(str).reset_index(drop=True)
+    group_values = (
+        pd.Series(groups).fillna("").astype(str).str.strip().reset_index(drop=True)
+    )
+    if len(group_values) != len(labels):
+        raise ValueError("calibration groups do not match training rows")
+    if group_values.eq("").any():
+        return None, _skipped_group_calibration(
+            group_column,
+            "calibration groups contain empty values",
+            unique_groups=int(group_values.loc[group_values.ne("")].nunique()),
+        )
+    unique_groups = int(group_values.nunique())
+    if unique_groups < CALIBRATION_FOLDS:
+        return None, _skipped_group_calibration(
+            group_column,
+            f"unique_calibration_groups={unique_groups} below {CALIBRATION_FOLDS}",
+            unique_groups=unique_groups,
+        )
+    class_group_counts = (
+        pd.DataFrame({"label": labels, "group": group_values})
+        .groupby("label", sort=False)["group"]
+        .nunique()
+    )
+    minimum_class_groups = int(class_group_counts.min())
+    if minimum_class_groups < CALIBRATION_FOLDS:
+        return None, _skipped_group_calibration(
+            group_column,
+            "minimum_class_calibration_groups="
+            f"{minimum_class_groups} below {CALIBRATION_FOLDS}",
+            unique_groups=unique_groups,
+        )
+
+    splitter = StratifiedGroupKFold(
+        n_splits=CALIBRATION_FOLDS,
+        shuffle=True,
+        random_state=int(random_state),
+    )
+    splits = [
+        (np.asarray(train_idx), np.asarray(test_idx))
+        for train_idx, test_idx in splitter.split(
+            np.zeros(len(labels)),
+            labels,
+            groups=group_values,
+        )
+    ]
+    all_labels = set(labels)
+    minimum_train_rows: int | None = None
+    minimum_test_rows: int | None = None
+    held_out_rows: list[int] = []
+    for train_idx, test_idx in splits:
+        train_groups = set(group_values.iloc[train_idx])
+        test_groups = set(group_values.iloc[test_idx])
+        if train_groups & test_groups:
+            raise AssertionError("calibration group leakage detected")
+        train_counts = labels.iloc[train_idx].value_counts()
+        test_counts = labels.iloc[test_idx].value_counts()
+        if set(train_counts.index) != all_labels or set(test_counts.index) != all_labels:
+            return None, _skipped_group_calibration(
+                group_column,
+                "a calibration fold does not contain every class",
+                unique_groups=unique_groups,
+            )
+        fold_train_min = int(train_counts.min())
+        fold_test_min = int(test_counts.min())
+        minimum_train_rows = (
+            fold_train_min
+            if minimum_train_rows is None
+            else min(minimum_train_rows, fold_train_min)
+        )
+        minimum_test_rows = (
+            fold_test_min
+            if minimum_test_rows is None
+            else min(minimum_test_rows, fold_test_min)
+        )
+        held_out_rows.extend(test_idx.tolist())
+    if (
+        int(minimum_train_rows or 0) < CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT
+        or int(minimum_test_rows or 0) < CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT
+    ):
+        return None, _skipped_group_calibration(
+            group_column,
+            "minimum class rows in a calibration train/test split below "
+            f"{CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT}",
+            unique_groups=unique_groups,
+            minimum_train_rows=int(minimum_train_rows or 0),
+            minimum_test_rows=int(minimum_test_rows or 0),
+        )
+    every_row_held_out_once = sorted(held_out_rows) == list(range(len(labels)))
+    if not every_row_held_out_once:
+        raise AssertionError("calibration did not hold every training row out once")
+    return splits, {
+        "status": "complete",
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "strategy": "StratifiedGroupKFold",
+        "group_column": str(group_column),
+        "grouped": True,
+        "folds": CALIBRATION_FOLDS,
+        "unique_groups": unique_groups,
+        "minimum_class_groups": minimum_class_groups,
+        "minimum_train_class_rows": int(minimum_train_rows or 0),
+        "minimum_test_class_rows": int(minimum_test_rows or 0),
+        "every_group_held_out_once": True,
+        "reason": "",
+    }
+
+
+def _skipped_group_calibration(
+    group_column: str,
+    reason: str,
+    *,
+    unique_groups: int,
+    minimum_train_rows: int = 0,
+    minimum_test_rows: int = 0,
+) -> dict[str, Any]:
+    return {
+        "status": "skipped",
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "strategy": "StratifiedGroupKFold",
+        "group_column": str(group_column),
+        "grouped": True,
+        "folds": CALIBRATION_FOLDS,
+        "unique_groups": int(unique_groups),
+        "minimum_train_class_rows": int(minimum_train_rows),
+        "minimum_test_class_rows": int(minimum_test_rows),
+        "every_group_held_out_once": False,
+        "reason": str(reason),
+    }
 
 
 def per_assay_metrics(

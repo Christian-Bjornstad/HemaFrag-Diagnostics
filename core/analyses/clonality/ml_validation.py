@@ -11,6 +11,9 @@ from sklearn.metrics import balanced_accuracy_score
 from sklearn.model_selection import StratifiedGroupKFold
 
 from core.analyses.clonality.ml_training import (
+    CALIBRATION_FOLDS,
+    CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT,
+    TREE_CLASSIFIER_KINDS,
     PerAssayDataset,
     PerAssayMetrics,
     fit_classifier,
@@ -58,6 +61,8 @@ def grouped_oof_validate(
     importance_repeats: int = 1,
     validation_groups: pd.Series | None = None,
     group_column: str = "DIT",
+    calibration_groups: pd.Series | None = None,
+    calibration_group_column: str = "DITContentComponent",
 ) -> GroupedValidationResult:
     """Evaluate every row out of fold while keeping each group in one fold."""
     groups = (
@@ -85,6 +90,13 @@ def grouped_oof_validate(
         raise ValueError(
             f"assay {dataset.assay!r} has fewer than two chemist label classes"
         )
+    calibration_values = (
+        dataset.dit.reset_index(drop=True).copy()
+        if calibration_groups is None
+        else pd.Series(calibration_groups).reset_index(drop=True)
+    )
+    if len(calibration_values) != dataset.n_samples:
+        raise ValueError("calibration groups do not match assay rows")
 
     splitter = StratifiedGroupKFold(
         n_splits=effective_splits,
@@ -112,6 +124,11 @@ def grouped_oof_validate(
             dataset.y.iloc[train_idx],
             kind=classifier_kind,
             random_state=int(random_state) + fold - 1,
+            calibration_groups=calibration_values.iloc[train_idx],
+            calibration_group_column=calibration_group_column,
+        )
+        calibration = dict(
+            getattr(estimator, "hemafrag_calibration_", {}) or {}
         )
         X_test = dataset.X.iloc[test_idx]
         y_test = dataset.y.iloc[test_idx].reset_index(drop=True)
@@ -158,6 +175,11 @@ def grouped_oof_validate(
                 "ExpectedCalibrationError": (
                     fold_metric.expected_calibration_error
                 ),
+                "CalibrationStatus": calibration.get("status", ""),
+                "CalibrationStrategy": calibration.get("strategy", ""),
+                "CalibrationGroups": int(
+                    calibration.get("unique_groups") or 0
+                ),
             }
         )
         split_records.append(
@@ -180,6 +202,7 @@ def grouped_oof_validate(
                         .items()
                     )
                 },
+                "calibration": calibration,
             }
         )
         prediction_frames.append(
@@ -249,6 +272,11 @@ def grouped_oof_validate(
             labels=sorted(set(dataset.y.astype(str))),
             effective_splits=effective_splits,
         ),
+        "calibration": _calibration_manifest(
+            split_records,
+            classifier_kind=classifier_kind,
+            calibration_group_column=calibration_group_column,
+        ),
         "folds": split_records,
     }
     return GroupedValidationResult(
@@ -276,6 +304,7 @@ def source_run_grouped_validate(
     """Stress-test an assay while holding complete source runs out."""
     if "SourceRunKey" not in dataset.rows.columns:
         raise ValueError("SourceRunKey is required for source-run validation")
+    calibration_groups, _ = dit_content_validation_groups(dataset)
     return grouped_oof_validate(
         dataset,
         classifier_kind=classifier_kind,
@@ -286,6 +315,8 @@ def source_run_grouped_validate(
         importance_repeats=0,
         validation_groups=dataset.rows["SourceRunKey"],
         group_column="SourceRunKey",
+        calibration_groups=calibration_groups,
+        calibration_group_column="DITContentComponent",
     )
 
 
@@ -300,7 +331,7 @@ def dit_content_grouped_validate(
     importance_repeats: int = 1,
 ) -> GroupedValidationResult:
     """Hold out DITs and any DITs linked by identical raw FSA content."""
-    groups, provenance = _dit_content_components(dataset)
+    groups, provenance = dit_content_validation_groups(dataset)
     validation = grouped_oof_validate(
         dataset,
         classifier_kind=classifier_kind,
@@ -311,6 +342,8 @@ def dit_content_grouped_validate(
         importance_repeats=importance_repeats,
         validation_groups=groups,
         group_column="DITContentComponent",
+        calibration_groups=groups,
+        calibration_group_column="DITContentComponent",
     )
     validation.split_manifest["group_provenance"] = provenance
     return validation
@@ -529,6 +562,116 @@ def assess_class_support_gate(
     )
 
 
+def assess_calibration_gate(
+    validation: GroupedValidationResult,
+    *,
+    source_run_validation: GroupedValidationResult | None,
+    final_estimator: Any,
+    classifier_kind: str,
+) -> PromotionGate:
+    """Require patient/content-grouped confidence calibration for tree models."""
+    required = classifier_kind in TREE_CLASSIFIER_KINDS
+    thresholds: dict[str, float | int] = {
+        "require_grouped_tree_calibration": int(required),
+        "calibration_folds": CALIBRATION_FOLDS if required else 0,
+        "min_calibration_split_class_rows": (
+            CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT if required else 0
+        ),
+    }
+    reasons: list[str] = []
+    if required:
+        _append_validation_calibration_reasons(
+            reasons,
+            prefix="dit_oof",
+            manifest=validation.split_manifest.get("calibration"),
+        )
+        if source_run_validation is None:
+            reasons.append("source_run_oof.calibration_missing")
+        else:
+            _append_validation_calibration_reasons(
+                reasons,
+                prefix="source_run_oof",
+                manifest=source_run_validation.split_manifest.get(
+                    "calibration"
+                ),
+            )
+        final = getattr(final_estimator, "hemafrag_calibration_", {})
+        _append_calibration_record_reasons(
+            reasons,
+            prefix="final_fit",
+            record=final if isinstance(final, Mapping) else {},
+        )
+    return PromotionGate(
+        passed=not reasons,
+        reasons=reasons,
+        thresholds=thresholds,
+    )
+
+
+def _append_validation_calibration_reasons(
+    reasons: list[str],
+    *,
+    prefix: str,
+    manifest: Any,
+) -> None:
+    if not isinstance(manifest, Mapping):
+        reasons.append(f"{prefix}.calibration_manifest_missing")
+        return
+    folds = manifest.get("folds")
+    if not isinstance(folds, list) or not folds:
+        reasons.append(f"{prefix}.calibration_folds_missing")
+        return
+    if manifest.get("every_fold_complete") is not True:
+        reasons.append(f"{prefix}.every_calibration_fold_complete=false")
+    if manifest.get("every_fold_grouped") is not True:
+        reasons.append(f"{prefix}.every_calibration_fold_grouped=false")
+    for index, record in enumerate(folds, start=1):
+        _append_calibration_record_reasons(
+            reasons,
+            prefix=f"{prefix}.fold[{index}]",
+            record=record if isinstance(record, Mapping) else {},
+        )
+
+
+def _append_calibration_record_reasons(
+    reasons: list[str],
+    *,
+    prefix: str,
+    record: Mapping[str, Any],
+) -> None:
+    if record.get("status") != "complete":
+        reason = str(record.get("reason") or "not complete")
+        reasons.append(f"{prefix}.calibration_status={reason}")
+    if record.get("strategy") != "StratifiedGroupKFold":
+        reasons.append(f"{prefix}.calibration_strategy_not_grouped")
+    if record.get("grouped") is not True:
+        reasons.append(f"{prefix}.calibration_grouped=false")
+    if record.get("group_column") != "DITContentComponent":
+        reasons.append(f"{prefix}.calibration_group_column_incompatible")
+    if record.get("every_group_held_out_once") is not True:
+        reasons.append(f"{prefix}.every_calibration_group_held_out_once=false")
+    try:
+        folds = int(record.get("folds") or 0)
+        min_train = int(record.get("minimum_train_class_rows") or 0)
+        min_test = int(record.get("minimum_test_class_rows") or 0)
+    except (TypeError, ValueError):
+        folds = min_train = min_test = 0
+    if folds != CALIBRATION_FOLDS:
+        reasons.append(
+            f"{prefix}.calibration_folds={folds} below {CALIBRATION_FOLDS}"
+        )
+    if min_train < CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT:
+        reasons.append(
+            f"{prefix}.minimum_train_class_rows={min_train} below "
+            f"{CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT}"
+        )
+    if min_test < CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT:
+        reasons.append(
+            f"{prefix}.minimum_test_class_rows={min_test} below "
+            f"{CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT}"
+        )
+
+
 def _append_fold_support_reasons(
     reasons: list[str],
     *,
@@ -596,6 +739,36 @@ def _class_fold_support(
             ),
         }
     return support
+
+
+def _calibration_manifest(
+    split_records: list[dict[str, Any]],
+    *,
+    classifier_kind: str,
+    calibration_group_column: str,
+) -> dict[str, Any]:
+    folds = [
+        dict(record.get("calibration") or {})
+        for record in split_records
+    ]
+    required = classifier_kind in {"random_forest", "extra_trees"}
+    return {
+        "required_for_runtime": required,
+        "method": "sigmoid" if required else "native_probability",
+        "group_column": str(calibration_group_column) if required else "",
+        "fold_count": len(folds),
+        "every_fold_complete": (
+            all(fold.get("status") == "complete" for fold in folds)
+            if required
+            else True
+        ),
+        "every_fold_grouped": (
+            all(fold.get("grouped") is True for fold in folds)
+            if required
+            else True
+        ),
+        "folds": folds,
+    }
 
 
 def metrics_as_dict(metrics: PerAssayMetrics) -> dict[str, Any]:
@@ -832,7 +1005,7 @@ def _fold_permutation_importance(
     return records
 
 
-def _dit_content_components(
+def dit_content_validation_groups(
     dataset: PerAssayDataset,
 ) -> tuple[pd.Series, dict[str, Any]]:
     if "FsaContentHash" not in dataset.rows.columns:
@@ -1083,9 +1256,11 @@ __all__ = [
     "GroupedValidationResult",
     "PromotionGate",
     "REVIEW_ROUTED_LABELS",
+    "assess_calibration_gate",
     "assess_class_support_gate",
     "assess_promotion_gate",
     "assess_source_run_gate",
+    "dit_content_validation_groups",
     "dit_content_grouped_validate",
     "grouped_oof_validate",
     "metrics_as_dict",

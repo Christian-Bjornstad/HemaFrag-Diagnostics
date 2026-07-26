@@ -325,6 +325,64 @@ def test_fit_classifier_extra_trees_predicts_labels():
     assert estimator.predict_proba(ds.X.iloc[test_idx[:3]]).shape[0] == 3
 
 
+def test_fit_classifier_uses_grouped_calibration_without_patient_overlap():
+    row_count = 36
+    X = pd.DataFrame(
+        {
+            "trace_runtime_signal": np.linspace(0.0, 1.0, row_count),
+            "trace_peak_count_raw_per_channel.DATA1": (
+                [2.0, 12.0] * (row_count // 2)
+            ),
+        }
+    )
+    y = pd.Series(["monoklonal", "polyklonal"] * (row_count // 2))
+    groups = pd.Series([f"DIT-{index:03d}" for index in range(row_count)])
+
+    estimator = fit_classifier(
+        X,
+        y,
+        kind="random_forest",
+        calibration_groups=groups,
+        calibration_group_column="DITContentComponent",
+    )
+    calibration = estimator.hemafrag_calibration_
+
+    assert calibration["status"] == "complete"
+    assert calibration["strategy"] == "StratifiedGroupKFold"
+    assert calibration["grouped"] is True
+    assert calibration["every_group_held_out_once"] is True
+    for train_idx, test_idx in estimator.cv:
+        assert set(groups.iloc[train_idx]).isdisjoint(
+            set(groups.iloc[test_idx])
+        )
+
+
+def test_fit_classifier_skips_calibration_when_class_has_too_few_groups():
+    X = pd.DataFrame(
+        {
+            "trace_runtime_signal": np.linspace(0.0, 1.0, 24),
+            "trace_peak_count_raw_per_channel.DATA1": [2.0] * 12
+            + [12.0] * 12,
+        }
+    )
+    y = pd.Series(["monoklonal"] * 12 + ["polyklonal"] * 12)
+    groups = pd.Series(
+        ["mono-a", "mono-b"] * 6 + ["poly-a", "poly-b"] * 6
+    )
+
+    estimator = fit_classifier(
+        X,
+        y,
+        kind="random_forest",
+        calibration_groups=groups,
+    )
+
+    assert estimator.hemafrag_calibration_["status"] == "skipped"
+    assert "minimum_class_calibration_groups=2 below 3" in (
+        estimator.hemafrag_calibration_["reason"]
+    )
+
+
 def test_fit_classifier_rejects_unknown_kind():
     df = _synth_combined()
     ds = build_per_assay_datasets(df, min_samples_per_assay=100)["FR1"]

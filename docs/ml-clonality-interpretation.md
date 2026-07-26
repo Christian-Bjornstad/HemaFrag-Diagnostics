@@ -22,12 +22,16 @@ remains the report source of truth.
 - Every label must occur in enough held-out folds, remain present in every
   training fold, and have at least six training rows per fold so tree-model
   confidence is calibrated consistently.
+- RandomForest and ExtraTrees sigmoid calibration uses three
+  `StratifiedGroupKFold` splits over DIT/FSA-content components. Replicates and
+  byte-identical traces cannot cross the calibration train/test boundary.
 - Replicate and panel context is limited to the same DIT and sanitized source
   run, and controls/SL are excluded from patient context.
 - Training produces runtime-ineligible candidates by default.
-- Runtime only discovers explicitly promoted `ml_training_pipeline_v6`
+- Runtime only discovers explicitly promoted `ml_training_pipeline_v7`
   artifacts whose metadata proves complete DIT/content- and source-run-grouped
-  out-of-fold validation plus per-class support and fold coverage.
+  out-of-fold validation, per-class support and fold coverage, and complete
+  grouped calibration for every fold plus the final refit.
 - Controls, SL, unavailable traces, failed quality gates, disagreement,
   low confidence, and rare-label predictions are never silently accepted.
 
@@ -63,17 +67,21 @@ revalidation.
 6. In auto mode, compare calibrated RandomForest and ExtraTrees candidates
    on identical grouped folds and select one using the recorded safety-first
    ranking.
-7. Rerun the selected explicit classifier with complete source runs held out.
+7. Within every tree-model fit, calibrate probabilities on three internal
+   DIT/content-grouped splits. If any class or group cannot support those
+   splits, keep the model candidate-only.
+8. Rerun the selected explicit classifier with complete source runs held out.
    Require each class to remain trainable and evaluable across both validation
    strategies, including the six-row calibration minimum in every train fold.
-8. Export row-level out-of-fold predictions, disagreements, review cases,
+9. Export row-level out-of-fold predictions, disagreements, review cases,
    drift summaries, held-out feature importance, split provenance, metrics,
    and a local HTML review panel.
-9. Refit the selected candidate estimator on all unique labeled traces.
-10. Keep the artifact candidate-only unless explicit promotion was requested
-   and every configured metric gate passed.
-11. At runtime, show eligible ML output as a second-opinion badge without
-   replacing the rule interpretation.
+10. Refit the selected candidate estimator on all unique labeled traces using
+    the same grouped calibration policy.
+11. Keep the artifact candidate-only unless explicit promotion was requested
+    and every configured metric gate passed.
+12. At runtime, show eligible ML output as a second-opinion badge without
+    replacing the rule interpretation.
 
 ## Commands
 
@@ -222,6 +230,11 @@ hash count, and the number of DIT groups coalesced to prevent leakage. Both
 primary and source-run split manifests also record, for every label, train/test
 fold coverage and minimum rows in any train or test fold.
 
+Each outer fold also records its confidence-calibration strategy, group count,
+per-class train/test minimum, and completion state. For tree models, promotion
+requires all outer-fold calibrators and the final refit to use three complete
+`DITContentComponent`-grouped sigmoid-calibration folds.
+
 Review reasons include:
 
 ```text
@@ -257,6 +270,8 @@ Every candidate stores:
 - privacy-preserving training-data fingerprint;
 - grouped validation strategy, fold count, random state, per-class fold
   coverage, and metrics;
+- per-fold and final-fit calibration strategy, group provenance, class
+  minimums, and completion state;
 - source-run stress metrics, split provenance, thresholds, and pass/fail state;
 - held-out feature-importance method and the top 20 aggregated features;
 - requested and selected classifier plus every comparison candidate's metrics;
@@ -274,12 +289,13 @@ never from the refitted candidate.
 ML stays off unless both conditions are true:
 
 1. `analyses.clonality.interpretation.enabled` is true.
-2. `model_path` contains at least one eligible validated v6 assay artifact.
+2. `model_path` contains at least one eligible validated v7 assay artifact.
 
-Runtime rejects v1-v5 artifacts and v6 artifacts lacking complete content-hash
-deduplication/grouping, per-class independent support and fold coverage, or a
-complete passing `SourceRunKey` stress test. This deliberately requires
-retraining before an older model can be enabled.
+Runtime rejects v1-v6 artifacts and v7 artifacts lacking complete content-hash
+deduplication/grouping, per-class independent support and fold coverage,
+grouped OOF/final-fit calibration, or a complete passing `SourceRunKey` stress
+test. This deliberately requires retraining before an older model can be
+enabled.
 
 The batch pipeline attaches rule results first, computes same-run patient
 context across the completed batch, and only then invokes ML. The runtime

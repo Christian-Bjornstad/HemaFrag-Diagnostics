@@ -39,6 +39,38 @@ from sklearn.ensemble import RandomForestClassifier
 # --- helpers -------------------------------------------------------------
 
 
+def _calibration_record(unique_groups: int) -> dict:
+    return {
+        "status": "complete",
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "strategy": "StratifiedGroupKFold",
+        "group_column": "DITContentComponent",
+        "grouped": True,
+        "folds": 3,
+        "unique_groups": unique_groups,
+        "minimum_train_class_rows": 6,
+        "minimum_test_class_rows": 3,
+        "every_group_held_out_once": True,
+        "reason": "",
+    }
+
+
+def _calibration_manifest(fold_count: int, unique_groups: int) -> dict:
+    return {
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "group_column": "DITContentComponent",
+        "fold_count": fold_count,
+        "every_fold_complete": True,
+        "every_fold_grouped": True,
+        "folds": [
+            _calibration_record(unique_groups)
+            for _ in range(fold_count)
+        ],
+    }
+
+
 class _FakeFSA:
     def __init__(self, file_name: str):
         self.file_name = file_name
@@ -55,6 +87,7 @@ def _train_dummy_model(*, seed: int = 0) -> RandomForestClassifier:
     y = np.array(["monoklonal"] * 30 + ["polyklonal"] * 30)
     clf = RandomForestClassifier(n_estimators=30, random_state=seed, n_jobs=1)
     clf.fit(X, y)
+    clf.hemafrag_calibration_ = _calibration_record(20)
     return clf
 
 
@@ -63,7 +96,7 @@ def _make_model_dir(p: Path) -> Path:
     clf = _train_dummy_model(seed=42)
     joblib.dump(clf, p / "FR1" / "random_forest.joblib")
     meta = {
-        "schema_version": "ml_training_pipeline_v6",
+        "schema_version": "ml_training_pipeline_v7",
         "assay": "FR1",
         "label_order": ["monoklonal", "polyklonal", "irregulaer",
                         "bi_oligoklonal", "pseudoklonal"],
@@ -104,6 +137,7 @@ def _make_model_dir(p: Path) -> Path:
                 "rows_missing_source_run": 0,
             },
         },
+        "final_fit_calibration": _calibration_record(20),
         "validation": {
             "strategy": "StratifiedGroupKFold",
             "group_column": "DITContentComponent",
@@ -116,6 +150,8 @@ def _make_model_dir(p: Path) -> Path:
                 "content_hash_coverage": 1.0,
             },
             "class_support_gate": {"passed": True},
+            "calibration_gate": {"passed": True},
+            "calibration": _calibration_manifest(5, 16),
             "class_fold_support": {
                 "monoklonal": {
                     "total_folds": 5,
@@ -153,6 +189,7 @@ def _make_model_dir(p: Path) -> Path:
                         "min_train_rows": 6,
                     },
                 },
+                "calibration": _calibration_manifest(3, 12),
                 "promotion_gate": {"passed": True},
             },
         },
@@ -267,7 +304,7 @@ def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch)
     }
     if out.get("ClonalityMLSuggestion"):
         # If ML emitted a label, the model_version stamp should be present
-        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v6"
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v7"
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
 

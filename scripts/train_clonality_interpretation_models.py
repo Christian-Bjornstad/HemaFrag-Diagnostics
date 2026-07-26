@@ -49,9 +49,11 @@ from core.analyses.clonality.ml_training import (
 )
 from core.analyses.clonality.ml_validation import (
     PromotionGate,
+    assess_calibration_gate,
     assess_class_support_gate,
     assess_promotion_gate,
     assess_source_run_gate,
+    dit_content_validation_groups,
     dit_content_grouped_validate,
     metrics_as_dict,
     render_review_panel_html,
@@ -137,6 +139,8 @@ def _render_per_assay_markdown(
     data_provenance,
     class_support,
     class_support_gate,
+    calibration_gate,
+    final_fit_calibration,
 ):
     """Emit a single markdown file per assay."""
     out_lines = []
@@ -332,6 +336,40 @@ def _render_per_assay_markdown(
         )
     )
     for reason in class_support_gate.reasons:
+        out_lines.append(f"- Blocked: {reason}")
+    out_lines.append("")
+    out_lines.append("## Confidence calibration")
+    out_lines.append("")
+    primary_calibration = validation.split_manifest.get("calibration", {})
+    out_lines.append(
+        "- DIT/content OOF folds calibrated: **{}**".format(
+            "yes"
+            if primary_calibration.get("every_fold_complete")
+            and primary_calibration.get("every_fold_grouped")
+            else "no"
+        )
+    )
+    run_calibration = source_run_stress.get("calibration", {})
+    out_lines.append(
+        "- Source-run OOF folds calibrated: **{}**".format(
+            "yes"
+            if run_calibration.get("every_fold_complete")
+            and run_calibration.get("every_fold_grouped")
+            else "no"
+        )
+    )
+    out_lines.append(
+        "- Final fit calibration: **{}** (`{}`)".format(
+            final_fit_calibration.get("status", "missing"),
+            final_fit_calibration.get("strategy", ""),
+        )
+    )
+    out_lines.append(
+        "- Calibration gate: **{}**".format(
+            "pass" if calibration_gate.passed else "block"
+        )
+    )
+    for reason in calibration_gate.reasons:
         out_lines.append(f"- Blocked: {reason}")
     out_lines.append("")
 
@@ -668,6 +706,7 @@ def _source_run_stress_metadata(validation, gate, *, status, error=""):
                 "class_fold_support": validation.split_manifest[
                     "class_fold_support"
                 ],
+                "calibration": validation.split_manifest["calibration"],
                 "metrics": metrics_as_dict(validation.aggregate_metrics),
             }
         )
@@ -1202,23 +1241,36 @@ def main(argv=None):
             source_run_validation,
             args,
         )
-        deployment_gate = _merge_promotion_gates(
-            gate,
-            source_run_gate,
-            class_support_gate,
-        )
         try:
-            runtime_eligible = bool(
-                args.promote_if_passes and deployment_gate.passed
-            )
-            if args.promote_if_passes and not deployment_gate.passed:
-                promotion_failures.append(assay_name)
+            final_calibration_groups, _ = dit_content_validation_groups(ds)
             estimator = fit_classifier(
                 ds.X,
                 ds.y,
                 kind=selected_kind,
                 random_state=args.random_state,
+                calibration_groups=final_calibration_groups,
+                calibration_group_column="DITContentComponent",
             )
+            final_fit_calibration = dict(
+                getattr(estimator, "hemafrag_calibration_", {}) or {}
+            )
+            calibration_gate = assess_calibration_gate(
+                validation,
+                source_run_validation=source_run_validation,
+                final_estimator=estimator,
+                classifier_kind=selected_kind,
+            )
+            deployment_gate = _merge_promotion_gates(
+                gate,
+                source_run_gate,
+                class_support_gate,
+                calibration_gate,
+            )
+            runtime_eligible = bool(
+                args.promote_if_passes and deployment_gate.passed
+            )
+            if args.promote_if_passes and not deployment_gate.passed:
+                promotion_failures.append(assay_name)
         except Exception as exc:
             print("[train] assay={} FAILED validation/training: {}".format(assay_name, exc))
             failed_assays.append({"assay": assay_name, "error": str(exc)})
@@ -1236,6 +1288,7 @@ def main(argv=None):
             "class_fold_support": validation.split_manifest[
                 "class_fold_support"
             ],
+            "calibration": validation.split_manifest["calibration"],
             "group_provenance": validation.split_manifest["group_provenance"],
             "metrics": metrics_as_dict(metrics),
             "promotion_gate": {
@@ -1247,6 +1300,11 @@ def main(argv=None):
                 "passed": class_support_gate.passed,
                 "reasons": class_support_gate.reasons,
                 "thresholds": class_support_gate.thresholds,
+            },
+            "calibration_gate": {
+                "passed": calibration_gate.passed,
+                "reasons": calibration_gate.reasons,
+                "thresholds": calibration_gate.thresholds,
             },
             "source_run_stress": source_run_stress,
             "model_selection": {
@@ -1290,6 +1348,7 @@ def main(argv=None):
                 "training_data_fingerprint": _training_data_fingerprint(ds),
                 "training_data_provenance": ds.data_provenance,
                 "training_class_support": ds.class_support,
+                "final_fit_calibration": final_fit_calibration,
                 "feature_dataset_version": _first_value(
                     ds.rows, "FeatureDatasetVersion"
                 ),
@@ -1316,6 +1375,8 @@ def main(argv=None):
                 data_provenance=ds.data_provenance,
                 class_support=ds.class_support,
                 class_support_gate=class_support_gate,
+                calibration_gate=calibration_gate,
+                final_fit_calibration=final_fit_calibration,
             ),
             encoding="utf-8",
         )
@@ -1410,6 +1471,8 @@ def main(argv=None):
             "source_run_stress_gate_reasons": source_run_gate.reasons,
             "class_support_gate_passed": class_support_gate.passed,
             "class_support_gate_reasons": class_support_gate.reasons,
+            "calibration_gate_passed": calibration_gate.passed,
+            "calibration_gate_reasons": calibration_gate.reasons,
             "requested_classifier_kind": args.classifier_kind,
             "selected_classifier_kind": selected_kind,
             "runtime_eligible": runtime_eligible,
