@@ -382,6 +382,11 @@ other observed classes, at least three source runs per class, and no class
 dominated by one DIT. Exit code `2` means no assay is ready; it is not a reason
 to lower validation gates.
 
+The app's ML Training tab runs the same readiness check in a background thread
+before training. Unsupported assays are unchecked and disabled, the aggregate
+report is written beside the tracking workbook, and training starts only when
+at least one selected assay is candidate-ready.
+
 ## Main Modules
 
 ```text

@@ -90,12 +90,70 @@ class _TrainWorker(QThread):
         self.finished_signal.emit(ok, summary, self._output_dir)
 
 
+class _ReadinessWorker(QThread):
+    """Load aggregate label support away from the GUI thread."""
+
+    finished_signal = pyqtSignal(bool, object, str)
+
+    def __init__(
+        self,
+        *,
+        xlsx: str,
+        features_csv: str,
+        output_dir: str,
+        min_samples: int,
+    ):
+        super().__init__()
+        self._xlsx = xlsx
+        self._features_csv = features_csv
+        self._output_dir = output_dir
+        self._min_samples = int(min_samples)
+
+    def run(self) -> None:
+        try:
+            import pandas as pd
+
+            from core.analyses.clonality.ml_data_contract import (
+                load_tracking_run_table,
+            )
+            from core.analyses.clonality.ml_readiness import (
+                assess_clonality_label_readiness,
+                write_clonality_label_readiness,
+            )
+
+            tracking = load_tracking_run_table(self._xlsx).frame
+            features = pd.read_csv(self._features_csv)
+            readiness = assess_clonality_label_readiness(
+                tracking,
+                features,
+                min_samples=self._min_samples,
+            )
+            paths = write_clonality_label_readiness(
+                readiness,
+                self._output_dir,
+                source_workbook=self._xlsx,
+                source_features=self._features_csv,
+            )
+            payload = {
+                "report": readiness.report,
+                "assays": readiness.assays.to_dict(orient="records"),
+                "report_path": str(paths["report"]),
+            }
+            self.finished_signal.emit(True, payload, "")
+        except Exception as exc:
+            self.finished_signal.emit(False, {}, f"{type(exc).__name__}: {exc}")
+
+
 class TabMlTraining(QWidget):
     """In-app ML training launcher."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._worker: _TrainWorker | None = None
+        self._readiness_worker: _ReadinessWorker | None = None
+        self._readiness_payload: dict[str, Any] | None = None
+        self._readiness_signature: tuple[str, str, int] | None = None
+        self._train_after_readiness = False
         self._build_ui()
         self._load_default_state()
 
@@ -166,6 +224,9 @@ class TabMlTraining(QWidget):
         self._min_samples.setValue(200)
         self._min_samples.setSingleStep(5)
         form.addRow("Min samples per assay:", self._min_samples)
+        self._xlsx_edit.textChanged.connect(self._invalidate_readiness)
+        self._features_edit.textChanged.connect(self._invalidate_readiness)
+        self._min_samples.valueChanged.connect(self._invalidate_readiness)
 
         layout.addWidget(card)
 
@@ -190,6 +251,9 @@ class TabMlTraining(QWidget):
 
         # --- run button + progress ---
         run_row = QHBoxLayout()
+        self._readiness_btn = QPushButton("Check readiness")
+        self._readiness_btn.clicked.connect(self._check_readiness_clicked)
+        run_row.addWidget(self._readiness_btn)
         self._train_btn = QPushButton("Train")
         self._train_btn.setObjectName("PrimaryButton")
         self._train_btn.clicked.connect(self._train_clicked)
@@ -202,6 +266,7 @@ class TabMlTraining(QWidget):
 
         self._status_label = QLabel("")
         self._status_label.setObjectName("StatusBarText")
+        self._status_label.setWordWrap(True)
         layout.addWidget(self._status_label)
         layout.addStretch()
 
@@ -240,20 +305,47 @@ class TabMlTraining(QWidget):
     def _toggle_all_assays(self) -> None:
         any_checked = False
         for i in range(self._assays_list.count()):
-            if self._assays_list.item(i).checkState() == Qt.CheckState.Checked:
+            item = self._assays_list.item(i)
+            if (
+                item.flags() & Qt.ItemFlag.ItemIsEnabled
+                and item.checkState() == Qt.CheckState.Checked
+            ):
                 any_checked = True
                 break
         target = Qt.CheckState.Unchecked if any_checked else Qt.CheckState.Checked
         for i in range(self._assays_list.count()):
-            self._assays_list.item(i).setCheckState(target)
+            item = self._assays_list.item(i)
+            if item.flags() & Qt.ItemFlag.ItemIsEnabled:
+                item.setCheckState(target)
 
     def _selected_assays(self) -> list[str]:
         out: list[str] = []
         for i in range(self._assays_list.count()):
             item = self._assays_list.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
+            if (
+                item.flags() & Qt.ItemFlag.ItemIsEnabled
+                and item.checkState() == Qt.CheckState.Checked
+            ):
                 out.append(item.text())
         return out
+
+    def _input_signature(self) -> tuple[str, str, int]:
+        return (
+            self._xlsx_edit.text().strip(),
+            self._features_edit.text().strip(),
+            int(self._min_samples.value()),
+        )
+
+    def _invalidate_readiness(self, *_args) -> None:
+        self._readiness_payload = None
+        self._readiness_signature = None
+        if self._readiness_worker is None or not self._readiness_worker.isRunning():
+            self._readiness_btn.setEnabled(True)
+            self._train_btn.setEnabled(True)
+        for index in range(self._assays_list.count()):
+            item = self._assays_list.item(index)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
+            item.setToolTip("")
 
     def _browse_xlsx(self) -> None:
         start = self._xlsx_edit.text().strip() or str(Path.home())
@@ -285,6 +377,22 @@ class TabMlTraining(QWidget):
         if self._worker is not None and self._worker.isRunning():
             self._status_label.setText("Training already in progress.")
             return
+        if self._readiness_worker is not None and self._readiness_worker.isRunning():
+            self._status_label.setText("Readiness check already in progress.")
+            return
+
+        if self._readiness_signature != self._input_signature():
+            self._run_readiness(train_after=True)
+            return
+        self._start_training()
+
+    def _check_readiness_clicked(self) -> None:
+        self._run_readiness(train_after=False)
+
+    def _run_readiness(self, *, train_after: bool) -> None:
+        if self._readiness_worker is not None and self._readiness_worker.isRunning():
+            self._status_label.setText("Readiness check already in progress.")
+            return
 
         xlsx = self._xlsx_edit.text().strip()
         if not xlsx or not Path(xlsx).exists():
@@ -294,6 +402,87 @@ class TabMlTraining(QWidget):
         if not features_csv or not Path(features_csv).is_file():
             self._status_label.setText("Pick a trace feature dataset first.")
             return
+        readiness_output = str(Path(xlsx).parent / "clonality_ml_readiness")
+        self._train_after_readiness = bool(train_after)
+        self._readiness_btn.setEnabled(False)
+        self._train_btn.setEnabled(False)
+        self._status_label.setText("Checking chemist-label readiness...")
+        self._readiness_worker = _ReadinessWorker(
+            xlsx=xlsx,
+            features_csv=features_csv,
+            output_dir=readiness_output,
+            min_samples=self._min_samples.value(),
+        )
+        self._readiness_worker.finished_signal.connect(
+            self._on_readiness_finished
+        )
+        self._readiness_worker.start()
+
+    def _on_readiness_finished(
+        self,
+        ok: bool,
+        payload: object,
+        error: str,
+    ) -> None:
+        self._readiness_btn.setEnabled(True)
+        if not ok or not isinstance(payload, dict):
+            self._readiness_payload = None
+            self._readiness_signature = None
+            self._train_btn.setEnabled(True)
+            self._status_label.setText(f"Readiness check failed: {error}")
+            self._train_after_readiness = False
+            return
+
+        self._readiness_payload = payload
+        self._readiness_signature = self._input_signature()
+        assay_records = {
+            str(record.get("Assay") or ""): record
+            for record in payload.get("assays", [])
+            if isinstance(record, dict)
+        }
+        candidate_assays = []
+        for index in range(self._assays_list.count()):
+            item = self._assays_list.item(index)
+            record = assay_records.get(item.text(), {})
+            ready = bool(record.get("CandidateReady", False))
+            status = str(record.get("Status") or "not_available")
+            blockers = str(record.get("CandidateBlockers") or "")
+            item.setToolTip(
+                status if not blockers else f"{status}: {blockers}"
+            )
+            if ready:
+                candidate_assays.append(item.text())
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                item.setCheckState(Qt.CheckState.Unchecked)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+
+        report = payload.get("report", {})
+        labeled = int(report.get("labeled_rows") or 0)
+        available = int(report.get("available_rows") or 0)
+        report_path = str(payload.get("report_path") or "")
+        if candidate_assays:
+            self._status_label.setText(
+                f"Ready: {', '.join(candidate_assays)}. "
+                f"Labeled {labeled}/{available}. Report: {report_path}"
+            )
+            self._train_btn.setEnabled(True)
+        else:
+            self._status_label.setText(
+                f"No assay is candidate-ready. Labeled {labeled}/{available}. "
+                f"Report: {report_path}"
+            )
+            self._train_btn.setEnabled(False)
+
+        should_train = self._train_after_readiness and bool(candidate_assays)
+        self._train_after_readiness = False
+        if should_train:
+            self._start_training()
+
+    def _start_training(self) -> None:
+        xlsx = self._xlsx_edit.text().strip()
+        features_csv = self._features_edit.text().strip()
         output_dir = self._output_edit.text().strip()
         if not output_dir:
             stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
@@ -303,7 +492,7 @@ class TabMlTraining(QWidget):
 
         assays = self._selected_assays()
         if not assays:
-            self._status_label.setText("Pick at least one assay.")
+            self._status_label.setText("No candidate-ready assay is selected.")
             return
 
         cmd = [

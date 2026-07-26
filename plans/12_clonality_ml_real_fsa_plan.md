@@ -108,8 +108,10 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
 4. [Completed 2026-07-26] Add aggregate per-assay/class readiness reports
    aligned with the trainer's DIT, source-run, calibration, and concentration
    gates.
-5. Export new labelled batches after each chemist session.
-6. Re-train, compare against previous model, and only promote if validation improves or review burden drops without harming monoklonal precision.
+5. [Completed 2026-07-26] Gate the in-app ML Training launcher on the same
+   readiness report and disable unsupported assays before fitting.
+6. Export new labelled batches after each chemist session.
+7. Re-train, compare against previous model, and only promote if validation improves or review burden drops without harming monoklonal precision.
 
 ## Immediate Next Tasks
 

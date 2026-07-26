@@ -90,6 +90,66 @@ def test_status_text_initialised_as_empty():
     assert tab._status_label is not None
     assert tab._status_label.text() == ""
     assert tab._features_edit is not None
+    assert tab._readiness_btn is not None
+
+
+def test_readiness_result_disables_unsupported_assays():
+    _qapp_or_skip()
+    from gui_qt.tabs.tab_ml_training import TabMlTraining
+
+    tab = TabMlTraining()
+    tab._xlsx_edit.setText("tracking.xlsx")
+    tab._features_edit.setText("features.csv")
+    tab._on_readiness_finished(
+        True,
+        {
+            "report": {"labeled_rows": 220, "available_rows": 500},
+            "assays": [
+                {
+                    "Assay": "FR1",
+                    "CandidateReady": True,
+                    "Status": "candidate_ready",
+                    "CandidateBlockers": "",
+                },
+                {
+                    "Assay": "FR2",
+                    "CandidateReady": False,
+                    "Status": "awaiting_labels",
+                    "CandidateBlockers": "required_class=monoklonal absent",
+                },
+            ],
+            "report_path": "readiness.json",
+        },
+        "",
+    )
+
+    fr1 = tab._assays_list.item(0)
+    fr2 = tab._assays_list.item(1)
+    assert fr1.checkState() == Qt.CheckState.Checked
+    assert bool(fr1.flags() & Qt.ItemFlag.ItemIsEnabled)
+    assert fr2.checkState() == Qt.CheckState.Unchecked
+    assert not bool(fr2.flags() & Qt.ItemFlag.ItemIsEnabled)
+    assert tab._train_btn.isEnabled()
+    assert "Labeled 220/500" in tab._status_label.text()
+
+
+def test_readiness_result_blocks_training_when_no_assay_is_ready():
+    _qapp_or_skip()
+    from gui_qt.tabs.tab_ml_training import TabMlTraining
+
+    tab = TabMlTraining()
+    tab._on_readiness_finished(
+        True,
+        {
+            "report": {"labeled_rows": 0, "available_rows": 2263},
+            "assays": [],
+            "report_path": "readiness.json",
+        },
+        "",
+    )
+
+    assert not tab._train_btn.isEnabled()
+    assert "No assay is candidate-ready" in tab._status_label.text()
 
 
 def test_successful_training_does_not_auto_promote_model_path(tmp_path, monkeypatch):
