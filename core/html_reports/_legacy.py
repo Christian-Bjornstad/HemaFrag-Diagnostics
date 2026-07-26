@@ -1219,6 +1219,16 @@ def _clonality_ml_confidence_for_entry(entry: dict) -> str:
         return ""
 
 
+def _clonality_ml_threshold_for_entry(entry: dict) -> str:
+    raw = entry.get("ClonalityMLThreshold", "")
+    if raw in (None, ""):
+        return ""
+    try:
+        return f"{float(raw):.2f}"
+    except (TypeError, ValueError):
+        return ""
+
+
 def _render_clonality_ml_badge(entry: dict, html_lines: list[str]) -> None:
     """Render a dismissible ML badge for a single sample.
 
@@ -1238,7 +1248,9 @@ def _render_clonality_ml_badge(entry: dict, html_lines: list[str]) -> None:
     if not label:
         return
     confidence = _clonality_ml_confidence_for_entry(entry)
+    threshold = _clonality_ml_threshold_for_entry(entry)
     review_needed = entry.get("ClonalityMLReviewNeeded", False)
+    evidence = str(entry.get("ClonalityMLEvidence") or "").strip()
     rule_label = str(entry.get("ClonalitySuggestion") or "").strip()
     identity_key = (
         str(entry.get("dit") or entry.get("DIT") or "")
@@ -1256,11 +1268,17 @@ def _render_clonality_ml_badge(entry: dict, html_lines: list[str]) -> None:
     )
     review_gloss = (
         "<span class='ml-review-tag ml-review-flagged' "
-        "title='Lav konfidens eller uenighet med regellaget'>&#9888; vurder</span>"
+        f"title='{escape(evidence or 'Lav konfidens eller uenighet med regellaget')}'"
+        ">&#9888; vurder</span>"
         if review_needed
         else ""
     )
     confidence_text = f" ({confidence})" if confidence else ""
+    threshold_gloss = (
+        f"<span class='ml-rule-gloss'>grense: {escape(threshold)}</span>"
+        if threshold
+        else ""
+    )
     html_lines.append(
         f"<div class='clonality-ml-badge' "
         f"id='{badge_id}' data-state='active' "
@@ -1271,6 +1289,7 @@ def _render_clonality_ml_badge(entry: dict, html_lines: list[str]) -> None:
         f"{escape(confidence_text)}</span>"
         f"{review_gloss}"
         f"{rule_gloss}"
+        f"{threshold_gloss}"
         f"<button class='ml-dismiss no-print' type='button' "
         f"onclick='ClonalityDecisionLog.dismiss(this)'>Skjul for patolog</button>"
         f"<button class='ml-restore no-print' type='button' hidden "

@@ -47,7 +47,7 @@ def _synth_combined(  # noqa: C901 -- synthetic generator
         "ladder_r2", "ladder_linear_r2", "peak_count",
         "dominant_peak_height", "dominant_height_share", "dominant_to_second_ratio",
         "peak_variance_per_channel.DATA1", "mad_per_channel.DATA1",
-        "peak_count_per_channel.DATA1",
+        "trace_peak_count_raw_per_channel.DATA1",
         "dom_distance_to_ref_window_center_bp",
         "in_reference_window",
         "patient_assays_run_count", "assay_panel_completeness_pct",
@@ -91,7 +91,7 @@ def _synth_combined(  # noqa: C901 -- synthetic generator
                 "dominant_to_second_ratio": ratio,
                 "peak_variance_per_channel.DATA1": float(NP_RNG.uniform(0.01, 4.0)),
                 "mad_per_channel.DATA1": float(NP_RNG.uniform(0.001, 1.2)),
-                "peak_count_per_channel.DATA1": peak_count,
+                "trace_peak_count_raw_per_channel.DATA1": peak_count,
                 "dom_distance_to_ref_window_center_bp": float(NP_RNG.uniform(-30, 30)),
                 "in_reference_window": in_win,
                 "patient_assays_run_count": patient_assays,
@@ -124,6 +124,19 @@ def test_build_per_assay_datasets_aliases_lower_case_columns():
 def test_build_per_assay_datasets_empty_dataframe_returns_empty_dict():
     out = build_per_assay_datasets(pd.DataFrame(), min_samples_per_assay=1)
     assert out == {}
+
+
+def test_build_per_assay_datasets_normalizes_assay_filter_spelling():
+    df = _synth_combined(n_per_assay={"TCRG-A": 24})
+    df["Assay"] = "TCRgA"
+
+    out = build_per_assay_datasets(
+        df,
+        include_assays=["TCRG-A"],
+        min_samples_per_assay=20,
+    )
+
+    assert set(out) == {"TCRgA"}
 
 
 def test_build_per_assay_datasets_drops_unlabelled_rows_and_uses_numeric_features_only():
@@ -256,9 +269,35 @@ def test_per_assay_metrics_basic_shape():
     assert 0.0 <= m.macro_f1 <= 1.0
     assert 0.0 <= m.monoklonal_f1 <= 1.0
     assert m.accept_threshold_tau == 0.85
+    assert m.accepted_coverage == 0.0
+    assert m.accepted_accuracy == 0.0
+    assert m.expected_calibration_error == 0.0
     # Confusion matrix: rows=predicted, cols=true
     assert isinstance(m.confusion_matrix, list)
     assert all(isinstance(row, list) for row in m.confusion_matrix)
+
+
+def test_per_assay_metrics_reports_confidence_calibration_and_coverage():
+    y_true = pd.Series(["monoklonal", "polyklonal", "monoklonal", "polyklonal"])
+    y_pred = pd.Series(["monoklonal", "polyklonal", "polyklonal", "polyklonal"])
+    confidence = [0.95, 0.90, 0.80, 0.60]
+
+    metrics = per_assay_metrics(
+        y_true,
+        y_pred,
+        y_prob=None,
+        prediction_confidence=confidence,
+        classes=["monoklonal", "polyklonal"],
+        assay="FR1",
+        training_samples=4,
+        rare_class_counts={"monoklonal": 2, "polyklonal": 2},
+        accept_threshold_tau=0.85,
+    )
+
+    assert metrics.accepted_coverage == 0.5
+    assert metrics.accepted_accuracy == 1.0
+    assert metrics.mean_confidence == pytest.approx(0.8125)
+    assert 0.0 <= metrics.expected_calibration_error <= 1.0
 
 
 def test_per_assay_metrics_csv_roundtrip(tmp_path):
@@ -306,6 +345,8 @@ def test_serialize_model_writes_joblib_and_metadata(tmp_path):
     assert meta["schema_version"] == "ml_training_pipeline_v1"
     assert meta["assay"] == "FR1"
     assert meta["accept_threshold_tau"] == 0.85
+    assert meta["runtime_versions"]["python"]
+    assert meta["runtime_versions"]["scikit_learn"]
 
     # Roundtrip load: predict via loaded model
     roundtrip_model, roundtrip_meta = deserialize_model(
@@ -364,3 +405,50 @@ def test_serialize_model_omits_feature_columns_when_unset(tmp_path):
     )
     meta = json.loads(Path(paths["metadata"]).read_text(encoding="utf-8"))
     assert "feature_columns" not in meta
+
+
+def test_serialize_model_persists_validation_and_deployment_metadata(tmp_path):
+    df = _synth_combined()
+    ds = build_per_assay_datasets(df, min_samples_per_assay=100)["FR1"]
+    estimator = fit_classifier(
+        ds.X,
+        ds.y,
+        kind="random_forest",
+    )
+    paths = serialize_model(
+        estimator,
+        label_order=list(ANNOTATION_CLASSES_ORDER),
+        assay="FR1",
+        accept_threshold_tau=0.85,
+        classifier_kind="random_forest",
+        rare_class_counts=ds.rare_class_counts,
+        output_dir=tmp_path,
+        extra_metadata={
+            "deployment_status": "candidate",
+            "runtime_eligible": False,
+            "validation": {"strategy": "StratifiedGroupKFold"},
+        },
+    )
+
+    meta = json.loads(paths["metadata"].read_text(encoding="utf-8"))
+    assert meta["deployment_status"] == "candidate"
+    assert meta["runtime_eligible"] is False
+    assert meta["validation"]["strategy"] == "StratifiedGroupKFold"
+
+
+def test_serialize_model_rejects_reserved_metadata_override(tmp_path):
+    df = _synth_combined()
+    ds = build_per_assay_datasets(df, min_samples_per_assay=100)["FR1"]
+    estimator = fit_classifier(ds.X, ds.y, kind="random_forest")
+
+    with pytest.raises(ValueError, match="reserved keys"):
+        serialize_model(
+            estimator,
+            label_order=list(ANNOTATION_CLASSES_ORDER),
+            assay="FR1",
+            accept_threshold_tau=0.85,
+            classifier_kind="random_forest",
+            rare_class_counts=ds.rare_class_counts,
+            output_dir=tmp_path,
+            extra_metadata={"assay": "TCRG-A"},
+        )

@@ -23,14 +23,23 @@ from core.analyses.clonality.ml_training import ANNOTATION_CLASSES_ORDER
 
 def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = None) -> dict:
     return {
-        "schema_version": "ml_training_pipeline_v1",
+        "schema_version": "ml_training_pipeline_v2",
         "assay": assay,
         "label_order": list(ANNOTATION_CLASSES_ORDER),
         "accept_threshold_tau": float(tau),
         "classifier_kind": "random_forest",
         "rare_class_counts": {"monoklonal": 50, "polyklonal": 50},
         "trained_at_utc": "2026-07-13T10:00:00Z",
-        "feature_columns": features or ["f_height", "f_ratio", "f_share"],
+        "feature_columns": features or ["trace_runtime_signal", "f_ratio", "f_share"],
+        "trace_feature_schema_version": "clonality_trace_features_v1",
+        "deployment_status": "validated",
+        "runtime_eligible": True,
+        "validation": {
+            "strategy": "StratifiedGroupKFold",
+            "every_row_oof_once": True,
+            "effective_splits": 5,
+            "promotion_gate": {"passed": True},
+        },
     }
 
 
@@ -79,6 +88,30 @@ def test_store_returns_empty_when_dir_missing(tmp_path):
     store = ClonalityModelStore(model_dir=bogus)
     assert store.is_enabled("FR1") is False
     assert store.predict("FR1", {}) is None
+
+
+def test_store_ignores_candidate_model(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["deployment_status"] = "candidate"
+    metadata["runtime_eligible"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    store = ClonalityModelStore(model_dir=tmp_path)
+
+    assert store.is_enabled("FR1") is False
+    assert store.predict("FR1", {"f_height": 1.0}) is None
+
+
+def test_store_ignores_artifact_without_grouped_validation(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["validation"]["every_row_oof_once"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
 
 
 def test_store_loads_joblib_for_known_assay(tmp_path):

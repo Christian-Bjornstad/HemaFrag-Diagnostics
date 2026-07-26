@@ -42,37 +42,37 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
 ## Phase 3 - Baseline Models
 
 1. Start with interpretable baselines:
-   - RandomForest with class balancing
+   - [Completed 2026-07-26] RandomForest with class balancing
    - HistGradientBoosting or ExtraTrees for nonlinear trace patterns
-   - calibrated probabilities when class counts allow it
-2. Train per assay and also test grouped assay families only as research comparisons.
-3. Save `feature_columns`, `label_order`, thresholds, label counts, and train/eval split metadata with every model.
+   - [Completed 2026-07-26] calibrated probabilities when class counts allow it
+2. [Completed 2026-07-26] Train per assay. Grouped assay families remain research-only comparisons.
+3. [Completed 2026-07-26] Save `feature_columns`, `label_order`, thresholds, label counts, data fingerprint, grouped validation metadata, and promotion state with every model.
 
 ## Phase 4 - Validation Reports
 
-1. Produce per-assay reports with:
+1. [Completed 2026-07-26] Produce per-assay reports with:
    - confusion matrix
    - macro F1, balanced accuracy, monoklonal F1
    - per-class precision/recall/F1
    - false-positive monoklonal examples
    - rule-vs-ML disagreement table
-2. Generate review HTML panels for disagreement and low-confidence cases.
-3. Track performance by run date/instrument/run folder to catch drift.
+2. [Completed 2026-07-26] Generate local review HTML panels for disagreement and low-confidence cases.
+3. [Partially completed 2026-07-26] Track performance by run date and sanitized run folder. Instrument-specific drift awaits a reliable instrument field.
 
 ## Phase 5 - Runtime Integration
 
-1. Keep ML default-off.
-2. In app reports, show ML as a second-opinion badge only:
+1. [Completed 2026-07-26] Keep ML default-off.
+2. [Completed 2026-07-26] In app reports, show ML as a second-opinion badge only:
    - ML suggestion
    - confidence
    - threshold
    - reason for review
-3. Auto-accept only when:
+3. [Completed in runtime gate 2026-07-26] Accept an ML second opinion only when:
    - rule and ML agree
    - confidence is above assay threshold
    - ladder/control/DNA quality gates pass
    - assay validation report meets minimum monoklonal and macro-F1 thresholds
-4. Always route disagreement, rare-label predictions, and low-confidence rows to review.
+4. [Completed 2026-07-26] Always route disagreement, rare-label predictions, low-confidence rows, and unavailable traces to review.
 
 ## Phase 6 - Learning Loop
 
@@ -150,6 +150,17 @@ python -m scripts.train_clonality_interpretation_models `
   --min-samples 200 `
   --classifier-kind random_forest
 ```
+
+Training writes candidate-only models plus grouped out-of-fold predictions,
+disagreement/review CSVs, drift summaries, split metadata, and an HTML review
+panel. Candidate metadata is rejected by runtime.
+
+After chemist review, rerun with `--promote-if-passes` and explicit
+`--min-macro-f1`, `--min-monoklonal-f1`,
+`--min-monoklonal-precision`, `--min-dit-groups`,
+`--min-accepted-accuracy`, `--min-accepted-coverage`, and
+`--max-calibration-error` gates. Exit code `2` means promotion was blocked;
+the candidate and validation reports remain available for inspection.
 
 The feature CSV stores numeric summaries, source hashes, chemist labels, and
 rule outputs for disagreement analysis. It does not store raw traces or raw

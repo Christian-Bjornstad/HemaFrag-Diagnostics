@@ -70,7 +70,9 @@ RUN_SHEET_COLUMNS_WITH_INTERPRETATION = RUN_SHEET_COLUMNS + CLONALITY_INTERPRETA
 RUN_SHEET_COLUMNS_WITH_ML = RUN_SHEET_COLUMNS_WITH_INTERPRETATION + [
     "ClonalityMLSuggestion",
     "ClonalityMLConfidence",
+    "ClonalityMLThreshold",
     "ClonalityMLReviewNeeded",
+    "ClonalityMLEvidence",
     "ClonalityMLModelVersion",
 ]
 PEAK_SHEET_COLUMNS = [
@@ -412,7 +414,9 @@ def _build_run_row(entry: dict) -> dict:
         "ClonalityModelVersion": entry.get("ClonalityModelVersion", ""),
         "ClonalityMLSuggestion": entry.get("ClonalityMLSuggestion", ""),
         "ClonalityMLConfidence": entry.get("ClonalityMLConfidence", ""),
+        "ClonalityMLThreshold": entry.get("ClonalityMLThreshold", ""),
         "ClonalityMLReviewNeeded": entry.get("ClonalityMLReviewNeeded", ""),
+        "ClonalityMLEvidence": entry.get("ClonalityMLEvidence", ""),
         "ClonalityMLModelVersion": entry.get("ClonalityMLModelVersion", ""),
     }
 
@@ -715,7 +719,9 @@ def _month_bucket(run_date: str) -> str:
 _ML_INTERPRETATION_COLUMNS = (
     "ClonalityMLSuggestion",
     "ClonalityMLConfidence",
+    "ClonalityMLThreshold",
     "ClonalityMLReviewNeeded",
+    "ClonalityMLEvidence",
     "ClonalityMLModelVersion",
 )
 

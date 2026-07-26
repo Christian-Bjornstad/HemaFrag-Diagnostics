@@ -344,7 +344,7 @@ class TabMlTraining(QWidget):
         self._open_folder_btn.setEnabled(True)
         if ok:
             self._status_label.setText(
-                f"Training complete — validation models are in {output_dir}."
+                f"Training complete — candidate models and validation reports are in {output_dir}."
             )
         else:
             self._status_label.setText(

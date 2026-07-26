@@ -89,8 +89,10 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             patient_entry["ClonalityReviewNeeded"] = False
             patient_entry["ClonalityMLSuggestion"] = "monoklonal"
             patient_entry["ClonalityMLConfidence"] = 0.86
+            patient_entry["ClonalityMLThreshold"] = 0.8
             patient_entry["ClonalityMLReviewNeeded"] = False
-            patient_entry["ClonalityMLModelVersion"] = "ml_training_pipeline_v1"
+            patient_entry["ClonalityMLEvidence"] = "rule_ml_agree"
+            patient_entry["ClonalityMLModelVersion"] = "ml_training_pipeline_v2"
             entries = [
                 patient_entry,
                 # Control entry does NOT carry ML fields (chemist usually
@@ -112,20 +114,26 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
                 update_clonality_tracking_workbook(workbook, entries)
             patients = pd.read_excel(workbook, sheet_name="Patient_Runs", engine="openpyxl")
             self.assertEqual(len(patients), 1)
-            # All four ML columns are present and round-trip
+            # All ML columns are present and round-trip
             self.assertIn("ClonalityMLSuggestion", patients.columns)
             self.assertIn("ClonalityMLConfidence", patients.columns)
+            self.assertIn("ClonalityMLThreshold", patients.columns)
             self.assertIn("ClonalityMLReviewNeeded", patients.columns)
+            self.assertIn("ClonalityMLEvidence", patients.columns)
             self.assertIn("ClonalityMLModelVersion", patients.columns)
             self.assertEqual(patients.iloc[0]["ClonalityMLSuggestion"], "monoklonal")
             self.assertEqual(float(patients.iloc[0]["ClonalityMLConfidence"]), 0.86)
+            self.assertEqual(float(patients.iloc[0]["ClonalityMLThreshold"]), 0.8)
+            self.assertEqual(patients.iloc[0]["ClonalityMLEvidence"], "rule_ml_agree")
             # Control row: nothing was stamped ⇒ empty cell (Excel NaN read is fine)
             controls = pd.read_excel(workbook, sheet_name="Control_Runs", engine="openpyxl")
             self.assertEqual(len(controls), 1)
             for col in (
                 "ClonalityMLSuggestion",
                 "ClonalityMLConfidence",
+                "ClonalityMLThreshold",
                 "ClonalityMLReviewNeeded",
+                "ClonalityMLEvidence",
                 "ClonalityMLModelVersion",
             ):
                 val = controls.iloc[0][col]

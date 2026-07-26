@@ -20,6 +20,7 @@ Public surface (see __all__):
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -28,6 +29,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from core.analyses.clonality.ml_data_contract import is_raw_trace_feature
 from core.analyses.clonality.ml_training import deserialize_model
 
 
@@ -92,6 +94,23 @@ class ClonalityModelStore:
         if not assay:
             return False
         return _normalise_assay(assay) in self._available
+
+    def has_eligible_models(self) -> bool:
+        """Return whether discovery found at least one validated artifact."""
+        return bool(self._available)
+
+    def required_feature_columns(self, assay: str) -> list[str]:
+        """Return an eligible assay artifact's ordered feature contract."""
+        norm = _normalise_assay(assay)
+        if norm not in self._available:
+            return []
+        artifact = self._cache.get(norm) or self._load_assay(norm)
+        if artifact is None:
+            return []
+        return [
+            str(column)
+            for column in (artifact.metadata.get("feature_columns") or ())
+        ]
 
     def predict(
         self,
@@ -182,6 +201,12 @@ class ClonalityModelStore:
             meta = child / "metadata.json"
             if not meta.exists():
                 continue
+            try:
+                metadata = json.loads(meta.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+            if not _runtime_eligible_metadata(metadata):
+                continue
             # Check that at least one preferred classifier exists.
             if any((child / f"{kind}.joblib").exists() for kind in _CLASSIFIER_PREFERENCE):
                 # Register common spellings plus the separator-free key used
@@ -221,6 +246,10 @@ class ClonalityModelStore:
                 joblib_path=joblib_path, metadata_path=meta_path,
             )
         except Exception:  # noqa: BLE001 - load tolerance
+            return None
+        if not _runtime_eligible_metadata(metadata):
+            return None
+        if _assay_key(metadata.get("assay")) != _assay_key(assay_dir.name):
             return None
         artifact = _AssayArtifact(estimator=estimator, metadata=metadata)
         self._cache[norm_assay] = artifact
@@ -273,6 +302,34 @@ def _estimator_input(estimator: Any, X: pd.DataFrame) -> pd.DataFrame | np.ndarr
     if all(name in X.columns for name in names):
         return X[names]
     return X
+
+
+def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
+    validation = metadata.get("validation")
+    if not isinstance(validation, Mapping):
+        return False
+    promotion_gate = validation.get("promotion_gate")
+    if not isinstance(promotion_gate, Mapping):
+        return False
+    feature_columns = metadata.get("feature_columns")
+    if not isinstance(feature_columns, list):
+        return False
+    try:
+        effective_splits = int(validation.get("effective_splits") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        metadata.get("schema_version") == "ml_training_pipeline_v2"
+        and metadata.get("deployment_status") == "validated"
+        and metadata.get("runtime_eligible") is True
+        and metadata.get("trace_feature_schema_version")
+        == "clonality_trace_features_v1"
+        and any(is_raw_trace_feature(column) for column in feature_columns)
+        and validation.get("strategy") == "StratifiedGroupKFold"
+        and validation.get("every_row_oof_once") is True
+        and effective_splits >= 2
+        and promotion_gate.get("passed") is True
+    )
 
 
 def flatten_features_for_inference(

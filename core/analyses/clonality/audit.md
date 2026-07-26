@@ -12,9 +12,10 @@
 3. The rule engine (`interpretation.py::interpret_entry(...)`) consumes the entry dict,
    walks the rule path for the entry's assay, and returns one of ANNOTATION_CLASSES values
    plus evidence strings.
-4. Optional ML second-opinion: `interpretation_enabled()` returns True → `predict_with_rejection(...)`
-   for that assay, calibrated via Platt scaling from `clonality_interpretation_quick_model_v1`.
-   (Phase 4 — not yet wired; off by default.)
+4. Optional ML second-opinion: when interpretation is enabled,
+   `ml_runtime.attach_ml_prediction_if_enabled(...)` loads only an explicitly
+   promoted, grouped-validated v2 per-assay artifact. It recomputes raw trace
+   features when needed and leaves the rule output unchanged.
 5. Tracking Excel writer (`tracking_excel.py::update_clonality_tracking_workbook`) writes
    the rule columns by default, plus ML columns when enabled.
 
@@ -28,7 +29,7 @@
 | `sample_kind_for_file` | — | derives patient/pk/nk/rk from filename | fsa Path | str | `sample_annotation_files`, `peak_context_for_assay` | — |
 | `sample_annotation_files` | — | yields (path, sample_kind) tuples | fsa dir | generator | training export | — |
 | `features_from_entry` | — | **PRIMARY** feature builder, called per-entry | entry dict | entry dict w/ all features | `interpret_entry` | **extends** with new per-channel / reference-window / patient-panel (T-2.1/2.2/2.3) |
-| `interpret_entry` | — | **PRIMARY** rule decision; returns ANNOTATION_CLASSES label + evidence | entry dict | dict w/ ClonalitySuggestion, ClonalityConfidence, ClonalityEvidence, ClonalityReviewNeeded | tracking_excel; GUI review widget | consults ml-enabled branch only |
+| `interpret_entry` | — | **PRIMARY** rule decision; returns ANNOTATION_CLASSES label + evidence | entry dict | dict w/ ClonalitySuggestion, ClonalityConfidence, ClonalityEvidence, ClonalityReviewNeeded | tracking_excel; GUI review widget | independent of ML |
 | `attach_interpretation_if_enabled` | — | writes rule columns to entry dict | entry dict | entry dict (mutated) | called from pipeline | — |
 | `annotation_export_rows_to_frame` | — | shapes json training rows | json + entry dict | pd.DataFrame | training scripts | consumed in Phase 3 |
 | `write_annotation_csv_from_json` | — | writes training CSV | json dir | Path | training scripts | consumed in Phase 3 |
@@ -40,12 +41,16 @@
 | `assay_interpretation_range` | — | per-assay helper | assay name | (bp_min, bp_max) | features_from_entry | — |
 | `peak_context_for_assay` | — | extracts dominant-peak / in-window peak series | entry dict, assay | DataFrame | interpret_entry + ML | — |
 
-## Public functions in `core/analyses/clonality/feature_artifacts.py`
+## Real-FSA feature and validation modules
 
-| Symbol | Lines | Purpose | Inputs | Outputs | Notes |
-|--------|-------|---------|--------|---------|-------|
-| `write_clonality_feature_artifacts` | — | writes CSVs of features per directory of FSAs | input dir, output dir | list[Path] | offline feature dump; Phase 2+3 hook |
-| `build_clonality_feature_tables` | — | builds pandas frames per assay | input dir | dict[assay → DataFrame] | training input | consumed in Phase 3 |
+| Module | Purpose |
+|--------|---------|
+| `trace_features.py` | deterministic scalar and per-channel raw FSA trace geometry |
+| `ml_feature_dataset.py` | resumable, content-hashed local feature artifact |
+| `ml_training.py` | per-assay datasets, estimators, metrics, serialization |
+| `ml_validation.py` | DIT-grouped OOF predictions, promotion gates, review/drift outputs |
+| `ml_model.py` | validated-v2 artifact discovery and inference contract |
+| `ml_runtime.py` | default-off second-opinion attachment and quality/review routing |
 
 ## Public functions in `core/analyses/clonality/candidate_artifacts.py`
 
@@ -85,7 +90,7 @@ Walked from `interpret_entry()` and `_interpret_<assay>()` functions. Each row b
 | `pseudoklonal` | single dominant at bp just outside expected window | suspected pipetting artifact |
 | `intet_pcr_produkt_darlig_dna` | zero total peaks across all channels | sample-quality failure |
 | `qc_teknisk_fail` | input-DNA control failed | OR carry-over from `_interpret_*` |
-| `usikker_review` | forced fallback for ANY of: ladder_qc_gate fails, control_flag overridden, ML↔rule disagreement over threshold | always terminal in tracking |
+| `usikker_review` | forced rule fallback for ladder/QC/control uncertainty | always terminal in rule tracking; ML disagreement is stored separately as review evidence |
 
 Per-assay detail:
 - `FR1/FR2/FR3`: dominant_peak + Biglari variant. FR1 zero-peak → polyklonal.
@@ -106,33 +111,36 @@ override the label to `usikker_review` regardless of model output.
 
 ## Tracking columns written by `tracking_excel.py`
 
-(Rule-only columns shipped today; ML columns are Phase 6)
-
 `ClonalityInterpretationEnabled`, `ClonalitySuggestion`, `ClonalityConfidence`, `ClonalityReviewNeeded`,
 `ClonalityEvidence`, `ClonalitySLQualityClass`, `ClonalitySLFragmentedPercent`,
 `ClonalitySLQualityPhrase`, `ClonalityModelVersion`.
+
+Validated ML adds `ClonalityMLSuggestion`, `ClonalityMLConfidence`,
+`ClonalityMLThreshold`, `ClonalityMLReviewNeeded`, `ClonalityMLEvidence`, and
+`ClonalityMLModelVersion` without replacing rule fields.
 
 ## Existing schema versions
 
 - `ANNOTATION_SCHEMA_VERSION = "clonality_interpretation_v1"`
 - `INTERPRETATION_RULE_VERSION = "clonality_interpretation_rules_v1"`
 - `MODEL_VERSION = "clonality_interpretation_quick_model_v1"`
+- `TRACE_FEATURE_SCHEMA_VERSION = "clonality_trace_features_v1"`
+- validated runtime model schema: `ml_training_pipeline_v2`
 
 Keep all three under versioned definitions; bumping either triggers:
 - Tracking-column metadata update
 - Obsidian changelog entry
 - DoC re-validation
 
-## ML integration hotspots (where Phase 3 / 4 / 6 will plug in)
+## ML integration hotspots
 
 | File | Function | Why here | Phase |
 |------|----------|----------|-------|
-| `core/analyses/clonality/interpretation.py` | `interpret_entry` | decision point — after rule resolves, consult ML second opinion | 4 |
-| `core/analyses/clonality/feature_artifacts.py` | `features_from_entry` | feature pipeline output | 2 add-on |
-| `core/analyses/clonality/calibration.py` (new) | `predict_with_rejection` (new) | Platt-scaled ML predict with auth-rejection | 4 |
-| `core/analyses/clonality/ml_training.py` (new) | `load_dataset_for_assay`, `per_assay_metrics` | Phase 3 training modules | 3 |
-| `scripts/train_clonality_interpretation_models.py` (new) | main pipeline driver | ship CLI | 3 |
-| `core/analyses/clonality/tracking_excel.py` | `update_clonality_tracking_workbook` | writer that emits tracking workbooks | 6 |
+| `core/analyses/clonality/interpretation.py` | `features_from_entry` | shared scalar plus optional raw-trace feature contract | 2 |
+| `core/analyses/clonality/ml_validation.py` | `grouped_oof_validate` | patient-safe validation and disagreement evidence | 4 |
+| `core/analyses/clonality/ml_model.py` | `_runtime_eligible_metadata` | candidate/validated deployment boundary | 5 |
+| `core/analyses/clonality/ml_runtime.py` | `attach_ml_prediction_if_enabled` | second-opinion and review routing | 5 |
+| `core/analyses/clonality/tracking_excel.py` | `update_clonality_tracking_workbook` | rule and ML tracking columns | 5 |
 
 ## Canonical ANNOTATION_CLASSES values
 
@@ -145,6 +153,5 @@ and bump `ANNOTATION_SCHEMA_VERSION`.
 ## OPEN: what this map does NOT (yet) cover
 
 - `tracking_excel.py::aggregate_clonality_tracking_*` functions emitted when multiple batches merged — call-graph to be added in Phase 6.
-- The TITAN/ImmuneML research-only candidate would NOT plug into `interpret_entry`; rather it slots into `_extract_trace_shape_features` (currently absent). Plan 11 explicitly defers this until chemist asks.
+- The TITAN/ImmuneML research-only candidate would not plug into `interpret_entry`; it remains deferred until real-data baselines justify the added complexity.
 - Per-sample feature shared by multiple files (patient panel view) is `T-2.3` material — see `ObsidianVault/Clonality_ML_Log/decisions/dependencies.md` for Phase 2 wiring.
-

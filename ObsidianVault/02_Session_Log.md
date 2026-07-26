@@ -1203,3 +1203,12 @@ Verification:
 - Added a local, resumable feature-artifact builder with audit integration, atomic checkpoints, provenance manifest, content-hash and settings invalidation, and no raw traces or raw FSA paths in the feature CSV.
 - Connected trace artifacts to per-assay training in the CLI and Qt ML tab; current chemist labels are refreshed by `IdentityKey+Assay`, metadata/rule outputs are excluded from model inputs, and controls/SL remain outside ML inference.
 - Verification: focused ML tests passed (`60`); full suite passed (`303 passed, 3 skipped`, with four known sklearn/scipy warnings). Real-corpus extraction remains pending until the private workbook and `.fsa` root are mounted locally.
+
+## 2026-07-26 - Clonality Grouped Validation And Promotion Gate
+
+- Replaced the trainer's single grouped holdout with per-assay `StratifiedGroupKFold` out-of-fold validation; every labeled row is predicted exactly once and each DIT remains wholly in one fold.
+- Added local prediction, disagreement, monoklonal false-positive, low-confidence, review HTML, drift, metrics, and split-provenance artifacts. Validation now reports calibration error plus confidence-threshold coverage and accuracy.
+- Candidate models are refit on all labeled rows but remain runtime-ineligible by default. Explicit promotion requires all configured F1, monoklonal precision, DIT support, accepted-accuracy/coverage, and calibration gates; blocked promotion exits `2`.
+- Runtime now rejects candidate, legacy, incomplete-validation, and non-trace artifacts; honors the default-off interpretation toggle; recomputes real-FSA features when rule-cached features are incomplete; and refuses inference when trace channels are unavailable.
+- Tracking and HTML reports retain the rule result and add ML threshold and review evidence. Assay spelling is normalized across GUI filters, threshold settings, training, and runtime lookup.
+- Verification: focused ML/report tests passed (`82`); full suite passed (`323 passed, 3 skipped`, with four known sklearn/scipy warnings). Real-corpus validation and chemist threshold approval remain pending until private data is mounted.

@@ -6,6 +6,7 @@ import json
 from core.html_reports._legacy import (
     _clonality_ml_confidence_for_entry,
     _clonality_ml_label_for_entry,
+    _clonality_ml_threshold_for_entry,
     _render_clonality_ml_badge,
 )
 
@@ -20,6 +21,8 @@ def _entry(
     label: str = "",
     confidence: float | str = 0.0,
     review_needed: bool = False,
+    threshold: float | str = "",
+    evidence: str = "",
     rule_label: str = "",
     file_name: str = "test_FR1.fsa",
     dit: str = "26OUM00005",
@@ -39,6 +42,10 @@ def _entry(
         e["ClonalityMLConfidence"] = confidence
     if review_needed:
         e["ClonalityMLReviewNeeded"] = True
+    if threshold != "":
+        e["ClonalityMLThreshold"] = threshold
+    if evidence:
+        e["ClonalityMLEvidence"] = evidence
     return e
 
 
@@ -60,6 +67,10 @@ def test_confidence_helper_formats_two_decimals():
     assert _clonality_ml_confidence_for_entry(_entry(confidence=0.867)) == "0.87"
 
 
+def test_threshold_helper_formats_two_decimals():
+    assert _clonality_ml_threshold_for_entry(_entry(threshold=0.85)) == "0.85"
+
+
 def test_render_badge_emits_dml_div_when_label_present():
     out = []
     entry = _entry(label="monoklonal", confidence=0.84, rule_label="polyklonal")
@@ -78,6 +89,21 @@ def test_render_badge_emits_warning_when_review_needed():
     _render_clonality_ml_badge(entry, out)
     html = "\n".join(out)
     assert "ml-review-flagged" in html
+
+
+def test_render_badge_shows_threshold_and_review_reason():
+    out = []
+    entry = _entry(
+        label="monoklonal",
+        confidence=0.70,
+        threshold=0.85,
+        review_needed=True,
+        evidence="rule_ml_disagreement",
+    )
+    _render_clonality_ml_badge(entry, out)
+    html = "\n".join(out)
+    assert "grense: 0.85" in html
+    assert "rule_ml_disagreement" in html
 
 
 def test_render_badge_noop_when_no_label():

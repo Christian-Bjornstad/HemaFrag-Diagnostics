@@ -41,7 +41,9 @@ __all__ = [
 MLCOLUMNS = (
     "ClonalityMLSuggestion",
     "ClonalityMLConfidence",
+    "ClonalityMLThreshold",
     "ClonalityMLReviewNeeded",
+    "ClonalityMLEvidence",
     "ClonalityMLModelVersion",
 )
 
@@ -53,7 +55,9 @@ _store_path: Path | None = None
 def is_ml_enabled(settings: dict[str, Any] | None = None) -> bool:
     """Return True iff the in-app ML settings point at an enabled model dir."""
     dir_path = ml_model_dir_for_settings(settings)
-    return bool(dir_path is not None and dir_path.exists() and dir_path.is_dir())
+    if dir_path is None or not dir_path.exists() or not dir_path.is_dir():
+        return False
+    return ClonalityModelStore(model_dir=dir_path).has_eligible_models()
 
 
 def ml_model_dir_for_settings(
@@ -76,6 +80,8 @@ def ml_model_dir_for_settings(
         return None
     interpretation = profile.get("interpretation", {}) or {}
     if not isinstance(interpretation, Mapping):
+        return None
+    if not bool(interpretation.get("enabled", False)):
         return None
     raw = interpretation.get("model_path", "")
     if not raw:
@@ -109,12 +115,29 @@ def reset_model_store_cache() -> None:
     _store_path = None
 
 
-def _coerce_review(entry: dict[str, Any]) -> bool:
-    rule_review = bool(entry.get("ClonalityReviewNeeded", False))
+def _quality_review_reasons(
+    entry: dict[str, Any],
+    features: Mapping[str, Any],
+) -> list[str]:
+    reasons: list[str] = []
+    if bool(
+        entry.get("ladder_review_required")
+        or features.get("ladder_review_required")
+    ):
+        reasons.append("ladder_qc")
+    ladder_status = str(
+        entry.get("ladder_qc_status")
+        or features.get("ladder_qc_status")
+        or ""
+    ).strip().lower()
+    if ladder_status and ladder_status not in {"ok", "pass", "passed", "good", "valid"}:
+        reasons.append("ladder_qc")
+    if bool(entry.get("ClonalityReviewNeeded", False)):
+        reasons.append("rule_review")
     rule_label = str(entry.get("ClonalitySuggestion") or "").strip()
     if rule_label in {"usikker_review", "qc_teknisk_fail", "intet_pcr_produkt_darlig_dna"}:
-        return True
-    return rule_review
+        reasons.append("rule_quality")
+    return list(dict.fromkeys(reasons))
 
 
 def attach_ml_prediction_if_enabled(entry: dict[str, Any]) -> dict[str, Any]:
@@ -142,13 +165,9 @@ def attach_ml_prediction_if_enabled(entry: dict[str, Any]) -> dict[str, Any]:
 def _do_attach(entry: dict[str, Any], store: ClonalityModelStore) -> dict[str, Any]:
     if not isinstance(entry, dict):
         return entry
-    # Pull features — either precomputed by the rule layer or freshly
-    # derived from the entry. Both paths produce the same dict shape.
     features = entry.get("features")
     if not isinstance(features, dict):
-        # Lazy import avoids sklearn import unless ML is actually on.
-        from core.analyses.clonality.interpretation import features_from_entry
-        features = features_from_entry(entry)
+        features = {}
     assay = str(entry.get("assay") or "").strip()
     # Only patient/sample entries get ML attached; controls/sl ruled out.
     sample_kind = str(
@@ -163,6 +182,31 @@ def _do_attach(entry: dict[str, Any], store: ClonalityModelStore) -> dict[str, A
             entry.setdefault(col, "")
         return entry
 
+    required_columns = store.required_feature_columns(assay)
+    required_raw_columns = [
+        column for column in required_columns if str(column).startswith("trace_")
+    ]
+    if required_raw_columns and not all(
+        _feature_is_present(features, column) for column in required_raw_columns
+    ):
+        # The rule layer intentionally caches scalar-only features. Recompute
+        # the full real-FSA contract only when an eligible model needs it.
+        from core.analyses.clonality.interpretation import features_from_entry
+
+        features = {**features, **features_from_entry(entry)}
+    available_channels = features.get("trace_available_channel_count")
+    if available_channels is not None:
+        try:
+            trace_unavailable = float(available_channels) <= 0
+        except (TypeError, ValueError):
+            trace_unavailable = True
+        if trace_unavailable:
+            for column in MLCOLUMNS:
+                entry.setdefault(column, "")
+            entry["ClonalityMLReviewNeeded"] = True
+            entry["ClonalityMLEvidence"] = "trace_features_unavailable"
+            return entry
+
     result = store.predict(assay, features)
     if result is None:
         for col in MLCOLUMNS:
@@ -171,15 +215,38 @@ def _do_attach(entry: dict[str, Any], store: ClonalityModelStore) -> dict[str, A
 
     label = str(result["label"])
     confidence = float(result["confidence"])
-    ml_review = bool(result["review_needed"])
-    review = _coerce_review(entry) or ml_review
-    # Disagreement ⇒ forced review (chemist should glance at it)
+    threshold = float(result.get("threshold_tau") or 0.0)
+    reasons = _quality_review_reasons(entry, features)
+    if bool(result["review_needed"]):
+        reasons.append("low_confidence")
+    if label in {
+        "bi_oligoklonal",
+        "irregulaer",
+        "pseudoklonal",
+        "intet_pcr_produkt_darlig_dna",
+        "qc_teknisk_fail",
+        "usikker_review",
+    }:
+        reasons.append("rare_label_prediction")
     rule_label = str(entry.get("ClonalitySuggestion") or "").strip()
     if rule_label and label and rule_label != label and rule_label != "usikker_review":
-        review = True
+        reasons.append("rule_ml_disagreement")
+    reasons = list(dict.fromkeys(reasons))
 
     entry["ClonalityMLSuggestion"] = label
     entry["ClonalityMLConfidence"] = round(confidence, 3)
-    entry["ClonalityMLReviewNeeded"] = bool(review)
+    entry["ClonalityMLThreshold"] = round(threshold, 3)
+    entry["ClonalityMLReviewNeeded"] = bool(reasons)
+    entry["ClonalityMLEvidence"] = ";".join(reasons) if reasons else "rule_ml_agree"
     entry["ClonalityMLModelVersion"] = str(result.get("model_version") or "")
     return entry
+
+
+def _feature_is_present(features: Mapping[str, Any], column: str) -> bool:
+    if column in features:
+        return True
+    if "." not in column:
+        return False
+    parent, child = column.rsplit(".", 1)
+    nested = features.get(parent)
+    return isinstance(nested, Mapping) and child in nested

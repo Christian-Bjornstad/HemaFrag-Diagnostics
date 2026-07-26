@@ -145,7 +145,7 @@ class TabAnalysisSettings(QWidget):
 
         self.clonality_model_path = QLineEdit()
         self.clonality_model_path.setPlaceholderText(
-            "Directory of <assay>/<*.joblib — leave blank to disable ML"
+            "Directory containing validated assay model folders"
         )
         row_model = QHBoxLayout()
         btn_browse_model = QPushButton("Browse...")
@@ -160,8 +160,8 @@ class TabAnalysisSettings(QWidget):
         self.clonality_model_path.textChanged.connect(self._refresh_ml_status)
 
         note = QLabel(
-            "When enabled, HemaFrag adds experimental interpretation columns to clonality tracking output. "
-            "Final report text is not changed."
+            "When enabled, validated ML appears as a second opinion. "
+            "The rule interpretation remains unchanged."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #64748b;")
@@ -335,10 +335,7 @@ class TabAnalysisSettings(QWidget):
 
     def _refresh_ml_status(self) -> None:
         """Show a quick pill: how many assay models are present under the chosen dir."""
-        from core.analyses.clonality.ml_runtime import (
-            is_ml_enabled,
-            ml_model_dir_for_settings,
-        )
+        from core.analyses.clonality.ml_model import ClonalityModelStore
         text = self.clonality_model_path.text().strip()
         if not text:
             self._ml_status_label.setText("ML off (no directory set).")
@@ -351,20 +348,28 @@ class TabAnalysisSettings(QWidget):
             )
             self._ml_status_label.setStyleSheet("color: #ef4444; font-size: 0.8rem;")
             return
-        # Quick listing — subdirectories with metadata.json
-        assays: list[str] = []
+        artifact_dirs: list[str] = []
         try:
             for child in sorted(path.iterdir()):
                 if child.is_dir() and (child / "metadata.json").exists():
-                    assays.append(child.name)
+                    artifact_dirs.append(child.name)
         except OSError:
-            assays = []
-        if assays:
-            joined = " · ".join(assays)
+            artifact_dirs = []
+        store = ClonalityModelStore(model_dir=path)
+        eligible = [
+            assay for assay in artifact_dirs if store.is_enabled(assay)
+        ]
+        if eligible:
+            joined = " · ".join(eligible)
             self._ml_status_label.setText(
-                f"OK — {len(assays)} assay model(s): {joined}"
+                f"OK — {len(eligible)} validated assay model(s): {joined}"
             )
             self._ml_status_label.setStyleSheet("color: #22c55e; font-size: 0.8rem;")
+        elif artifact_dirs:
+            self._ml_status_label.setText(
+                f"Candidate-only artifacts: {len(artifact_dirs)}. Runtime remains off."
+            )
+            self._ml_status_label.setStyleSheet("color: #b45309; font-size: 0.8rem;")
         else:
             self._ml_status_label.setText(
                 "Directory is empty of <assay>/metadata.json pairs."

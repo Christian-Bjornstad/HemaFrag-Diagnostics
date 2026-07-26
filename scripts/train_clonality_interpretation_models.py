@@ -21,6 +21,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -33,7 +34,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import numpy as np
 import pandas as pd
 
 from core.analyses.clonality.ml_data_contract import (
@@ -42,12 +42,15 @@ from core.analyses.clonality.ml_data_contract import (
 )
 from core.analyses.clonality.ml_training import (
     ANNOTATION_CLASSES_ORDER,
-    PerAssayDataset,
     build_per_assay_datasets,
     fit_classifier,
-    group_shuffle_split_by_dit,
-    per_assay_metrics,
     serialize_model,
+)
+from core.analyses.clonality.ml_validation import (
+    assess_promotion_gate,
+    grouped_oof_validate,
+    metrics_as_dict,
+    render_review_panel_html,
 )
 from config import APP_SETTINGS
 
@@ -78,7 +81,11 @@ def _per_assay_threshold_default(assay):
     tau = inter.get("thresholds", {})
     if not isinstance(tau, dict):
         return 0.85
-    return float(tau.get(assay, tau.get("_default", 0.85)))
+    assay_key = _assay_key(assay)
+    for configured_assay, value in tau.items():
+        if configured_assay != "_default" and _assay_key(configured_assay) == assay_key:
+            return float(value)
+    return float(tau.get("_default", 0.85))
 
 
 def _assemble_labelled_df(xlsx_path, *, source_label_col=CHEMIST_LABEL_COLUMN):
@@ -112,61 +119,14 @@ def _assemble_labelled_df(xlsx_path, *, source_label_col=CHEMIST_LABEL_COLUMN):
     return combined
 
 
-def _train_one_assay(
-    ds,
-    classifier_kind,
-    test_size,
-    random_state,
-    accept_threshold_tau,
+def _render_per_assay_markdown(
+    metrics,
+    who_called,
+    *,
+    validation,
+    promotion_gate,
+    runtime_eligible,
 ):
-    """Train a per-assay classifier on the dataset's DIT-split fold.
-
-    Returns (fitted_estimator, holdout_metrics).
-    """
-    train_idx, test_idx = group_shuffle_split_by_dit(
-        ds.X,
-        ds.y,
-        ds.dit,
-        test_size=test_size,
-        random_state=random_state,
-    )
-    X_train = ds.X.iloc[train_idx]
-    y_train = ds.y.iloc[train_idx]
-    X_test = ds.X.iloc[test_idx]
-    y_test = ds.y.iloc[test_idx]
-
-    estimator = fit_classifier(
-        X_train, y_train,
-        kind=classifier_kind,
-        random_state=random_state,
-    )
-    y_pred = estimator.predict(X_test)
-    try:
-        y_prob = estimator.predict_proba(X_test)
-    except Exception:
-        y_prob = None
-    classes = list(getattr(estimator, "classes_", []))
-    if not classes:
-        try:
-            classes = list(estimator.named_steps["qda"].classes_)
-        except Exception:
-            classes = sorted(set(y_pred.tolist()))
-
-    metrics = per_assay_metrics(
-        y_test,
-        y_pred,
-        y_prob,
-        classes=classes,
-        assay=ds.assay,
-        training_samples=int(len(train_idx)),
-        rare_class_counts=ds.rare_class_counts,
-        accept_threshold_tau=accept_threshold_tau,
-        classifier_kind=classifier_kind,
-    )
-    return estimator, metrics
-
-
-def _render_per_assay_markdown(metrics, who_called):
     """Emit a single markdown file per assay."""
     out_lines = []
     out_lines.append("# Clonality ML - Per-Assay Report: `{}`".format(metrics.assay))
@@ -177,12 +137,59 @@ def _render_per_assay_markdown(metrics, who_called):
     out_lines.append("")
     out_lines.append("- Assay: `{}`".format(metrics.assay))
     out_lines.append("- Classifier kind: `{}`".format(metrics.classifier_kind))
-    out_lines.append("- Training samples: **{}**".format(metrics.training_samples))
+    out_lines.append("- Grouped out-of-fold samples: **{}**".format(len(validation.predictions)))
+    out_lines.append("- Unique DIT groups: **{}**".format(
+        validation.split_manifest["unique_dit_groups"]
+    ))
+    out_lines.append("- Validation folds: **{}**".format(
+        validation.split_manifest["effective_splits"]
+    ))
     out_lines.append("- Macro F1: **{:.3f}**".format(metrics.macro_f1))
     out_lines.append("- Accuracy: {:.3f}".format(metrics.accuracy))
     out_lines.append("- Balanced accuracy: {:.3f}".format(metrics.balanced_accuracy))
     out_lines.append("- Monoklonal-class F1 (rare-class focus): **{:.3f}**".format(metrics.monoklonal_f1))
+    out_lines.append("- Accepted coverage at tau: {:.3f}".format(metrics.accepted_coverage))
+    out_lines.append("- Accepted accuracy at tau: **{:.3f}**".format(metrics.accepted_accuracy))
+    out_lines.append("- Expected calibration error: {:.3f}".format(
+        metrics.expected_calibration_error
+    ))
+    out_lines.append("- Mean confidence: {:.3f}".format(metrics.mean_confidence))
     out_lines.append("- Per-assay acceptance threshold tau: {}".format(metrics.accept_threshold_tau))
+    out_lines.append(
+        "- Artifact status: **{}**".format(
+            "runtime eligible" if runtime_eligible else "candidate only"
+        )
+    )
+    out_lines.append("")
+    out_lines.append("## Promotion gate")
+    out_lines.append("")
+    out_lines.append("- Configured metrics pass: **{}**".format(
+        "yes" if promotion_gate.passed else "no"
+    ))
+    for name, value in promotion_gate.thresholds.items():
+        out_lines.append("- `{}`: {}".format(name, value))
+    if promotion_gate.reasons:
+        for reason in promotion_gate.reasons:
+            out_lines.append("- Blocked: {}".format(reason))
+    if promotion_gate.passed and not runtime_eligible:
+        out_lines.append(
+            "- Metrics pass, but explicit `--promote-if-passes` approval was not supplied."
+        )
+    out_lines.append("")
+    out_lines.append("## Fold stability")
+    out_lines.append("")
+    out_lines.append(
+        "| Fold | Train rows | Test rows | Macro F1 | Mono F1 | "
+        "Balanced accuracy | Accepted accuracy | Coverage | ECE |"
+    )
+    out_lines.append("|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    for row in validation.fold_metrics.to_dict(orient="records"):
+        out_lines.append(
+            "| {Fold} | {TrainRows} | {TestRows} | {MacroF1:.3f} | "
+            "{MonoklonalF1:.3f} | {BalancedAccuracy:.3f} | "
+            "{AcceptedAccuracy:.3f} | {AcceptedCoverage:.3f} | "
+            "{ExpectedCalibrationError:.3f} |".format(**row)
+        )
     out_lines.append("")
     out_lines.append("## Rare-class counts")
     out_lines.append("")
@@ -195,7 +202,7 @@ def _render_per_assay_markdown(metrics, who_called):
 
     out_lines.append("## Confusion matrix")
     out_lines.append("")
-    out_lines.append("Rows = predicted, Columns = true.")
+    out_lines.append("Rows = true, Columns = predicted.")
     out_lines.append("")
     out_lines.append("```")
     cm = metrics.confusion_matrix
@@ -235,9 +242,9 @@ def _render_per_assay_markdown(metrics, who_called):
     out_lines.append("")
     out_lines.append("## Decision notes")
     out_lines.append("")
-    out_lines.append("- tau defines the calibration threshold above which the ML suggestion is auto-accepted. Today's values are Phase-3 first cuts; chemist will calibrate per assay.")
-    out_lines.append("- If monoklonal-class F1 < 0.70, do not auto-apply; route to `usikker_review` instead.")
-    out_lines.append("- Trigger xgboost promotion per `decisions/xgboost_pending.md`: rare-class F1 < 0.85 across multiple chemist-validations.")
+    out_lines.append("- Rule-based interpretation remains the report source of truth.")
+    out_lines.append("- ML is a second opinion; disagreement, low confidence, and rare-label predictions route to review.")
+    out_lines.append("- Candidate artifacts are ignored by runtime until explicitly promoted after passing configured gates.")
     out_lines.append("")
     return chr(10).join(out_lines)
 
@@ -402,6 +409,52 @@ def _ensure_columns_renamed(combined):
             renames[old] = new
     return combined.rename(columns=renames) if renames else combined
 
+
+def _training_data_fingerprint(dataset) -> str:
+    columns = [
+        column
+        for column in (
+            "IdentityKey",
+            "FsaContentHash",
+            DIR_COL,
+            ASSAY_COL,
+            LABEL_COL,
+        )
+        if column in dataset.rows.columns
+    ]
+    if columns:
+        frame = dataset.rows[columns].fillna("").astype(str).copy()
+    else:
+        frame = pd.DataFrame(
+            {
+                DIR_COL: dataset.dit.astype(str),
+                ASSAY_COL: dataset.assay,
+                LABEL_COL: dataset.y.astype(str),
+            }
+        )
+    payload = frame.sort_values(list(frame.columns), kind="stable").to_csv(
+        index=False,
+        lineterminator="\n",
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _first_value(frame, column):
+    if column not in frame.columns:
+        return ""
+    values = frame[column].fillna("").astype(str).str.strip()
+    values = values.loc[values.ne("")]
+    return values.iloc[0] if not values.empty else ""
+
+
+def _safe_assay_name(value):
+    cleaned = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "_"
+        for character in str(value)
+    )
+    return cleaned or "unknown"
+
+
 def _parse_args(argv=None):
     p = argparse.ArgumentParser(
         description="Train per-assay clonality interpretation models."
@@ -470,7 +523,13 @@ def _parse_args(argv=None):
         "--test-size",
         type=float,
         default=0.20,
-        help="Holdout fraction (default 0.20).",
+        help="Deprecated compatibility option; grouped OOF validation uses folds.",
+    )
+    p.add_argument(
+        "--validation-folds",
+        type=int,
+        default=5,
+        help="Patient-grouped out-of-fold validation folds (default 5).",
     )
     p.add_argument(
         "--random-state",
@@ -487,6 +546,56 @@ def _parse_args(argv=None):
             "the value is read from APP_SETTINGS.analyses.clonality.interpretation.thresholds."
         ),
     )
+    p.add_argument(
+        "--promote-if-passes",
+        action="store_true",
+        help=(
+            "Mark models runtime eligible only when every configured validation "
+            "gate passes. Without this flag all outputs remain candidates."
+        ),
+    )
+    p.add_argument(
+        "--min-macro-f1",
+        type=float,
+        default=0.70,
+        help="Promotion gate for grouped OOF macro F1 (default 0.70).",
+    )
+    p.add_argument(
+        "--min-monoklonal-f1",
+        type=float,
+        default=0.70,
+        help="Promotion gate for grouped OOF monoklonal F1 (default 0.70).",
+    )
+    p.add_argument(
+        "--min-monoklonal-precision",
+        type=float,
+        default=0.90,
+        help="Promotion gate for monoklonal precision (default 0.90).",
+    )
+    p.add_argument(
+        "--min-dit-groups",
+        type=int,
+        default=50,
+        help="Minimum unique DIT groups required for promotion (default 50).",
+    )
+    p.add_argument(
+        "--min-accepted-accuracy",
+        type=float,
+        default=0.95,
+        help="Minimum OOF accuracy among predictions at/above tau (default 0.95).",
+    )
+    p.add_argument(
+        "--min-accepted-coverage",
+        type=float,
+        default=0.10,
+        help="Minimum OOF fraction at/above tau (default 0.10).",
+    )
+    p.add_argument(
+        "--max-calibration-error",
+        type=float,
+        default=0.10,
+        help="Maximum expected calibration error (default 0.10).",
+    )
     return p.parse_args(argv)
 
 
@@ -498,6 +607,12 @@ def main(argv=None):
         raise FileNotFoundError(f"--xls {xlsx_path} not found")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    existing_models = sorted(output_dir.glob("*/metadata.json"))
+    if existing_models:
+        raise FileExistsError(
+            "--output-dir already contains model artifacts; use a fresh "
+            f"directory: {output_dir}"
+        )
     today = args.date if args.date else datetime.now(timezone.utc).strftime("%Y-%m-%d")
     report_dir = output_dir / "reports" / today
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -547,6 +662,8 @@ def main(argv=None):
         len(datasets), ", ".join(sorted(datasets.keys()))))
 
     summaries = []
+    failed_assays = []
+    promotion_failures = []
     # Optional CLI override of per-assay tau — defaults to settings lookup.
     override_tau = getattr(args, "accept_threshold_tau", None)
     for assay_name in sorted(datasets.keys()):
@@ -559,16 +676,51 @@ def main(argv=None):
         print("[train] assay={}: n_samples={}, tau={}".format(
             assay_name, ds.n_samples, tau))
         try:
-            estimator, metrics = _train_one_assay(
+            validation = grouped_oof_validate(
                 ds,
                 classifier_kind=args.classifier_kind,
-                test_size=args.test_size,
+                n_splits=args.validation_folds,
                 random_state=args.random_state,
                 accept_threshold_tau=tau,
             )
+            gate = assess_promotion_gate(
+                validation,
+                min_macro_f1=args.min_macro_f1,
+                min_monoklonal_f1=args.min_monoklonal_f1,
+                min_monoklonal_precision=args.min_monoklonal_precision,
+                min_dit_groups=args.min_dit_groups,
+                min_accepted_accuracy=args.min_accepted_accuracy,
+                min_accepted_coverage=args.min_accepted_coverage,
+                max_expected_calibration_error=args.max_calibration_error,
+            )
+            runtime_eligible = bool(args.promote_if_passes and gate.passed)
+            if args.promote_if_passes and not gate.passed:
+                promotion_failures.append(assay_name)
+            estimator = fit_classifier(
+                ds.X,
+                ds.y,
+                kind=args.classifier_kind,
+                random_state=args.random_state,
+            )
         except Exception as exc:
-            print("[train] assay={} FAILED to fit: {}".format(assay_name, exc))
+            print("[train] assay={} FAILED validation/training: {}".format(assay_name, exc))
+            failed_assays.append({"assay": assay_name, "error": str(exc)})
             continue
+        metrics = validation.aggregate_metrics
+        validation_metadata = {
+            "strategy": validation.split_manifest["strategy"],
+            "group_column": validation.split_manifest["group_column"],
+            "effective_splits": validation.split_manifest["effective_splits"],
+            "random_state": validation.split_manifest["random_state"],
+            "unique_dit_groups": validation.split_manifest["unique_dit_groups"],
+            "every_row_oof_once": validation.split_manifest["every_row_oof_once"],
+            "metrics": metrics_as_dict(metrics),
+            "promotion_gate": {
+                "passed": gate.passed,
+                "reasons": gate.reasons,
+                "thresholds": gate.thresholds,
+            },
+        }
         paths = serialize_model(
             estimator,
             label_order=list(ANNOTATION_CLASSES_ORDER),
@@ -579,10 +731,55 @@ def main(argv=None):
             trained_at_utc=today,
             output_dir=output_dir,
             feature_columns=list(ds.X.columns),
+            schema_version="ml_training_pipeline_v2",
+            extra_metadata={
+                "deployment_status": (
+                    "validated" if runtime_eligible else "candidate"
+                ),
+                "runtime_eligible": runtime_eligible,
+                "training_rows": ds.n_samples,
+                "training_dit_groups": int(ds.dit.nunique()),
+                "training_data_fingerprint": _training_data_fingerprint(ds),
+                "feature_dataset_version": _first_value(
+                    ds.rows, "FeatureDatasetVersion"
+                ),
+                "trace_feature_schema_version": _first_value(
+                    ds.rows, "TraceFeatureSchemaVersion"
+                ),
+                "validation": validation_metadata,
+            },
         )
-        report_path = report_dir / "report_{}.md".format(assay_name)
+        report_stem = _safe_assay_name(assay_name)
+        report_path = report_dir / "report_{}.md".format(report_stem)
         report_path.write_text(
-            _render_per_assay_markdown(metrics, who_called="train_clonality_interpretation_models"),
+            _render_per_assay_markdown(
+                metrics,
+                who_called="train_clonality_interpretation_models",
+                validation=validation,
+                promotion_gate=gate,
+                runtime_eligible=runtime_eligible,
+            ),
+            encoding="utf-8",
+        )
+        predictions_path = report_dir / "predictions_{}.csv".format(report_stem)
+        review_path = report_dir / "review_cases_{}.csv".format(report_stem)
+        review_html_path = report_dir / "review_panel_{}.html".format(report_stem)
+        drift_path = report_dir / "drift_{}.csv".format(report_stem)
+        split_path = report_dir / "splits_{}.json".format(report_stem)
+        metrics_path = report_dir / "metrics_{}.json".format(report_stem)
+        validation.predictions.to_csv(predictions_path, index=False)
+        validation.review_cases.to_csv(review_path, index=False)
+        validation.drift_summary.to_csv(drift_path, index=False)
+        review_html_path.write_text(
+            render_review_panel_html(validation, promotion_gate=gate),
+            encoding="utf-8",
+        )
+        split_path.write_text(
+            json.dumps(validation.split_manifest, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        metrics_path.write_text(
+            json.dumps(metrics_as_dict(metrics), indent=2, sort_keys=True),
             encoding="utf-8",
         )
         summaries.append({
@@ -590,16 +787,55 @@ def main(argv=None):
             "training_samples": metrics.training_samples,
             "monoklonal_f1": metrics.monoklonal_f1,
             "macro_f1": metrics.macro_f1,
+            "monoklonal_precision": float(
+                metrics.classification_report.get("monoklonal", {}).get(
+                    "precision", 0.0
+                )
+            ),
+            "accepted_accuracy": metrics.accepted_accuracy,
+            "accepted_coverage": metrics.accepted_coverage,
+            "expected_calibration_error": metrics.expected_calibration_error,
+            "runtime_eligible": runtime_eligible,
+            "deployment_status": "validated" if runtime_eligible else "candidate",
+            "promotion_gate_passed": gate.passed,
+            "promotion_gate_reasons": gate.reasons,
             "model_path": str(paths["joblib"]),
             "report_path": str(report_path),
+            "predictions_path": str(predictions_path),
+            "review_cases_path": str(review_path),
+            "review_panel_path": str(review_html_path),
+            "drift_path": str(drift_path),
+            "splits_path": str(split_path),
         })
 
     summary_path = output_dir / "reports" / today / "summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(json.dumps({"date": today, "summaries": summaries}, indent=2), encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(
+            {
+                "date": today,
+                "summaries": summaries,
+                "failed_assays": failed_assays,
+                "explicit_promotion_requested": bool(args.promote_if_passes),
+                "promotion_failures": promotion_failures,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     print("[train] wrote models to: {}".format(output_dir))
     print("[train] wrote reports to: {}".format(report_dir))
+    if not summaries:
+        print("[train] FAILED: no assay model completed")
+        return 1
+    if promotion_failures:
+        print(
+            "[train] promotion blocked for: {}".format(
+                ", ".join(promotion_failures)
+            )
+        )
+        return 2
     print("[train] DONE")
     return 0
 

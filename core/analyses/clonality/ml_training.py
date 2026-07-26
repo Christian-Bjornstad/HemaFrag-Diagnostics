@@ -18,15 +18,17 @@ Public surface (re-exported via __all__):
 
 from __future__ import annotations
 
+import inspect
 import json
+import platform
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import joblib
-import inspect
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.naive_bayes import GaussianNB
@@ -44,7 +46,7 @@ from sklearn.pipeline import Pipeline
 
 from core.analyses.clonality.ml_data_contract import (
     CHEMIST_LABEL_COLUMN,
-    is_trace_feature,
+    is_raw_trace_feature,
 )
 
 
@@ -99,7 +101,9 @@ DEFAULT_NON_FEATURE_COLUMNS = {
     "ClonalityModelVersion",
     "ClonalityMLSuggestion",
     "ClonalityMLConfidence",
+    "ClonalityMLThreshold",
     "ClonalityMLReviewNeeded",
+    "ClonalityMLEvidence",
     "ClonalityMLModelVersion",
 }
 
@@ -134,6 +138,7 @@ class PerAssayDataset:
     assay: str
     rare_class_counts: dict[str, int] = field(default_factory=dict)
     n_samples: int = 0
+    rows: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     def __post_init__(self) -> None:
         if self.n_samples == 0:
@@ -155,6 +160,10 @@ class PerAssayMetrics:
     rare_class_counts: dict[str, int]
     accept_threshold_tau: float
     classifier_kind: str = "random_forest"
+    expected_calibration_error: float = 0.0
+    accepted_coverage: float = 0.0
+    accepted_accuracy: float = 0.0
+    mean_confidence: float = 0.0
 
 
 def _annotation_sort_key(name: str) -> int:
@@ -162,6 +171,17 @@ def _annotation_sort_key(name: str) -> int:
         return ANNOTATION_CLASSES_ORDER.index(name)
     except ValueError:
         return len(ANNOTATION_CLASSES_ORDER)
+
+
+def _assay_key(value: Any) -> str:
+    return (
+        str(value or "")
+        .strip()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .upper()
+    )
 
 
 def _ensure_numeric_X(X: pd.DataFrame) -> pd.DataFrame:
@@ -258,17 +278,25 @@ def build_per_assay_datasets(
     feature_cols = [c for c in feature_cols if c in combined_df.columns]
     if not feature_cols:
         raise ValueError("no numeric feature columns were available for training")
-    if not any(is_trace_feature(column) for column in feature_cols):
+    if not any(is_raw_trace_feature(column) for column in feature_cols):
         raise ValueError(
             "no raw FSA trace features were available for training; "
             "refusing to fit a ladder/QC-only clonality model"
         )
 
     out: dict[str, PerAssayDataset] = {}
+    include_assay_keys = (
+        {_assay_key(value) for value in include_assays}
+        if include_assays is not None
+        else None
+    )
     for assay_name, group in combined_df.groupby(assay_col, sort=True):
         if pd.isna(assay_name):
             continue
-        if include_assays is not None and str(assay_name) not in include_assays:
+        if (
+            include_assay_keys is not None
+            and _assay_key(assay_name) not in include_assay_keys
+        ):
             continue
         if len(group) < min_samples_per_assay:
             continue
@@ -283,6 +311,7 @@ def build_per_assay_datasets(
             assay=str(assay_name),
             n_samples=len(group),
             rare_class_counts={str(k): int(v) for k, v in counts.items()},
+            rows=group.reset_index(drop=True),
         )
     return out
 
@@ -416,6 +445,7 @@ def per_assay_metrics(
     rare_class_counts: Mapping[str, int],
     accept_threshold_tau: float,
     classifier_kind: str = "random_forest",
+    prediction_confidence: Sequence[float] | None = None,
 ) -> PerAssayMetrics:
     """Compute accuracy / F1 / confusion-matrix for one assay's holdout.
 
@@ -443,6 +473,34 @@ def per_assay_metrics(
     report = classification_report(
         y_true, y_pred, labels=labels, output_dict=True, zero_division=0
     )
+    has_confidence = prediction_confidence is not None or y_prob is not None
+    if prediction_confidence is not None:
+        confidence = np.asarray(prediction_confidence, dtype=float)
+    elif y_prob is not None:
+        probabilities = np.asarray(y_prob, dtype=float)
+        confidence = (
+            np.max(probabilities, axis=1)
+            if probabilities.ndim == 2 and probabilities.shape[0] == len(y_pred)
+            else np.zeros(len(y_pred), dtype=float)
+        )
+    else:
+        confidence = np.zeros(len(y_pred), dtype=float)
+    confidence = np.nan_to_num(
+        confidence,
+        nan=0.0,
+        posinf=1.0,
+        neginf=0.0,
+    )
+    confidence = np.clip(confidence, 0.0, 1.0)
+    correct = (
+        pd.Series(y_true).astype(str).reset_index(drop=True).to_numpy()
+        == pd.Series(y_pred).astype(str).reset_index(drop=True).to_numpy()
+    )
+    accepted = confidence >= float(accept_threshold_tau)
+    accepted_coverage = float(np.mean(accepted)) if accepted.size else 0.0
+    accepted_accuracy = (
+        float(np.mean(correct[accepted])) if accepted.any() else 0.0
+    )
     return PerAssayMetrics(
         assay=assay,
         training_samples=int(training_samples),
@@ -455,7 +513,41 @@ def per_assay_metrics(
         rare_class_counts=dict({str(k): int(v) for k, v in rare_class_counts.items()}),
         accept_threshold_tau=accept_threshold_tau,
         classifier_kind=classifier_kind,
+        expected_calibration_error=(
+            _expected_calibration_error(correct, confidence)
+            if has_confidence
+            else 0.0
+        ),
+        accepted_coverage=accepted_coverage,
+        accepted_accuracy=accepted_accuracy,
+        mean_confidence=float(np.mean(confidence)) if confidence.size else 0.0,
     )
+
+
+def _expected_calibration_error(
+    correct: np.ndarray,
+    confidence: np.ndarray,
+    *,
+    bins: int = 10,
+) -> float:
+    if confidence.size == 0:
+        return 0.0
+    edges = np.linspace(0.0, 1.0, max(2, int(bins)) + 1)
+    total = float(confidence.size)
+    error = 0.0
+    for index in range(len(edges) - 1):
+        lower = edges[index]
+        upper = edges[index + 1]
+        in_bin = (
+            (confidence >= lower)
+            & (confidence <= upper if index == len(edges) - 2 else confidence < upper)
+        )
+        if not in_bin.any():
+            continue
+        accuracy = float(np.mean(correct[in_bin]))
+        mean_confidence = float(np.mean(confidence[in_bin]))
+        error += float(np.sum(in_bin)) / total * abs(accuracy - mean_confidence)
+    return float(error)
 
 
 def serialize_model(
@@ -470,6 +562,7 @@ def serialize_model(
     trained_at_utc: str = "",
     output_dir: Path | None = None,
     feature_columns: Sequence[str] | None = None,
+    extra_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Path]:
     """Persist a trained estimator and metadata. Returns paths dict.
 
@@ -496,9 +589,24 @@ def serialize_model(
         "classifier_kind": classifier_kind,
         "rare_class_counts": dict({str(k): int(v) for k, v in rare_class_counts.items()}),
         "trained_at_utc": trained_at_utc,
+        "runtime_versions": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "pandas": pd.__version__,
+            "scikit_learn": sklearn.__version__,
+            "joblib": joblib.__version__,
+        },
     }
     if feature_columns is not None:
         metadata["feature_columns"] = [str(c) for c in feature_columns]
+    if extra_metadata:
+        overlap = sorted(set(metadata) & set(extra_metadata))
+        if overlap:
+            raise ValueError(
+                "extra model metadata cannot replace reserved keys: "
+                + ", ".join(overlap)
+            )
+        metadata.update(dict(extra_metadata))
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
     return {"joblib": joblib_path, "metadata": metadata_path}
 

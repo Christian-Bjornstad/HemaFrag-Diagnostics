@@ -38,14 +38,23 @@ def _make_model_dir(p: Path) -> Path:
     joblib.dump(clf, p / "FR1" / "dummy.joblib")
     (p / "FR1" / "metadata.json").write_text(
         json.dumps({
-            "schema_version": "ml_training_pipeline_v1",
+            "schema_version": "ml_training_pipeline_v2",
             "assay": "FR1",
             "label_order": ["monoklonal", "polyklonal"],
             "accept_threshold_tau": 0.80,
             "classifier_kind": "random_forest",
             "rare_class_counts": {},
             "trained_at_utc": "",
-            "feature_columns": ["dominant_peak_height", "dominant_to_second_ratio", "dominant_height_share"],
+            "feature_columns": ["trace_runtime_signal", "dominant_to_second_ratio", "dominant_height_share"],
+            "trace_feature_schema_version": "clonality_trace_features_v1",
+            "deployment_status": "validated",
+            "runtime_eligible": True,
+            "validation": {
+                "strategy": "StratifiedGroupKFold",
+                "every_row_oof_once": True,
+                "effective_splits": 5,
+                "promotion_gate": {"passed": True},
+            },
         }),
         encoding="utf-8",
     )
@@ -75,8 +84,28 @@ def test_is_ml_enabled_when_dir_set(tmp_path):
     assert ml_model_dir_for_settings(settings) == tmp_path
 
 
+def test_is_ml_enabled_rejects_candidate_artifact(tmp_path):
+    _make_model_dir(tmp_path)
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["deployment_status"] = "candidate"
+    metadata["runtime_eligible"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert is_ml_enabled(_settings_with_dir(tmp_path)) is False
+
+
 def test_is_ml_disabled_when_dir_missing_setting(tmp_path):
     settings = {"analyses": {"clonality": {"interpretation": {}}}}
+    assert is_ml_enabled(settings) is False
+    assert ml_model_dir_for_settings(settings) is None
+
+
+def test_is_ml_disabled_when_interpretation_toggle_is_off(tmp_path):
+    _make_model_dir(tmp_path)
+    settings = _settings_with_dir(tmp_path)
+    settings["analyses"]["clonality"]["interpretation"]["enabled"] = False
+
     assert is_ml_enabled(settings) is False
     assert ml_model_dir_for_settings(settings) is None
 
@@ -132,7 +161,7 @@ def test_attach_stamps_ml_columns_when_assay_known(tmp_path):
             "ClonalityConfidence": 0.66,
             "ClonalityReviewNeeded": False,
             "features": {
-                "dominant_peak_height": 100.0,
+                "trace_runtime_signal": 100.0,
                 "dominant_to_second_ratio": 0.5,
                 "dominant_height_share": 0.3,
             },
@@ -142,9 +171,84 @@ def test_attach_stamps_ml_columns_when_assay_known(tmp_path):
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
         # Model version stamped
-        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v1"
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v2"
+        assert out.get("ClonalityMLThreshold") == 0.8
+        assert out.get("ClonalityMLEvidence")
     finally:
         monkeypatch.undo()
+
+
+def test_attach_recomputes_full_features_when_raw_trace_fields_are_missing(
+    tmp_path,
+    monkeypatch,
+):
+    _make_model_dir(tmp_path)
+    import core.analyses.clonality.ml_runtime as rt_mod
+
+    monkeypatch.setattr(
+        rt_mod,
+        "ml_model_dir_for_settings",
+        lambda _=None: tmp_path,
+    )
+    calls = []
+
+    def full_features(_entry):
+        calls.append(True)
+        return {
+            "sample_kind": "patient",
+            "trace_runtime_signal": 100.0,
+            "dominant_to_second_ratio": 0.5,
+            "dominant_height_share": 0.3,
+        }
+
+    monkeypatch.setattr(
+        "core.analyses.clonality.interpretation.features_from_entry",
+        full_features,
+    )
+    entry = {
+        "assay": "FR1",
+        "sample_kind": "patient",
+        "ClonalitySuggestion": "monoklonal",
+        "features": {"dominant_to_second_ratio": 0.5},
+    }
+
+    out = attach_ml_prediction_if_enabled(entry)
+
+    assert calls == [True]
+    assert out["ClonalityMLSuggestion"] == "monoklonal"
+
+
+def test_attach_refuses_prediction_when_raw_trace_is_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    _make_model_dir(tmp_path)
+    import core.analyses.clonality.ml_runtime as rt_mod
+
+    monkeypatch.setattr(
+        rt_mod,
+        "ml_model_dir_for_settings",
+        lambda _=None: tmp_path,
+    )
+    monkeypatch.setattr(
+        "core.analyses.clonality.interpretation.features_from_entry",
+        lambda _entry: {
+            "sample_kind": "patient",
+            "trace_available_channel_count": 0,
+        },
+    )
+    entry = {
+        "assay": "FR1",
+        "sample_kind": "patient",
+        "ClonalitySuggestion": "monoklonal",
+        "features": {},
+    }
+
+    out = attach_ml_prediction_if_enabled(entry)
+
+    assert out["ClonalityMLSuggestion"] == ""
+    assert out["ClonalityMLReviewNeeded"] is True
+    assert out["ClonalityMLEvidence"] == "trace_features_unavailable"
 
 
 def test_attach_excludes_control_when_kind_is_only_in_features(tmp_path):
@@ -161,7 +265,7 @@ def test_attach_excludes_control_when_kind_is_only_in_features(tmp_path):
             "assay": "FR1",
             "features": {
                 "sample_kind": "control",
-                "dominant_peak_height": 100.0,
+                "trace_runtime_signal": 100.0,
                 "dominant_to_second_ratio": 2.0,
                 "dominant_height_share": 0.7,
             },
@@ -203,7 +307,7 @@ def test_attach_marks_review_when_disagreement(tmp_path):
             "ClonalityConfidence": 0.66,
             "ClonalityReviewNeeded": False,
             "features": {
-                "dominant_peak_height": 50.0,
+                "trace_runtime_signal": 50.0,
                 "dominant_to_second_ratio": 0.9,
                 "dominant_height_share": 0.7,
             },

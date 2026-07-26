@@ -63,7 +63,7 @@ def _make_model_dir(p: Path) -> Path:
     clf = _train_dummy_model(seed=42)
     joblib.dump(clf, p / "FR1" / "random_forest.joblib")
     meta = {
-        "schema_version": "ml_training_pipeline_v1",
+        "schema_version": "ml_training_pipeline_v2",
         "assay": "FR1",
         "label_order": ["monoklonal", "polyklonal", "irregulaer",
                         "bi_oligoklonal", "pseudoklonal"],
@@ -72,11 +72,20 @@ def _make_model_dir(p: Path) -> Path:
         "rare_class_counts": {},
         "trained_at_utc": "2026-07-13T10:00:00Z",
         "feature_columns": [
-            "dominant_peak_height",
+            "trace_runtime_signal",
             "dominant_to_second_ratio",
             "dominant_height_share",
             "peak_count",
         ],
+        "trace_feature_schema_version": "clonality_trace_features_v1",
+        "deployment_status": "validated",
+        "runtime_eligible": True,
+        "validation": {
+            "strategy": "StratifiedGroupKFold",
+            "every_row_oof_once": True,
+            "effective_splits": 5,
+            "promotion_gate": {"passed": True},
+        },
     }
     (p / "FR1" / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
     return p
@@ -156,6 +165,7 @@ def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch)
     # Patch features_from_entry to return controllable features; the real
     # one needs real peak data we don't have in this minimal harness.
     fake_features = {
+        "trace_runtime_signal": 0.6,
         "dominant_peak_height": 0.6,
         "dominant_to_second_ratio": 0.55,
         "dominant_height_share": 0.45,
@@ -187,7 +197,7 @@ def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch)
     }
     if out.get("ClonalityMLSuggestion"):
         # If ML emitted a label, the model_version stamp should be present
-        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v1"
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v2"
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
 

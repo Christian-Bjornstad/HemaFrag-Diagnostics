@@ -129,6 +129,11 @@ def is_trace_feature(column: object) -> bool:
     return any(name.startswith(prefix) for prefix in TRACE_FEATURE_PREFIXES)
 
 
+def is_raw_trace_feature(column: object) -> bool:
+    """Return whether a column belongs to the real-FSA trace schema."""
+    return str(column).strip().lower().startswith("trace_")
+
+
 def _normalize_run_columns(frame: pd.DataFrame) -> pd.DataFrame:
     normalized = frame.copy()
     lower_to_actual = {str(column).strip().lower(): column for column in normalized.columns}
@@ -167,6 +172,7 @@ __all__ = [
     "RUN_SHEET_PRIORITY",
     "TrackingRunTable",
     "TRACE_FEATURE_PREFIXES",
+    "is_raw_trace_feature",
     "is_trace_feature",
     "load_tracking_run_table",
     "missing_required_columns",
