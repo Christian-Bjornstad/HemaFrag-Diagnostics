@@ -23,7 +23,7 @@ from core.analyses.clonality.ml_training import ANNOTATION_CLASSES_ORDER
 
 def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = None) -> dict:
     return {
-        "schema_version": "ml_training_pipeline_v5",
+        "schema_version": "ml_training_pipeline_v6",
         "assay": assay,
         "label_order": list(ANNOTATION_CLASSES_ORDER),
         "accept_threshold_tau": float(tau),
@@ -44,6 +44,20 @@ def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = No
             "conflicting_label_content_hashes": 0,
             "conflicting_source_run_content_hashes": 0,
         },
+        "training_class_support": {
+            "monoklonal": {
+                "rows": 25,
+                "unique_dit_groups": 25,
+                "unique_source_run_groups": 3,
+                "rows_missing_source_run": 0,
+            },
+            "polyklonal": {
+                "rows": 25,
+                "unique_dit_groups": 25,
+                "unique_source_run_groups": 3,
+                "rows_missing_source_run": 0,
+            },
+        },
         "validation": {
             "strategy": "StratifiedGroupKFold",
             "group_column": "DITContentComponent",
@@ -55,6 +69,21 @@ def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = No
                 "method": "dit_fsa_content_connected_components",
                 "content_hash_coverage": 1.0,
             },
+            "class_support_gate": {"passed": True},
+            "class_fold_support": {
+                "monoklonal": {
+                    "total_folds": 5,
+                    "training_folds_with_examples": 5,
+                    "evaluation_folds_with_examples": 5,
+                    "min_train_rows": 20,
+                },
+                "polyklonal": {
+                    "total_folds": 5,
+                    "training_folds_with_examples": 5,
+                    "evaluation_folds_with_examples": 5,
+                    "min_train_rows": 20,
+                },
+            },
             "promotion_gate": {"passed": True},
             "source_run_stress": {
                 "status": "complete",
@@ -64,6 +93,20 @@ def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = No
                 "effective_splits": 3,
                 "row_count": 50,
                 "unique_groups": 3,
+                "class_fold_support": {
+                    "monoklonal": {
+                        "total_folds": 3,
+                        "training_folds_with_examples": 3,
+                        "evaluation_folds_with_examples": 3,
+                        "min_train_rows": 16,
+                    },
+                    "polyklonal": {
+                        "total_folds": 3,
+                        "training_folds_with_examples": 3,
+                        "evaluation_folds_with_examples": 3,
+                        "min_train_rows": 16,
+                    },
+                },
                 "promotion_gate": {"passed": True},
             },
         },
@@ -190,6 +233,30 @@ def test_store_ignores_artifact_without_passing_source_run_stress(tmp_path):
     metadata["validation"]["source_run_stress"]["promotion_gate"][
         "passed"
     ] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_without_class_support_evidence(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["training_class_support"]["monoklonal"][
+        "unique_source_run_groups"
+    ] = 0
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_without_core_class_fold_coverage(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["validation"]["class_fold_support"]["monoklonal"][
+        "evaluation_folds_with_examples"
+    ] = 1
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
     assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False

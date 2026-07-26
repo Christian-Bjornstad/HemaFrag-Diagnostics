@@ -26,6 +26,7 @@ REVIEW_ROUTED_LABELS = {
     "qc_teknisk_fail",
     "usikker_review",
 }
+CORE_CLONALITY_LABELS = ("monoklonal", "polyklonal")
 
 
 @dataclass
@@ -170,6 +171,15 @@ def grouped_oof_validate(
                     str(key): int(value)
                     for key, value in y_test.value_counts().sort_index().items()
                 },
+                "train_label_counts": {
+                    str(key): int(value)
+                    for key, value in (
+                        dataset.y.iloc[train_idx]
+                        .value_counts()
+                        .sort_index()
+                        .items()
+                    )
+                },
             }
         )
         prediction_frames.append(
@@ -234,6 +244,11 @@ def grouped_oof_validate(
             "max_features_per_fold": max(0, int(importance_max_features)),
             "repeats_per_feature_per_fold": max(0, int(importance_repeats)),
         },
+        "class_fold_support": _class_fold_support(
+            split_records,
+            labels=sorted(set(dataset.y.astype(str))),
+            effective_splits=effective_splits,
+        ),
         "folds": split_records,
     }
     return GroupedValidationResult(
@@ -413,6 +428,174 @@ def assess_source_run_gate(
         reasons=reasons,
         thresholds=thresholds,
     )
+
+
+def assess_class_support_gate(
+    dataset: PerAssayDataset,
+    validation: GroupedValidationResult,
+    *,
+    source_run_validation: GroupedValidationResult | None,
+    min_class_dit_groups: int,
+    min_core_class_dit_groups: int,
+    min_class_source_run_groups: int,
+    min_class_evaluation_folds: int,
+    min_class_training_rows_per_fold: int,
+) -> PromotionGate:
+    """Require each modeled label to have independent, evaluable support."""
+    thresholds: dict[str, float | int] = {
+        "min_class_dit_groups": int(min_class_dit_groups),
+        "min_core_class_dit_groups": int(min_core_class_dit_groups),
+        "min_class_source_run_groups": int(min_class_source_run_groups),
+        "min_class_evaluation_folds": int(min_class_evaluation_folds),
+        "min_class_training_rows_per_fold": int(
+            min_class_training_rows_per_fold
+        ),
+    }
+    support = dataset.class_support
+    observed_labels = sorted(support)
+    reasons: list[str] = []
+    for label in CORE_CLONALITY_LABELS:
+        if label not in support:
+            reasons.append(f"required_class={label} absent from training data")
+
+    primary_fold_support = validation.split_manifest.get(
+        "class_fold_support", {}
+    )
+    source_fold_support = (
+        source_run_validation.split_manifest.get("class_fold_support", {})
+        if source_run_validation is not None
+        else {}
+    )
+    for label in observed_labels:
+        label_support = support[label]
+        required_dits = (
+            max(
+                int(min_class_dit_groups),
+                int(min_core_class_dit_groups),
+            )
+            if label in CORE_CLONALITY_LABELS
+            else int(min_class_dit_groups)
+        )
+        dit_groups = int(label_support.get("unique_dit_groups") or 0)
+        run_groups = int(
+            label_support.get("unique_source_run_groups") or 0
+        )
+        if dit_groups < required_dits:
+            reasons.append(
+                f"class_support[{label}].unique_dit_groups={dit_groups} "
+                f"below {required_dits}"
+            )
+        if run_groups < int(min_class_source_run_groups):
+            reasons.append(
+                f"class_support[{label}].unique_source_run_groups="
+                f"{run_groups} below {int(min_class_source_run_groups)}"
+            )
+        missing_runs = int(label_support.get("rows_missing_source_run") or 0)
+        if missing_runs:
+            reasons.append(
+                f"class_support[{label}].rows_missing_source_run="
+                f"{missing_runs} above 0"
+            )
+        _append_fold_support_reasons(
+            reasons,
+            label=label,
+            prefix="dit_oof",
+            support=primary_fold_support.get(label),
+            effective_splits=int(
+                validation.split_manifest.get("effective_splits") or 0
+            ),
+            min_evaluation_folds=int(min_class_evaluation_folds),
+            min_training_rows=int(min_class_training_rows_per_fold),
+        )
+        if source_run_validation is not None:
+            _append_fold_support_reasons(
+                reasons,
+                label=label,
+                prefix="source_run_oof",
+                support=source_fold_support.get(label),
+                effective_splits=int(
+                    source_run_validation.split_manifest.get(
+                        "effective_splits"
+                    )
+                    or 0
+                ),
+                min_evaluation_folds=int(min_class_evaluation_folds),
+                min_training_rows=int(min_class_training_rows_per_fold),
+            )
+    return PromotionGate(
+        passed=not reasons,
+        reasons=reasons,
+        thresholds=thresholds,
+    )
+
+
+def _append_fold_support_reasons(
+    reasons: list[str],
+    *,
+    label: str,
+    prefix: str,
+    support: Mapping[str, Any] | None,
+    effective_splits: int,
+    min_evaluation_folds: int,
+    min_training_rows: int,
+) -> None:
+    support = support if isinstance(support, Mapping) else {}
+    train_folds = int(support.get("training_folds_with_examples") or 0)
+    evaluation_folds = int(
+        support.get("evaluation_folds_with_examples") or 0
+    )
+    minimum_training_rows = int(support.get("min_train_rows") or 0)
+    required_evaluation = min(
+        max(1, int(min_evaluation_folds)),
+        max(1, int(effective_splits)),
+    )
+    if train_folds < int(effective_splits):
+        reasons.append(
+            f"{prefix}.class[{label}].training_folds_with_examples="
+            f"{train_folds} below {int(effective_splits)}"
+        )
+    if evaluation_folds < required_evaluation:
+        reasons.append(
+            f"{prefix}.class[{label}].evaluation_folds_with_examples="
+            f"{evaluation_folds} below {required_evaluation}"
+        )
+    if minimum_training_rows < int(min_training_rows):
+        reasons.append(
+            f"{prefix}.class[{label}].min_train_rows="
+            f"{minimum_training_rows} below {int(min_training_rows)}"
+        )
+
+
+def _class_fold_support(
+    split_records: list[dict[str, Any]],
+    *,
+    labels: list[str],
+    effective_splits: int,
+) -> dict[str, dict[str, int | bool]]:
+    support: dict[str, dict[str, int | bool]] = {}
+    for label in labels:
+        train_counts = [
+            int(record.get("train_label_counts", {}).get(label) or 0)
+            for record in split_records
+        ]
+        test_counts = [
+            int(record.get("test_label_counts", {}).get(label) or 0)
+            for record in split_records
+        ]
+        training_folds = sum(count > 0 for count in train_counts)
+        evaluation_folds = sum(count > 0 for count in test_counts)
+        support[label] = {
+            "total_folds": int(effective_splits),
+            "training_folds_with_examples": int(training_folds),
+            "evaluation_folds_with_examples": int(evaluation_folds),
+            "min_train_rows": int(min(train_counts, default=0)),
+            "min_test_rows": int(min(test_counts, default=0)),
+            "every_training_fold": training_folds == int(effective_splits),
+            "every_evaluation_fold": evaluation_folds == int(
+                effective_splits
+            ),
+        }
+    return support
 
 
 def metrics_as_dict(metrics: PerAssayMetrics) -> dict[str, Any]:
@@ -900,6 +1083,7 @@ __all__ = [
     "GroupedValidationResult",
     "PromotionGate",
     "REVIEW_ROUTED_LABELS",
+    "assess_class_support_gate",
     "assess_promotion_gate",
     "assess_source_run_gate",
     "dit_content_grouped_validate",

@@ -6,6 +6,7 @@ from sklearn.ensemble import RandomForestClassifier
 
 from core.analyses.clonality.ml_training import PerAssayDataset
 from core.analyses.clonality.ml_validation import (
+    assess_class_support_gate,
     assess_promotion_gate,
     assess_source_run_gate,
     dit_content_grouped_validate,
@@ -95,6 +96,12 @@ def test_grouped_oof_validation_predicts_every_row_without_dit_leakage(monkeypat
     assert result.predictions.groupby("DIT")["Fold"].nunique().eq(1).all()
     assert result.split_manifest["every_row_oof_once"] is True
     assert result.split_manifest["effective_splits"] == 5
+    assert result.split_manifest["class_fold_support"]["monoklonal"][
+        "training_folds_with_examples"
+    ] == 5
+    assert result.split_manifest["class_fold_support"]["monoklonal"][
+        "evaluation_folds_with_examples"
+    ] >= 2
     assert len(result.fold_metrics) == 5
     assert set(result.drift_summary["Dimension"]) == {"SourceRunKey", "RunDate"}
     assert not result.feature_importance.empty
@@ -230,6 +237,82 @@ def test_source_run_stress_rejects_missing_run_provenance(monkeypatch):
             dataset,
             classifier_kind="random_forest",
         )
+
+
+def test_class_support_gate_requires_independent_patients_runs_and_folds(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+    dit_validation = dit_content_grouped_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=3,
+        importance_max_features=0,
+    )
+    run_validation = source_run_grouped_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=3,
+    )
+
+    passing = assess_class_support_gate(
+        dataset,
+        dit_validation,
+        source_run_validation=run_validation,
+        min_class_dit_groups=10,
+        min_core_class_dit_groups=10,
+        min_class_source_run_groups=3,
+        min_class_evaluation_folds=2,
+        min_class_training_rows_per_fold=6,
+    )
+    assert passing.passed is True
+
+    run_validation.split_manifest["class_fold_support"]["monoklonal"][
+        "min_train_rows"
+    ] = 5
+    calibration_blocked = assess_class_support_gate(
+        dataset,
+        dit_validation,
+        source_run_validation=run_validation,
+        min_class_dit_groups=10,
+        min_core_class_dit_groups=10,
+        min_class_source_run_groups=3,
+        min_class_evaluation_folds=2,
+        min_class_training_rows_per_fold=6,
+    )
+    assert any(
+        "source_run_oof.class[monoklonal].min_train_rows=5 below 6"
+        in reason
+        for reason in calibration_blocked.reasons
+    )
+    run_validation.split_manifest["class_fold_support"]["monoklonal"][
+        "min_train_rows"
+    ] = 20
+
+    dataset.class_support["monoklonal"]["unique_dit_groups"] = 1
+    dataset.class_support["monoklonal"]["unique_source_run_groups"] = 1
+    blocked = assess_class_support_gate(
+        dataset,
+        dit_validation,
+        source_run_validation=run_validation,
+        min_class_dit_groups=10,
+        min_core_class_dit_groups=10,
+        min_class_source_run_groups=3,
+        min_class_evaluation_folds=2,
+        min_class_training_rows_per_fold=6,
+    )
+
+    assert blocked.passed is False
+    assert any("monoklonal" in reason for reason in blocked.reasons)
+    assert any("unique_dit_groups=1" in reason for reason in blocked.reasons)
+    assert any(
+        "unique_source_run_groups=1" in reason
+        for reason in blocked.reasons
+    )
 
 
 def test_dit_content_validation_coalesces_cross_dit_duplicate_traces(

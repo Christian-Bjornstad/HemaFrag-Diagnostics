@@ -321,6 +321,9 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
     promotion_gate = validation.get("promotion_gate")
     if not isinstance(promotion_gate, Mapping):
         return False
+    class_support_gate = validation.get("class_support_gate")
+    if not isinstance(class_support_gate, Mapping):
+        return False
     run_stress = validation.get("source_run_stress")
     if not isinstance(run_stress, Mapping):
         return False
@@ -332,6 +335,9 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         return False
     data_provenance = metadata.get("training_data_provenance")
     if not isinstance(data_provenance, Mapping):
+        return False
+    training_class_support = metadata.get("training_class_support")
+    if not isinstance(training_class_support, Mapping):
         return False
     try:
         effective_splits = int(validation.get("effective_splits") or 0)
@@ -392,6 +398,11 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         and conflicting_label_hashes == 0
         and conflicting_run_hashes == 0
     )
+    class_support_compatible = _valid_training_class_support(
+        training_class_support
+    )
+    primary_fold_support_compatible = _valid_class_fold_support(validation)
+    run_fold_support_compatible = _valid_class_fold_support(run_stress)
     return bool(
         metadata.get("schema_version") == RUNTIME_MODEL_SCHEMA_VERSION
         and metadata.get("deployment_status") == "validated"
@@ -407,6 +418,10 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         and unique_primary_groups >= 2
         and content_grouping_compatible
         and deduplication_compatible
+        and class_support_compatible
+        and primary_fold_support_compatible
+        and run_fold_support_compatible
+        and class_support_gate.get("passed") is True
         and promotion_gate.get("passed") is True
         and run_stress.get("status") == "complete"
         and run_stress.get("strategy") == "StratifiedGroupKFold"
@@ -416,6 +431,60 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         and unique_run_groups >= 2
         and run_gate.get("passed") is True
     )
+
+
+def _valid_training_class_support(support: Mapping[str, Any]) -> bool:
+    if not support:
+        return False
+    for label, values in support.items():
+        if not str(label) or not isinstance(values, Mapping):
+            return False
+        try:
+            rows = int(values.get("rows") or 0)
+            dit_groups = int(values.get("unique_dit_groups") or 0)
+            run_groups = int(values.get("unique_source_run_groups") or 0)
+            missing_runs = int(values.get("rows_missing_source_run") or 0)
+        except (TypeError, ValueError):
+            return False
+        if rows <= 0 or dit_groups <= 0 or run_groups <= 0 or missing_runs:
+            return False
+    return all(label in support for label in ("monoklonal", "polyklonal"))
+
+
+def _valid_class_fold_support(container: Mapping[str, Any]) -> bool:
+    fold_support = container.get("class_fold_support")
+    if not isinstance(fold_support, Mapping):
+        return False
+    try:
+        effective_splits = int(container.get("effective_splits") or 0)
+    except (TypeError, ValueError):
+        return False
+    if effective_splits < 2:
+        return False
+    required_evaluation_folds = min(2, effective_splits)
+    for label in ("monoklonal", "polyklonal"):
+        values = fold_support.get(label)
+        if not isinstance(values, Mapping):
+            return False
+        try:
+            total_folds = int(values.get("total_folds") or 0)
+            training_folds = int(
+                values.get("training_folds_with_examples") or 0
+            )
+            evaluation_folds = int(
+                values.get("evaluation_folds_with_examples") or 0
+            )
+            minimum_training_rows = int(values.get("min_train_rows") or 0)
+        except (TypeError, ValueError):
+            return False
+        if (
+            total_folds != effective_splits
+            or training_folds != effective_splits
+            or evaluation_folds < required_evaluation_folds
+            or minimum_training_rows < 6
+        ):
+            return False
+    return True
 
 
 def flatten_features_for_inference(

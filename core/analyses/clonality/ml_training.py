@@ -63,7 +63,7 @@ ANNOTATION_CLASSES_ORDER: tuple[str, ...] = (
     "qc_teknisk_fail",
     "usikker_review",
 )
-RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v5"
+RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v6"
 
 DEFAULT_NON_FEATURE_COLUMNS = {
     "Month",
@@ -120,7 +120,45 @@ __all__ = [
     "deserialize_model",
     "PerAssayDataset",
     "PerAssayMetrics",
+    "summarize_class_support",
 ]
+
+
+def summarize_class_support(
+    y: pd.Series,
+    dit: pd.Series,
+    rows: pd.DataFrame,
+) -> dict[str, dict[str, int]]:
+    """Count independent patient and run support for every observed label."""
+    labels = pd.Series(y).fillna("").astype(str).str.strip().reset_index(drop=True)
+    dits = pd.Series(dit).fillna("").astype(str).str.strip().reset_index(drop=True)
+    metadata = pd.DataFrame(rows).reset_index(drop=True)
+    if len(labels) != len(dits) or len(labels) != len(metadata):
+        raise ValueError("class support inputs must have identical row counts")
+    if "SourceRunKey" in metadata.columns:
+        source_runs = (
+            metadata["SourceRunKey"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .reset_index(drop=True)
+        )
+    else:
+        source_runs = pd.Series([""] * len(labels), dtype=str)
+
+    support: dict[str, dict[str, int]] = {}
+    for label in sorted(set(labels.loc[labels.ne("")])):
+        mask = labels.eq(label)
+        label_runs = source_runs.loc[mask]
+        support[label] = {
+            "rows": int(mask.sum()),
+            "unique_dit_groups": int(dits.loc[mask & dits.ne("")].nunique()),
+            "unique_source_run_groups": int(
+                label_runs.loc[label_runs.ne("")].nunique()
+            ),
+            "rows_missing_source_run": int(label_runs.eq("").sum()),
+        }
+    return support
 
 
 @dataclass
@@ -140,6 +178,7 @@ class PerAssayDataset:
     dit: pd.Series
     assay: str
     rare_class_counts: dict[str, int] = field(default_factory=dict)
+    class_support: dict[str, dict[str, int]] = field(default_factory=dict)
     data_provenance: dict[str, Any] = field(default_factory=dict)
     n_samples: int = 0
     rows: pd.DataFrame = field(default_factory=pd.DataFrame)
@@ -147,6 +186,12 @@ class PerAssayDataset:
     def __post_init__(self) -> None:
         if self.n_samples == 0:
             self.n_samples = int(len(self.X))
+        if not self.class_support and len(self.rows) == self.n_samples:
+            self.class_support = summarize_class_support(
+                self.y,
+                self.dit,
+                self.rows,
+            )
 
 
 @dataclass
@@ -314,6 +359,7 @@ def build_per_assay_datasets(
         y_series = group[label_col].astype(str).reset_index(drop=True)
         dit_series = group[dit_col].astype(str).reset_index(drop=True)
         counts = group[label_col].value_counts().to_dict()
+        reset_group = group.reset_index(drop=True)
         out[str(assay_name)] = PerAssayDataset(
             X=X_num,
             y=y_series,
@@ -322,7 +368,12 @@ def build_per_assay_datasets(
             n_samples=len(group),
             rare_class_counts={str(k): int(v) for k, v in counts.items()},
             data_provenance=data_provenance,
-            rows=group.reset_index(drop=True),
+            rows=reset_group,
+            class_support=summarize_class_support(
+                y_series,
+                dit_series,
+                reset_group,
+            ),
         )
     return out
 

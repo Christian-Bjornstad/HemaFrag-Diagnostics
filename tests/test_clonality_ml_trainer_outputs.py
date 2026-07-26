@@ -92,6 +92,7 @@ def _run(
     promote,
     gate_value="0.5",
     classifier_kind="random_forest",
+    extra_args=(),
 ):
     workbook, features = _inputs(tmp_path)
     output = tmp_path / ("promoted" if promote else "candidate")
@@ -120,6 +121,8 @@ def _run(
         classifier_kind,
         "--min-dit-groups",
         "20",
+        "--min-core-class-dit-groups",
+        "10",
         "--min-macro-f1",
         gate_value,
         "--min-monoklonal-f1",
@@ -127,6 +130,7 @@ def _run(
         "--min-monoklonal-precision",
         gate_value,
     ]
+    args.extend(extra_args)
     if promote:
         args.append("--promote-if-passes")
     return main(args), output
@@ -139,7 +143,7 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
     metadata = json.loads(
         (output / "FR1" / "metadata.json").read_text(encoding="utf-8")
     )
-    assert metadata["schema_version"] == "ml_training_pipeline_v5"
+    assert metadata["schema_version"] == "ml_training_pipeline_v6"
     assert metadata["deployment_status"] == "candidate"
     assert metadata["runtime_eligible"] is False
     assert metadata["training_rows"] == 36
@@ -147,6 +151,9 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
     assert metadata["training_data_provenance"][
         "duplicate_rows_removed"
     ] == 0
+    assert metadata["training_class_support"]["monoklonal"][
+        "unique_dit_groups"
+    ] == 18
     assert metadata["validation"]["every_row_oof_once"] is True
     assert metadata["validation"]["group_column"] == "DITContentComponent"
     assert metadata["validation"]["group_provenance"][
@@ -161,6 +168,10 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
     assert metadata["validation"]["source_run_stress"]["promotion_gate"][
         "passed"
     ] is True
+    assert metadata["validation"]["class_support_gate"]["passed"] is True
+    assert metadata["validation"]["class_fold_support"]["monoklonal"][
+        "evaluation_folds_with_examples"
+    ] >= 2
     assert ClonalityModelStore(model_dir=output).is_enabled("FR1") is False
 
     report_dir = output / "reports" / "2026-07-26"
@@ -207,6 +218,32 @@ def test_trainer_blocks_explicit_promotion_when_gate_fails(tmp_path, monkeypatch
     assert metadata["validation"]["promotion_gate"]["passed"] is False
     assert metadata["validation"]["promotion_gate"]["reasons"]
     assert ClonalityModelStore(model_dir=output).is_enabled("FR1") is False
+
+
+def test_trainer_blocks_promotion_when_class_support_is_too_low(
+    tmp_path,
+    monkeypatch,
+):
+    exit_code, output = _run(
+        tmp_path,
+        monkeypatch,
+        promote=True,
+        extra_args=("--min-core-class-dit-groups", "100"),
+    )
+
+    metadata = json.loads(
+        (output / "FR1" / "metadata.json").read_text(encoding="utf-8")
+    )
+    support_gate = metadata["validation"]["class_support_gate"]
+
+    assert exit_code == 2
+    assert support_gate["passed"] is False
+    assert any(
+        "class_support[monoklonal].unique_dit_groups=18 below 100"
+        in reason
+        for reason in support_gate["reasons"]
+    )
+    assert metadata["runtime_eligible"] is False
 
 
 def test_trainer_refuses_existing_model_output_directory(tmp_path, monkeypatch):
@@ -275,6 +312,18 @@ def test_trainer_rejects_auto_selection_for_direct_promotion(tmp_path):
                 "--classifier-kind",
                 "auto",
                 "--promote-if-passes",
+            ]
+        )
+
+
+def test_trainer_rejects_calibration_support_below_runtime_floor(tmp_path):
+    with pytest.raises(ValueError, match="cannot be below 6"):
+        main(
+            [
+                "--xls",
+                str(tmp_path / "missing.xlsx"),
+                "--min-class-training-rows-per-fold",
+                "5",
             ]
         )
 

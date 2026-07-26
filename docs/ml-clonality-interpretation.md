@@ -17,12 +17,17 @@ remains the report source of truth.
 - Within each assay, one FSA content hash contributes one training vote.
   Conflicting chemist labels or source-run assignments for identical bytes
   stop training.
+- Every modeled label must have configurable independent DIT and source-run
+  support. `monoklonal` and `polyklonal` are required classes.
+- Every label must occur in enough held-out folds, remain present in every
+  training fold, and have at least six training rows per fold so tree-model
+  confidence is calibrated consistently.
 - Replicate and panel context is limited to the same DIT and sanitized source
   run, and controls/SL are excluded from patient context.
 - Training produces runtime-ineligible candidates by default.
-- Runtime only discovers explicitly promoted `ml_training_pipeline_v5`
+- Runtime only discovers explicitly promoted `ml_training_pipeline_v6`
   artifacts whose metadata proves complete DIT/content- and source-run-grouped
-  out-of-fold validation.
+  out-of-fold validation plus per-class support and fold coverage.
 - Controls, SL, unavailable traces, failed quality gates, disagreement,
   low confidence, and rare-label predictions are never silently accepted.
 
@@ -52,14 +57,15 @@ revalidation.
 3. Refresh chemist labels from the current workbook at training time.
 4. Build one dataset per assay, require complete `FsaContentHash` coverage,
    reject conflicting duplicate provenance, remove agreeing byte-identical
-   copies, then apply minimum sample and class counts.
+   copies, then measure row, independent-DIT, and source-run support per class.
 5. Validate with `StratifiedGroupKFold`. DITs connected by byte-identical FSA
    content are coalesced into one validation group as defense in depth.
 6. In auto mode, compare calibrated RandomForest and ExtraTrees candidates
    on identical grouped folds and select one using the recorded safety-first
    ranking.
-7. Rerun the selected explicit classifier with complete source runs held out
-   and require its separate promotion thresholds to pass.
+7. Rerun the selected explicit classifier with complete source runs held out.
+   Require each class to remain trainable and evaluable across both validation
+   strategies, including the six-row calibration minimum in every train fold.
 8. Export row-level out-of-fold predictions, disagreements, review cases,
    drift summaries, held-out feature importance, split provenance, metrics,
    and a local HTML review panel.
@@ -128,6 +134,11 @@ python -m scripts.train_clonality_interpretation_models `
   --min-monoklonal-f1 0.70 `
   --min-monoklonal-precision 0.90 `
   --min-dit-groups 50 `
+  --min-class-dit-groups 10 `
+  --min-core-class-dit-groups 20 `
+  --min-class-source-run-groups 3 `
+  --min-class-evaluation-folds 2 `
+  --min-class-training-rows-per-fold 6 `
   --min-accepted-accuracy 0.95 `
   --min-accepted-coverage 0.10 `
   --max-calibration-error 0.10 `
@@ -207,7 +218,9 @@ probabilities.
 
 The primary split manifest records original DIT count, independent
 DIT/content-component count, duplicate content-hash count, cross-DIT duplicate
-hash count, and the number of DIT groups coalesced to prevent leakage.
+hash count, and the number of DIT groups coalesced to prevent leakage. Both
+primary and source-run split manifests also record, for every label, train/test
+fold coverage and minimum rows in any train or test fold.
 
 Review reasons include:
 
@@ -237,12 +250,13 @@ importance report before promotion.
 Every candidate stores:
 
 - feature columns plus trace and cohort schemas;
-- label order and class counts;
+- label order, class counts, and per-class DIT/source-run support;
 - training row, unique-DIT, and independent DIT/content-group counts;
 - raw labeled rows, unique physical traces, removed duplicate copies, content
   hash coverage, and duplicate label/run conflict counts;
 - privacy-preserving training-data fingerprint;
-- grouped validation strategy, fold count, random state, and metrics;
+- grouped validation strategy, fold count, random state, per-class fold
+  coverage, and metrics;
 - source-run stress metrics, split provenance, thresholds, and pass/fail state;
 - held-out feature-importance method and the top 20 aggregated features;
 - requested and selected classifier plus every comparison candidate's metrics;
@@ -260,11 +274,12 @@ never from the refitted candidate.
 ML stays off unless both conditions are true:
 
 1. `analyses.clonality.interpretation.enabled` is true.
-2. `model_path` contains at least one eligible validated v5 assay artifact.
+2. `model_path` contains at least one eligible validated v6 assay artifact.
 
-Runtime rejects v1-v4 artifacts and v5 artifacts lacking complete content-hash
-deduplication/grouping or a complete, passing `SourceRunKey` stress test. This
-deliberately requires retraining before an older model can be enabled.
+Runtime rejects v1-v5 artifacts and v6 artifacts lacking complete content-hash
+deduplication/grouping, per-class independent support and fold coverage, or a
+complete passing `SourceRunKey` stress test. This deliberately requires
+retraining before an older model can be enabled.
 
 The batch pipeline attaches rule results first, computes same-run patient
 context across the completed batch, and only then invokes ML. The runtime
@@ -306,6 +321,8 @@ scripts/train_clonality_interpretation_models.py
 
 - Run the audit and extraction against the private mounted corpus.
 - Inspect per-assay label support, review panels, and run-date drift.
+- Confirm every modeled label meets independent-patient, source-run, fold
+  coverage, and calibration-row gates; merge or review-route unsupported labels.
 - Decide assay-specific promotion thresholds with the chemist.
 - Review whether the automatic RandomForest/ExtraTrees ranking is stable
   across run-date cohorts and an external holdout.

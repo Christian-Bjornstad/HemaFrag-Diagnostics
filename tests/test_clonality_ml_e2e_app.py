@@ -63,7 +63,7 @@ def _make_model_dir(p: Path) -> Path:
     clf = _train_dummy_model(seed=42)
     joblib.dump(clf, p / "FR1" / "random_forest.joblib")
     meta = {
-        "schema_version": "ml_training_pipeline_v5",
+        "schema_version": "ml_training_pipeline_v6",
         "assay": "FR1",
         "label_order": ["monoklonal", "polyklonal", "irregulaer",
                         "bi_oligoklonal", "pseudoklonal"],
@@ -90,6 +90,20 @@ def _make_model_dir(p: Path) -> Path:
             "conflicting_label_content_hashes": 0,
             "conflicting_source_run_content_hashes": 0,
         },
+        "training_class_support": {
+            "monoklonal": {
+                "rows": 10,
+                "unique_dit_groups": 10,
+                "unique_source_run_groups": 3,
+                "rows_missing_source_run": 0,
+            },
+            "polyklonal": {
+                "rows": 10,
+                "unique_dit_groups": 10,
+                "unique_source_run_groups": 3,
+                "rows_missing_source_run": 0,
+            },
+        },
         "validation": {
             "strategy": "StratifiedGroupKFold",
             "group_column": "DITContentComponent",
@@ -101,6 +115,21 @@ def _make_model_dir(p: Path) -> Path:
                 "method": "dit_fsa_content_connected_components",
                 "content_hash_coverage": 1.0,
             },
+            "class_support_gate": {"passed": True},
+            "class_fold_support": {
+                "monoklonal": {
+                    "total_folds": 5,
+                    "training_folds_with_examples": 5,
+                    "evaluation_folds_with_examples": 5,
+                    "min_train_rows": 8,
+                },
+                "polyklonal": {
+                    "total_folds": 5,
+                    "training_folds_with_examples": 5,
+                    "evaluation_folds_with_examples": 5,
+                    "min_train_rows": 8,
+                },
+            },
             "promotion_gate": {"passed": True},
             "source_run_stress": {
                 "status": "complete",
@@ -110,6 +139,20 @@ def _make_model_dir(p: Path) -> Path:
                 "effective_splits": 3,
                 "row_count": 20,
                 "unique_groups": 3,
+                "class_fold_support": {
+                    "monoklonal": {
+                        "total_folds": 3,
+                        "training_folds_with_examples": 3,
+                        "evaluation_folds_with_examples": 3,
+                        "min_train_rows": 6,
+                    },
+                    "polyklonal": {
+                        "total_folds": 3,
+                        "training_folds_with_examples": 3,
+                        "evaluation_folds_with_examples": 3,
+                        "min_train_rows": 6,
+                    },
+                },
                 "promotion_gate": {"passed": True},
             },
         },
@@ -224,7 +267,7 @@ def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch)
     }
     if out.get("ClonalityMLSuggestion"):
         # If ML emitted a label, the model_version stamp should be present
-        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v5"
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v6"
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
 

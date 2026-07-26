@@ -181,6 +181,25 @@ def test_per_assay_dataset_rare_class_counts_non_empty_for_FR1():
     assert counts["monoklonal"] >= 1
 
 
+def test_per_assay_dataset_reports_independent_class_support():
+    df = _synth_combined(n_per_assay={"FR1": 24})
+    df["ClonalitySuggestion"] = ["monoklonal", "polyklonal"] * 12
+    df["SourceRunKey"] = [f"run-{index % 3}" for index in range(len(df))]
+
+    dataset = build_per_assay_datasets(
+        df,
+        min_samples_per_assay=20,
+    )["FR1"]
+
+    assert dataset.class_support["monoklonal"] == {
+        "rows": 12,
+        "unique_dit_groups": 12,
+        "unique_source_run_groups": 3,
+        "rows_missing_source_run": 0,
+    }
+    assert dataset.class_support["polyklonal"]["unique_dit_groups"] == 12
+
+
 def test_build_per_assay_datasets_deduplicates_identical_trace_votes():
     df = _synth_combined(n_per_assay={"FR1": 12})
     df["FsaContentHash"] = [f"hash-{index}" for index in range(len(df))]

@@ -49,6 +49,7 @@ from core.analyses.clonality.ml_training import (
 )
 from core.analyses.clonality.ml_validation import (
     PromotionGate,
+    assess_class_support_gate,
     assess_promotion_gate,
     assess_source_run_gate,
     dit_content_grouped_validate,
@@ -134,6 +135,8 @@ def _render_per_assay_markdown(
     model_comparison,
     source_run_stress,
     data_provenance,
+    class_support,
+    class_support_gate,
 ):
     """Emit a single markdown file per assay."""
     out_lines = []
@@ -293,13 +296,43 @@ def _render_per_assay_markdown(
             "{ExpectedCalibrationError:.3f} |".format(**row)
         )
     out_lines.append("")
-    out_lines.append("## Rare-class counts")
+    out_lines.append("## Independent class support")
     out_lines.append("")
-    out_lines.append("| Class | Row count |")
-    out_lines.append("|---|---|")
+    out_lines.append(
+        "| Class | Rows | DIT groups | Source runs | DIT test folds | "
+        "Run test folds |"
+    )
+    out_lines.append("|---|---:|---:|---:|---:|---:|")
+    primary_fold_support = validation.split_manifest.get(
+        "class_fold_support", {}
+    )
+    run_fold_support = source_run_stress.get("class_fold_support", {})
     for cls in ANNOTATION_CLASSES_ORDER:
-        if cls in metrics.rare_class_counts:
-            out_lines.append("| {} | {} |".format(cls, metrics.rare_class_counts[cls]))
+        if cls not in class_support:
+            continue
+        support = class_support[cls]
+        out_lines.append(
+            "| {} | {} | {} | {} | {} | {} |".format(
+                cls,
+                support["rows"],
+                support["unique_dit_groups"],
+                support["unique_source_run_groups"],
+                primary_fold_support.get(cls, {}).get(
+                    "evaluation_folds_with_examples", 0
+                ),
+                run_fold_support.get(cls, {}).get(
+                    "evaluation_folds_with_examples", 0
+                ),
+            )
+        )
+    out_lines.append("")
+    out_lines.append(
+        "- Class-support gate: **{}**".format(
+            "pass" if class_support_gate.passed else "block"
+        )
+    )
+    for reason in class_support_gate.reasons:
+        out_lines.append(f"- Blocked: {reason}")
     out_lines.append("")
 
     out_lines.append("## Confusion matrix")
@@ -632,10 +665,28 @@ def _source_run_stress_metadata(validation, gate, *, status, error=""):
                 "every_row_oof_once": validation.split_manifest[
                     "every_row_oof_once"
                 ],
+                "class_fold_support": validation.split_manifest[
+                    "class_fold_support"
+                ],
                 "metrics": metrics_as_dict(validation.aggregate_metrics),
             }
         )
     return metadata
+
+
+def _class_support_gate(dataset, validation, source_run_validation, args):
+    return assess_class_support_gate(
+        dataset,
+        validation,
+        source_run_validation=source_run_validation,
+        min_class_dit_groups=args.min_class_dit_groups,
+        min_core_class_dit_groups=args.min_core_class_dit_groups,
+        min_class_source_run_groups=args.min_class_source_run_groups,
+        min_class_evaluation_folds=args.min_class_evaluation_folds,
+        min_class_training_rows_per_fold=(
+            args.min_class_training_rows_per_fold
+        ),
+    )
 
 
 def _candidate_record(kind, validation, gate):
@@ -822,6 +873,51 @@ def _parse_args(argv=None):
         help="Minimum unique DIT groups required for promotion (default 50).",
     )
     p.add_argument(
+        "--min-class-dit-groups",
+        type=int,
+        default=10,
+        help=(
+            "Minimum independent DIT groups for every observed class "
+            "(default 10)."
+        ),
+    )
+    p.add_argument(
+        "--min-core-class-dit-groups",
+        type=int,
+        default=20,
+        help=(
+            "Minimum DIT groups for monoklonal and polyklonal classes "
+            "(default 20)."
+        ),
+    )
+    p.add_argument(
+        "--min-class-source-run-groups",
+        type=int,
+        default=3,
+        help=(
+            "Minimum source runs represented in every observed class "
+            "(default 3)."
+        ),
+    )
+    p.add_argument(
+        "--min-class-evaluation-folds",
+        type=int,
+        default=2,
+        help=(
+            "Minimum grouped test folds containing each observed class "
+            "(default 2)."
+        ),
+    )
+    p.add_argument(
+        "--min-class-training-rows-per-fold",
+        type=int,
+        default=6,
+        help=(
+            "Minimum training rows per class in every grouped fold, matching "
+            "the tree calibration requirement (default 6)."
+        ),
+    )
+    p.add_argument(
         "--min-accepted-accuracy",
         type=float,
         default=0.95,
@@ -865,6 +961,19 @@ def _parse_args(argv=None):
 
 def main(argv=None):
     args = _parse_args(argv)
+    if args.min_class_training_rows_per_fold < 6:
+        raise ValueError(
+            "--min-class-training-rows-per-fold cannot be below 6; "
+            "tree-model calibration is disabled below that support"
+        )
+    if args.min_class_evaluation_folds < 2:
+        raise ValueError(
+            "--min-class-evaluation-folds cannot be below 2"
+        )
+    if args.min_class_source_run_groups < 2:
+        raise ValueError(
+            "--min-class-source-run-groups cannot be below 2"
+        )
     if args.classifier_kind == "auto" and args.promote_if_passes:
         raise ValueError(
             "--classifier-kind auto is comparison-only; inspect its reports, "
@@ -1087,7 +1196,17 @@ def main(argv=None):
                         exc,
                     )
                 )
-        deployment_gate = _merge_promotion_gates(gate, source_run_gate)
+        class_support_gate = _class_support_gate(
+            ds,
+            validation,
+            source_run_validation,
+            args,
+        )
+        deployment_gate = _merge_promotion_gates(
+            gate,
+            source_run_gate,
+            class_support_gate,
+        )
         try:
             runtime_eligible = bool(
                 args.promote_if_passes and deployment_gate.passed
@@ -1114,12 +1233,20 @@ def main(argv=None):
             "unique_dit_groups": validation.split_manifest["unique_dit_groups"],
             "unique_groups": validation.split_manifest["unique_groups"],
             "every_row_oof_once": validation.split_manifest["every_row_oof_once"],
+            "class_fold_support": validation.split_manifest[
+                "class_fold_support"
+            ],
             "group_provenance": validation.split_manifest["group_provenance"],
             "metrics": metrics_as_dict(metrics),
             "promotion_gate": {
                 "passed": deployment_gate.passed,
                 "reasons": deployment_gate.reasons,
                 "thresholds": deployment_gate.thresholds,
+            },
+            "class_support_gate": {
+                "passed": class_support_gate.passed,
+                "reasons": class_support_gate.reasons,
+                "thresholds": class_support_gate.thresholds,
             },
             "source_run_stress": source_run_stress,
             "model_selection": {
@@ -1162,6 +1289,7 @@ def main(argv=None):
                 "training_dit_groups": int(ds.dit.nunique()),
                 "training_data_fingerprint": _training_data_fingerprint(ds),
                 "training_data_provenance": ds.data_provenance,
+                "training_class_support": ds.class_support,
                 "feature_dataset_version": _first_value(
                     ds.rows, "FeatureDatasetVersion"
                 ),
@@ -1186,6 +1314,8 @@ def main(argv=None):
                 model_comparison=model_comparison,
                 source_run_stress=source_run_stress,
                 data_provenance=ds.data_provenance,
+                class_support=ds.class_support,
+                class_support_gate=class_support_gate,
             ),
             encoding="utf-8",
         )
@@ -1278,6 +1408,8 @@ def main(argv=None):
             "source_run_stress_status": source_run_stress["status"],
             "source_run_stress_gate_passed": source_run_gate.passed,
             "source_run_stress_gate_reasons": source_run_gate.reasons,
+            "class_support_gate_passed": class_support_gate.passed,
+            "class_support_gate_reasons": class_support_gate.reasons,
             "requested_classifier_kind": args.classifier_kind,
             "selected_classifier_kind": selected_kind,
             "runtime_eligible": runtime_eligible,
