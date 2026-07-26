@@ -470,7 +470,7 @@ window.ReportPlotManager = (function() {
 def extract_dit_from_name(name: str) -> str | None:
     """Finner første forekomst av 2-sifret år + 'OUM' + 5 siffer."""
     m = DIT_PATTERN.search(name)
-    return m.group(1) if m else None
+    return m.group(1).upper() if m else None
 
 def dit_to_year(dit: str) -> int | None:
     """25OUM10166 -> 2025, 26OUMxxxxx -> 2026, etc."""

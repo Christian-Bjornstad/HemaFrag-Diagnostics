@@ -16,7 +16,7 @@ __all__ = [
 ]
 
 
-DIT_PATTERN = re.compile(r"(\d{2}OUM\d{5})")
+DIT_PATTERN = re.compile(r"(\d{2}OUM\d{5})", re.IGNORECASE)
 DIT_QC_CONTROL_IDS = {"PK", "PK1", "PK2", "NK", "RK"}
 
 
