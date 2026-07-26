@@ -154,6 +154,10 @@ Completed on 2026-07-26 against the private January-April 2026 corpus:
   assays, 126 distinct DITs, and all 55 source runs. It contains 204
   rule-review rows and zero prefilled chemist labels; all 300 raw FSA files
   resolve from the local corpus.
+- The app labeling view now analyzes FSA files asynchronously and displays
+  ladder-calibrated base-pair traces, assay interpretation windows, detected
+  peaks, and ladder QC. A real pilot FSA completed successfully without
+  persisting its raw trace.
 - The readiness baseline marks all 14 assays `awaiting_labels`, with zero
   candidate-ready or promotion-preflight-ready assays. Requiring a candidate
   exits with code 2 until real chemist support satisfies the configured gates.

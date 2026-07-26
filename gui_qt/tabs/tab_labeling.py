@@ -24,29 +24,61 @@ Keyboard-only:
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QApplication,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QProgressBar,
     QPushButton,
     QSplitter,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 from PyQt6.QtGui import QKeySequence, QShortcut
 
 logger = logging.getLogger(__name__)
+
+
+class _PlotWorker(QThread):
+    """Analyze one FSA away from the GUI thread."""
+
+    completed = pyqtSignal(int, str, object, str)
+
+    def __init__(self, generation: int, fsa_path: Path, parent=None):
+        super().__init__(parent)
+        self._generation = generation
+        self._fsa_path = Path(fsa_path)
+
+    def run(self):
+        try:
+            from core.analyses.clonality.pipeline import _analyze_single_file
+            from core.labeling.labeling_plot import build_labeling_plot_data
+
+            entry = _analyze_single_file(self._fsa_path)
+            if entry is None:
+                raise ValueError("The file was not recognized as a clonality assay.")
+            plot_data = build_labeling_plot_data(entry)
+            self.completed.emit(
+                self._generation,
+                str(self._fsa_path),
+                plot_data,
+                "",
+            )
+        except Exception as exc:
+            logger.exception("Labeling plot analysis failed for %s", self._fsa_path)
+            self.completed.emit(
+                self._generation,
+                str(self._fsa_path),
+                None,
+                str(exc),
+            )
+
 
 # Lazy import to avoid hard dependency in headless tests
 def _import_pyqtgraph():
@@ -67,6 +99,10 @@ class TabLabeling(QWidget):
         self._assay_filter = ""
         self._show_unlabeled_only = False
         self._visible_sample_indices = []
+        self._plot_generation = 0
+        self._plot_worker = None
+        self._pending_plot_request = None
+        self._plot_cache = {}
         self._build_ui()
         self._setup_shortcuts()
 
@@ -163,12 +199,17 @@ class TabLabeling(QWidget):
         self.lbl_hint.setStyleSheet("font-size: 12px; color: #666; padding: 4px;")
         detail_layout.addWidget(self.lbl_hint)
 
+        self.lbl_plot_status = QLabel("Select an FSA root to load calibrated traces")
+        self.lbl_plot_status.setStyleSheet("font-size: 12px; color: #555; padding: 0 4px;")
+        self.lbl_plot_status.setWordWrap(True)
+        detail_layout.addWidget(self.lbl_plot_status)
+
         # Plot area (pyqtgraph) — lazy import
         try:
             pg = _import_pyqtgraph()
             self.plot_widget = pg.PlotWidget()
             self.plot_widget.setLabel("left", "RFU")
-            self.plot_widget.setLabel("bottom", "data point")
+            self.plot_widget.setLabel("bottom", "Base pairs", units="bp")
             self.plot_widget.showGrid(x=False, y=True, alpha=0.3)
             self.plot_widget.addLegend()
             detail_layout.addWidget(self.plot_widget, stretch=1)
@@ -219,6 +260,7 @@ class TabLabeling(QWidget):
             self._fsa_root = path
             self.lbl_fsa.setText(path)
             self.lbl_fsa.setStyleSheet("color: #333;")
+            self._render_current_plot()
 
     def _refresh_sample_list(self):
         from core.labeling.labeling_session import LABEL_TO_KEY
@@ -263,6 +305,10 @@ class TabLabeling(QWidget):
     def _on_sample_selected(self, row: int):
         idx = self._current_sample_index()
         if idx < 0 or not self._session:
+            self._plot_generation += 1
+            self._pending_plot_request = None
+            if hasattr(self.plot_widget, "clear"):
+                self.plot_widget.clear()
             return
         sample = self._session.samples[idx]
         from core.labeling.labeling_session import LABEL_TO_KEY
@@ -281,46 +327,163 @@ class TabLabeling(QWidget):
             f"padding: 2px 6px; border-radius: 3px;'>"
             f"{key}: {sample.current_label or 'unlabeled'}</span>"
         )
-        self._render_plot(sample)
+        self._render_plot(sample, idx)
 
-    def _render_plot(self, sample):
-        """Render the FSA electropherogram trace in the pyqtgraph widget."""
-        if not hasattr(self.plot_widget, "clear") or not self._fsa_root:
+    def _render_current_plot(self):
+        idx = self._current_sample_index()
+        if idx < 0 or not self._session:
             return
+        self._render_plot(self._session.samples[idx], idx)
+
+    def _render_plot(self, sample, sample_index: int | None = None):
+        """Queue a calibrated FSA plot without blocking sample navigation."""
+        if not hasattr(self.plot_widget, "clear"):
+            return
+        self._plot_generation += 1
+        generation = self._plot_generation
+        self._pending_plot_request = None
         self.plot_widget.clear()
+        if not self._fsa_root:
+            self.lbl_plot_status.setText("Select an FSA root to load the calibrated trace")
+            return
+        if sample_index is None:
+            sample_index = self._session.samples.index(sample)
         fsa_path = self._session.fsa_path_for(
-            self._session.samples.index(sample),
-            self._fsa_root
+            sample_index,
+            self._fsa_root,
         )
         if fsa_path is None:
+            self.lbl_plot_status.setText("FSA file not found under the selected root")
+            return
+        fsa_path = Path(fsa_path)
+        cache_key = str(fsa_path.resolve())
+        cached = self._plot_cache.get(cache_key)
+        if cached is not None and cached[0] == _file_mtime(fsa_path):
+            self._apply_plot_data(cached[1])
+            return
+
+        self.lbl_plot_status.setText(f"Analyzing {sample.assay} trace...")
+        request = (generation, fsa_path)
+        if self._plot_worker is not None and self._plot_worker.isRunning():
+            self._pending_plot_request = request
+            return
+        self._start_plot_worker(*request)
+
+    def _start_plot_worker(self, generation: int, fsa_path: Path):
+        self._pending_plot_request = None
+        worker = _PlotWorker(generation, fsa_path, self)
+        self._plot_worker = worker
+        worker.completed.connect(self._on_plot_ready)
+        worker.finished.connect(
+            lambda current=worker: self._on_plot_worker_finished(current)
+        )
+        worker.start()
+
+    def _on_plot_ready(
+        self,
+        generation: int,
+        fsa_path: str,
+        plot_data,
+        error: str,
+    ):
+        if plot_data is not None:
+            cache_key = str(Path(fsa_path).resolve())
+            self._plot_cache[cache_key] = (_file_mtime(Path(fsa_path)), plot_data)
+            while len(self._plot_cache) > 32:
+                self._plot_cache.pop(next(iter(self._plot_cache)))
+        if generation != self._plot_generation:
+            return
+        if error:
+            self.plot_widget.clear()
+            self.lbl_plot_status.setText(f"Plot unavailable: {error}")
+            return
+        self._apply_plot_data(plot_data)
+
+    def _on_plot_worker_finished(self, worker=None):
+        worker = worker or self._plot_worker
+        if worker is not None:
+            worker.deleteLater()
+        if worker is not self._plot_worker:
+            return
+        self._plot_worker = None
+        pending = self._pending_plot_request
+        self._pending_plot_request = None
+        if pending is not None:
+            self._start_plot_worker(*pending)
+
+    def _apply_plot_data(self, plot_data):
+        if plot_data is None or not hasattr(self.plot_widget, "clear"):
             return
         try:
-            from Bio import SeqIO
-
-            from core.analyses.clonality.config import ASSAY_CONFIG
-
-            raw = SeqIO.read(str(fsa_path), "abi").annotations.get("abif_raw", {})
-            channels = ASSAY_CONFIG.get(sample.assay, {}).get(
-                "trace_channels",
-                ["DATA1"],
-            )
+            pg = _import_pyqtgraph()
             colors = {
                 "DATA1": "#2563eb",
                 "DATA2": "#16a34a",
-                "DATA3": "#f97316",
+                "DATA3": "#ea580c",
             }
-            for channel in channels:
-                trace = raw.get(channel)
-                if trace is None:
-                    continue
-                self.plot_widget.plot(
-                    range(len(trace)),
-                    trace,
-                    pen=colors.get(channel, "#475569"),
-                    name=channel,
+            self.plot_widget.clear()
+            for start, end in plot_data.interpretation_ranges:
+                region = pg.LinearRegionItem(
+                    values=(start, end),
+                    movable=False,
+                    brush=pg.mkBrush(214, 198, 105, 55),
+                    pen=pg.mkPen(168, 145, 42, 100),
                 )
+                region.setZValue(-20)
+                self.plot_widget.addItem(region)
+
+            for trace in plot_data.traces:
+                self.plot_widget.plot(
+                    trace.basepairs,
+                    trace.rfu,
+                    pen=pg.mkPen(colors.get(trace.channel, "#475569"), width=1.1),
+                    name=trace.channel,
+                )
+
+            for channel in sorted({peak.channel for peak in plot_data.peaks}):
+                peaks = [peak for peak in plot_data.peaks if peak.channel == channel]
+                self.plot_widget.plot(
+                    [peak.basepair for peak in peaks],
+                    [peak.rfu for peak in peaks],
+                    pen=None,
+                    symbol="o",
+                    symbolSize=7,
+                    symbolPen=pg.mkPen(colors.get(channel, "#111827"), width=1.5),
+                    symbolBrush=pg.mkBrush("#ffffff"),
+                    name=f"{channel} peaks",
+                )
+
+            labeled_peaks = sorted(
+                (peak for peak in plot_data.peaks if peak.kept),
+                key=lambda peak: peak.rfu,
+                reverse=True,
+            )[:12]
+            for peak in labeled_peaks:
+                label = pg.TextItem(
+                    text=f"{peak.basepair:.1f}",
+                    color=colors.get(peak.channel, "#111827"),
+                    anchor=(0.5, 1.15),
+                )
+                label.setPos(peak.basepair, peak.rfu)
+                self.plot_widget.addItem(label)
+
+            self.plot_widget.setXRange(
+                plot_data.bp_min,
+                plot_data.bp_max,
+                padding=0,
+            )
+            self.plot_widget.enableAutoRange(axis="y", enable=True)
+            ranges = ", ".join(
+                f"{start:g}-{end:g} bp"
+                for start, end in plot_data.interpretation_ranges
+            ) or "none configured"
+            self.lbl_plot_status.setText(
+                f"{plot_data.assay} | ladder QC: {plot_data.ladder_qc_status} | "
+                f"{len(plot_data.peaks)} detected peaks | review windows: {ranges}"
+            )
         except Exception as exc:
-            logger.debug("Plot render failed for %s: %s", fsa_path, exc)
+            logger.exception("Plot rendering failed")
+            self.lbl_plot_status.setText(f"Plot unavailable: {exc}")
 
     def _on_label_key(self, label: str):
         visible_row = self.sample_list.currentRow()
@@ -397,3 +560,10 @@ class TabLabeling(QWidget):
         self.assay_filter.blockSignals(False)
         self._assay_filter = str(self.assay_filter.currentData() or "")
         self._refresh_sample_list()
+
+
+def _file_mtime(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None

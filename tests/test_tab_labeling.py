@@ -8,7 +8,9 @@ file on disk.
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import pandas as pd
 
@@ -205,3 +207,49 @@ def test_save_round_trip(qapp, tmp_path):
     session2.load()
     assert session2.samples[0].current_label == "monoklonal"
     assert session2.samples[2].current_label == "polyklonal"
+
+
+def test_tab_applies_calibrated_plot_data(qapp):
+    pytest.importorskip("pyqtgraph")
+
+    from core.labeling.labeling_plot import LabelingPeak, LabelingPlotData, LabelingTrace
+    from gui_qt.tabs.tab_labeling import TabLabeling
+
+    tab = TabLabeling()
+    plot_data = LabelingPlotData(
+        assay="FR1",
+        traces=(
+            LabelingTrace(
+                channel="DATA1",
+                basepairs=np.asarray([280.0, 320.0, 360.0, 420.0]),
+                rfu=np.asarray([5.0, 80.0, 25.0, 4.0]),
+            ),
+        ),
+        peaks=(
+            LabelingPeak(channel="DATA1", basepair=320.0, rfu=80.0, kept=True),
+        ),
+        interpretation_ranges=((310.0, 360.0),),
+        bp_min=280.0,
+        bp_max=420.0,
+        ladder_qc_status="ok",
+    )
+
+    tab._apply_plot_data(plot_data)
+
+    assert "FR1" in tab.lbl_plot_status.text()
+    assert "310-360 bp" in tab.lbl_plot_status.text()
+    assert "1 detected peaks" in tab.lbl_plot_status.text()
+    assert tab.plot_widget.getAxis("bottom").labelText == "Base pairs"
+
+
+def test_tab_ignores_stale_plot_result(qapp, monkeypatch):
+    from gui_qt.tabs.tab_labeling import TabLabeling
+
+    tab = TabLabeling()
+    tab._plot_generation = 2
+    applied = []
+    monkeypatch.setattr(tab, "_apply_plot_data", applied.append)
+
+    tab._on_plot_ready(1, "missing.fsa", SimpleNamespace(), "")
+
+    assert applied == []

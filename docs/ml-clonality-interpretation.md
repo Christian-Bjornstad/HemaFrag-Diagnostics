@@ -349,6 +349,13 @@ workbook uses the normal `Runs` contract, so keyboard labels and save behavior
 are unchanged. `Batch_Summary`, `Rule_Summary`, and `Batch_Metadata` document
 coverage and provenance.
 
+The plot is produced by the same clonality analysis pipeline used for reports.
+It runs outside the GUI thread and shows ladder-calibrated base pairs, assay
+interpretation windows, channel traces, detected peak markers, and ladder QC.
+Only the newest selection is displayed during fast navigation, and a small
+in-memory cache speeds revisits. Raw traces are not added to the workbook or
+written as ML artifacts.
+
 After review, preview the merge into the full tracking workbook:
 
 ```powershell
@@ -400,6 +407,7 @@ core/analyses/clonality/ml_training.py
 core/analyses/clonality/ml_validation.py
 core/analyses/clonality/ml_model.py
 core/analyses/clonality/ml_runtime.py
+core/labeling/labeling_plot.py
 scripts/audit_clonality_ml_data.py
 scripts/assess_clonality_ml_readiness.py
 scripts/build_clonality_ml_features.py
