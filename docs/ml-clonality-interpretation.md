@@ -323,9 +323,50 @@ ClonalityMLModelVersion
 The HTML badge shows the ML label, confidence, threshold, rule label, and
 review state. It does not overwrite `ClonalitySuggestion`.
 
+## Chemist Labeling Batches
+
+Create an assay-balanced, feature-diverse pilot from the current unlabeled
+cohort:
+
+```powershell
+python -m scripts.prepare_clonality_labeling_batch `
+  --xls "C:\local\Clonality_Tracking.xlsx" `
+  --features-csv "C:\local\features\clonality_ml_trace_features.csv" `
+  --output-xlsx "C:\local\labeling\Clonality_Labeling_Pilot.xlsx" `
+  --batch-id "chemist-pilot-001" `
+  --per-assay 24 `
+  --max-rows 300 `
+  --review-fraction 0.65
+```
+
+Selection is deterministic for the same inputs and random state. It balances
+assay quotas and favors feature diversity, unseen source runs, rule strata,
+and review-needed rows. Rule suggestions are sampling context only;
+`ClonalityChemistLabel` is always blank in a new batch.
+
+Open the generated workbook and raw FSA root in the app's Labeling tab. The
+workbook uses the normal `Runs` contract, so keyboard labels and save behavior
+are unchanged. `Batch_Summary`, `Rule_Summary`, and `Batch_Metadata` document
+coverage and provenance.
+
+After review, preview the merge into the full tracking workbook:
+
+```powershell
+python -m scripts.merge_clonality_labeling_batch `
+  --batch-xlsx "C:\local\labeling\Clonality_Labeling_Pilot.xlsx" `
+  --target-xlsx "C:\local\Clonality_Tracking.xlsx" `
+  --dry-run `
+  --report-json "C:\local\labeling\merge_report.json"
+```
+
+Remove `--dry-run` to write non-conflicting labels. Existing target labels are
+never overwritten by default; conflicts return exit code `2` and remain in the
+local report. Use `--allow-overwrite` only after explicit chemist resolution.
+
 ## Main Modules
 
 ```text
+core/analyses/clonality/labeling_batch.py
 core/analyses/clonality/ml_data_audit.py
 core/analyses/clonality/trace_features.py
 core/analyses/clonality/cohort_features.py
@@ -336,6 +377,8 @@ core/analyses/clonality/ml_model.py
 core/analyses/clonality/ml_runtime.py
 scripts/audit_clonality_ml_data.py
 scripts/build_clonality_ml_features.py
+scripts/prepare_clonality_labeling_batch.py
+scripts/merge_clonality_labeling_batch.py
 scripts/train_clonality_interpretation_models.py
 ```
 

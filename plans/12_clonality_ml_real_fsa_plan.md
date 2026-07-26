@@ -101,17 +101,22 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
    - filter unlabeled/review-needed
    - keyboard labels
    - quick save back to tracking workbook
-2. Export new labelled batches after each chemist session.
-3. Re-train, compare against previous model, and only promote if validation improves or review burden drops without harming monoklonal precision.
+2. [Completed 2026-07-26] Build deterministic, assay-balanced,
+   feature-diverse labeling batches that open directly in the Qt app.
+3. [Completed 2026-07-26] Add conflict-safe merge-back from reviewed batches
+   to the full tracking workbook.
+4. Export new labelled batches after each chemist session.
+5. Re-train, compare against previous model, and only promote if validation improves or review burden drops without harming monoklonal precision.
 
 ## Immediate Next Tasks
 
 1. [Completed 2026-07-26] Complete and inspect the full local trace-feature extraction. Require zero
    unresolved files, no raw paths in the feature CSV, and a documented error
    review before using the artifact.
-2. Run a chemist-labeling pilot from the clean tracking workbook. Sample across
-   assays, source runs, rule suggestions, and review-needed cases; do not copy
-   the rule suggestion into the chemist label.
+2. [Prepared 2026-07-26; chemist review pending] Run a chemist-labeling pilot
+   from the clean tracking workbook. Sample across assays, source runs, rule
+   suggestions, and review-needed cases; do not copy the rule suggestion into
+   the chemist label.
 3. Re-run the audit after each labeling batch and report class support by
    independent DIT and source run. Do not train an assay with one class or
    inadequate grouped-fold support.
@@ -140,6 +145,10 @@ Completed on 2026-07-26 against the private January-April 2026 corpus:
 - The feature artifact was migrated to dataset schema v3 so derived
   reference-window and cohort-panel fields are populated consistently without
   re-reading raw traces.
+- A deterministic 300-row chemist pilot was prepared across all 14 clonality
+  assays, 126 distinct DITs, and all 55 source runs. It contains 204
+  rule-review rows and zero prefilled chemist labels; all 300 raw FSA files
+  resolve from the local corpus.
 
 ## Real-Data Audit Command
 
