@@ -213,6 +213,25 @@ def test_flatten_expands_dotted_per_channel_columns():
     assert out["mad_per_channel.DATA1"].iloc[0] == 0.12
 
 
+def test_flatten_expands_generic_trace_channel_columns():
+    from core.analyses.clonality.ml_model import flatten_features_for_inference
+
+    columns = [
+        "trace_dominant_height_raw_per_channel.DATA1",
+        "trace_signal_to_noise_per_channel.DATA2",
+    ]
+    out = flatten_features_for_inference(
+        {
+            "trace_dominant_height_raw_per_channel": {"DATA1": 1234.0},
+            "trace_signal_to_noise_per_channel": {"DATA2": 18.5},
+        },
+        columns=columns,
+    )
+
+    assert out.iloc[0][columns[0]] == 1234.0
+    assert out.iloc[0][columns[1]] == 18.5
+
+
 def test_flatten_coerces_non_numeric_to_numeric():
     from core.analyses.clonality.ml_model import flatten_features_for_inference
     out = flatten_features_for_inference(

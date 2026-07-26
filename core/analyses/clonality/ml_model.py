@@ -301,6 +301,15 @@ def flatten_features_for_inference(
             flat[key] = value
 
     # Second pass: nested per-channel fields
+    for raw_key, nested in features.items():
+        if not isinstance(nested, Mapping):
+            continue
+        for nested_key, sub_value in nested.items():
+            dotted = f"{raw_key}.{str(nested_key).upper()}"
+            if dotted in columns:
+                flat[dotted] = sub_value
+
+    # Backward-compatible aliases used by the first synthetic model artifacts.
     for raw_key, prefix in _NESTED_FIELD_EXPANSION:
         nested = features.get(raw_key)
         if not isinstance(nested, dict):

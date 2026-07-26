@@ -19,7 +19,7 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
 
 1. Standardize one labelled table per sample/injection with:
    - `DIT`, `Assay`, `File`, `SourceRunDir`, `RunDate`, `Well`
-   - chemist label in `ClonalitySuggestion`
+   - chemist label in `ClonalityChemistLabel`
    - current rule output and review flag
    - raw `.fsa` path or resolvable relative path
 2. Export a manifest that records which raw files were included but stores no raw clinical data in Git.
@@ -27,8 +27,8 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
 
 ## Phase 2 - FSA Trace Features
 
-1. Keep existing scalar features from `features_from_entry`.
-2. Add assay-window trace-shape features per DATA channel:
+1. [Completed 2026-07-26] Keep existing scalar features from `features_from_entry`.
+2. [Completed 2026-07-26] Add assay-window trace-shape features per DATA channel:
    - peak count, dominant height/area, height share, area share
    - local noise/MAD, baseline drift, dome/broad-hump indicators
    - reference-window coverage and outside-window signal share
@@ -37,7 +37,7 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
    - same-patient assay concordance
    - duplicate/parallel peak bp distance
    - control-run context when available
-4. Store feature artifacts as CSV/Parquet with a manifest containing code version, settings, and source workbook path.
+4. [Completed 2026-07-26] Store feature artifacts as CSV with a manifest containing code version, settings fingerprint, and source workbook path.
 
 ## Phase 3 - Baseline Models
 
@@ -90,7 +90,7 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
    - assay/label counts
    - DIT grouping quality
    - feature null/zero rates
-2. Add richer reference-window trace-shape features to `features_from_entry` or a separate offline feature builder.
+2. [Completed 2026-07-26] Add richer reference-window trace-shape features to `features_from_entry` and the offline feature builder.
 3. Train one first real per-assay model on the best labelled workbook and generate disagreement panels.
 4. Decide threshold gates from the first validation report before enabling anything in normal reports.
 
@@ -115,3 +115,43 @@ clinical identifiers and local paths; keep them outside Git.
 
 `--strict` exits with code 2 for blocking issues such as missing FSA files,
 invalid labels, duplicate identities, empty files, or missing DIT values.
+
+## Trace Feature and Training Commands
+
+Run a small smoke extraction first:
+
+```powershell
+python -m scripts.build_clonality_ml_features `
+  --xls "C:\path\to\Clonality_Tracking.xlsx" `
+  --fsa-root "D:\path\to\raw-fsa" `
+  --output-dir "C:\local\clonality_ml_features" `
+  --limit 25
+```
+
+Continue with the full local corpus. Checkpoints are written atomically and
+`--resume` skips rows whose file content, feature schema, and clonality
+settings already match:
+
+```powershell
+python -m scripts.build_clonality_ml_features `
+  --xls "C:\path\to\Clonality_Tracking.xlsx" `
+  --fsa-root "D:\path\to\raw-fsa" `
+  --output-dir "C:\local\clonality_ml_features" `
+  --resume
+```
+
+Train per-assay candidate models from the resulting trace artifact:
+
+```powershell
+python -m scripts.train_clonality_interpretation_models `
+  --xls "C:\path\to\Clonality_Tracking.xlsx" `
+  --features-csv "C:\local\clonality_ml_features\clonality_ml_trace_features.csv" `
+  --output-dir "C:\local\clonality_ml_models" `
+  --min-samples 200 `
+  --classifier-kind random_forest
+```
+
+The feature CSV stores numeric summaries, source hashes, chemist labels, and
+rule outputs for disagreement analysis. It does not store raw traces or raw
+FSA paths. All audit, feature, and model artifacts remain local and ignored by
+Git.

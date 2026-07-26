@@ -305,7 +305,17 @@ def compute_patient_panel_features(
 
 
 
-def features_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
+def features_from_entry(
+    entry: dict[str, Any],
+    *,
+    include_raw_trace_features: bool = True,
+) -> dict[str, Any]:
+    raw_trace_features: dict[str, Any] = {}
+    if include_raw_trace_features:
+        from core.analyses.clonality.trace_features import raw_trace_shape_features
+
+        raw_trace_features = raw_trace_shape_features(entry)
+
     file_name = str(entry.get("file_name") or getattr(entry.get("fsa"), "file_name", "") or "")
     sample_kind, control, control_bucket = sample_kind_for_file(file_name)
     peaks = _combined_peak_frame(entry)
@@ -385,6 +395,7 @@ def features_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "sl_quality_phrase": sl_quality.get("quality_phrase", ""),
         "annotation_schema_version": ANNOTATION_SCHEMA_VERSION,
         **per_channel_trace_summary(entry),
+        **raw_trace_features,
         **reference_window_features(entry),
         **compute_patient_panel_features(entry),
     }
@@ -398,7 +409,7 @@ def interpret_entry(entry: dict[str, Any]) -> dict[str, Any]:
     Ladder QC failures, SL quality classification, and control logic are
     handled before dispatching and remain assay-agnostic.
     """
-    features = features_from_entry(entry)
+    features = features_from_entry(entry, include_raw_trace_features=False)
     suggestion = "usikker_review"
     confidence = 0.35
     review_needed = True

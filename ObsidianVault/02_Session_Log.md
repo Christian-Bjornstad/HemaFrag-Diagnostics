@@ -1196,3 +1196,10 @@ Verification:
 - Removed `uspesifikke_topper` as an annotation/model class; known nonspecific peaks from `NONSPECIFIC_PEAKS` are now exclusion metadata/evidence only and are masked from trace-learning windows.
 - Added clonality learning export settings and app-run JSON/CSV annotation seed writer for later model training.
 - Rebuilt masked trace model at `local_triage/clonality_learning_2026-06-05/quick_model_trace_features_nonspecific_masked_group_split/model.joblib`; group split accuracy `0.676`, weighted F1 `0.683`, macro F1 `0.422`.
+
+## 2026-07-26 - Clonality Real-FSA Feature Pipeline
+
+- Added deterministic per-channel raw `.fsa` trace-shape features, including peak geometry, area shares, noise, baseline drift, outside-window signal, clipping, shoulders, and known nonspecific-peak masking.
+- Added a local, resumable feature-artifact builder with audit integration, atomic checkpoints, provenance manifest, content-hash and settings invalidation, and no raw traces or raw FSA paths in the feature CSV.
+- Connected trace artifacts to per-assay training in the CLI and Qt ML tab; current chemist labels are refreshed by `IdentityKey+Assay`, metadata/rule outputs are excluded from model inputs, and controls/SL remain outside ML inference.
+- Verification: focused ML tests passed (`60`); full suite passed (`303 passed, 3 skipped`, with four known sklearn/scipy warnings). Real-corpus extraction remains pending until the private workbook and `.fsa` root are mounted locally.

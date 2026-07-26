@@ -58,6 +58,17 @@ ASSAY_COL = "Assay"
 LABEL_COL = "ClonalitySuggestion"
 
 
+def _assay_key(value):
+    return (
+        str(value or "")
+        .strip()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .upper()
+    )
+
+
 def _per_assay_threshold_default(assay):
     """Pull from APP_SETTINGS, fall back to 0.85 if not configured."""
     cfg = APP_SETTINGS.get("analyses", {}).get("clonality", {})
@@ -234,7 +245,6 @@ def _render_per_assay_markdown(metrics, who_called):
 def _assemble_labelled_df_with_labels_csv(
     xlsx_path,
     labels_csv_path,
-    entry_metadata_path=None,
     *,
     source_label_col=CHEMIST_LABEL_COLUMN,
 ):
@@ -307,6 +317,80 @@ def _assemble_labelled_df_with_labels_csv(
     return merged
 
 
+def _assemble_trace_feature_df(
+    xlsx_path,
+    features_csv_path,
+    *,
+    source_label_col=CHEMIST_LABEL_COLUMN,
+):
+    """Join an offline trace artifact to the workbook's latest labels."""
+    features = pd.read_csv(features_csv_path)
+    required_features = {"IdentityKey", DIR_COL, ASSAY_COL}
+    missing_features = sorted(required_features - set(features.columns))
+    if missing_features:
+        raise KeyError(
+            "trace feature CSV is missing: {}".format(", ".join(missing_features))
+        )
+
+    tracking = load_tracking_run_table(
+        xlsx_path,
+        include_controls=False,
+    ).frame
+    required_tracking = {"IdentityKey", DIR_COL, ASSAY_COL, source_label_col}
+    missing_tracking = sorted(required_tracking - set(tracking.columns))
+    if missing_tracking:
+        raise KeyError(
+            "tracking workbook is missing: {}".format(", ".join(missing_tracking))
+        )
+
+    features = features.copy()
+    tracking = tracking.copy()
+    features["_AssayKey"] = features[ASSAY_COL].map(_assay_key)
+    tracking["_AssayKey"] = tracking[ASSAY_COL].map(_assay_key)
+    join_columns = ["IdentityKey", "_AssayKey"]
+
+    feature_duplicates = features.duplicated(subset=join_columns, keep=False)
+    if feature_duplicates.any():
+        raise ValueError(
+            f"{int(feature_duplicates.sum())} trace feature row(s) duplicate IdentityKey+Assay"
+        )
+    tracking_duplicates = tracking.duplicated(subset=join_columns, keep=False)
+    if tracking_duplicates.any():
+        raise ValueError(
+            f"{int(tracking_duplicates.sum())} workbook row(s) duplicate IdentityKey+Assay"
+        )
+
+    current_labels = tracking[
+        join_columns + [DIR_COL, source_label_col]
+    ].rename(
+        columns={
+            DIR_COL: "_CurrentDIT",
+            source_label_col: "_CurrentChemistLabel",
+        }
+    )
+    features = features.drop(
+        columns=[source_label_col, LABEL_COL],
+        errors="ignore",
+    )
+    merged = features.merge(
+        current_labels,
+        on=join_columns,
+        how="left",
+        validate="one_to_one",
+        indicator=True,
+    )
+    unmatched = merged["_merge"].ne("both")
+    if unmatched.any():
+        raise ValueError(
+            f"{int(unmatched.sum())} trace feature row(s) no longer match the tracking workbook"
+        )
+    merged[DIR_COL] = merged["_CurrentDIT"].fillna("").astype(str)
+    merged[LABEL_COL] = merged["_CurrentChemistLabel"]
+    return merged.drop(
+        columns=["_AssayKey", "_CurrentDIT", "_CurrentChemistLabel", "_merge"]
+    )
+
+
 def _ensure_columns_renamed(combined):
     """Best-effort column-renaming so DIT/Assay/ClonalitySuggestion exist."""
     renames = {}
@@ -365,6 +449,15 @@ def _parse_args(argv=None):
         help="Optional chemist-label CSV keyed by IdentityKey+Assay or DIT+Assay.",
     )
     p.add_argument(
+        "--features-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Trace feature artifact from scripts.build_clonality_ml_features. "
+            "Labels are refreshed from the tracking workbook by IdentityKey+Assay."
+        ),
+    )
+    p.add_argument(
         "--label-column",
         default=CHEMIST_LABEL_COLUMN,
         help=(
@@ -372,12 +465,6 @@ def _parse_args(argv=None):
             f"{CHEMIST_LABEL_COLUMN!r}; use ClonalitySuggestion only for "
             "explicitly reviewed legacy workbooks."
         ),
-    )
-    p.add_argument(
-        "--entry-metadata",
-        type=Path,
-        default=None,
-        help="Optional JSON file keyed on identity_key with extra metadata per FSA file. Required when build_clonality_feature_tables cannot otherwise populate identity_key.",
     )
     p.add_argument(
         "--test-size",
@@ -396,7 +483,7 @@ def _parse_args(argv=None):
         type=float,
         default=None,
         help=(
-            "Override per-assay acceptance threshold τ (0..1). If omitted, "
+            "Override per-assay acceptance threshold tau (0..1). If omitted, "
             "the value is read from APP_SETTINGS.analyses.clonality.interpretation.thresholds."
         ),
     )
@@ -415,12 +502,21 @@ def main(argv=None):
     report_dir = output_dir / "reports" / today
     report_dir.mkdir(parents=True, exist_ok=True)
     print("[train] loading tracking workbook: {}".format(xlsx_path))
-    if args.labels_csv:
+    if args.features_csv and args.labels_csv:
+        raise ValueError("--features-csv and --labels-csv cannot be used together")
+    if args.features_csv:
+        if not Path(args.features_csv).is_file():
+            raise FileNotFoundError("--features-csv {} not found".format(args.features_csv))
+        combined = _assemble_trace_feature_df(
+            xlsx_path,
+            Path(args.features_csv),
+            source_label_col=args.label_column,
+        )
+    elif args.labels_csv:
         if not Path(args.labels_csv).exists():
             raise FileNotFoundError("--labels-csv {} not found".format(args.labels_csv))
         combined = _assemble_labelled_df_with_labels_csv(
             xlsx_path, Path(args.labels_csv),
-            entry_metadata_path=args.entry_metadata,
             source_label_col=args.label_column,
         )
     else:

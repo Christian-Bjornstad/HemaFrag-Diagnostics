@@ -87,6 +87,7 @@ def test_status_text_initialised_as_empty():
     # The status label exists and starts empty.
     assert tab._status_label is not None
     assert tab._status_label.text() == ""
+    assert tab._features_edit is not None
 
 
 def test_successful_training_does_not_auto_promote_model_path(tmp_path, monkeypatch):

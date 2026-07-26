@@ -173,7 +173,7 @@ def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch)
     }
     monkeypatch.setattr(
         "core.analyses.clonality.interpretation.features_from_entry",
-        lambda _e: fake_features,
+        lambda _e, **_kwargs: fake_features,
     )
 
     # 3) Apply the chain

@@ -133,6 +133,17 @@ class TabMlTraining(QWidget):
         xlsx_row.addWidget(xlsx_browse)
         form.addRow("Tracking Workbook:", xlsx_row)
 
+        self._features_edit = QLineEdit()
+        self._features_edit.setPlaceholderText(
+            "Path to clonality_ml_trace_features.csv"
+        )
+        features_row = QHBoxLayout()
+        features_row.addWidget(self._features_edit, stretch=1)
+        features_browse = QPushButton("Browse...")
+        features_browse.clicked.connect(self._browse_features)
+        features_row.addWidget(features_browse)
+        form.addRow("Trace Feature Dataset:", features_row)
+
         self._output_edit = QLineEdit()
         self._output_edit.setPlaceholderText(
             "Defaults to <output_dir>/ml_models/<YYYY-MM-DD_HHMMSS>"
@@ -209,6 +220,13 @@ class TabMlTraining(QWidget):
             output_base = batch.get("output_base", "")
             if xlsx and Path(xlsx).exists():
                 self._xlsx_edit.setText(str(xlsx))
+                feature_candidate = (
+                    Path(xlsx).parent
+                    / "clonality_ml_features"
+                    / "clonality_ml_trace_features.csv"
+                )
+                if feature_candidate.exists():
+                    self._features_edit.setText(str(feature_candidate))
             elif output_base:
                 # Default to a sensible tracking.xlsx location
                 candidate = Path(output_base) / "Clonality_Tracking.xlsx"
@@ -257,6 +275,17 @@ class TabMlTraining(QWidget):
         if folder:
             self._output_edit.setText(folder)
 
+    def _browse_features(self) -> None:
+        start = self._features_edit.text().strip() or str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Trace Feature Dataset",
+            start,
+            "CSV files (*.csv);;All files (*.*)",
+        )
+        if path:
+            self._features_edit.setText(path)
+
     def _train_clicked(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             self._status_label.setText("Training already in progress.")
@@ -265,6 +294,10 @@ class TabMlTraining(QWidget):
         xlsx = self._xlsx_edit.text().strip()
         if not xlsx or not Path(xlsx).exists():
             self._status_label.setText("Pick a tracking workbook first.")
+            return
+        features_csv = self._features_edit.text().strip()
+        if not features_csv or not Path(features_csv).is_file():
+            self._status_label.setText("Pick a trace feature dataset first.")
             return
         output_dir = self._output_edit.text().strip()
         if not output_dir:
@@ -283,6 +316,7 @@ class TabMlTraining(QWidget):
             "-m",
             "scripts.train_clonality_interpretation_models",
             "--xls", xlsx,
+            "--features-csv", features_csv,
             "--output-dir", output_dir,
             "--min-samples", str(self._min_samples.value()),
             "--classifier-kind", self._classifier_combo.currentText(),

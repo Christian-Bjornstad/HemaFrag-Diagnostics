@@ -151,8 +151,13 @@ def _do_attach(entry: dict[str, Any], store: ClonalityModelStore) -> dict[str, A
         features = features_from_entry(entry)
     assay = str(entry.get("assay") or "").strip()
     # Only patient/sample entries get ML attached; controls/sl ruled out.
-    sample_kind = str(entry.get("sample_kind") or entry.get("SampleKind") or "")
-    if not assay or sample_kind.lower() == "control":
+    sample_kind = str(
+        entry.get("sample_kind")
+        or entry.get("SampleKind")
+        or features.get("sample_kind")
+        or ""
+    )
+    if not assay or sample_kind.lower() == "control" or assay.upper() == "SL":
         # Still stamp empty columns so the tracking workbook is uniform.
         for col in MLCOLUMNS:
             entry.setdefault(col, "")

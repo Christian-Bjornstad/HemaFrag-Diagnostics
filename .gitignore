@@ -82,6 +82,11 @@ fraggler-v2/target/
 *.joblib
 ObsidianVault/**/models/**/*.joblib
 
+# Local clonality ML audits and raw-derived feature artifacts. These may
+# contain clinical identifiers, local paths, or provenance fingerprints.
+clonality_ml_audit/
+clonality_ml_features/
+
 # Windows things .NET-style
 Thumbs.db
 *.lnk

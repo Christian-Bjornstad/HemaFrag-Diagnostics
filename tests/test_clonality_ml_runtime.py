@@ -147,6 +147,32 @@ def test_attach_stamps_ml_columns_when_assay_known(tmp_path):
         monkeypatch.undo()
 
 
+def test_attach_excludes_control_when_kind_is_only_in_features(tmp_path):
+    _make_model_dir(tmp_path)
+    import core.analyses.clonality.ml_runtime as rt_mod
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        rt_mod,
+        "ml_model_dir_for_settings",
+        lambda _=None: tmp_path,
+    )
+    try:
+        entry = {
+            "assay": "FR1",
+            "features": {
+                "sample_kind": "control",
+                "dominant_peak_height": 100.0,
+                "dominant_to_second_ratio": 2.0,
+                "dominant_height_share": 0.7,
+            },
+        }
+        out = attach_ml_prediction_if_enabled(entry)
+        assert out["ClonalityMLSuggestion"] == ""
+        assert out["ClonalityMLConfidence"] == ""
+    finally:
+        monkeypatch.undo()
+
+
 def test_attach_marks_review_when_disagreement(tmp_path):
     """Rule=polyklonal + ML=monoklonal ⇒ review_needed=True."""
     _make_model_dir(tmp_path)
