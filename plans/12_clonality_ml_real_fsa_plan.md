@@ -17,13 +17,18 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
 
 ## Phase 1 - Data Contract
 
-1. Standardize one labelled table per sample/injection with:
+1. [Completed 2026-07-26] Standardize one labelled table per sample/injection with:
    - `DIT`, `Assay`, `File`, `SourceRunDir`, `RunDate`, `Well`
    - chemist label in `ClonalityChemistLabel`
    - current rule output and review flag
    - raw `.fsa` path or resolvable relative path
-2. Export a manifest that records which raw files were included but stores no raw clinical data in Git.
-3. Add a validation command that fails fast when labels, assay names, or DITs are missing.
+2. [Completed 2026-07-26] Export a manifest that records which raw files were included but stores no raw clinical data in Git.
+3. [Completed 2026-07-26] Add a validation command that fails fast when labels, assay names, or DITs are missing.
+4. [Completed 2026-07-26] Preserve the original top-level source run through
+   Windows staging, including runs that reuse identical filenames.
+5. [Completed 2026-07-26] Preserve files without a defensible DIT as
+   `unassigned` inventory rows while excluding them from labeling, audit, and
+   training by default.
 
 ## Phase 2 - FSA Trace Features
 
@@ -90,7 +95,7 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
 
 ## Phase 6 - Learning Loop
 
-1. Make labeling ergonomic in the Qt app:
+1. [Completed 2026-07-26] Make labeling ergonomic in the Qt app:
    - filter unlabeled/review-needed
    - keyboard labels
    - quick save back to tracking workbook
@@ -99,14 +104,35 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
 
 ## Immediate Next Tasks
 
-1. [Completed 2026-07-26] Build a real-data feature audit script that reads a tracking workbook plus raw `.fsa` root and reports:
-   - rows with missing raw files
-   - assay/label counts
-   - DIT grouping quality
-   - feature null/zero rates
-2. [Completed 2026-07-26] Add richer reference-window trace-shape features to `features_from_entry` and the offline feature builder.
-3. Train one first real per-assay model on the best labelled workbook and generate disagreement panels.
-4. Decide threshold gates from the first validation report before enabling anything in normal reports.
+1. Complete and inspect the full local trace-feature extraction. Require zero
+   unresolved files, no raw paths in the feature CSV, and a documented error
+   review before using the artifact.
+2. Run a chemist-labeling pilot from the clean tracking workbook. Sample across
+   assays, source runs, rule suggestions, and review-needed cases; do not copy
+   the rule suggestion into the chemist label.
+3. Re-run the audit after each labeling batch and report class support by
+   independent DIT and source run. Do not train an assay with one class or
+   inadequate grouped-fold support.
+4. Train candidate-only per-assay RandomForest and ExtraTrees models once label
+   support passes those gates, then generate grouped out-of-fold disagreement
+   panels.
+5. Decide assay-specific confidence, precision, coverage, and calibration gates
+   with the chemist before promoting any model or enabling it in reports.
+
+## 2026 Real-Data Checkpoint
+
+Completed on 2026-07-26 against the private January-April 2026 corpus:
+
+- 5,280 local `.fsa` files inventoried across 55 source-run folders.
+- A clean tracking rebuild completed all 55 folders with zero failed folders.
+- The inventory contains 3,103 analyzed rows: 2,402 model-eligible patient
+  injections, 700 controls, and one safely unassigned injection.
+- Strict audit resolved all 2,402 patient injections uniquely, with zero
+  missing FSA files, zero duplicate identities, and all 55 source runs retained.
+- No chemist labels were present in the available tracking workbooks. Rule
+  suggestions remain comparison data only and must not become training truth.
+- Full trace-feature extraction was started from the audited workbook as a
+  resumable, local-only artifact.
 
 ## Real-Data Audit Command
 

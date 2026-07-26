@@ -64,6 +64,8 @@ class LabelingSample:
     identity_key: str = ""
     sample_kind: str = ""
     group: str = ""
+    rule_suggestion: str = ""
+    rule_review_needed: bool = False
     tracking_sheet: str = ""
     tracking_row_number: int = 0
 
@@ -121,6 +123,8 @@ class LabelingSession:
                 identity_key=_str("IdentityKey"),
                 sample_kind=_str("SampleKind"),
                 group=_str("Group"),
+                rule_suggestion=_str("ClonalitySuggestion"),
+                rule_review_needed=_as_bool(row.get("ClonalityReviewNeeded", False)),
                 tracking_sheet=_str("_TrackingSheet"),
                 tracking_row_number=int(row.get("_TrackingRowNumber", idx + 2) or idx + 2),
             )
@@ -229,6 +233,10 @@ class LabelingSession:
         """Return the indices (into ``self.samples``) of unlabeled samples."""
         return [i for i, s in enumerate(self.samples) if not s.is_labeled]
 
+    def filter_review_needed(self) -> list[int]:
+        """Return indices whose rule interpretation requires chemist review."""
+        return [i for i, sample in enumerate(self.samples) if sample.rule_review_needed]
+
     def fsa_path_for(self, sample_index: int, fsa_root: str) -> Path | None:
         """Resolve the FSA file path for a sample, given the FSA root dir."""
         if not (0 <= sample_index < len(self.samples)):
@@ -247,3 +255,11 @@ class LabelingSession:
         if candidate2.exists():
             return candidate2
         return None
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if pd.isna(value):
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}

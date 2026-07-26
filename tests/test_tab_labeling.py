@@ -39,6 +39,7 @@ def _make_test_excel(tmp_path) -> str:
         "SampleKind": ["patient"] * 5,
         "Group": ["B", "B", "A", "B", "A"],
         "ClonalitySuggestion": ["", "", "", "", ""],
+        "ClonalityReviewNeeded": [False, True, False, True, False],
     })
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         df.to_excel(w, sheet_name="Run", index=False)
@@ -144,6 +145,26 @@ def test_tab_filter_shows_unlabeled_only(qapp, tmp_path):
     tab._on_toggle_filter()
     assert tab._show_unlabeled_only is False
     assert tab.sample_list.count() == 5
+
+
+def test_tab_filters_rule_review_rows_and_assay(qapp, tmp_path):
+    from gui_qt.tabs.tab_labeling import TabLabeling
+    from core.labeling.labeling_session import LabelingSession
+
+    path = _make_test_excel(tmp_path)
+    tab = TabLabeling()
+    tab._session = LabelingSession(excel_path=path)
+    tab._session.load()
+    tab._populate_assay_filter()
+
+    tab.queue_filter.setCurrentIndex(tab.queue_filter.findData("review"))
+    assert tab.sample_list.count() == 2
+
+    tab.assay_filter.setCurrentIndex(tab.assay_filter.findData("FR1"))
+    assert tab.sample_list.count() == 1
+    assert tab._current_sample_index() == -1
+    tab.sample_list.setCurrentRow(0)
+    assert tab._current_sample_index() == 3
 
 
 def test_progress_bar_updates(qapp, tmp_path):

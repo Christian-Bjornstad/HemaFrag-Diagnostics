@@ -25,6 +25,8 @@ def _make_test_excel(tmp_path) -> str:
         "IdentityKey": ["ID1", "ID2", "ID3"],
         "SampleKind": ["patient", "patient", "patient"],
         "Group": ["B", "B", "A"],
+        "ClonalitySuggestion": ["polyklonal", "monoklonal", "irregulaer"],
+        "ClonalityReviewNeeded": [False, True, "true"],
         LABEL_COLUMN: ["", "", "monoklonal"],  # 3rd sample already labeled
     })
     with pd.ExcelWriter(path, engine="openpyxl") as w:
@@ -102,6 +104,8 @@ def test_sample_fields_populate_correctly(tmp_path):
     assert s0.file_name == "sample1.fsa"
     assert s0.source_run_dir == "run_2025_01_15"
     assert s0.current_label == ""
+    assert s0.rule_suggestion == "polyklonal"
+    assert s0.rule_review_needed is False
     assert not s0.is_labeled
 
     s2 = session.samples[2]
@@ -143,6 +147,14 @@ def test_filter_unlabeled_returns_correct_indices(tmp_path):
     session.load()
     unlabeled = session.filter_unlabeled()
     assert unlabeled == [0, 1]  # sample 2 is already labeled
+
+
+def test_filter_review_needed_returns_rule_review_indices(tmp_path):
+    path = _make_test_excel(tmp_path)
+    session = LabelingSession(excel_path=path)
+    session.load()
+
+    assert session.filter_review_needed() == [1, 2]
 
 
 def test_save_round_trip(tmp_path):

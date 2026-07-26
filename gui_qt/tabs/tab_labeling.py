@@ -30,6 +30,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -62,7 +63,10 @@ class TabLabeling(QWidget):
         super().__init__(parent)
         self._session = None
         self._fsa_root = ""
+        self._filter_mode = "all"
+        self._assay_filter = ""
         self._show_unlabeled_only = False
+        self._visible_sample_indices = []
         self._build_ui()
         self._setup_shortcuts()
 
@@ -112,6 +116,20 @@ class TabLabeling(QWidget):
 
         self.lbl_filter = QLabel("All samples")
         list_layout.addWidget(self.lbl_filter)
+
+        filter_row = QHBoxLayout()
+        self.queue_filter = QComboBox()
+        self.queue_filter.addItem("All", "all")
+        self.queue_filter.addItem("Unlabeled", "unlabeled")
+        self.queue_filter.addItem("Rule review", "review")
+        self.queue_filter.currentIndexChanged.connect(self._on_queue_filter_changed)
+        filter_row.addWidget(self.queue_filter)
+
+        self.assay_filter = QComboBox()
+        self.assay_filter.addItem("All assays", "")
+        self.assay_filter.currentIndexChanged.connect(self._on_assay_filter_changed)
+        filter_row.addWidget(self.assay_filter)
+        list_layout.addLayout(filter_row)
 
         self.sample_list = QListWidget()
         self.sample_list.currentRowChanged.connect(self._on_sample_selected)
@@ -189,6 +207,7 @@ class TabLabeling(QWidget):
             self._session.load()
             self.lbl_xlsx.setText(path)
             self.lbl_xlsx.setStyleSheet("color: #333;")
+            self._populate_assay_filter()
             self._refresh_sample_list()
         except Exception as exc:
             self.lbl_xlsx.setText(f"Error: {exc}")
@@ -204,11 +223,17 @@ class TabLabeling(QWidget):
     def _refresh_sample_list(self):
         from core.labeling.labeling_session import LABEL_TO_KEY
         self.sample_list.clear()
+        self._visible_sample_indices = []
         if not self._session:
             return
-        for i, sample in enumerate(self._session.samples):
-            if self._show_unlabeled_only and sample.is_labeled:
+        for index, sample in enumerate(self._session.samples):
+            if self._filter_mode == "unlabeled" and sample.is_labeled:
                 continue
+            if self._filter_mode == "review" and not sample.rule_review_needed:
+                continue
+            if self._assay_filter and sample.assay != self._assay_filter:
+                continue
+            self._visible_sample_indices.append(index)
             key = LABEL_TO_KEY.get(sample.current_label, "")
             prefix = f"[{key}] " if key else "  "
             short_label = sample.current_label if sample.is_labeled else "—"
@@ -231,13 +256,9 @@ class TabLabeling(QWidget):
         row = self.sample_list.currentRow()
         if row < 0 or not self._session:
             return -1
-        # Map filtered list row back to session.samples index
-        if self._show_unlabeled_only:
-            unlabeled_indices = self._session.filter_unlabeled()
-            if 0 <= row < len(unlabeled_indices):
-                return unlabeled_indices[row]
-            return -1
-        return row
+        if 0 <= row < len(self._visible_sample_indices):
+            return self._visible_sample_indices[row]
+        return -1
 
     def _on_sample_selected(self, row: int):
         idx = self._current_sample_index()
@@ -253,6 +274,8 @@ class TabLabeling(QWidget):
             f"<b>Group:</b> {sample.group}<br>"
             f"<b>File:</b> {sample.file_name}<br>"
             f"<b>Run dir:</b> {sample.source_run_dir}<br>"
+            f"<b>Rule:</b> {sample.rule_suggestion or 'none'}"
+            f"{' (review)' if sample.rule_review_needed else ''}<br>"
             f"<b>Label:</b> "
             f"<span style='background: {'#e8f5e9' if key else '#fff3e0'}; "
             f"padding: 2px 6px; border-radius: 3px;'>"
@@ -308,7 +331,7 @@ class TabLabeling(QWidget):
         self._refresh_sample_list()
         if self.sample_list.count() == 0:
             return
-        target_row = visible_row if self._show_unlabeled_only else visible_row + 1
+        target_row = visible_row if self._filter_mode == "unlabeled" else visible_row + 1
         self.sample_list.setCurrentRow(
             min(max(target_row, 0), self.sample_list.count() - 1)
         )
@@ -341,6 +364,36 @@ class TabLabeling(QWidget):
             self.lbl_xlsx.setStyleSheet("color: red;")
 
     def _on_toggle_filter(self):
-        self._show_unlabeled_only = not self._show_unlabeled_only
-        self.lbl_filter.setText("Unlabeled only" if self._show_unlabeled_only else "All samples")
+        target = "all" if self._filter_mode == "unlabeled" else "unlabeled"
+        index = self.queue_filter.findData(target)
+        self.queue_filter.setCurrentIndex(index)
+
+    def _on_queue_filter_changed(self):
+        self._filter_mode = str(self.queue_filter.currentData() or "all")
+        self._show_unlabeled_only = self._filter_mode == "unlabeled"
+        labels = {
+            "all": "All samples",
+            "unlabeled": "Unlabeled only",
+            "review": "Rule review",
+        }
+        self.lbl_filter.setText(labels[self._filter_mode])
+        self._refresh_sample_list()
+
+    def _on_assay_filter_changed(self):
+        self._assay_filter = str(self.assay_filter.currentData() or "")
+        self._refresh_sample_list()
+
+    def _populate_assay_filter(self):
+        current = self._assay_filter
+        self.assay_filter.blockSignals(True)
+        self.assay_filter.clear()
+        self.assay_filter.addItem("All assays", "")
+        if self._session:
+            assays = sorted({sample.assay for sample in self._session.samples if sample.assay})
+            for assay in assays:
+                self.assay_filter.addItem(assay, assay)
+        index = self.assay_filter.findData(current)
+        self.assay_filter.setCurrentIndex(max(index, 0))
+        self.assay_filter.blockSignals(False)
+        self._assay_filter = str(self.assay_filter.currentData() or "")
         self._refresh_sample_list()
