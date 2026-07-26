@@ -79,8 +79,11 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
    - assay validation report meets minimum monoklonal and macro-F1 thresholds
 4. [Completed 2026-07-26] Always route disagreement, rare-label predictions, low-confidence rows, and unavailable traces to review.
 5. [Completed 2026-07-26] Runtime accepts only
-   `ml_training_pipeline_v3` artifacts with passing DIT-grouped and
+   `ml_training_pipeline_v4` artifacts with passing DIT/content-grouped and
    source-run-grouped validation evidence.
+6. [Completed 2026-07-26] Coalesce DITs connected by an identical
+   `FsaContentHash` before primary OOF splitting, require 100% hash coverage,
+   and record duplicate-content provenance in every model.
 
 ## Phase 6 - Learning Loop
 

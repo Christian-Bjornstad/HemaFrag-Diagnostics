@@ -63,7 +63,7 @@ def _make_model_dir(p: Path) -> Path:
     clf = _train_dummy_model(seed=42)
     joblib.dump(clf, p / "FR1" / "random_forest.joblib")
     meta = {
-        "schema_version": "ml_training_pipeline_v3",
+        "schema_version": "ml_training_pipeline_v4",
         "assay": "FR1",
         "label_order": ["monoklonal", "polyklonal", "irregulaer",
                         "bi_oligoklonal", "pseudoklonal"],
@@ -82,8 +82,14 @@ def _make_model_dir(p: Path) -> Path:
         "runtime_eligible": True,
         "validation": {
             "strategy": "StratifiedGroupKFold",
+            "group_column": "DITContentComponent",
             "every_row_oof_once": True,
             "effective_splits": 5,
+            "unique_groups": 20,
+            "group_provenance": {
+                "method": "dit_fsa_content_connected_components",
+                "content_hash_coverage": 1.0,
+            },
             "promotion_gate": {"passed": True},
             "source_run_stress": {
                 "status": "complete",
@@ -206,7 +212,7 @@ def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch)
     }
     if out.get("ClonalityMLSuggestion"):
         # If ML emitted a label, the model_version stamp should be present
-        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v3"
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v4"
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
 

@@ -51,7 +51,7 @@ from core.analyses.clonality.ml_validation import (
     PromotionGate,
     assess_promotion_gate,
     assess_source_run_gate,
-    grouped_oof_validate,
+    dit_content_grouped_validate,
     metrics_as_dict,
     render_review_panel_html,
     source_run_grouped_validate,
@@ -147,6 +147,9 @@ def _render_per_assay_markdown(
     out_lines.append("- Grouped out-of-fold samples: **{}**".format(len(validation.predictions)))
     out_lines.append("- Unique DIT groups: **{}**".format(
         validation.split_manifest["unique_dit_groups"]
+    ))
+    out_lines.append("- Independent DIT/content groups: **{}**".format(
+        validation.split_manifest["unique_groups"]
     ))
     out_lines.append("- Validation folds: **{}**".format(
         validation.split_manifest["effective_splits"]
@@ -946,7 +949,7 @@ def main(argv=None):
                 )
             )
             try:
-                candidate_validation = grouped_oof_validate(
+                candidate_validation = dit_content_grouped_validate(
                     ds,
                     classifier_kind=classifier_kind,
                     n_splits=args.validation_folds,
@@ -1096,7 +1099,9 @@ def main(argv=None):
             "effective_splits": validation.split_manifest["effective_splits"],
             "random_state": validation.split_manifest["random_state"],
             "unique_dit_groups": validation.split_manifest["unique_dit_groups"],
+            "unique_groups": validation.split_manifest["unique_groups"],
             "every_row_oof_once": validation.split_manifest["every_row_oof_once"],
+            "group_provenance": validation.split_manifest["group_provenance"],
             "metrics": metrics_as_dict(metrics),
             "promotion_gate": {
                 "passed": deployment_gate.passed,

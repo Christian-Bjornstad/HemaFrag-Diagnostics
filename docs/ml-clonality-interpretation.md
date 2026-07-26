@@ -11,13 +11,14 @@ remains the report source of truth.
 - `ClonalitySuggestion` is the independent rule output and is never used as
   accidental ground truth.
 - Models train and validate per assay.
-- Primary validation groups by `DIT`; the same patient cannot occur in train
-  and test. Explicit classifier runs also hold out complete source runs.
+- Primary validation groups by connected DIT/FSA-content components; the same
+  patient or byte-identical trace cannot occur in train and test. Explicit
+  classifier runs also hold out complete source runs.
 - Replicate and panel context is limited to the same DIT and sanitized source
   run, and controls/SL are excluded from patient context.
 - Training produces runtime-ineligible candidates by default.
-- Runtime only discovers explicitly promoted `ml_training_pipeline_v3`
-  artifacts whose metadata proves complete DIT- and source-run-grouped
+- Runtime only discovers explicitly promoted `ml_training_pipeline_v4`
+  artifacts whose metadata proves complete DIT/content- and source-run-grouped
   out-of-fold validation.
 - Controls, SL, unavailable traces, failed quality gates, disagreement,
   low confidence, and rare-label predictions are never silently accepted.
@@ -46,8 +47,9 @@ revalidation.
 2. Analyze each resolved FSA and export flat scalar plus per-channel trace
    features.
 3. Refresh chemist labels from the current workbook at training time.
-4. Build one dataset per assay and validate with `StratifiedGroupKFold`,
-   grouping by DIT.
+4. Build one dataset per assay, require complete `FsaContentHash` coverage, and
+   validate with `StratifiedGroupKFold`. DITs connected by byte-identical FSA
+   content are coalesced into one validation group.
 5. In auto mode, compare calibrated RandomForest and ExtraTrees candidates
    on identical grouped folds and select one using the recorded safety-first
    ranking.
@@ -198,6 +200,10 @@ chemist, rule, and ML labels; confidence; fold; rule/ML agreement; chemist/ML
 agreement; monoklonal false-positive status; review reason; and class
 probabilities.
 
+The primary split manifest records original DIT count, independent
+DIT/content-component count, duplicate content-hash count, cross-DIT duplicate
+hash count, and the number of DIT groups coalesced to prevent leakage.
+
 Review reasons include:
 
 ```text
@@ -227,7 +233,7 @@ Every candidate stores:
 
 - feature columns plus trace and cohort schemas;
 - label order and class counts;
-- training row and unique-DIT counts;
+- training row, unique-DIT, and independent DIT/content-group counts;
 - privacy-preserving training-data fingerprint;
 - grouped validation strategy, fold count, random state, and metrics;
 - source-run stress metrics, split provenance, thresholds, and pass/fail state;
@@ -247,11 +253,11 @@ never from the refitted candidate.
 ML stays off unless both conditions are true:
 
 1. `analyses.clonality.interpretation.enabled` is true.
-2. `model_path` contains at least one eligible validated v3 assay artifact.
+2. `model_path` contains at least one eligible validated v4 assay artifact.
 
-Runtime rejects v1/v2 artifacts and v3 artifacts lacking a complete, passing
-`SourceRunKey` stress test. This deliberately requires retraining before an
-older model can be enabled.
+Runtime rejects v1-v3 artifacts and v4 artifacts lacking complete content-hash
+grouping or a complete, passing `SourceRunKey` stress test. This deliberately
+requires retraining before an older model can be enabled.
 
 The batch pipeline attaches rule results first, computes same-run patient
 context across the completed batch, and only then invokes ML. The runtime

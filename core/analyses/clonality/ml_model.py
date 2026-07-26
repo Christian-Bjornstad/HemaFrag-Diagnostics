@@ -332,8 +332,15 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         return False
     try:
         effective_splits = int(validation.get("effective_splits") or 0)
+        unique_primary_groups = int(validation.get("unique_groups") or 0)
         run_effective_splits = int(run_stress.get("effective_splits") or 0)
         unique_run_groups = int(run_stress.get("unique_groups") or 0)
+        group_provenance = validation.get("group_provenance")
+        content_hash_coverage = float(
+            group_provenance.get("content_hash_coverage") or 0.0
+            if isinstance(group_provenance, Mapping)
+            else 0.0
+        )
     except (TypeError, ValueError):
         return False
     requires_cohort_context = any(
@@ -344,6 +351,12 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         or metadata.get("cohort_feature_schema_version")
         == COHORT_FEATURE_SCHEMA_VERSION
     )
+    content_grouping_compatible = bool(
+        isinstance(group_provenance, Mapping)
+        and group_provenance.get("method")
+        == "dit_fsa_content_connected_components"
+        and content_hash_coverage == 1.0
+    )
     return bool(
         metadata.get("schema_version") == RUNTIME_MODEL_SCHEMA_VERSION
         and metadata.get("deployment_status") == "validated"
@@ -353,8 +366,11 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         and cohort_schema_compatible
         and any(is_raw_trace_feature(column) for column in feature_columns)
         and validation.get("strategy") == "StratifiedGroupKFold"
+        and validation.get("group_column") == "DITContentComponent"
         and validation.get("every_row_oof_once") is True
         and effective_splits >= 2
+        and unique_primary_groups >= 2
+        and content_grouping_compatible
         and promotion_gate.get("passed") is True
         and run_stress.get("status") == "complete"
         and run_stress.get("strategy") == "StratifiedGroupKFold"

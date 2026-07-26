@@ -274,6 +274,33 @@ def source_run_grouped_validate(
     )
 
 
+def dit_content_grouped_validate(
+    dataset: PerAssayDataset,
+    *,
+    classifier_kind: str,
+    n_splits: int = 5,
+    random_state: int = 12345,
+    accept_threshold_tau: float = 0.85,
+    importance_max_features: int = 25,
+    importance_repeats: int = 1,
+) -> GroupedValidationResult:
+    """Hold out DITs and any DITs linked by identical raw FSA content."""
+    groups, provenance = _dit_content_components(dataset)
+    validation = grouped_oof_validate(
+        dataset,
+        classifier_kind=classifier_kind,
+        n_splits=n_splits,
+        random_state=random_state,
+        accept_threshold_tau=accept_threshold_tau,
+        importance_max_features=importance_max_features,
+        importance_repeats=importance_repeats,
+        validation_groups=groups,
+        group_column="DITContentComponent",
+    )
+    validation.split_manifest["group_provenance"] = provenance
+    return validation
+
+
 def assess_promotion_gate(
     validation: GroupedValidationResult,
     *,
@@ -289,7 +316,7 @@ def assess_promotion_gate(
     metrics = validation.aggregate_metrics
     mono = metrics.classification_report.get("monoklonal", {})
     mono_precision = float(mono.get("precision", 0.0))
-    groups = int(validation.split_manifest.get("unique_dit_groups") or 0)
+    groups = int(validation.split_manifest.get("unique_groups") or 0)
     thresholds: dict[str, float | int] = {
         "min_macro_f1": float(min_macro_f1),
         "min_monoklonal_f1": float(min_monoklonal_f1),
@@ -317,7 +344,10 @@ def assess_promotion_gate(
             f"{mono_precision:.3f} below {float(min_monoklonal_precision):.3f}"
         )
     if groups < int(min_dit_groups):
-        reasons.append(f"dit_groups={groups} below {int(min_dit_groups)}")
+        reasons.append(
+            f"independent_dit_content_groups={groups} below "
+            f"{int(min_dit_groups)}"
+        )
     if metrics.accepted_accuracy < float(min_accepted_accuracy):
         reasons.append(
             "accepted_accuracy="
@@ -619,6 +649,79 @@ def _fold_permutation_importance(
     return records
 
 
+def _dit_content_components(
+    dataset: PerAssayDataset,
+) -> tuple[pd.Series, dict[str, Any]]:
+    if "FsaContentHash" not in dataset.rows.columns:
+        raise ValueError(
+            "FsaContentHash is required for leakage-safe DIT validation"
+        )
+    dits = dataset.dit.fillna("").astype(str).str.strip().reset_index(drop=True)
+    hashes = (
+        dataset.rows["FsaContentHash"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .reset_index(drop=True)
+    )
+    if hashes.eq("").any():
+        raise ValueError(
+            "FsaContentHash validation requires a non-empty hash for every row"
+        )
+
+    unique_dits = list(dict.fromkeys(dits.tolist()))
+    parent = {dit: dit for dit in unique_dits}
+
+    def find(value: str) -> str:
+        root = value
+        while parent[root] != root:
+            root = parent[root]
+        while parent[value] != value:
+            next_value = parent[value]
+            parent[value] = root
+            value = next_value
+        return root
+
+    def union(left: str, right: str) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root == right_root:
+            return
+        keep, merge = sorted((left_root, right_root))
+        parent[merge] = keep
+
+    first_dit_by_hash: dict[str, str] = {}
+    dits_by_hash: dict[str, set[str]] = {}
+    for dit, content_hash in zip(dits, hashes):
+        prior = first_dit_by_hash.setdefault(content_hash, dit)
+        union(prior, dit)
+        dits_by_hash.setdefault(content_hash, set()).add(dit)
+
+    roots = sorted({find(dit) for dit in unique_dits})
+    labels = {
+        root: f"dit_content_component_{index:06d}"
+        for index, root in enumerate(roots, start=1)
+    }
+    groups = dits.map(lambda dit: labels[find(dit)])
+    counts = hashes.value_counts()
+    cross_dit_hashes = sum(
+        len(hash_dits) > 1 for hash_dits in dits_by_hash.values()
+    )
+    provenance = {
+        "method": "dit_fsa_content_connected_components",
+        "content_hash_column": "FsaContentHash",
+        "content_hash_coverage": float(hashes.ne("").mean()),
+        "row_count": int(len(hashes)),
+        "original_dit_groups": int(dits.nunique()),
+        "independent_validation_groups": int(groups.nunique()),
+        "unique_content_hashes": int(hashes.nunique()),
+        "duplicate_content_hashes": int((counts > 1).sum()),
+        "cross_dit_duplicate_content_hashes": int(cross_dit_hashes),
+        "coalesced_dit_group_count": int(dits.nunique() - groups.nunique()),
+    }
+    return groups, provenance
+
+
 def _importance_candidates(
     estimator: Any,
     X: pd.DataFrame,
@@ -799,6 +902,7 @@ __all__ = [
     "REVIEW_ROUTED_LABELS",
     "assess_promotion_gate",
     "assess_source_run_gate",
+    "dit_content_grouped_validate",
     "grouped_oof_validate",
     "metrics_as_dict",
     "render_review_panel_html",

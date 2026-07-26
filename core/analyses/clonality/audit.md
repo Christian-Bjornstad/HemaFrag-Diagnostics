@@ -14,7 +14,7 @@
    plus evidence strings.
 4. Optional ML second-opinion: when interpretation is enabled,
    `ml_runtime.attach_ml_prediction_if_enabled(...)` loads only an explicitly
-   promoted, dual-group-validated v3 per-assay artifact. It recomputes raw trace
+   promoted, content/run-group-validated v4 per-assay artifact. It recomputes raw trace
    features when needed and leaves the rule output unchanged.
 5. Tracking Excel writer (`tracking_excel.py::update_clonality_tracking_workbook`) writes
    the rule columns by default, plus ML columns when enabled.
@@ -125,7 +125,7 @@ Validated ML adds `ClonalityMLSuggestion`, `ClonalityMLConfidence`,
 - `INTERPRETATION_RULE_VERSION = "clonality_interpretation_rules_v1"`
 - `MODEL_VERSION = "clonality_interpretation_quick_model_v1"`
 - `TRACE_FEATURE_SCHEMA_VERSION = "clonality_trace_features_v1"`
-- validated runtime model schema: `ml_training_pipeline_v3`
+- validated runtime model schema: `ml_training_pipeline_v4`
 
 Keep all three under versioned definitions; bumping either triggers:
 - Tracking-column metadata update
@@ -137,7 +137,7 @@ Keep all three under versioned definitions; bumping either triggers:
 | File | Function | Why here | Phase |
 |------|----------|----------|-------|
 | `core/analyses/clonality/interpretation.py` | `features_from_entry` | shared scalar plus optional raw-trace feature contract | 2 |
-| `core/analyses/clonality/ml_validation.py` | `grouped_oof_validate`, `source_run_grouped_validate` | patient/run-safe validation and disagreement evidence | 6 |
+| `core/analyses/clonality/ml_validation.py` | `dit_content_grouped_validate`, `source_run_grouped_validate` | patient/content/run-safe validation and disagreement evidence | 7 |
 | `core/analyses/clonality/ml_model.py` | `_runtime_eligible_metadata` | candidate/validated deployment boundary | 5 |
 | `core/analyses/clonality/ml_runtime.py` | `attach_ml_prediction_if_enabled` | second-opinion and review routing | 5 |
 | `core/analyses/clonality/tracking_excel.py` | `update_clonality_tracking_workbook` | rule and ML tracking columns | 5 |

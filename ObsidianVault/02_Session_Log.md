@@ -1232,3 +1232,10 @@ Verification:
 - Promotion requires minimum source-run support, macro F1, and monoklonal precision in addition to every existing DIT/calibration gate. Missing or single-run provenance writes an inspectable candidate but blocks promotion with exit code `2`.
 - Bumped runtime eligibility to `ml_training_pipeline_v3`. Runtime independently requires complete passing DIT and source-run validation metadata, so v1/v2 artifacts and incomplete v3 artifacts cannot load.
 - Verification: focused runtime/trainer/validation integration passed (`55`); full suite passed (`345 passed, 3 skipped`, with seven known pytest/sklearn/scipy warnings). Real source-run performance remains pending until the private corpus is mounted.
+
+## 2026-07-26 - Clonality Duplicate-Content Leakage Gate
+
+- Added connected primary validation groups built from DIT plus `FsaContentHash`. DITs linked by byte-identical raw traces are now held out together even when copied files have different paths or workbook identities.
+- Training requires non-empty content hashes for every row and records hash coverage, duplicate hashes, cross-DIT duplicate hashes, original DIT groups, independent validation groups, and coalesced group count.
+- Bumped runtime eligibility to `ml_training_pipeline_v4`; runtime rejects older artifacts and v4 metadata without complete content-group provenance plus passing source-run stress evidence.
+- Verification: focused validation/trainer/runtime integration passed (`58`); full suite passed (`348 passed, 3 skipped`, with seven known pytest/sklearn/scipy warnings). Real duplicate-content counts remain pending until the private corpus is mounted.

@@ -8,6 +8,7 @@ from core.analyses.clonality.ml_training import PerAssayDataset
 from core.analyses.clonality.ml_validation import (
     assess_promotion_gate,
     assess_source_run_gate,
+    dit_content_grouped_validate,
     grouped_oof_validate,
     render_review_panel_html,
     source_run_grouped_validate,
@@ -40,6 +41,9 @@ def _dataset() -> PerAssayDataset:
             rows.append(
                 {
                     "IdentityKey": f"{dit}-{replicate}",
+                    "FsaContentHash": (
+                        f"content-{group_index:03d}-{replicate}"
+                    ),
                     "DIT": dit,
                     "Assay": "FR1",
                     "RunDate": f"2026-07-{1 + group_index % 3:02d}",
@@ -223,6 +227,52 @@ def test_source_run_stress_rejects_missing_run_provenance(monkeypatch):
 
     with np.testing.assert_raises_regex(ValueError, "non-empty group"):
         source_run_grouped_validate(
+            dataset,
+            classifier_kind="random_forest",
+        )
+
+
+def test_dit_content_validation_coalesces_cross_dit_duplicate_traces(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+    dataset.rows.loc[0, "FsaContentHash"] = "shared-content"
+    dataset.rows.loc[2, "FsaContentHash"] = "shared-content"
+
+    result = dit_content_grouped_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=5,
+        random_state=44,
+        importance_max_features=0,
+    )
+    linked = result.predictions.loc[
+        result.predictions["DIT"].isin(["DIT-000", "DIT-001"])
+    ]
+    provenance = result.split_manifest["group_provenance"]
+
+    assert linked["Fold"].nunique() == 1
+    assert result.split_manifest["group_column"] == "DITContentComponent"
+    assert result.split_manifest["unique_dit_groups"] == 30
+    assert result.split_manifest["unique_groups"] == 29
+    assert provenance["cross_dit_duplicate_content_hashes"] == 1
+    assert provenance["coalesced_dit_group_count"] == 1
+
+
+def test_dit_content_validation_requires_complete_hash_coverage(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+    dataset.rows.loc[0, "FsaContentHash"] = ""
+
+    with np.testing.assert_raises_regex(ValueError, "non-empty hash"):
+        dit_content_grouped_validate(
             dataset,
             classifier_kind="random_forest",
         )

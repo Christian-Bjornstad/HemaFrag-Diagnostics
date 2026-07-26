@@ -63,7 +63,7 @@ ANNOTATION_CLASSES_ORDER: tuple[str, ...] = (
     "qc_teknisk_fail",
     "usikker_review",
 )
-RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v3"
+RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v4"
 
 DEFAULT_NON_FEATURE_COLUMNS = {
     "Month",
