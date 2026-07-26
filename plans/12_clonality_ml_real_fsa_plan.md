@@ -33,17 +33,18 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
    - local noise/MAD, baseline drift, dome/broad-hump indicators
    - reference-window coverage and outside-window signal share
    - peak spacing, symmetry, shoulder count, and multi-peak density
-3. Add replicate/panel features:
-   - same-patient assay concordance
-   - duplicate/parallel peak bp distance
-   - control-run context when available
+3. [Partially completed 2026-07-26] Add replicate/panel features:
+   - [Completed 2026-07-26] same-run patient assay counts and panel completeness
+   - [Completed 2026-07-26] duplicate/parallel dominant peak bp distance and
+     2 bp concordance
+   - control-run context when reliable control provenance is available
 4. [Completed 2026-07-26] Store feature artifacts as CSV with a manifest containing code version, settings fingerprint, and source workbook path.
 
 ## Phase 3 - Baseline Models
 
 1. Start with interpretable baselines:
    - [Completed 2026-07-26] RandomForest with class balancing
-   - HistGradientBoosting or ExtraTrees for nonlinear trace patterns
+   - [Completed 2026-07-26] ExtraTrees for nonlinear trace patterns
    - [Completed 2026-07-26] calibrated probabilities when class counts allow it
 2. [Completed 2026-07-26] Train per assay. Grouped assay families remain research-only comparisons.
 3. [Completed 2026-07-26] Save `feature_columns`, `label_order`, thresholds, label counts, data fingerprint, grouped validation metadata, and promotion state with every model.
@@ -129,8 +130,8 @@ python -m scripts.build_clonality_ml_features `
 ```
 
 Continue with the full local corpus. Checkpoints are written atomically and
-`--resume` skips rows whose file content, feature schema, and clonality
-settings already match:
+`--resume` skips rows whose file content, trace/cohort feature schemas, and
+clonality settings already match:
 
 ```powershell
 python -m scripts.build_clonality_ml_features `
@@ -154,6 +155,11 @@ python -m scripts.train_clonality_interpretation_models `
 Training writes candidate-only models plus grouped out-of-fold predictions,
 disagreement/review CSVs, drift summaries, split metadata, and an HTML review
 panel. Candidate metadata is rejected by runtime.
+
+Use `--classifier-kind auto` for a candidate-only comparison of RandomForest
+and ExtraTrees on identical grouped folds. Inspect the model-comparison output,
+then rerun the selected explicit classifier in a fresh directory for promotion;
+auto-selected models cannot be promoted directly.
 
 After chemist review, rerun with `--promote-if-passes` and explicit
 `--min-macro-f1`, `--min-monoklonal-f1`,

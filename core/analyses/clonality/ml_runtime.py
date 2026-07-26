@@ -183,6 +183,18 @@ def _do_attach(entry: dict[str, Any], store: ClonalityModelStore) -> dict[str, A
         return entry
 
     required_columns = store.required_feature_columns(assay)
+    required_context_columns = [
+        column for column in required_columns if str(column).startswith("cohort_")
+    ]
+    if required_context_columns and not all(
+        _feature_is_present(features, column)
+        for column in required_context_columns
+    ):
+        for column in MLCOLUMNS:
+            entry[column] = ""
+        entry["ClonalityMLReviewNeeded"] = True
+        entry["ClonalityMLEvidence"] = "cohort_context_unavailable"
+        return entry
     required_raw_columns = [
         column for column in required_columns if str(column).startswith("trace_")
     ]
@@ -193,7 +205,7 @@ def _do_attach(entry: dict[str, Any], store: ClonalityModelStore) -> dict[str, A
         # the full real-FSA contract only when an eligible model needs it.
         from core.analyses.clonality.interpretation import features_from_entry
 
-        features = {**features, **features_from_entry(entry)}
+        features = {**features_from_entry(entry), **features}
     available_channels = features.get("trace_available_channel_count")
     if available_channels is not None:
         try:

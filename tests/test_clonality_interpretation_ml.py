@@ -230,6 +230,26 @@ def test_fit_classifier_random_forest_predicts_labels():
     assert pred_set.issubset(label_set | {"polyklonal", "monoklonal", "usikker_review"})  # tolerate rule labels
 
 
+def test_fit_classifier_extra_trees_predicts_labels():
+    df = _synth_combined()
+    ds = build_per_assay_datasets(df, min_samples_per_assay=100)["FR1"]
+    train_idx, test_idx = group_shuffle_split_by_dit(
+        ds.X,
+        ds.y,
+        ds.dit,
+        random_state=12345,
+    )
+
+    estimator = fit_classifier(
+        ds.X.iloc[train_idx],
+        ds.y.iloc[train_idx],
+        kind="extra_trees",
+    )
+
+    assert len(estimator.predict(ds.X.iloc[test_idx])) == len(test_idx)
+    assert estimator.predict_proba(ds.X.iloc[test_idx[:3]]).shape[0] == 3
+
+
 def test_fit_classifier_rejects_unknown_kind():
     df = _synth_combined()
     ds = build_per_assay_datasets(df, min_samples_per_assay=100)["FR1"]

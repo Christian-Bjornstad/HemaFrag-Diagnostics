@@ -114,6 +114,30 @@ def test_store_ignores_artifact_without_grouped_validation(tmp_path):
     assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
 
 
+def test_store_ignores_classifier_filename_metadata_mismatch(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["classifier_kind"] = "extra_trees"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_rejects_cohort_model_without_matching_schema(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["feature_columns"].append("cohort_context_available")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+    metadata["cohort_feature_schema_version"] = "clonality_cohort_features_v1"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is True
+
+
 def test_store_loads_joblib_for_known_assay(tmp_path):
     model_dir = _make_model_dir(tmp_path, ["FR1", "TCRG-A"])
     store = ClonalityModelStore(model_dir=model_dir)
@@ -122,6 +146,30 @@ def test_store_loads_joblib_for_known_assay(tmp_path):
     assert store.is_enabled("TCRGA") is True
     assert store.is_enabled("TCRGB") is False
     assert store.is_enabled("UNKNOWN") is False
+
+
+def test_store_loads_validated_extra_trees_artifact(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    assay_dir = tmp_path / "FR1"
+    (assay_dir / "random_forest.joblib").replace(
+        assay_dir / "extra_trees.joblib"
+    )
+    metadata_path = assay_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["classifier_kind"] = "extra_trees"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    store = ClonalityModelStore(model_dir=tmp_path)
+
+    assert store.is_enabled("FR1") is True
+    assert store.predict(
+        "FR1",
+        {
+            "trace_runtime_signal": 1.0,
+            "f_ratio": 0.5,
+            "f_share": 0.3,
+        },
+    ) is not None
 
 
 def test_store_predicts_when_runtime_assay_omits_separator(tmp_path):

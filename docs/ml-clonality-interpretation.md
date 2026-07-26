@@ -12,6 +12,8 @@ remains the report source of truth.
   accidental ground truth.
 - Models train and validate per assay.
 - Validation groups by `DIT`; the same patient cannot occur in train and test.
+- Replicate and panel context is limited to the same DIT and sanitized source
+  run, and controls/SL are excluded from patient context.
 - Training produces runtime-ineligible candidates by default.
 - Runtime only discovers explicitly promoted `ml_training_pipeline_v2`
   artifacts whose metadata proves complete grouped out-of-fold validation.
@@ -44,12 +46,15 @@ revalidation.
 3. Refresh chemist labels from the current workbook at training time.
 4. Build one dataset per assay and validate with `StratifiedGroupKFold`,
    grouping by DIT.
-5. Export row-level out-of-fold predictions, disagreements, review cases,
+5. In auto mode, compare calibrated RandomForest and ExtraTrees candidates
+   on identical grouped folds and select one using the recorded safety-first
+   ranking.
+6. Export row-level out-of-fold predictions, disagreements, review cases,
    drift summaries, split provenance, metrics, and a local HTML review panel.
-6. Refit the candidate estimator on all labeled rows.
-7. Keep the artifact candidate-only unless explicit promotion was requested
+7. Refit the selected candidate estimator on all labeled rows.
+8. Keep the artifact candidate-only unless explicit promotion was requested
    and every configured metric gate passed.
-8. At runtime, show eligible ML output as a second-opinion badge without
+9. At runtime, show eligible ML output as a second-opinion badge without
    replacing the rule interpretation.
 
 ## Commands
@@ -93,7 +98,7 @@ python -m scripts.train_clonality_interpretation_models `
   --output-dir "C:\local\clonality_ml_models" `
   --min-samples 200 `
   --validation-folds 5 `
-  --classifier-kind random_forest
+  --classifier-kind auto
 ```
 
 After chemist review, request promotion with explicit gates:
@@ -123,6 +128,10 @@ Each training run requires a fresh output directory. This prevents a failed
 or partial retraining run from leaving stale validated assay artifacts mixed
 with current candidates.
 
+`--classifier-kind auto` is comparison-only and cannot be promoted directly.
+Review `model_comparison_<assay>.json`, then rerun the selected explicit
+classifier in a fresh directory with the promotion gates.
+
 ## Feature Artifact
 
 `clonality_ml_trace_features.csv` contains:
@@ -132,7 +141,9 @@ with current candidates.
 - current chemist label;
 - independent rule suggestion, confidence, review flag, evidence, and version;
 - scalar analysis features;
-- deterministic `clonality_trace_features_v1` per-channel trace summaries.
+- deterministic `clonality_trace_features_v1` per-channel trace summaries;
+- deterministic `clonality_cohort_features_v1` same-run panel and replicate
+  summaries, including duplicate peak-bp concordance.
 
 It does not contain raw traces, raw FSA paths, or source-run paths. The local
 manifest contains source paths and must not be committed.
@@ -141,7 +152,12 @@ Resume requires matching:
 
 - FSA byte content hash;
 - trace feature schema;
+- cohort feature schema;
 - assay ranges and nonspecific-peak settings fingerprint.
+
+The current artifact version is `clonality_ml_feature_dataset_v2`. A v1
+checkpoint cannot be resumed; rebuild it so cohort context is computed over
+the complete local artifact.
 
 ## Validation Outputs
 
@@ -155,6 +171,8 @@ review_cases_<assay>.csv
 review_panel_<assay>.html
 drift_<assay>.csv
 splits_<assay>.json
+model_comparison_<assay>.json
+model_comparison_<assay>.csv
 ```
 
 The predictions file has one out-of-fold row per labeled sample. It includes
@@ -179,11 +197,12 @@ monoklonal false positives by run date and sanitized source-run key.
 
 Every candidate stores:
 
-- feature columns and trace schema;
+- feature columns plus trace and cohort schemas;
 - label order and class counts;
 - training row and unique-DIT counts;
 - privacy-preserving training-data fingerprint;
 - grouped validation strategy, fold count, random state, and metrics;
+- requested and selected classifier plus every comparison candidate's metrics;
 - promotion thresholds, pass/fail state, and blocking reasons;
 - expected calibration error plus high-confidence coverage and accuracy;
 - Python, NumPy, pandas, scikit-learn, and joblib versions;
@@ -200,8 +219,11 @@ ML stays off unless both conditions are true:
 1. `analyses.clonality.interpretation.enabled` is true.
 2. `model_path` contains at least one eligible validated v2 assay artifact.
 
-The runtime recomputes full raw-trace features when the rule layer only cached
-scalar features. It refuses to infer when no trace channel is available.
+The batch pipeline attaches rule results first, computes same-run patient
+context across the completed batch, and only then invokes ML. The runtime
+recomputes full raw-trace features when the rule layer only cached scalar
+features. It refuses to infer when no trace channel is available, or when a
+model requires cohort fields but batch context is unavailable.
 
 Tracking/report fields are:
 
@@ -222,6 +244,7 @@ review state. It does not overwrite `ClonalitySuggestion`.
 ```text
 core/analyses/clonality/ml_data_audit.py
 core/analyses/clonality/trace_features.py
+core/analyses/clonality/cohort_features.py
 core/analyses/clonality/ml_feature_dataset.py
 core/analyses/clonality/ml_training.py
 core/analyses/clonality/ml_validation.py
@@ -237,8 +260,7 @@ scripts/train_clonality_interpretation_models.py
 - Run the audit and extraction against the private mounted corpus.
 - Inspect per-assay label support, review panels, and run-date drift.
 - Decide assay-specific promotion thresholds with the chemist.
-- Compare RandomForest with an additional nonlinear baseline where sample
-  support allows.
-- Add replicate/panel and instrument-context features where provenance is
-  reliable.
+- Review whether the automatic RandomForest/ExtraTrees ranking is stable
+  across run-date cohorts and an external holdout.
+- Add control-run and instrument-context features where provenance is reliable.
 - Promote no model until real-data evidence supports every configured gate.

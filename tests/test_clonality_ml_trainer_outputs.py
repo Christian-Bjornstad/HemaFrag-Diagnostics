@@ -33,8 +33,9 @@ def _inputs(tmp_path):
         )
         feature_rows.append(
             {
-                "FeatureDatasetVersion": "clonality_ml_feature_dataset_v1",
+                "FeatureDatasetVersion": "clonality_ml_feature_dataset_v2",
                 "TraceFeatureSchemaVersion": "clonality_trace_features_v1",
+                "CohortFeatureSchemaVersion": "clonality_cohort_features_v1",
                 "IdentityKey": identity,
                 "FsaSourceHash": f"source-{index}",
                 "FsaContentHash": f"content-{index}",
@@ -48,6 +49,13 @@ def _inputs(tmp_path):
                 ),
                 "RuleConfidence": 0.8,
                 "RuleReviewNeeded": index % 7 == 0,
+                "cohort_context_available": 1,
+                "cohort_patient_entry_count": 1,
+                "cohort_patient_assay_count": 1,
+                "cohort_panel_completeness": 1.0 / 12.0,
+                "cohort_same_assay_entry_count": 1,
+                "cohort_same_assay_replicate_count": 0,
+                "cohort_replicate_bp_observation_count": 0,
                 "trace_dominant_area_share_raw_per_channel.DATA1": (
                     0.9 if label == "monoklonal" else 0.2
                 ),
@@ -77,7 +85,14 @@ def test_threshold_lookup_normalizes_assay_spelling():
     assert _per_assay_threshold_default("TCRgA") == 0.75
 
 
-def _run(tmp_path, monkeypatch, *, promote, gate_value="0.5"):
+def _run(
+    tmp_path,
+    monkeypatch,
+    *,
+    promote,
+    gate_value="0.5",
+    classifier_kind="random_forest",
+):
     workbook, features = _inputs(tmp_path)
     output = tmp_path / ("promoted" if promote else "candidate")
     monkeypatch.setattr(
@@ -101,6 +116,8 @@ def _run(tmp_path, monkeypatch, *, promote, gate_value="0.5"):
         "20",
         "--validation-folds",
         "3",
+        "--classifier-kind",
+        classifier_kind,
         "--min-dit-groups",
         "20",
         "--min-macro-f1",
@@ -187,5 +204,53 @@ def test_trainer_refuses_existing_model_output_directory(tmp_path, monkeypatch):
                 str(output),
                 "--min-samples",
                 "20",
+                "--classifier-kind",
+                "random_forest",
+            ]
+        )
+
+
+def test_trainer_auto_compares_baselines_and_selects_candidate(
+    tmp_path,
+    monkeypatch,
+):
+    exit_code, output = _run(
+        tmp_path,
+        monkeypatch,
+        promote=False,
+        classifier_kind="auto",
+    )
+
+    assert exit_code == 0
+    metadata = json.loads(
+        (output / "FR1" / "metadata.json").read_text(encoding="utf-8")
+    )
+    selection = metadata["validation"]["model_selection"]
+    assert selection["requested_classifier_kind"] == "auto"
+    assert selection["selected_classifier_kind"] == "random_forest"
+    assert {
+        row["classifier_kind"] for row in selection["candidates"]
+    } == {"random_forest", "extra_trees"}
+    assert sum(bool(row["selected"]) for row in selection["candidates"]) == 1
+    report_dir = output / "reports" / "2026-07-26"
+    assert (report_dir / "model_comparison_FR1.json").is_file()
+    assert (report_dir / "model_comparison_FR1.csv").is_file()
+
+
+def test_trainer_rejects_auto_selection_for_direct_promotion(tmp_path):
+    workbook, features = _inputs(tmp_path)
+
+    with pytest.raises(ValueError, match="comparison-only"):
+        main(
+            [
+                "--xls",
+                str(workbook),
+                "--features-csv",
+                str(features),
+                "--output-dir",
+                str(tmp_path / "auto-promote"),
+                "--classifier-kind",
+                "auto",
+                "--promote-if-passes",
             ]
         )

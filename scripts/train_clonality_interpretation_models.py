@@ -59,6 +59,7 @@ from config import APP_SETTINGS
 DIR_COL = "DIT"
 ASSAY_COL = "Assay"
 LABEL_COL = "ClonalitySuggestion"
+AUTO_CLASSIFIER_KINDS = ("random_forest", "extra_trees")
 
 
 def _assay_key(value):
@@ -126,6 +127,7 @@ def _render_per_assay_markdown(
     validation,
     promotion_gate,
     runtime_eligible,
+    model_comparison,
 ):
     """Emit a single markdown file per assay."""
     out_lines = []
@@ -160,6 +162,33 @@ def _render_per_assay_markdown(
             "runtime eligible" if runtime_eligible else "candidate only"
         )
     )
+    out_lines.append("")
+    out_lines.append("## Model comparison")
+    out_lines.append("")
+    out_lines.append(
+        "| Classifier | Selected | Gate | Macro F1 | Mono precision | "
+        "Mono F1 | Accepted accuracy | Coverage | ECE |"
+    )
+    out_lines.append("|---|---|---|---:|---:|---:|---:|---:|---:|")
+    for row in model_comparison:
+        if row.get("status") != "complete":
+            out_lines.append(
+                "| {} | no | failed | - | - | - | - | - | - |".format(
+                    row.get("classifier_kind", "")
+                )
+            )
+            continue
+        display = {
+            **row,
+            "selected": "yes" if row["selected"] else "no",
+            "gate": "pass" if row["promotion_gate_passed"] else "block",
+        }
+        out_lines.append(
+            "| {classifier_kind} | {selected} | {gate} | {macro_f1:.3f} | "
+            "{monoklonal_precision:.3f} | {monoklonal_f1:.3f} | "
+            "{accepted_accuracy:.3f} | {accepted_coverage:.3f} | "
+            "{expected_calibration_error:.3f} |".format(**display)
+        )
     out_lines.append("")
     out_lines.append("## Promotion gate")
     out_lines.append("")
@@ -455,6 +484,52 @@ def _safe_assay_name(value):
     return cleaned or "unknown"
 
 
+def _candidate_gate(validation, args):
+    return assess_promotion_gate(
+        validation,
+        min_macro_f1=args.min_macro_f1,
+        min_monoklonal_f1=args.min_monoklonal_f1,
+        min_monoklonal_precision=args.min_monoklonal_precision,
+        min_dit_groups=args.min_dit_groups,
+        min_accepted_accuracy=args.min_accepted_accuracy,
+        min_accepted_coverage=args.min_accepted_coverage,
+        max_expected_calibration_error=args.max_calibration_error,
+    )
+
+
+def _candidate_record(kind, validation, gate):
+    metrics = validation.aggregate_metrics
+    return {
+        "classifier_kind": kind,
+        "status": "complete",
+        "selected": False,
+        "promotion_gate_passed": gate.passed,
+        "promotion_gate_reasons": gate.reasons,
+        "macro_f1": metrics.macro_f1,
+        "monoklonal_f1": metrics.monoklonal_f1,
+        "monoklonal_precision": float(
+            metrics.classification_report.get("monoklonal", {}).get(
+                "precision", 0.0
+            )
+        ),
+        "balanced_accuracy": metrics.balanced_accuracy,
+        "accepted_accuracy": metrics.accepted_accuracy,
+        "accepted_coverage": metrics.accepted_coverage,
+        "expected_calibration_error": metrics.expected_calibration_error,
+    }
+
+
+def _candidate_selection_key(record):
+    return (
+        bool(record["promotion_gate_passed"]),
+        float(record["monoklonal_precision"]),
+        float(record["macro_f1"]),
+        float(record["monoklonal_f1"]),
+        float(record["accepted_accuracy"]),
+        -float(record["expected_calibration_error"]),
+    )
+
+
 def _parse_args(argv=None):
     p = argparse.ArgumentParser(
         description="Train per-assay clonality interpretation models."
@@ -485,9 +560,12 @@ def _parse_args(argv=None):
     )
     p.add_argument(
         "--classifier-kind",
-        choices=("random_forest", "qda_calibrated"),
-        default="random_forest",
-        help="Classifier family (default random_forest).",
+        choices=("auto", "random_forest", "extra_trees", "qda_calibrated"),
+        default="auto",
+        help=(
+            "Classifier family. 'auto' compares RandomForest and ExtraTrees "
+            "with identical grouped folds and writes a candidate only."
+        ),
     )
     p.add_argument(
         "--assays",
@@ -601,6 +679,12 @@ def _parse_args(argv=None):
 
 def main(argv=None):
     args = _parse_args(argv)
+    if args.classifier_kind == "auto" and args.promote_if_passes:
+        raise ValueError(
+            "--classifier-kind auto is comparison-only; inspect its reports, "
+            "then rerun the selected classifier in a fresh output directory "
+            "with --promote-if-passes"
+        )
 
     xlsx_path = Path(args.xls)
     if not xlsx_path.exists():
@@ -675,31 +759,91 @@ def main(argv=None):
         )
         print("[train] assay={}: n_samples={}, tau={}".format(
             assay_name, ds.n_samples, tau))
+        candidate_kinds = (
+            AUTO_CLASSIFIER_KINDS
+            if args.classifier_kind == "auto"
+            else (args.classifier_kind,)
+        )
+        validations = {}
+        gates = {}
+        model_comparison = []
+        for classifier_kind in candidate_kinds:
+            print(
+                "[train] assay={} validating classifier={}".format(
+                    assay_name,
+                    classifier_kind,
+                )
+            )
+            try:
+                candidate_validation = grouped_oof_validate(
+                    ds,
+                    classifier_kind=classifier_kind,
+                    n_splits=args.validation_folds,
+                    random_state=args.random_state,
+                    accept_threshold_tau=tau,
+                )
+                candidate_gate = _candidate_gate(candidate_validation, args)
+                validations[classifier_kind] = candidate_validation
+                gates[classifier_kind] = candidate_gate
+                model_comparison.append(
+                    _candidate_record(
+                        classifier_kind,
+                        candidate_validation,
+                        candidate_gate,
+                    )
+                )
+            except Exception as exc:
+                model_comparison.append(
+                    {
+                        "classifier_kind": classifier_kind,
+                        "status": "failed",
+                        "selected": False,
+                        "error": str(exc),
+                    }
+                )
+                print(
+                    "[train] assay={} classifier={} FAILED: {}".format(
+                        assay_name,
+                        classifier_kind,
+                        exc,
+                    )
+                )
+        successful_candidates = [
+            record
+            for record in model_comparison
+            if record.get("status") == "complete"
+        ]
+        if not successful_candidates:
+            failed_assays.append(
+                {
+                    "assay": assay_name,
+                    "error": "all classifier candidates failed",
+                    "model_comparison": model_comparison,
+                }
+            )
+            continue
+        selected_record = max(
+            successful_candidates,
+            key=_candidate_selection_key,
+        )
+        selected_record["selected"] = True
+        selected_kind = str(selected_record["classifier_kind"])
+        validation = validations[selected_kind]
+        gate = gates[selected_kind]
+        print(
+            "[train] assay={} selected classifier={}".format(
+                assay_name,
+                selected_kind,
+            )
+        )
         try:
-            validation = grouped_oof_validate(
-                ds,
-                classifier_kind=args.classifier_kind,
-                n_splits=args.validation_folds,
-                random_state=args.random_state,
-                accept_threshold_tau=tau,
-            )
-            gate = assess_promotion_gate(
-                validation,
-                min_macro_f1=args.min_macro_f1,
-                min_monoklonal_f1=args.min_monoklonal_f1,
-                min_monoklonal_precision=args.min_monoklonal_precision,
-                min_dit_groups=args.min_dit_groups,
-                min_accepted_accuracy=args.min_accepted_accuracy,
-                min_accepted_coverage=args.min_accepted_coverage,
-                max_expected_calibration_error=args.max_calibration_error,
-            )
             runtime_eligible = bool(args.promote_if_passes and gate.passed)
             if args.promote_if_passes and not gate.passed:
                 promotion_failures.append(assay_name)
             estimator = fit_classifier(
                 ds.X,
                 ds.y,
-                kind=args.classifier_kind,
+                kind=selected_kind,
                 random_state=args.random_state,
             )
         except Exception as exc:
@@ -720,13 +864,26 @@ def main(argv=None):
                 "reasons": gate.reasons,
                 "thresholds": gate.thresholds,
             },
+            "model_selection": {
+                "requested_classifier_kind": args.classifier_kind,
+                "selected_classifier_kind": selected_kind,
+                "selection_order": [
+                    "promotion_gate_passed",
+                    "monoklonal_precision",
+                    "macro_f1",
+                    "monoklonal_f1",
+                    "accepted_accuracy",
+                    "lower_expected_calibration_error",
+                ],
+                "candidates": model_comparison,
+            },
         }
         paths = serialize_model(
             estimator,
             label_order=list(ANNOTATION_CLASSES_ORDER),
             assay=assay_name,
             accept_threshold_tau=tau,
-            classifier_kind=args.classifier_kind,
+            classifier_kind=selected_kind,
             rare_class_counts=ds.rare_class_counts,
             trained_at_utc=today,
             output_dir=output_dir,
@@ -746,6 +903,9 @@ def main(argv=None):
                 "trace_feature_schema_version": _first_value(
                     ds.rows, "TraceFeatureSchemaVersion"
                 ),
+                "cohort_feature_schema_version": _first_value(
+                    ds.rows, "CohortFeatureSchemaVersion"
+                ),
                 "validation": validation_metadata,
             },
         )
@@ -758,6 +918,7 @@ def main(argv=None):
                 validation=validation,
                 promotion_gate=gate,
                 runtime_eligible=runtime_eligible,
+                model_comparison=model_comparison,
             ),
             encoding="utf-8",
         )
@@ -767,6 +928,12 @@ def main(argv=None):
         drift_path = report_dir / "drift_{}.csv".format(report_stem)
         split_path = report_dir / "splits_{}.json".format(report_stem)
         metrics_path = report_dir / "metrics_{}.json".format(report_stem)
+        comparison_path = report_dir / "model_comparison_{}.json".format(
+            report_stem
+        )
+        comparison_csv_path = report_dir / "model_comparison_{}.csv".format(
+            report_stem
+        )
         validation.predictions.to_csv(predictions_path, index=False)
         validation.review_cases.to_csv(review_path, index=False)
         validation.drift_summary.to_csv(drift_path, index=False)
@@ -782,6 +949,11 @@ def main(argv=None):
             json.dumps(metrics_as_dict(metrics), indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        comparison_path.write_text(
+            json.dumps(model_comparison, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        pd.DataFrame(model_comparison).to_csv(comparison_csv_path, index=False)
         summaries.append({
             "assay": assay_name,
             "training_samples": metrics.training_samples,
@@ -795,6 +967,8 @@ def main(argv=None):
             "accepted_accuracy": metrics.accepted_accuracy,
             "accepted_coverage": metrics.accepted_coverage,
             "expected_calibration_error": metrics.expected_calibration_error,
+            "requested_classifier_kind": args.classifier_kind,
+            "selected_classifier_kind": selected_kind,
             "runtime_eligible": runtime_eligible,
             "deployment_status": "validated" if runtime_eligible else "candidate",
             "promotion_gate_passed": gate.passed,
@@ -806,6 +980,7 @@ def main(argv=None):
             "review_panel_path": str(review_html_path),
             "drift_path": str(drift_path),
             "splits_path": str(split_path),
+            "model_comparison_path": str(comparison_path),
         })
 
     summary_path = output_dir / "reports" / today / "summary.json"

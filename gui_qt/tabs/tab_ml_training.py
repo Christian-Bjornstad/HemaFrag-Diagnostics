@@ -156,21 +156,16 @@ class TabMlTraining(QWidget):
         form.addRow("Model Output Folder:", out_row)
 
         self._classifier_combo = QComboBox()
-        self._classifier_combo.addItems(["random_forest", "qda_calibrated"])
+        self._classifier_combo.addItems(
+            ["auto", "random_forest", "extra_trees", "qda_calibrated"]
+        )
         form.addRow("Classifier:", self._classifier_combo)
 
         self._min_samples = QSpinBox()
         self._min_samples.setRange(10, 5000)
-        self._min_samples.setValue(30)
+        self._min_samples.setValue(200)
         self._min_samples.setSingleStep(5)
         form.addRow("Min samples per assay:", self._min_samples)
-
-        self._tau = QSpinBox()
-        self._tau.setRange(50, 100)
-        self._tau.setValue(80)
-        self._tau.setSingleStep(5)
-        self._tau.setSuffix(" %")
-        form.addRow("Accept threshold τ:", self._tau)
 
         layout.addWidget(card)
 
@@ -320,7 +315,6 @@ class TabMlTraining(QWidget):
             "--output-dir", output_dir,
             "--min-samples", str(self._min_samples.value()),
             "--classifier-kind", self._classifier_combo.currentText(),
-            "--accept-threshold-tau", f"{self._tau.value() / 100.0:.2f}",
             "--assays", ",".join(assays),
         ]
 

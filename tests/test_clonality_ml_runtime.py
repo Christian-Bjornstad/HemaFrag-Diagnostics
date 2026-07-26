@@ -251,6 +251,69 @@ def test_attach_refuses_prediction_when_raw_trace_is_unavailable(
     assert out["ClonalityMLEvidence"] == "trace_features_unavailable"
 
 
+def test_attach_refuses_cohort_model_without_batch_context():
+    class CohortStore:
+        def required_feature_columns(self, _assay):
+            return [
+                "trace_runtime_signal",
+                "cohort_context_available",
+            ]
+
+        def predict(self, _assay, _features):
+            raise AssertionError("prediction must not run without cohort context")
+
+    entry = {
+        "assay": "FR1",
+        "sample_kind": "patient",
+        "features": {"trace_runtime_signal": 100.0},
+    }
+
+    out = ml_runtime._do_attach(entry, CohortStore())
+
+    assert out["ClonalityMLSuggestion"] == ""
+    assert out["ClonalityMLReviewNeeded"] is True
+    assert out["ClonalityMLEvidence"] == "cohort_context_unavailable"
+
+
+def test_attach_keeps_batch_context_when_recomputing_trace_features(monkeypatch):
+    observed = {}
+
+    class CohortStore:
+        def required_feature_columns(self, _assay):
+            return [
+                "trace_runtime_signal",
+                "cohort_context_available",
+            ]
+
+        def predict(self, _assay, features):
+            observed.update(features)
+            return {
+                "label": "monoklonal",
+                "confidence": 0.9,
+                "threshold_tau": 0.8,
+                "review_needed": False,
+                "model_version": "test",
+            }
+
+    monkeypatch.setattr(
+        "core.analyses.clonality.interpretation.features_from_entry",
+        lambda _entry: {
+            "trace_runtime_signal": 100.0,
+            "cohort_context_available": 0,
+        },
+    )
+    entry = {
+        "assay": "FR1",
+        "sample_kind": "patient",
+        "features": {"cohort_context_available": 1},
+    }
+
+    ml_runtime._do_attach(entry, CohortStore())
+
+    assert observed["trace_runtime_signal"] == 100.0
+    assert observed["cohort_context_available"] == 1
+
+
 def test_attach_excludes_control_when_kind_is_only_in_features(tmp_path):
     _make_model_dir(tmp_path)
     import core.analyses.clonality.ml_runtime as rt_mod

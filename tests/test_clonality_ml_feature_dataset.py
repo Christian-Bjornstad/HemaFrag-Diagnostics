@@ -113,6 +113,13 @@ def test_build_feature_dataset_exports_flat_trace_features_without_raw_paths(tmp
     assert "trace_peak_count_raw_per_channel.DATA1" in dataset.features.columns
     assert "trace_signal_to_noise_per_channel.DATA1" in dataset.features.columns
     assert dataset.features["FsaContentHash"].str.len().eq(64).all()
+    assert dataset.features["FeatureDatasetVersion"].eq(
+        "clonality_ml_feature_dataset_v2"
+    ).all()
+    assert dataset.features["CohortFeatureSchemaVersion"].eq(
+        "clonality_cohort_features_v1"
+    ).all()
+    assert dataset.features["cohort_context_available"].eq(1).all()
     assert "ResolvedFsaPath" not in dataset.features.columns
     assert "SourceRunDir" not in dataset.features.columns
     assert dataset.features.loc[0, "SourceRunKey"] == "run-a"

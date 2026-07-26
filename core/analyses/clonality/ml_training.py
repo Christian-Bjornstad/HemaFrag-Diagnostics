@@ -32,7 +32,7 @@ import sklearn
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.naive_bayes import GaussianNB
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
@@ -83,6 +83,7 @@ DEFAULT_NON_FEATURE_COLUMNS = {
     "RawPath",
     "FeatureDatasetVersion",
     "TraceFeatureSchemaVersion",
+    "CohortFeatureSchemaVersion",
     "FsaSourceHash",
     "FsaContentHash",
     CHEMIST_LABEL_COLUMN,
@@ -392,6 +393,8 @@ def fit_classifier(
       - 'random_forest': RandomForestClassifier(n_estimators=400,
         class_weight='balanced'), wrapped in CalibratedClassifierCV
         (Platt scaling).
+      - 'extra_trees': ExtraTreesClassifier with the same class balancing,
+        tree count, and calibration policy as RandomForest.
       - 'qda_calibrated': Pipeline(SimpleImputer(median) ->
         QuadraticDiscriminantAnalysis()). On sklearn >= 1.6 the
         rank-counter tightens and QDA.fit() may raise
@@ -402,12 +405,17 @@ def fit_classifier(
         ``sklearn.naive_bayes.GaussianNB`` while preserving
         ``named_steps["qda"]`` and ``predict_proba(n, n_classes)``.
     """
-    if kind not in {"random_forest", "qda_calibrated"}:
+    if kind not in {"random_forest", "extra_trees", "qda_calibrated"}:
         raise ValueError(f"unknown classifier kind: {kind!r}")
     X_train = _ensure_numeric_X(X_train)
     y_train = y_train.astype(str)
-    if kind == "random_forest":
-        base = RandomForestClassifier(
+    if kind in {"random_forest", "extra_trees"}:
+        estimator_type = (
+            RandomForestClassifier
+            if kind == "random_forest"
+            else ExtraTreesClassifier
+        )
+        base = estimator_type(
             n_estimators=400,
             class_weight="balanced",
             random_state=random_state,

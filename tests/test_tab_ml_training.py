@@ -39,6 +39,8 @@ def test_tab_construction_yields_checkable_assays():
             checked.append(item.text())
     assert "FR1" in checked
     assert "TCRgA" in checked
+    assert tab._classifier_combo.currentText() == "auto"
+    assert tab._min_samples.value() == 200
 
 
 def test_tab_toggle_all_is_idempotent():

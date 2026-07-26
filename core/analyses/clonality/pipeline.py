@@ -38,6 +38,9 @@ from core.analyses.clonality.tracking_excel import (
     update_clonality_tracking_workbook,
 )
 from core.analyses.clonality.interpretation import attach_interpretation_if_enabled
+from core.analyses.clonality.cohort_features import (
+    enrich_entries_with_cohort_context,
+)
 from core.analyses.clonality.ml_runtime import attach_ml_prediction_if_enabled
 from core.analysis import (
     LADDER_FIT_PROFILE_CLONALITY_LIZ500,
@@ -728,7 +731,7 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
         else np.nan,
         "sl_metrics": sl_metrics,
     }
-    return attach_ml_prediction_if_enabled(attach_interpretation_if_enabled(entry))
+    return attach_interpretation_if_enabled(entry)
 
 
 def _run_analyze_single_file_child(fsa_path: Path, queue) -> None:
@@ -975,6 +978,7 @@ def _analyze_files(
             results = [_analyze_single_file(p) for p in fsa_files]
 
     entries = [r for r in results if r is not None]
+    entries = _attach_batch_context_and_ml(entries)
     skipped = len(fsa_files) - len(entries)
 
     try:
@@ -987,6 +991,12 @@ def _analyze_files(
 
     print_green(f"[MASTER] Totalt {len(entries)} filer analysert. {skipped} skippet.")
     return entries, skipped
+
+
+def _attach_batch_context_and_ml(entries: list[dict]) -> list[dict]:
+    """Attach same-run patient context before invoking eligible ML models."""
+    enriched = enrich_entries_with_cohort_context(entries)
+    return [attach_ml_prediction_if_enabled(entry) for entry in enriched]
 
 
 def run_pipeline(

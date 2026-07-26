@@ -1212,3 +1212,10 @@ Verification:
 - Runtime now rejects candidate, legacy, incomplete-validation, and non-trace artifacts; honors the default-off interpretation toggle; recomputes real-FSA features when rule-cached features are incomplete; and refuses inference when trace channels are unavailable.
 - Tracking and HTML reports retain the rule result and add ML threshold and review evidence. Assay spelling is normalized across GUI filters, threshold settings, training, and runtime lookup.
 - Verification: focused ML/report tests passed (`82`); full suite passed (`323 passed, 3 skipped`, with four known sklearn/scipy warnings). Real-corpus validation and chemist threshold approval remain pending until private data is mounted.
+
+## 2026-07-26 - Clonality Baseline Comparison And Cohort Context
+
+- Added candidate-only automatic comparison of calibrated RandomForest and ExtraTrees models on identical DIT-grouped folds. Per-assay JSON/CSV reports record both candidates and a deterministic safety-first selection; promotion still requires an explicit classifier and fresh output directory.
+- Added versioned same-run patient context features for panel completeness and duplicate dominant-peak bp concordance. Offline feature artifacts and live report inference use the same enrichment contract, require source-run provenance, and exclude controls/SL.
+- Runtime now rejects cohort-dependent models when batch context is unavailable and validates the cohort schema in promoted metadata. The feature artifact is now `clonality_ml_feature_dataset_v2`; v1 checkpoints must be rebuilt.
+- Verification: focused cohort/ML tests passed (`78`, then `51` after stricter provenance coverage); full suite passed (`339 passed, 3 skipped`, with seven known pytest/sklearn/scipy warnings). Private real-FSA extraction, chemist review, and assay promotion remain pending.

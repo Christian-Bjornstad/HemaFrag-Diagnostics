@@ -13,6 +13,10 @@ from typing import Any, Callable, Mapping
 import pandas as pd
 
 from core.analyses.clonality.config import ASSAY_REFERENCE_RANGES, NONSPECIFIC_PEAKS
+from core.analyses.clonality.cohort_features import (
+    COHORT_FEATURE_SCHEMA_VERSION,
+    enrich_feature_frame_with_cohort_context,
+)
 from core.analyses.clonality.interpretation import features_from_entry, interpret_entry
 from core.analyses.clonality.ml_data_contract import (
     CHEMIST_LABEL_COLUMN,
@@ -24,7 +28,7 @@ from core.analyses.clonality.trace_features import (
 )
 
 
-ML_FEATURE_DATASET_VERSION = "clonality_ml_feature_dataset_v1"
+ML_FEATURE_DATASET_VERSION = "clonality_ml_feature_dataset_v2"
 FEATURE_DATASET_FILENAMES = {
     "features": "clonality_ml_trace_features.csv",
     "errors": "clonality_ml_trace_errors.csv",
@@ -33,6 +37,7 @@ FEATURE_DATASET_FILENAMES = {
 FEATURE_METADATA_COLUMNS = (
     "FeatureDatasetVersion",
     "TraceFeatureSchemaVersion",
+    "CohortFeatureSchemaVersion",
     "IdentityKey",
     "FsaSourceHash",
     "FsaContentHash",
@@ -96,6 +101,7 @@ def build_clonality_trace_feature_dataset(
             str(record.get("IdentityKey") or ""),
             str(record.get("FsaContentHash") or ""),
             str(record.get("TraceFeatureSchemaVersion") or ""),
+            str(record.get("CohortFeatureSchemaVersion") or ""),
         ): record
         for record in records
     }
@@ -126,7 +132,12 @@ def build_clonality_trace_feature_dataset(
             if progress_callback:
                 progress_callback(ordinal, total, "error")
             continue
-        completion_key = (identity, content_hash, TRACE_FEATURE_SCHEMA_VERSION)
+        completion_key = (
+            identity,
+            content_hash,
+            TRACE_FEATURE_SCHEMA_VERSION,
+            COHORT_FEATURE_SCHEMA_VERSION,
+        )
         if completion_key in completed_records:
             skipped_existing += 1
             existing = completed_records[completion_key]
@@ -212,6 +223,7 @@ def write_clonality_trace_feature_artifact(
     manifest = {
         "dataset_version": ML_FEATURE_DATASET_VERSION,
         "trace_feature_schema_version": TRACE_FEATURE_SCHEMA_VERSION,
+        "cohort_feature_schema_version": COHORT_FEATURE_SCHEMA_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "code_revision": _git_revision(),
         "settings_fingerprint": _settings_fingerprint(),
@@ -263,6 +275,8 @@ def load_resumable_feature_artifact(output_dir: Path | str) -> pd.DataFrame:
         raise ValueError("existing feature artifact uses a different dataset version")
     if manifest.get("trace_feature_schema_version") != TRACE_FEATURE_SCHEMA_VERSION:
         raise ValueError("existing feature artifact uses a different trace feature schema")
+    if manifest.get("cohort_feature_schema_version") != COHORT_FEATURE_SCHEMA_VERSION:
+        raise ValueError("existing feature artifact uses a different cohort feature schema")
     if manifest.get("settings_fingerprint") != _settings_fingerprint():
         raise ValueError("existing feature artifact uses different clonality settings")
     try:
@@ -280,6 +294,7 @@ def _metadata_record(
     return {
         "FeatureDatasetVersion": ML_FEATURE_DATASET_VERSION,
         "TraceFeatureSchemaVersion": TRACE_FEATURE_SCHEMA_VERSION,
+        "CohortFeatureSchemaVersion": COHORT_FEATURE_SCHEMA_VERSION,
         "IdentityKey": _clean_text(tracking_row.get("IdentityKey")),
         "FsaSourceHash": _clean_text(tracking_row.get("FsaSourceHash")),
         "FsaContentHash": content_hash,
@@ -307,12 +322,18 @@ def _dataset_result(
     if not features.empty and {"IdentityKey", "FsaSourceHash"}.issubset(features.columns):
         features = (
             features.drop_duplicates(
-                subset=["IdentityKey", "FsaSourceHash", "TraceFeatureSchemaVersion"],
+                subset=[
+                    "IdentityKey",
+                    "FsaSourceHash",
+                    "TraceFeatureSchemaVersion",
+                    "CohortFeatureSchemaVersion",
+                ],
                 keep="last",
             )
             .sort_values(["Assay", "DIT", "IdentityKey"], kind="stable")
             .reset_index(drop=True)
         )
+        features = enrich_feature_frame_with_cohort_context(features)
     error_frame = pd.DataFrame(errors)
     return TraceFeatureDataset(
         features=features,
@@ -325,7 +346,12 @@ def _dataset_result(
 def _existing_feature_records(frame: pd.DataFrame | None) -> list[dict[str, Any]]:
     if frame is None or frame.empty:
         return []
-    required = {"IdentityKey", "FsaSourceHash", "TraceFeatureSchemaVersion"}
+    required = {
+        "IdentityKey",
+        "FsaSourceHash",
+        "TraceFeatureSchemaVersion",
+        "CohortFeatureSchemaVersion",
+    }
     required.add("FsaContentHash")
     if not required.issubset(frame.columns):
         raise KeyError("existing feature artifact is missing resume identity columns")
@@ -349,6 +375,7 @@ def _settings_fingerprint() -> str:
         "assay_reference_ranges": ASSAY_REFERENCE_RANGES,
         "nonspecific_peaks": NONSPECIFIC_PEAKS,
         "trace_feature_schema_version": TRACE_FEATURE_SCHEMA_VERSION,
+        "cohort_feature_schema_version": COHORT_FEATURE_SCHEMA_VERSION,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()

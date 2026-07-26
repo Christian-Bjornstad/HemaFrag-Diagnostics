@@ -29,6 +29,9 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from core.analyses.clonality.cohort_features import (
+    COHORT_FEATURE_SCHEMA_VERSION,
+)
 from core.analyses.clonality.ml_data_contract import is_raw_trace_feature
 from core.analyses.clonality.ml_training import deserialize_model
 
@@ -41,10 +44,9 @@ __all__ = [
 
 
 # Order preference when selecting which joblib under an assay folder
-# to load first. RF is the canonical Phase-5 model; qda_calibrated is
-# the fallback. Anything else is ignored.
+# to load first. A fresh immutable training output normally contains one.
 DEFAULT_CLASSIFIER_KIND = "random_forest"
-_CLASSIFIER_PREFERENCE = ("random_forest", "qda_calibrated")
+_CLASSIFIER_PREFERENCE = ("random_forest", "extra_trees", "qda_calibrated")
 
 
 # Keys inside features dicts (from features_from_entry) that carry nested
@@ -207,8 +209,11 @@ class ClonalityModelStore:
                 continue
             if not _runtime_eligible_metadata(metadata):
                 continue
-            # Check that at least one preferred classifier exists.
-            if any((child / f"{kind}.joblib").exists() for kind in _CLASSIFIER_PREFERENCE):
+            classifier_kind = str(metadata.get("classifier_kind") or "")
+            if (
+                classifier_kind in _CLASSIFIER_PREFERENCE
+                and (child / f"{classifier_kind}.joblib").exists()
+            ):
                 # Register common spellings plus the separator-free key used
                 # by runtime assay classifiers (TCRG-A vs TCRGA).
                 self._available.add(child.name)
@@ -250,6 +255,8 @@ class ClonalityModelStore:
         if not _runtime_eligible_metadata(metadata):
             return None
         if _assay_key(metadata.get("assay")) != _assay_key(assay_dir.name):
+            return None
+        if str(metadata.get("classifier_kind") or "") != joblib_path.stem:
             return None
         artifact = _AssayArtifact(estimator=estimator, metadata=metadata)
         self._cache[norm_assay] = artifact
@@ -318,12 +325,21 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         effective_splits = int(validation.get("effective_splits") or 0)
     except (TypeError, ValueError):
         return False
+    requires_cohort_context = any(
+        str(column).startswith("cohort_") for column in feature_columns
+    )
+    cohort_schema_compatible = (
+        not requires_cohort_context
+        or metadata.get("cohort_feature_schema_version")
+        == COHORT_FEATURE_SCHEMA_VERSION
+    )
     return bool(
         metadata.get("schema_version") == "ml_training_pipeline_v2"
         and metadata.get("deployment_status") == "validated"
         and metadata.get("runtime_eligible") is True
         and metadata.get("trace_feature_schema_version")
         == "clonality_trace_features_v1"
+        and cohort_schema_compatible
         and any(is_raw_trace_feature(column) for column in feature_columns)
         and validation.get("strategy") == "StratifiedGroupKFold"
         and validation.get("every_row_oof_once") is True

@@ -47,7 +47,7 @@
 |--------|---------|
 | `trace_features.py` | deterministic scalar and per-channel raw FSA trace geometry |
 | `ml_feature_dataset.py` | resumable, content-hashed local feature artifact |
-| `ml_training.py` | per-assay datasets, estimators, metrics, serialization |
+| `ml_training.py` | per-assay RandomForest/ExtraTrees/QDA datasets, estimators, metrics, serialization |
 | `ml_validation.py` | DIT-grouped OOF predictions, promotion gates, review/drift outputs |
 | `ml_model.py` | validated-v2 artifact discovery and inference contract |
 | `ml_runtime.py` | default-off second-opinion attachment and quality/review routing |
