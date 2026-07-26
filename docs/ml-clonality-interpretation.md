@@ -50,7 +50,8 @@ revalidation.
    on identical grouped folds and select one using the recorded safety-first
    ranking.
 6. Export row-level out-of-fold predictions, disagreements, review cases,
-   drift summaries, split provenance, metrics, and a local HTML review panel.
+   drift summaries, held-out feature importance, split provenance, metrics,
+   and a local HTML review panel.
 7. Refit the selected candidate estimator on all labeled rows.
 8. Keep the artifact candidate-only unless explicit promotion was requested
    and every configured metric gate passed.
@@ -173,6 +174,7 @@ drift_<assay>.csv
 splits_<assay>.json
 model_comparison_<assay>.json
 model_comparison_<assay>.csv
+feature_importance_<assay>.csv
 ```
 
 The predictions file has one out-of-fold row per labeled sample. It includes
@@ -193,6 +195,16 @@ rare_label_prediction
 Drift summaries report accuracy, confidence, rule disagreement, and
 monoklonal false positives by run date and sanitized source-run key.
 
+Feature importance is not taken from the final refitted model. In each grouped
+fold, the fold model shortlists at most 25 features using native importance,
+or label-free fold variance when the estimator has no native importance. Each
+shortlisted feature is then permuted on untouched DIT groups. The CSV reports
+balanced-accuracy impact, variability, fold coverage, and the fraction of
+evaluated folds with positive impact. Use `--importance-max-features` and
+`--importance-repeats` to bound or disable this work. Auto comparison skips
+permutation work; rerunning its selected explicit classifier produces the
+importance report before promotion.
+
 ## Model Metadata
 
 Every candidate stores:
@@ -202,6 +214,7 @@ Every candidate stores:
 - training row and unique-DIT counts;
 - privacy-preserving training-data fingerprint;
 - grouped validation strategy, fold count, random state, and metrics;
+- held-out feature-importance method and the top 20 aggregated features;
 - requested and selected classifier plus every comparison candidate's metrics;
 - promotion thresholds, pass/fail state, and blocking reasons;
 - expected calibration error plus high-confidence coverage and accuracy;

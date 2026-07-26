@@ -144,6 +144,11 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
     assert metadata["runtime_eligible"] is False
     assert metadata["training_rows"] == 36
     assert metadata["validation"]["every_row_oof_once"] is True
+    assert (
+        metadata["validation"]["feature_importance"]["method"]
+        == "held_out_permutation_balanced_accuracy"
+    )
+    assert metadata["validation"]["feature_importance"]["top_features"]
     assert ClonalityModelStore(model_dir=output).is_enabled("FR1") is False
 
     report_dir = output / "reports" / "2026-07-26"
@@ -153,6 +158,7 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
     assert (report_dir / "review_cases_FR1.csv").is_file()
     assert (report_dir / "review_panel_FR1.html").is_file()
     assert (report_dir / "drift_FR1.csv").is_file()
+    assert (report_dir / "feature_importance_FR1.csv").is_file()
     assert (report_dir / "splits_FR1.json").is_file()
 
 
@@ -228,6 +234,7 @@ def test_trainer_auto_compares_baselines_and_selects_candidate(
     selection = metadata["validation"]["model_selection"]
     assert selection["requested_classifier_kind"] == "auto"
     assert selection["selected_classifier_kind"] == "random_forest"
+    assert metadata["validation"]["feature_importance"]["top_features"] == []
     assert {
         row["classifier_kind"] for row in selection["candidates"]
     } == {"random_forest", "extra_trees"}

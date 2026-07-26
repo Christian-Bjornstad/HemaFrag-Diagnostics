@@ -91,6 +91,16 @@ def test_grouped_oof_validation_predicts_every_row_without_dit_leakage(monkeypat
     assert result.split_manifest["effective_splits"] == 5
     assert len(result.fold_metrics) == 5
     assert set(result.drift_summary["Dimension"]) == {"SourceRunKey", "RunDate"}
+    assert not result.feature_importance.empty
+    assert result.feature_importance["Rank"].tolist() == list(
+        range(1, len(result.feature_importance) + 1)
+    )
+    assert set(result.feature_importance["Feature"]).issubset(dataset.X.columns)
+    assert result.feature_importance["FoldCoverage"].between(0, 1).all()
+    assert (
+        result.split_manifest["feature_importance"]["method"]
+        == "held_out_permutation_balanced_accuracy"
+    )
 
 
 def test_grouped_validation_exports_disagreements_and_review_html(monkeypatch):
@@ -147,3 +157,29 @@ def test_promotion_gate_reports_each_failed_requirement(monkeypatch):
 
     assert gate.passed is False
     assert len(gate.reasons) >= 4
+
+
+def test_grouped_validation_can_disable_feature_importance(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+
+    result = grouped_oof_validate(
+        _dataset(),
+        classifier_kind="random_forest",
+        n_splits=3,
+        importance_max_features=0,
+    )
+
+    assert result.feature_importance.empty
+    assert list(result.feature_importance.columns) == [
+        "Rank",
+        "Feature",
+        "PermutationImportanceMean",
+        "PermutationImportanceStd",
+        "ScreeningImportanceMean",
+        "FoldsEvaluated",
+        "FoldCoverage",
+        "PositiveImpactFoldFraction",
+    ]

@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
+from sklearn.metrics import balanced_accuracy_score
 from sklearn.model_selection import StratifiedGroupKFold
 
 from core.analyses.clonality.ml_training import (
@@ -33,6 +34,7 @@ class GroupedValidationResult:
     review_cases: pd.DataFrame
     fold_metrics: pd.DataFrame
     drift_summary: pd.DataFrame
+    feature_importance: pd.DataFrame
     aggregate_metrics: PerAssayMetrics
     split_manifest: dict[str, Any]
 
@@ -51,6 +53,8 @@ def grouped_oof_validate(
     n_splits: int = 5,
     random_state: int = 12345,
     accept_threshold_tau: float = 0.85,
+    importance_max_features: int = 25,
+    importance_repeats: int = 1,
 ) -> GroupedValidationResult:
     """Evaluate every row out of fold while keeping each DIT in one fold."""
     unique_groups = int(dataset.dit.nunique())
@@ -72,6 +76,7 @@ def grouped_oof_validate(
     prediction_frames: list[pd.DataFrame] = []
     fold_records: list[dict[str, Any]] = []
     split_records: list[dict[str, Any]] = []
+    importance_records: list[dict[str, Any]] = []
 
     for fold, (train_idx, test_idx) in enumerate(
         splitter.split(dataset.X, dataset.y, groups=dataset.dit),
@@ -94,6 +99,17 @@ def grouped_oof_validate(
         probabilities = _predict_probabilities(estimator, X_test)
         classes = _estimator_classes(estimator, y_pred)
         confidence = _prediction_confidence(probabilities, y_pred, classes)
+        importance_records.extend(
+            _fold_permutation_importance(
+                estimator,
+                X_test,
+                y_test,
+                fold=fold,
+                max_features=importance_max_features,
+                repeats=importance_repeats,
+                random_state=int(random_state) + fold - 1,
+            )
+        )
         fold_metric = per_assay_metrics(
             y_test,
             y_pred,
@@ -189,6 +205,14 @@ def grouped_oof_validate(
         "row_count": dataset.n_samples,
         "unique_dit_groups": unique_groups,
         "every_row_oof_once": True,
+        "feature_importance": {
+            "method": "held_out_permutation_balanced_accuracy",
+            "shortlist_method": (
+                "fold_model_native_importance_or_unlabelled_fold_variance"
+            ),
+            "max_features_per_fold": max(0, int(importance_max_features)),
+            "repeats_per_feature_per_fold": max(0, int(importance_repeats)),
+        },
         "folds": split_records,
     }
     return GroupedValidationResult(
@@ -196,6 +220,10 @@ def grouped_oof_validate(
         review_cases=review_cases,
         fold_metrics=pd.DataFrame(fold_records),
         drift_summary=_drift_summary(predictions),
+        feature_importance=_aggregate_feature_importance(
+            importance_records,
+            effective_splits=effective_splits,
+        ),
         aggregate_metrics=aggregate,
         split_manifest=split_manifest,
     )
@@ -449,6 +477,182 @@ def _drift_summary(predictions: pd.DataFrame) -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(records)
+
+
+def _fold_permutation_importance(
+    estimator: Any,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    *,
+    fold: int,
+    max_features: int,
+    repeats: int,
+    random_state: int,
+) -> list[dict[str, Any]]:
+    """Measure shortlisted feature impact on untouched fold rows."""
+    max_features = max(0, int(max_features))
+    repeats = max(0, int(repeats))
+    if max_features == 0 or repeats == 0 or X_test.empty:
+        return []
+    candidates, screening = _importance_candidates(
+        estimator,
+        X_test,
+        max_features=max_features,
+    )
+    if not candidates:
+        return []
+
+    baseline = balanced_accuracy_score(
+        y_test.astype(str),
+        np.asarray(estimator.predict(X_test), dtype=str),
+    )
+    rng = np.random.default_rng(int(random_state))
+    records: list[dict[str, Any]] = []
+    for column in candidates:
+        values = X_test[column].to_numpy(copy=True)
+        impacts: list[float] = []
+        for _repeat in range(repeats):
+            permuted = X_test.copy()
+            permuted[column] = values[rng.permutation(len(values))]
+            score = balanced_accuracy_score(
+                y_test.astype(str),
+                np.asarray(estimator.predict(permuted), dtype=str),
+            )
+            impacts.append(float(baseline - score))
+        records.append(
+            {
+                "Fold": int(fold),
+                "Feature": str(column),
+                "ScreeningImportance": float(screening.get(column, 0.0)),
+                "PermutationImportanceMean": float(np.mean(impacts)),
+                "PermutationImportanceStd": float(np.std(impacts)),
+                "Repeats": repeats,
+            }
+        )
+    return records
+
+
+def _importance_candidates(
+    estimator: Any,
+    X: pd.DataFrame,
+    *,
+    max_features: int,
+) -> tuple[list[str], dict[str, float]]:
+    columns = [str(column) for column in X.columns]
+    native = _native_feature_importance(estimator, expected_size=len(columns))
+    if native is None:
+        variance = X.var(axis=0, numeric_only=True).reindex(X.columns)
+        screening = {
+            str(column): float(value) if np.isfinite(value) else 0.0
+            for column, value in variance.fillna(0.0).items()
+        }
+    else:
+        screening = {
+            str(column): float(native[index])
+            for index, column in enumerate(columns)
+        }
+    ranked = sorted(
+        columns,
+        key=lambda column: (-screening[column], str(column)),
+    )
+    return ranked[:max_features], screening
+
+
+def _native_feature_importance(
+    estimator: Any,
+    *,
+    expected_size: int,
+) -> np.ndarray | None:
+    direct = getattr(estimator, "feature_importances_", None)
+    if direct is not None:
+        values = np.asarray(direct, dtype=float)
+        if values.shape == (expected_size,):
+            return values
+
+    components: list[Any] = []
+    calibrated = getattr(estimator, "calibrated_classifiers_", None)
+    if calibrated is not None:
+        components.extend(
+            getattr(item, "estimator", None) for item in calibrated
+        )
+    named_steps = getattr(estimator, "named_steps", None)
+    if isinstance(named_steps, Mapping):
+        components.extend(reversed(list(named_steps.values())))
+
+    values = [
+        nested
+        for component in components
+        if component is not None
+        for nested in [
+            _native_feature_importance(
+                component,
+                expected_size=expected_size,
+            )
+        ]
+        if nested is not None
+    ]
+    if not values:
+        return None
+    return np.mean(np.vstack(values), axis=0)
+
+
+def _aggregate_feature_importance(
+    records: list[dict[str, Any]],
+    *,
+    effective_splits: int,
+) -> pd.DataFrame:
+    columns = [
+        "Rank",
+        "Feature",
+        "PermutationImportanceMean",
+        "PermutationImportanceStd",
+        "ScreeningImportanceMean",
+        "FoldsEvaluated",
+        "FoldCoverage",
+        "PositiveImpactFoldFraction",
+    ]
+    if not records:
+        return pd.DataFrame(columns=columns)
+    frame = pd.DataFrame(records)
+    aggregated = (
+        frame.groupby("Feature", sort=False)
+        .agg(
+            PermutationImportanceMean=("PermutationImportanceMean", "mean"),
+            PermutationImportanceStd=("PermutationImportanceMean", "std"),
+            ScreeningImportanceMean=("ScreeningImportance", "mean"),
+            FoldsEvaluated=("Fold", "nunique"),
+            PositiveImpactFolds=(
+                "PermutationImportanceMean",
+                lambda values: int((values > 0).sum()),
+            ),
+        )
+        .reset_index()
+    )
+    aggregated["PermutationImportanceStd"] = (
+        aggregated["PermutationImportanceStd"].fillna(0.0)
+    )
+    aggregated["FoldCoverage"] = (
+        aggregated["FoldsEvaluated"] / max(1, int(effective_splits))
+    )
+    aggregated["PositiveImpactFoldFraction"] = (
+        aggregated["PositiveImpactFolds"]
+        / aggregated["FoldsEvaluated"].clip(lower=1)
+    )
+    aggregated = (
+        aggregated.sort_values(
+            [
+                "PermutationImportanceMean",
+                "PositiveImpactFoldFraction",
+                "Feature",
+            ],
+            ascending=[False, False, True],
+            kind="stable",
+        )
+        .drop(columns=["PositiveImpactFolds"])
+        .reset_index(drop=True)
+    )
+    aggregated.insert(0, "Rank", np.arange(1, len(aggregated) + 1))
+    return aggregated[columns]
 
 
 def _predict_probabilities(estimator: Any, X: pd.DataFrame) -> np.ndarray | None:

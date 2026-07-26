@@ -190,6 +190,30 @@ def _render_per_assay_markdown(
             "{expected_calibration_error:.3f} |".format(**display)
         )
     out_lines.append("")
+    out_lines.append("## Held-out feature importance")
+    out_lines.append("")
+    out_lines.append(
+        "Permutation impact is measured on untouched DIT groups in each fold "
+        "using balanced accuracy."
+    )
+    out_lines.append("")
+    if validation.feature_importance.empty:
+        out_lines.append("_Feature importance was disabled or unavailable._")
+    else:
+        out_lines.append(
+            "| Rank | Feature | Mean impact | Std | Fold coverage | "
+            "Positive-fold fraction |"
+        )
+        out_lines.append("|---:|---|---:|---:|---:|---:|")
+        for row in validation.feature_importance.head(15).to_dict(
+            orient="records"
+        ):
+            out_lines.append(
+                "| {Rank} | `{Feature}` | {PermutationImportanceMean:.4f} | "
+                "{PermutationImportanceStd:.4f} | {FoldCoverage:.2f} | "
+                "{PositiveImpactFoldFraction:.2f} |".format(**row)
+            )
+    out_lines.append("")
     out_lines.append("## Promotion gate")
     out_lines.append("")
     out_lines.append("- Configured metrics pass: **{}**".format(
@@ -610,6 +634,24 @@ def _parse_args(argv=None):
         help="Patient-grouped out-of-fold validation folds (default 5).",
     )
     p.add_argument(
+        "--importance-max-features",
+        type=int,
+        default=25,
+        help=(
+            "Maximum native-shortlisted features permuted per validation fold "
+            "(default 25; 0 disables importance; auto comparison skips it)."
+        ),
+    )
+    p.add_argument(
+        "--importance-repeats",
+        type=int,
+        default=1,
+        help=(
+            "Held-out permutations per shortlisted feature and fold "
+            "(default 1; 0 disables importance; auto comparison skips it)."
+        ),
+    )
+    p.add_argument(
         "--random-state",
         type=int,
         default=12345,
@@ -781,6 +823,16 @@ def main(argv=None):
                     n_splits=args.validation_folds,
                     random_state=args.random_state,
                     accept_threshold_tau=tau,
+                    importance_max_features=(
+                        0
+                        if args.classifier_kind == "auto"
+                        else args.importance_max_features
+                    ),
+                    importance_repeats=(
+                        0
+                        if args.classifier_kind == "auto"
+                        else args.importance_repeats
+                    ),
                 )
                 candidate_gate = _candidate_gate(candidate_validation, args)
                 validations[classifier_kind] = candidate_validation
@@ -877,6 +929,12 @@ def main(argv=None):
                 ],
                 "candidates": model_comparison,
             },
+            "feature_importance": {
+                **validation.split_manifest["feature_importance"],
+                "top_features": validation.feature_importance.head(20).to_dict(
+                    orient="records"
+                ),
+            },
         }
         paths = serialize_model(
             estimator,
@@ -934,6 +992,9 @@ def main(argv=None):
         comparison_csv_path = report_dir / "model_comparison_{}.csv".format(
             report_stem
         )
+        importance_path = report_dir / "feature_importance_{}.csv".format(
+            report_stem
+        )
         validation.predictions.to_csv(predictions_path, index=False)
         validation.review_cases.to_csv(review_path, index=False)
         validation.drift_summary.to_csv(drift_path, index=False)
@@ -954,6 +1015,7 @@ def main(argv=None):
             encoding="utf-8",
         )
         pd.DataFrame(model_comparison).to_csv(comparison_csv_path, index=False)
+        validation.feature_importance.to_csv(importance_path, index=False)
         summaries.append({
             "assay": assay_name,
             "training_samples": metrics.training_samples,
@@ -981,6 +1043,7 @@ def main(argv=None):
             "drift_path": str(drift_path),
             "splits_path": str(split_path),
             "model_comparison_path": str(comparison_path),
+            "feature_importance_path": str(importance_path),
         })
 
     summary_path = output_dir / "reports" / today / "summary.json"

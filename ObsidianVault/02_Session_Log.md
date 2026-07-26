@@ -1219,3 +1219,9 @@ Verification:
 - Added versioned same-run patient context features for panel completeness and duplicate dominant-peak bp concordance. Offline feature artifacts and live report inference use the same enrichment contract, require source-run provenance, and exclude controls/SL.
 - Runtime now rejects cohort-dependent models when batch context is unavailable and validates the cohort schema in promoted metadata. The feature artifact is now `clonality_ml_feature_dataset_v2`; v1 checkpoints must be rebuilt.
 - Verification: focused cohort/ML tests passed (`78`, then `51` after stricter provenance coverage); full suite passed (`339 passed, 3 skipped`, with seven known pytest/sklearn/scipy warnings). Private real-FSA extraction, chemist review, and assay promotion remain pending.
+
+## 2026-07-26 - Clonality Held-Out Feature Importance
+
+- Added per-assay feature-importance artifacts measured on untouched DIT groups: each fold model uses native importance only to shortlist features, then reports balanced-accuracy impact after held-out permutation.
+- Reports and model metadata now include ranked mean impact, cross-fold variability, fold coverage, and positive-impact fold fraction. Explicit classifier runs default to at most 25 features and one permutation per fold; automatic two-model comparison skips this extra work.
+- Verification: focused validation/trainer tests passed (`33`, then `11` after cost bounding); full suite passed (`340 passed, 3 skipped`, with seven known pytest/sklearn/scipy warnings). Real importance results remain pending until the private corpus is mounted.

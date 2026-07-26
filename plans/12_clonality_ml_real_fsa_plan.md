@@ -57,6 +57,7 @@ Build a reliable, chemist-reviewed ML assistant for clonality interpretation fro
    - per-class precision/recall/F1
    - false-positive monoklonal examples
    - rule-vs-ML disagreement table
+   - [Completed 2026-07-26] fold-held-out permutation feature importance
 2. [Completed 2026-07-26] Generate local review HTML panels for disagreement and low-confidence cases.
 3. [Partially completed 2026-07-26] Track performance by run date and sanitized run folder. Instrument-specific drift awaits a reliable instrument field.
 
