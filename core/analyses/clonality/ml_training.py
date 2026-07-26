@@ -63,7 +63,7 @@ ANNOTATION_CLASSES_ORDER: tuple[str, ...] = (
     "qc_teknisk_fail",
     "usikker_review",
 )
-RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v4"
+RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v5"
 
 DEFAULT_NON_FEATURE_COLUMNS = {
     "Month",
@@ -140,6 +140,7 @@ class PerAssayDataset:
     dit: pd.Series
     assay: str
     rare_class_counts: dict[str, int] = field(default_factory=dict)
+    data_provenance: dict[str, Any] = field(default_factory=dict)
     n_samples: int = 0
     rows: pd.DataFrame = field(default_factory=pd.DataFrame)
 
@@ -301,6 +302,12 @@ def build_per_assay_datasets(
             and _assay_key(assay_name) not in include_assay_keys
         ):
             continue
+        group, data_provenance = _deduplicate_content_rows(
+            group,
+            label_col=label_col,
+            dit_col=dit_col,
+            assay_name=str(assay_name),
+        )
         if len(group) < min_samples_per_assay:
             continue
         X_num = _ensure_numeric_X(group[feature_cols]).reset_index(drop=True)
@@ -314,9 +321,94 @@ def build_per_assay_datasets(
             assay=str(assay_name),
             n_samples=len(group),
             rare_class_counts={str(k): int(v) for k, v in counts.items()},
+            data_provenance=data_provenance,
             rows=group.reset_index(drop=True),
         )
     return out
+
+
+def _deduplicate_content_rows(
+    group: pd.DataFrame,
+    *,
+    label_col: str,
+    dit_col: str,
+    assay_name: str,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    raw_count = int(len(group))
+    if "FsaContentHash" not in group.columns:
+        return group.copy(), {
+            "method": "per_assay_fsa_content_hash_v1",
+            "raw_row_count": raw_count,
+            "unique_trace_row_count": raw_count,
+            "duplicate_rows_removed": 0,
+            "content_hash_coverage": 0.0,
+            "duplicate_content_hashes": 0,
+            "cross_dit_duplicate_content_hashes": 0,
+            "conflicting_label_content_hashes": 0,
+            "conflicting_source_run_content_hashes": 0,
+        }
+
+    working = group.copy()
+    hashes = (
+        working["FsaContentHash"].fillna("").astype(str).str.strip()
+    )
+    working["_TrainingContentHash"] = hashes
+    nonempty = working.loc[hashes.ne("")]
+    grouped_hashes = nonempty.groupby("_TrainingContentHash", sort=False)
+    label_counts = grouped_hashes[label_col].nunique(dropna=False)
+    conflicting_labels = int((label_counts > 1).sum())
+    if conflicting_labels:
+        raise ValueError(
+            f"assay {assay_name!r} has {conflicting_labels} FSA content "
+            "hash(es) with conflicting chemist labels"
+        )
+
+    conflicting_runs = 0
+    if "SourceRunKey" in working.columns:
+        run_values = working["SourceRunKey"].fillna("").astype(str).str.strip()
+        working["_TrainingSourceRunKey"] = run_values
+        run_counts = (
+            working.loc[hashes.ne("")]
+            .groupby("_TrainingContentHash", sort=False)[
+                "_TrainingSourceRunKey"
+            ]
+            .nunique()
+        )
+        conflicting_runs = int((run_counts > 1).sum())
+        if conflicting_runs:
+            raise ValueError(
+                f"assay {assay_name!r} has {conflicting_runs} FSA content "
+                "hash(es) assigned to conflicting source runs"
+            )
+
+    hash_counts = hashes.loc[hashes.ne("")].value_counts()
+    duplicate_hashes = int((hash_counts > 1).sum())
+    cross_dit_hashes = int(
+        (
+            nonempty.groupby("_TrainingContentHash", sort=False)[dit_col]
+            .nunique()
+            > 1
+        ).sum()
+    )
+    keep = ~(
+        hashes.ne("")
+        & hashes.duplicated(keep="first")
+    )
+    deduplicated = working.loc[keep].drop(
+        columns=["_TrainingContentHash", "_TrainingSourceRunKey"],
+        errors="ignore",
+    )
+    return deduplicated, {
+        "method": "per_assay_fsa_content_hash_v1",
+        "raw_row_count": raw_count,
+        "unique_trace_row_count": int(len(deduplicated)),
+        "duplicate_rows_removed": int(raw_count - len(deduplicated)),
+        "content_hash_coverage": float(hashes.ne("").mean()),
+        "duplicate_content_hashes": duplicate_hashes,
+        "cross_dit_duplicate_content_hashes": cross_dit_hashes,
+        "conflicting_label_content_hashes": conflicting_labels,
+        "conflicting_source_run_content_hashes": conflicting_runs,
+    }
 
 
 def group_shuffle_split_by_dit(

@@ -330,16 +330,38 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
     feature_columns = metadata.get("feature_columns")
     if not isinstance(feature_columns, list):
         return False
+    data_provenance = metadata.get("training_data_provenance")
+    if not isinstance(data_provenance, Mapping):
+        return False
     try:
         effective_splits = int(validation.get("effective_splits") or 0)
         unique_primary_groups = int(validation.get("unique_groups") or 0)
+        primary_validation_rows = int(validation.get("row_count") or 0)
         run_effective_splits = int(run_stress.get("effective_splits") or 0)
         unique_run_groups = int(run_stress.get("unique_groups") or 0)
+        run_validation_rows = int(run_stress.get("row_count") or 0)
         group_provenance = validation.get("group_provenance")
         content_hash_coverage = float(
             group_provenance.get("content_hash_coverage") or 0.0
             if isinstance(group_provenance, Mapping)
             else 0.0
+        )
+        training_hash_coverage = float(
+            data_provenance.get("content_hash_coverage") or 0.0
+        )
+        raw_training_rows = int(data_provenance.get("raw_row_count") or 0)
+        fitted_training_rows = int(metadata.get("training_rows") or 0)
+        unique_trace_rows = int(
+            data_provenance.get("unique_trace_row_count") or 0
+        )
+        duplicate_rows_removed = int(
+            data_provenance.get("duplicate_rows_removed") or 0
+        )
+        conflicting_label_hashes = int(
+            data_provenance.get("conflicting_label_content_hashes") or 0
+        )
+        conflicting_run_hashes = int(
+            data_provenance.get("conflicting_source_run_content_hashes") or 0
         )
     except (TypeError, ValueError):
         return False
@@ -357,6 +379,19 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         == "dit_fsa_content_connected_components"
         and content_hash_coverage == 1.0
     )
+    deduplication_compatible = bool(
+        data_provenance.get("method") == "per_assay_fsa_content_hash_v1"
+        and training_hash_coverage == 1.0
+        and raw_training_rows >= unique_trace_rows > 0
+        and duplicate_rows_removed
+        == raw_training_rows - unique_trace_rows
+        and fitted_training_rows
+        == primary_validation_rows
+        == run_validation_rows
+        == unique_trace_rows
+        and conflicting_label_hashes == 0
+        and conflicting_run_hashes == 0
+    )
     return bool(
         metadata.get("schema_version") == RUNTIME_MODEL_SCHEMA_VERSION
         and metadata.get("deployment_status") == "validated"
@@ -371,6 +406,7 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         and effective_splits >= 2
         and unique_primary_groups >= 2
         and content_grouping_compatible
+        and deduplication_compatible
         and promotion_gate.get("passed") is True
         and run_stress.get("status") == "complete"
         and run_stress.get("strategy") == "StratifiedGroupKFold"

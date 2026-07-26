@@ -63,7 +63,7 @@ def _make_model_dir(p: Path) -> Path:
     clf = _train_dummy_model(seed=42)
     joblib.dump(clf, p / "FR1" / "random_forest.joblib")
     meta = {
-        "schema_version": "ml_training_pipeline_v4",
+        "schema_version": "ml_training_pipeline_v5",
         "assay": "FR1",
         "label_order": ["monoklonal", "polyklonal", "irregulaer",
                         "bi_oligoklonal", "pseudoklonal"],
@@ -80,11 +80,22 @@ def _make_model_dir(p: Path) -> Path:
         "trace_feature_schema_version": "clonality_trace_features_v1",
         "deployment_status": "validated",
         "runtime_eligible": True,
+        "training_rows": 20,
+        "training_data_provenance": {
+            "method": "per_assay_fsa_content_hash_v1",
+            "raw_row_count": 20,
+            "unique_trace_row_count": 20,
+            "duplicate_rows_removed": 0,
+            "content_hash_coverage": 1.0,
+            "conflicting_label_content_hashes": 0,
+            "conflicting_source_run_content_hashes": 0,
+        },
         "validation": {
             "strategy": "StratifiedGroupKFold",
             "group_column": "DITContentComponent",
             "every_row_oof_once": True,
             "effective_splits": 5,
+            "row_count": 20,
             "unique_groups": 20,
             "group_provenance": {
                 "method": "dit_fsa_content_connected_components",
@@ -97,6 +108,7 @@ def _make_model_dir(p: Path) -> Path:
                 "group_column": "SourceRunKey",
                 "every_row_oof_once": True,
                 "effective_splits": 3,
+                "row_count": 20,
                 "unique_groups": 3,
                 "promotion_gate": {"passed": True},
             },
@@ -212,7 +224,7 @@ def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch)
     }
     if out.get("ClonalityMLSuggestion"):
         # If ML emitted a label, the model_version stamp should be present
-        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v4"
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v5"
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
 

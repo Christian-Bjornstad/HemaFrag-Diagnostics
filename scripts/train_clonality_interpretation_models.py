@@ -133,6 +133,7 @@ def _render_per_assay_markdown(
     runtime_eligible,
     model_comparison,
     source_run_stress,
+    data_provenance,
 ):
     """Emit a single markdown file per assay."""
     out_lines = []
@@ -145,6 +146,16 @@ def _render_per_assay_markdown(
     out_lines.append("- Assay: `{}`".format(metrics.assay))
     out_lines.append("- Classifier kind: `{}`".format(metrics.classifier_kind))
     out_lines.append("- Grouped out-of-fold samples: **{}**".format(len(validation.predictions)))
+    out_lines.append(
+        "- Raw labeled rows before content deduplication: **{}**".format(
+            data_provenance["raw_row_count"]
+        )
+    )
+    out_lines.append(
+        "- Byte-identical duplicate rows removed: **{}**".format(
+            data_provenance["duplicate_rows_removed"]
+        )
+    )
     out_lines.append("- Unique DIT groups: **{}**".format(
         validation.split_manifest["unique_dit_groups"]
     ))
@@ -615,6 +626,7 @@ def _source_run_stress_metadata(validation, gate, *, status, error=""):
                 "effective_splits": validation.split_manifest[
                     "effective_splits"
                 ],
+                "row_count": validation.split_manifest["row_count"],
                 "random_state": validation.split_manifest["random_state"],
                 "unique_groups": validation.split_manifest["unique_groups"],
                 "every_row_oof_once": validation.split_manifest[
@@ -1097,6 +1109,7 @@ def main(argv=None):
             "strategy": validation.split_manifest["strategy"],
             "group_column": validation.split_manifest["group_column"],
             "effective_splits": validation.split_manifest["effective_splits"],
+            "row_count": validation.split_manifest["row_count"],
             "random_state": validation.split_manifest["random_state"],
             "unique_dit_groups": validation.split_manifest["unique_dit_groups"],
             "unique_groups": validation.split_manifest["unique_groups"],
@@ -1148,6 +1161,7 @@ def main(argv=None):
                 "training_rows": ds.n_samples,
                 "training_dit_groups": int(ds.dit.nunique()),
                 "training_data_fingerprint": _training_data_fingerprint(ds),
+                "training_data_provenance": ds.data_provenance,
                 "feature_dataset_version": _first_value(
                     ds.rows, "FeatureDatasetVersion"
                 ),
@@ -1171,6 +1185,7 @@ def main(argv=None):
                 runtime_eligible=runtime_eligible,
                 model_comparison=model_comparison,
                 source_run_stress=source_run_stress,
+                data_provenance=ds.data_provenance,
             ),
             encoding="utf-8",
         )
@@ -1246,6 +1261,10 @@ def main(argv=None):
         summaries.append({
             "assay": assay_name,
             "training_samples": metrics.training_samples,
+            "raw_training_rows": ds.data_provenance["raw_row_count"],
+            "duplicate_training_rows_removed": ds.data_provenance[
+                "duplicate_rows_removed"
+            ],
             "monoklonal_f1": metrics.monoklonal_f1,
             "macro_f1": metrics.macro_f1,
             "monoklonal_precision": float(

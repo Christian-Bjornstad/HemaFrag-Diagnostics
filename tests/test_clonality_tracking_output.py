@@ -92,7 +92,7 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             patient_entry["ClonalityMLThreshold"] = 0.8
             patient_entry["ClonalityMLReviewNeeded"] = False
             patient_entry["ClonalityMLEvidence"] = "rule_ml_agree"
-            patient_entry["ClonalityMLModelVersion"] = "ml_training_pipeline_v4"
+            patient_entry["ClonalityMLModelVersion"] = "ml_training_pipeline_v5"
             entries = [
                 patient_entry,
                 # Control entry does NOT carry ML fields (chemist usually

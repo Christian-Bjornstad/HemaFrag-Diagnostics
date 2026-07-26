@@ -14,10 +14,13 @@ remains the report source of truth.
 - Primary validation groups by connected DIT/FSA-content components; the same
   patient or byte-identical trace cannot occur in train and test. Explicit
   classifier runs also hold out complete source runs.
+- Within each assay, one FSA content hash contributes one training vote.
+  Conflicting chemist labels or source-run assignments for identical bytes
+  stop training.
 - Replicate and panel context is limited to the same DIT and sanitized source
   run, and controls/SL are excluded from patient context.
 - Training produces runtime-ineligible candidates by default.
-- Runtime only discovers explicitly promoted `ml_training_pipeline_v4`
+- Runtime only discovers explicitly promoted `ml_training_pipeline_v5`
   artifacts whose metadata proves complete DIT/content- and source-run-grouped
   out-of-fold validation.
 - Controls, SL, unavailable traces, failed quality gates, disagreement,
@@ -47,21 +50,23 @@ revalidation.
 2. Analyze each resolved FSA and export flat scalar plus per-channel trace
    features.
 3. Refresh chemist labels from the current workbook at training time.
-4. Build one dataset per assay, require complete `FsaContentHash` coverage, and
-   validate with `StratifiedGroupKFold`. DITs connected by byte-identical FSA
-   content are coalesced into one validation group.
-5. In auto mode, compare calibrated RandomForest and ExtraTrees candidates
+4. Build one dataset per assay, require complete `FsaContentHash` coverage,
+   reject conflicting duplicate provenance, remove agreeing byte-identical
+   copies, then apply minimum sample and class counts.
+5. Validate with `StratifiedGroupKFold`. DITs connected by byte-identical FSA
+   content are coalesced into one validation group as defense in depth.
+6. In auto mode, compare calibrated RandomForest and ExtraTrees candidates
    on identical grouped folds and select one using the recorded safety-first
    ranking.
-6. Rerun the selected explicit classifier with complete source runs held out
+7. Rerun the selected explicit classifier with complete source runs held out
    and require its separate promotion thresholds to pass.
-7. Export row-level out-of-fold predictions, disagreements, review cases,
+8. Export row-level out-of-fold predictions, disagreements, review cases,
    drift summaries, held-out feature importance, split provenance, metrics,
    and a local HTML review panel.
-8. Refit the selected candidate estimator on all labeled rows.
-9. Keep the artifact candidate-only unless explicit promotion was requested
+9. Refit the selected candidate estimator on all unique labeled traces.
+10. Keep the artifact candidate-only unless explicit promotion was requested
    and every configured metric gate passed.
-10. At runtime, show eligible ML output as a second-opinion badge without
+11. At runtime, show eligible ML output as a second-opinion badge without
    replacing the rule interpretation.
 
 ## Commands
@@ -234,6 +239,8 @@ Every candidate stores:
 - feature columns plus trace and cohort schemas;
 - label order and class counts;
 - training row, unique-DIT, and independent DIT/content-group counts;
+- raw labeled rows, unique physical traces, removed duplicate copies, content
+  hash coverage, and duplicate label/run conflict counts;
 - privacy-preserving training-data fingerprint;
 - grouped validation strategy, fold count, random state, and metrics;
 - source-run stress metrics, split provenance, thresholds, and pass/fail state;
@@ -253,11 +260,11 @@ never from the refitted candidate.
 ML stays off unless both conditions are true:
 
 1. `analyses.clonality.interpretation.enabled` is true.
-2. `model_path` contains at least one eligible validated v4 assay artifact.
+2. `model_path` contains at least one eligible validated v5 assay artifact.
 
-Runtime rejects v1-v3 artifacts and v4 artifacts lacking complete content-hash
-grouping or a complete, passing `SourceRunKey` stress test. This deliberately
-requires retraining before an older model can be enabled.
+Runtime rejects v1-v4 artifacts and v5 artifacts lacking complete content-hash
+deduplication/grouping or a complete, passing `SourceRunKey` stress test. This
+deliberately requires retraining before an older model can be enabled.
 
 The batch pipeline attaches rule results first, computes same-run patient
 context across the completed batch, and only then invokes ML. The runtime

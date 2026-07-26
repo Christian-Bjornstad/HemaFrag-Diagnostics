@@ -181,6 +181,62 @@ def test_per_assay_dataset_rare_class_counts_non_empty_for_FR1():
     assert counts["monoklonal"] >= 1
 
 
+def test_build_per_assay_datasets_deduplicates_identical_trace_votes():
+    df = _synth_combined(n_per_assay={"FR1": 12})
+    df["FsaContentHash"] = [f"hash-{index}" for index in range(len(df))]
+    df["SourceRunKey"] = "run-a"
+    df.loc[1, "FsaContentHash"] = df.loc[0, "FsaContentHash"]
+    df.loc[1, "ClonalitySuggestion"] = df.loc[0, "ClonalitySuggestion"]
+
+    dataset = build_per_assay_datasets(
+        df,
+        min_samples_per_assay=10,
+    )["FR1"]
+
+    assert dataset.n_samples == 11
+    assert dataset.data_provenance["raw_row_count"] == 12
+    assert dataset.data_provenance["unique_trace_row_count"] == 11
+    assert dataset.data_provenance["duplicate_rows_removed"] == 1
+    assert dataset.data_provenance[
+        "cross_dit_duplicate_content_hashes"
+    ] == 1
+
+
+def test_build_per_assay_datasets_rejects_conflicting_duplicate_labels():
+    df = _synth_combined(n_per_assay={"FR1": 12})
+    df["FsaContentHash"] = [f"hash-{index}" for index in range(len(df))]
+    df.loc[0, "ClonalitySuggestion"] = "monoklonal"
+    df.loc[1, "ClonalitySuggestion"] = "polyklonal"
+    df.loc[1, "FsaContentHash"] = df.loc[0, "FsaContentHash"]
+
+    with pytest.raises(ValueError, match="conflicting chemist labels"):
+        build_per_assay_datasets(df, min_samples_per_assay=10)
+
+
+def test_build_per_assay_datasets_rejects_conflicting_duplicate_runs():
+    df = _synth_combined(n_per_assay={"FR1": 12})
+    df["FsaContentHash"] = [f"hash-{index}" for index in range(len(df))]
+    df["SourceRunKey"] = "run-a"
+    df.loc[1, "FsaContentHash"] = df.loc[0, "FsaContentHash"]
+    df.loc[1, "ClonalitySuggestion"] = df.loc[0, "ClonalitySuggestion"]
+    df.loc[1, "SourceRunKey"] = "run-b"
+
+    with pytest.raises(ValueError, match="conflicting source runs"):
+        build_per_assay_datasets(df, min_samples_per_assay=10)
+
+
+def test_minimum_samples_is_applied_after_trace_deduplication():
+    df = _synth_combined(n_per_assay={"FR1": 10})
+    df["FsaContentHash"] = [f"hash-{index}" for index in range(len(df))]
+    df.loc[1, "FsaContentHash"] = df.loc[0, "FsaContentHash"]
+    df.loc[1, "ClonalitySuggestion"] = df.loc[0, "ClonalitySuggestion"]
+
+    assert build_per_assay_datasets(
+        df,
+        min_samples_per_assay=10,
+    ) == {}
+
+
 # ----- T-3.3 group_shuffle_split_by_dit ------------------------------
 
 def test_group_shuffle_split_respects_dit_groups():

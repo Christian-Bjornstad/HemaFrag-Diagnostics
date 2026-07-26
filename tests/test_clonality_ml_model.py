@@ -23,7 +23,7 @@ from core.analyses.clonality.ml_training import ANNOTATION_CLASSES_ORDER
 
 def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = None) -> dict:
     return {
-        "schema_version": "ml_training_pipeline_v4",
+        "schema_version": "ml_training_pipeline_v5",
         "assay": assay,
         "label_order": list(ANNOTATION_CLASSES_ORDER),
         "accept_threshold_tau": float(tau),
@@ -34,11 +34,22 @@ def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = No
         "trace_feature_schema_version": "clonality_trace_features_v1",
         "deployment_status": "validated",
         "runtime_eligible": True,
+        "training_rows": 50,
+        "training_data_provenance": {
+            "method": "per_assay_fsa_content_hash_v1",
+            "raw_row_count": 50,
+            "unique_trace_row_count": 50,
+            "duplicate_rows_removed": 0,
+            "content_hash_coverage": 1.0,
+            "conflicting_label_content_hashes": 0,
+            "conflicting_source_run_content_hashes": 0,
+        },
         "validation": {
             "strategy": "StratifiedGroupKFold",
             "group_column": "DITContentComponent",
             "every_row_oof_once": True,
             "effective_splits": 5,
+            "row_count": 50,
             "unique_groups": 50,
             "group_provenance": {
                 "method": "dit_fsa_content_connected_components",
@@ -51,6 +62,7 @@ def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = No
                 "group_column": "SourceRunKey",
                 "every_row_oof_once": True,
                 "effective_splits": 3,
+                "row_count": 50,
                 "unique_groups": 3,
                 "promotion_gate": {"passed": True},
             },
@@ -144,6 +156,28 @@ def test_store_ignores_artifact_without_content_grouping_provenance(tmp_path):
     metadata_path = tmp_path / "FR1" / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["validation"].pop("group_provenance")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_without_training_dedup_provenance(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("training_data_provenance")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_inconsistent_training_and_validation_row_counts(
+    tmp_path,
+):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["training_rows"] = 49
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
     assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False

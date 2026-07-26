@@ -1239,3 +1239,10 @@ Verification:
 - Training requires non-empty content hashes for every row and records hash coverage, duplicate hashes, cross-DIT duplicate hashes, original DIT groups, independent validation groups, and coalesced group count.
 - Bumped runtime eligibility to `ml_training_pipeline_v4`; runtime rejects older artifacts and v4 metadata without complete content-group provenance plus passing source-run stress evidence.
 - Verification: focused validation/trainer/runtime integration passed (`58`); full suite passed (`348 passed, 3 skipped`, with seven known pytest/sklearn/scipy warnings). Real duplicate-content counts remain pending until the private corpus is mounted.
+
+## 2026-07-26 - Clonality One-Trace-One-Vote Contract
+
+- Added deterministic per-assay deduplication by `FsaContentHash` before class counts, minimum-sample checks, validation, and final fitting. Agreeing byte-identical copies now contribute one training vote.
+- Training fails when identical raw bytes carry conflicting chemist labels or incompatible source-run assignments. Metadata and reports record raw rows, unique traces, removed copies, hash coverage, and conflict counts.
+- Bumped runtime eligibility to `ml_training_pipeline_v5`; runtime independently validates the deduplication arithmetic, requires zero label/run conflicts, and requires fitted plus both OOF row counts to equal the unique-trace count.
+- Verification: focused ML integration passed (`85`, then `74` after row-count consistency coverage); full suite passed (`354 passed, 3 skipped`, with seven known pytest/sklearn/scipy warnings). Real deduplication counts remain pending until the private corpus is mounted.

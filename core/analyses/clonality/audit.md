@@ -14,7 +14,7 @@
    plus evidence strings.
 4. Optional ML second-opinion: when interpretation is enabled,
    `ml_runtime.attach_ml_prediction_if_enabled(...)` loads only an explicitly
-   promoted, content/run-group-validated v4 per-assay artifact. It recomputes raw trace
+   promoted, deduplicated content/run-group-validated v5 per-assay artifact. It recomputes raw trace
    features when needed and leaves the rule output unchanged.
 5. Tracking Excel writer (`tracking_excel.py::update_clonality_tracking_workbook`) writes
    the rule columns by default, plus ML columns when enabled.
@@ -125,7 +125,7 @@ Validated ML adds `ClonalityMLSuggestion`, `ClonalityMLConfidence`,
 - `INTERPRETATION_RULE_VERSION = "clonality_interpretation_rules_v1"`
 - `MODEL_VERSION = "clonality_interpretation_quick_model_v1"`
 - `TRACE_FEATURE_SCHEMA_VERSION = "clonality_trace_features_v1"`
-- validated runtime model schema: `ml_training_pipeline_v4`
+- validated runtime model schema: `ml_training_pipeline_v5`
 
 Keep all three under versioned definitions; bumping either triggers:
 - Tracking-column metadata update

@@ -139,10 +139,14 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
     metadata = json.loads(
         (output / "FR1" / "metadata.json").read_text(encoding="utf-8")
     )
-    assert metadata["schema_version"] == "ml_training_pipeline_v4"
+    assert metadata["schema_version"] == "ml_training_pipeline_v5"
     assert metadata["deployment_status"] == "candidate"
     assert metadata["runtime_eligible"] is False
     assert metadata["training_rows"] == 36
+    assert metadata["training_data_provenance"]["raw_row_count"] == 36
+    assert metadata["training_data_provenance"][
+        "duplicate_rows_removed"
+    ] == 0
     assert metadata["validation"]["every_row_oof_once"] is True
     assert metadata["validation"]["group_column"] == "DITContentComponent"
     assert metadata["validation"]["group_provenance"][
