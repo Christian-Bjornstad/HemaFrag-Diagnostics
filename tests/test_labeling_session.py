@@ -41,6 +41,56 @@ def test_load_reads_all_samples(tmp_path):
     assert session.unlabeled_count == 2
 
 
+def test_load_excludes_controls_and_size_ladders_by_default(tmp_path):
+    path = tmp_path / "tracking-filtered.xlsx"
+    frame = pd.DataFrame(
+        {
+            "IdentityKey": ["patient", "control", "ladder"],
+            "DIT": ["26A01", "", "26A01"],
+            "Assay": ["FR1", "FR1", "SL"],
+            "Well": ["A01", "A02", "A03"],
+            "File": ["patient.fsa", "control.fsa", "ladder.fsa"],
+            "SourceRunDir": ["run-a", "run-a", "run-a"],
+            "SampleKind": ["patient", "control", "patient"],
+            "Control": ["", "PK", ""],
+        }
+    )
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        frame.to_excel(writer, sheet_name="Runs", index=False)
+
+    session = LabelingSession(excel_path=str(path))
+    session.load()
+
+    assert [sample.identity_key for sample in session.samples] == ["patient"]
+
+
+def test_load_can_include_controls_and_size_ladders(tmp_path):
+    path = tmp_path / "tracking-all.xlsx"
+    frame = pd.DataFrame(
+        {
+            "IdentityKey": ["patient", "control", "ladder"],
+            "DIT": ["26A01", "", "26A01"],
+            "Assay": ["FR1", "FR1", "SL"],
+            "Well": ["A01", "A02", "A03"],
+            "File": ["patient.fsa", "control.fsa", "ladder.fsa"],
+            "SourceRunDir": ["run-a", "run-a", "run-a"],
+            "SampleKind": ["patient", "control", "patient"],
+            "Control": ["", "PK", ""],
+        }
+    )
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        frame.to_excel(writer, sheet_name="Runs", index=False)
+
+    session = LabelingSession(
+        excel_path=str(path),
+        include_controls=True,
+        include_size_ladders=True,
+    )
+    session.load()
+
+    assert session.total_count == 3
+
+
 def test_sample_fields_populate_correctly(tmp_path):
     path = _make_test_excel(tmp_path)
     session = LabelingSession(excel_path=path)
@@ -202,3 +252,27 @@ def test_fsa_path_returns_none_for_missing_file(tmp_path):
 
     resolved = session.fsa_path_for(0, str(fsa_root))
     assert resolved is None
+
+
+def test_fsa_path_can_resolve_flat_file_without_source_run(tmp_path):
+    fsa_root = tmp_path / "fsa_data"
+    fsa_root.mkdir()
+    (fsa_root / "sample1.fsa").touch()
+    path = tmp_path / "tracking-flat.xlsx"
+    frame = pd.DataFrame(
+        {
+            "IdentityKey": ["ID1"],
+            "DIT": ["26A01"],
+            "Assay": ["FR1"],
+            "File": ["sample1.fsa"],
+            "SourceRunDir": [""],
+            "SampleKind": ["patient"],
+        }
+    )
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        frame.to_excel(writer, sheet_name="Runs", index=False)
+
+    session = LabelingSession(excel_path=str(path))
+    session.load()
+
+    assert session.fsa_path_for(0, str(fsa_root)) == fsa_root / "sample1.fsa"

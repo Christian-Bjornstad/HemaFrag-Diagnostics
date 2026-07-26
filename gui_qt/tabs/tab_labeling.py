@@ -3,7 +3,7 @@
 Daily workflow for the chemist:
 1. Browse to tracking Excel (Clonality_Tracking_All_T7.xlsx)
 2. Browse to FSA root (D:/DATA/2025_data)
-3. The tab loads all samples from the Excel
+3. The tab loads patient assays from the Excel (controls and SL are excluded)
 4. For each sample:
    - Metadata panel: DIT, assay, well, file, current label
    - Plot panel: FSA electropherogram trace (pyqtgraph)
@@ -152,6 +152,7 @@ class TabLabeling(QWidget):
             self.plot_widget.setLabel("left", "RFU")
             self.plot_widget.setLabel("bottom", "data point")
             self.plot_widget.showGrid(x=False, y=True, alpha=0.3)
+            self.plot_widget.addLegend()
             detail_layout.addWidget(self.plot_widget, stretch=1)
         except Exception:
             self.plot_widget = QLabel("pyqtgraph not available — plots disabled")
@@ -271,27 +272,46 @@ class TabLabeling(QWidget):
         if fsa_path is None:
             return
         try:
-            # Read raw FSA data points using existing infra
-            from core.rust_bridge import read_fsa
-            data = read_fsa(str(fsa_path))
-            channel = "DATA1"  # FR1 default; TODO: per-assay channel mapping
-            if hasattr(data, "channels") and channel in data.channels:
-                trace = data.channels[channel]
-                self.plot_widget.plot(range(len(trace)), trace, pen="b")
+            from Bio import SeqIO
+
+            from core.analyses.clonality.config import ASSAY_CONFIG
+
+            raw = SeqIO.read(str(fsa_path), "abi").annotations.get("abif_raw", {})
+            channels = ASSAY_CONFIG.get(sample.assay, {}).get(
+                "trace_channels",
+                ["DATA1"],
+            )
+            colors = {
+                "DATA1": "#2563eb",
+                "DATA2": "#16a34a",
+                "DATA3": "#f97316",
+            }
+            for channel in channels:
+                trace = raw.get(channel)
+                if trace is None:
+                    continue
+                self.plot_widget.plot(
+                    range(len(trace)),
+                    trace,
+                    pen=colors.get(channel, "#475569"),
+                    name=channel,
+                )
         except Exception as exc:
             logger.debug("Plot render failed for %s: %s", fsa_path, exc)
 
     def _on_label_key(self, label: str):
+        visible_row = self.sample_list.currentRow()
         idx = self._current_sample_index()
         if idx < 0 or not self._session:
             return
         self._session.label_sample(idx, label)
         self._refresh_sample_list()
-        # Re-select the same row position so metadata refreshes; then advance.
-        if self.sample_list.currentRow() >= 0:
-            self._on_sample_selected(self.sample_list.currentRow())
-        # Auto-advance to next sample if one exists
-        self._on_next_sample()
+        if self.sample_list.count() == 0:
+            return
+        target_row = visible_row if self._show_unlabeled_only else visible_row + 1
+        self.sample_list.setCurrentRow(
+            min(max(target_row, 0), self.sample_list.count() - 1)
+        )
 
     def _on_clear_label(self):
         idx = self._current_sample_index()

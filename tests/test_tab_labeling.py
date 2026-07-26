@@ -81,6 +81,23 @@ def test_tab_label_key_assigns_label(qapp, tmp_path):
     assert tab._session.samples[0].current_label == "monoklonal"
 
 
+def test_tab_label_key_advances_to_next_visible_sample(qapp, tmp_path):
+    from gui_qt.tabs.tab_labeling import TabLabeling
+    from core.labeling.labeling_session import LabelingSession
+
+    path = _make_test_excel(tmp_path)
+    tab = TabLabeling()
+    tab._session = LabelingSession(excel_path=path)
+    tab._session.load()
+    tab._refresh_sample_list()
+    tab.sample_list.setCurrentRow(0)
+
+    tab._on_label_key("monoklonal")
+
+    assert tab._session.samples[0].current_label == "monoklonal"
+    assert tab.sample_list.currentRow() == 1
+
+
 def test_tab_navigation_next_prev(qapp, tmp_path):
     from gui_qt.tabs.tab_labeling import TabLabeling
     from core.labeling.labeling_session import LabelingSession

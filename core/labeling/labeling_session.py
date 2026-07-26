@@ -79,6 +79,8 @@ class LabelingSession:
     Does NOT touch the GUI — this is pure data. The tab widget wraps it.
     """
     excel_path: str
+    include_controls: bool = False
+    include_size_ladders: bool = False
     samples: list[LabelingSample] = field(default_factory=list)
     _df: pd.DataFrame | None = None
     _dirty: bool = False
@@ -87,8 +89,14 @@ class LabelingSession:
 
     def load(self) -> None:
         """Load tracked injections from current or legacy workbook sheets."""
-        table = load_tracking_run_table(self.excel_path, include_controls=True)
+        table = load_tracking_run_table(
+            self.excel_path,
+            include_controls=self.include_controls,
+        )
         df = table.frame
+        if not self.include_size_ladders and "Assay" in df.columns:
+            assay = df["Assay"].fillna("").astype(str).str.strip().str.upper()
+            df = df.loc[assay.ne("SL")].reset_index(drop=True)
         self._primary_sheet = table.primary_sheet
         self._available_sheets = table.available_sheets
         if LABEL_COLUMN in df.columns:
@@ -226,13 +234,14 @@ class LabelingSession:
         if not (0 <= sample_index < len(self.samples)):
             return None
         sample = self.samples[sample_index]
-        if not sample.file_name or not sample.source_run_dir:
+        if not sample.file_name:
             return None
         root = Path(fsa_root)
-        # source_run_dir is typically a folder name like "2025_01_15_FR1_..."
-        candidate = root / sample.source_run_dir / sample.file_name
-        if candidate.exists():
-            return candidate
+        if sample.source_run_dir:
+            # source_run_dir is typically a folder name like "2025_01_15_FR1_..."
+            candidate = root / sample.source_run_dir / sample.file_name
+            if candidate.exists():
+                return candidate
         # Try without source_run_dir (flat structure)
         candidate2 = root / sample.file_name
         if candidate2.exists():
