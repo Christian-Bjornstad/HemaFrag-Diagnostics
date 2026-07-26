@@ -1,9 +1,10 @@
 """Tests for ClonalityModelStore — wrapper that loads + caches + predicts
 per-assay joblib models living under a model directory of shape
-``<model_dir>/<assay>/<classifier>.joblib + metadata.json``.
+``<model_dir>/<assay>/<classifier>-<hash>.joblib + metadata.json``.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -55,7 +56,7 @@ def _calibration_manifest(fold_count: int, unique_groups: int) -> dict:
 
 def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = None) -> dict:
     return {
-        "schema_version": "ml_training_pipeline_v8",
+        "schema_version": "ml_training_pipeline_v9",
         "assay": assay,
         "label_order": list(ANNOTATION_CLASSES_ORDER),
         "accept_threshold_tau": float(tau),
@@ -180,14 +181,43 @@ def _make_model_dir(tmp_path: Path, assays: list[str]) -> Path:
         assay_dir = tmp_path / assay
         assay_dir.mkdir(parents=True, exist_ok=True)
         clf = _train_dummy_model(seed=abs(hash(assay)) % 1000)
-        joblib.dump(clf, assay_dir / "random_forest.joblib")
+        model_path = _write_content_addressed_model(
+            assay_dir,
+            clf,
+            "random_forest",
+        )
         # Every-assay default — also drop a DummyClassifier as the fallback
         # so we have at least one joblib we can confirm gets ignored.
         joblib.dump(DummyClassifier(strategy="most_frequent"),
                     assay_dir / "dummy.joblib")
         meta = _make_meta(assay=assay)
+        _stamp_artifact_manifest(meta, model_path)
         (assay_dir / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
     return tmp_path
+
+
+def _write_content_addressed_model(
+    assay_dir: Path,
+    estimator,
+    classifier_kind: str,
+) -> Path:
+    staged = assay_dir / f".{classifier_kind}.tmp"
+    joblib.dump(estimator, staged)
+    digest = hashlib.sha256(staged.read_bytes()).hexdigest()
+    destination = assay_dir / f"{classifier_kind}-{digest[:16]}.joblib"
+    staged.replace(destination)
+    return destination
+
+
+def _stamp_artifact_manifest(metadata: dict, model_path: Path) -> None:
+    payload = model_path.read_bytes()
+    metadata["artifact"] = {
+        "format": "joblib",
+        "hash_algorithm": "sha256",
+        "joblib_file": model_path.name,
+        "joblib_sha256": hashlib.sha256(payload).hexdigest(),
+        "joblib_size_bytes": len(payload),
+    }
 
 
 # --- tests ---------------------------------------------------------------
@@ -343,13 +373,37 @@ def test_store_ignores_artifact_with_incomplete_oof_calibration(tmp_path):
 
 def test_store_refuses_loaded_estimator_with_mismatched_calibration(tmp_path):
     _make_model_dir(tmp_path, ["FR1"])
-    model_path = tmp_path / "FR1" / "random_forest.joblib"
+    metadata = json.loads(
+        (tmp_path / "FR1" / "metadata.json").read_text(encoding="utf-8")
+    )
+    model_path = tmp_path / "FR1" / metadata["artifact"]["joblib_file"]
     estimator = joblib.load(model_path)
     estimator.hemafrag_calibration_["grouped"] = False
     joblib.dump(estimator, model_path)
+    _stamp_artifact_manifest(metadata, model_path)
+    (tmp_path / "FR1" / "metadata.json").write_text(
+        json.dumps(metadata),
+        encoding="utf-8",
+    )
     store = ClonalityModelStore(model_dir=tmp_path)
 
-    assert store.is_enabled("FR1") is True
+    assert store.is_enabled("FR1") is False
+    assert store.required_feature_columns("FR1") == []
+    assert store.predict("FR1", {"trace_runtime_signal": 1.0}) is None
+
+
+def test_store_refuses_artifact_with_tampered_bytes(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata = json.loads(
+        (tmp_path / "FR1" / "metadata.json").read_text(encoding="utf-8")
+    )
+    model_path = tmp_path / "FR1" / metadata["artifact"]["joblib_file"]
+    with model_path.open("ab") as handle:
+        handle.write(b"tampered")
+
+    store = ClonalityModelStore(model_dir=tmp_path)
+
+    assert store.is_enabled("FR1") is False
     assert store.required_feature_columns("FR1") == []
     assert store.predict("FR1", {"trace_runtime_signal": 1.0}) is None
 
@@ -388,15 +442,30 @@ def test_store_loads_joblib_for_known_assay(tmp_path):
     assert store.is_enabled("UNKNOWN") is False
 
 
+def test_store_exposes_only_validated_integrity_checked_artifact(tmp_path):
+    model_dir = _make_model_dir(tmp_path, ["FR1"])
+    loaded = ClonalityModelStore(
+        model_dir=model_dir
+    ).load_validated_artifact("FR1")
+
+    assert loaded is not None
+    estimator, metadata = loaded
+    assert hasattr(estimator, "predict_proba")
+    assert metadata["schema_version"] == "ml_training_pipeline_v9"
+    assert metadata["artifact"]["joblib_file"].startswith("random_forest-")
+
+
 def test_store_loads_validated_extra_trees_artifact(tmp_path):
     _make_model_dir(tmp_path, ["FR1"])
     assay_dir = tmp_path / "FR1"
-    (assay_dir / "random_forest.joblib").replace(
-        assay_dir / "extra_trees.joblib"
-    )
     metadata_path = assay_dir / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    old_path = assay_dir / metadata["artifact"]["joblib_file"]
+    digest_prefix = metadata["artifact"]["joblib_sha256"][:16]
+    new_path = assay_dir / f"extra_trees-{digest_prefix}.joblib"
+    old_path.replace(new_path)
     metadata["classifier_kind"] = "extra_trees"
+    _stamp_artifact_manifest(metadata, new_path)
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
     store = ClonalityModelStore(model_dir=tmp_path)

@@ -30,16 +30,15 @@ Triggering conditions (independently enforce), per entry:
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from config import APP_SETTINGS
 
+from core.analyses.clonality.ml_model import ClonalityModelStore
 from core.analyses.clonality.ml_training import (
     ANNOTATION_CLASSES_ORDER,
-    deserialize_model,
 )
 
 
@@ -132,38 +131,45 @@ def load_calibrated_pipeline(
     out_dir = Path(output_dir) if output_dir is not None else (
         Path.cwd() / "ObsidianVault" / "Clonality_ML_Log" / "models"
     )
-    joblib_path = out_dir / assay / f"{classifier_kind}.joblib"
-    metadata_path = out_dir / assay / "metadata.json"
-    if not joblib_path.exists():
+    loaded = ClonalityModelStore(
+        model_dir=out_dir
+    ).load_validated_artifact(assay)
+    if loaded is None:
         return _LoadFailed(
-            "no joblib artifact at expected path: %s" % str(joblib_path)
+            "no integrity-checked, promotion-eligible v9 artifact for %s"
+            % assay
         )
-    if not metadata_path.exists():
+    estimator, metadata = loaded
+    if str(metadata.get("classifier_kind") or "") != classifier_kind:
         return _LoadFailed(
-            "no metadata at expected path: %s" % str(metadata_path)
-        )
-    try:
-        estimator, metadata = deserialize_model(
-            joblib_path=joblib_path,
-            metadata_path=metadata_path,
-        )
-    except Exception as exc:
-        return _LoadFailed(
-            "deserialize_model raised %s: %s" % (type(exc).__name__, exc)
-        )
-    expected_schema = "ml_training_pipeline_v1"
-    actual_schema = metadata.get("schema_version")
-    if actual_schema != expected_schema:
-        return _LoadFailed(
-            "schema mismatch: expected %s got %s" % (expected_schema, actual_schema)
-        )
-    if metadata.get("assay") != assay:
-        return _LoadFailed(
-            "metadata says assay=%r; caller asked %r" % (
-                metadata.get("assay"), assay,
+            "classifier mismatch: metadata=%r requested=%r"
+            % (
+                metadata.get("classifier_kind"),
+                classifier_kind,
             )
         )
     return estimator, metadata
+
+
+def _manifest_joblib_path(
+    *,
+    out_dir: Path,
+    assay: str,
+    classifier_kind: str,
+    metadata: Mapping[str, Any],
+) -> Path:
+    if str(metadata.get("classifier_kind") or "") != classifier_kind:
+        raise ValueError(
+            "classifier mismatch: metadata=%r requested=%r"
+            % (metadata.get("classifier_kind"), classifier_kind)
+        )
+    artifact = metadata.get("artifact")
+    if not isinstance(artifact, Mapping):
+        raise ValueError("metadata has no artifact manifest")
+    filename = str(artifact.get("joblib_file") or "")
+    if not filename or Path(filename).name != filename:
+        raise ValueError("artifact filename is unsafe or empty")
+    return out_dir / assay / filename
 
 
 def _forced_review_reasons(entry: Mapping[str, Any]) -> list[str]:
@@ -396,9 +402,17 @@ def attach_ml_suggestion_if_enabled(
     out_dir = Path(artifact_dir) if artifact_dir is not None else (
         Path.cwd() / "ObsidianVault" / "Clonality_ML_Log" / "models"
     )
-    joblib_path = out_dir / assay / f"{classifier_kind}.joblib"
-    if joblib_path.exists():
-        artifact_path = str(joblib_path)
+    try:
+        joblib_path = _manifest_joblib_path(
+            out_dir=out_dir,
+            assay=assay,
+            classifier_kind=classifier_kind,
+            metadata=metadata,
+        )
+        if joblib_path.is_file():
+            artifact_path = str(joblib_path)
+    except ValueError:
+        artifact_path = ""
 
     pred = predict_with_rejection(
         estimator,

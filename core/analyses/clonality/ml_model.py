@@ -7,10 +7,10 @@ hook ``attach_ml_prediction_if_enabled`` and by the GUI.
 Layout on disk (one folder per assay):
     <model_dir>/
         FR1/
-            random_forest.joblib
+            random_forest-<sha256-prefix>.joblib
             metadata.json
         TCRG-A/
-            random_forest.joblib
+            random_forest-<sha256-prefix>.joblib
             metadata.json
         ...
 
@@ -36,6 +36,7 @@ from core.analyses.clonality.ml_data_contract import is_raw_trace_feature
 from core.analyses.clonality.ml_training import (
     RUNTIME_MODEL_SCHEMA_VERSION,
     deserialize_model,
+    verify_model_artifact,
 )
 
 
@@ -94,28 +95,40 @@ class ClonalityModelStore:
             self._discover()
 
     def is_enabled(self, assay: str) -> bool:
-        if self.model_dir is None:
-            return False
-        if not assay:
-            return False
-        return _normalise_assay(assay) in self._available
+        return self.load_validated_artifact(assay) is not None
 
     def has_eligible_models(self) -> bool:
-        """Return whether discovery found at least one validated artifact."""
-        return bool(self._available)
+        """Return whether at least one artifact passes load-time validation."""
+        return any(
+            self.load_validated_artifact(assay) is not None
+            for assay in sorted(self._available)
+        )
 
     def required_feature_columns(self, assay: str) -> list[str]:
         """Return an eligible assay artifact's ordered feature contract."""
-        norm = _normalise_assay(assay)
-        if norm not in self._available:
+        loaded = self.load_validated_artifact(assay)
+        if loaded is None:
             return []
-        artifact = self._cache.get(norm) or self._load_assay(norm)
-        if artifact is None:
-            return []
+        _estimator, metadata = loaded
         return [
             str(column)
-            for column in (artifact.metadata.get("feature_columns") or ())
+            for column in (metadata.get("feature_columns") or ())
         ]
+
+    def load_validated_artifact(
+        self,
+        assay: str,
+    ) -> tuple[Any, dict[str, Any]] | None:
+        """Load one integrity-checked, promotion-eligible assay artifact."""
+        if self.model_dir is None or not assay:
+            return None
+        norm = _normalise_assay(assay)
+        if norm not in self._available:
+            return None
+        artifact = self._cache.get(norm) or self._load_assay(norm)
+        if artifact is None:
+            return None
+        return artifact.estimator, dict(artifact.metadata)
 
     def predict(
         self,
@@ -137,20 +150,14 @@ class ClonalityModelStore:
                                   the estimator has no predict_proba),
             }
         """
-        if self.model_dir is None or not assay:
+        loaded = self.load_validated_artifact(assay)
+        if loaded is None:
             return None
-        norm = _normalise_assay(assay)
-        if norm not in self._available:
-            return None
-        artifact = self._cache.get(norm)
-        if artifact is None:
-            artifact = self._load_assay(norm)
-        if artifact is None:
-            return None
+        estimator, metadata = loaded
         if features is None:
             return None
 
-        feature_columns = list(artifact.metadata.get("feature_columns") or ())
+        feature_columns = list(metadata.get("feature_columns") or ())
         if not feature_columns:
             return None
 
@@ -160,11 +167,11 @@ class ClonalityModelStore:
         if X.empty:
             return None
         try:
-            proba = artifact.estimator.predict_proba(_estimator_input(artifact.estimator, X))
+            proba = estimator.predict_proba(_estimator_input(estimator, X))
         except Exception:  # noqa: BLE001 - defensive: any sklearn quirk
             return None
 
-        classes_attr = getattr(artifact.estimator, "classes_", None)
+        classes_attr = getattr(estimator, "classes_", None)
         if classes_attr is None:
             return None
         classes = [str(c) for c in np.asarray(classes_attr).tolist()]
@@ -178,7 +185,7 @@ class ClonalityModelStore:
 
         # Multi-class absolute confidence check (calibrated RF gives
         # well-scaled probs; we use max prob).
-        tau = float(artifact.metadata.get("accept_threshold_tau") or 0.80)
+        tau = float(metadata.get("accept_threshold_tau") or 0.80)
         review_needed = bool(confidence < tau)
 
         all_scores = {str(classes[i]): float(row[i]) for i in range(len(classes))}
@@ -186,7 +193,7 @@ class ClonalityModelStore:
             "label": label,
             "confidence": confidence,
             "review_needed": review_needed,
-            "model_version": str(artifact.metadata.get("schema_version") or ""),
+            "model_version": str(metadata.get("schema_version") or ""),
             "threshold_tau": tau,
             "all_scores": all_scores,
         }
@@ -213,10 +220,18 @@ class ClonalityModelStore:
             if not _runtime_eligible_metadata(metadata):
                 continue
             classifier_kind = str(metadata.get("classifier_kind") or "")
+            artifact_name = _artifact_joblib_name(metadata)
+            artifact_path = child / artifact_name if artifact_name else None
             if (
                 classifier_kind in _CLASSIFIER_PREFERENCE
-                and (child / f"{classifier_kind}.joblib").exists()
+                and artifact_name is not None
+                and artifact_path is not None
+                and artifact_path.is_file()
             ):
+                try:
+                    verify_model_artifact(artifact_path, metadata)
+                except ValueError:
+                    continue
                 # Register common spellings plus the separator-free key used
                 # by runtime assay classifiers (TCRG-A vs TCRGA).
                 self._available.add(child.name)
@@ -236,19 +251,18 @@ class ClonalityModelStore:
         meta_path = assay_dir / "metadata.json"
         if not meta_path.exists():
             return None
-        # Try preferred classifiers in order.
-        joblib_path: Path | None = None
-        for kind in _CLASSIFIER_PREFERENCE:
-            candidate = assay_dir / f"{kind}.joblib"
-            if candidate.exists():
-                joblib_path = candidate
-                break
-        if joblib_path is None:
-            # Fall back to any *.joblib under the dir.
-            joblibs = sorted(assay_dir.glob("*.joblib"))
-            if not joblibs:
-                return None
-            joblib_path = joblibs[0]
+        try:
+            metadata_preview = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+        if not _runtime_eligible_metadata(metadata_preview):
+            return None
+        artifact_name = _artifact_joblib_name(metadata_preview)
+        if artifact_name is None:
+            return None
+        joblib_path = assay_dir / artifact_name
+        if not joblib_path.is_file():
+            return None
         try:
             estimator, metadata = deserialize_model(
                 joblib_path=joblib_path, metadata_path=meta_path,
@@ -259,7 +273,7 @@ class ClonalityModelStore:
             return None
         if _assay_key(metadata.get("assay")) != _assay_key(assay_dir.name):
             return None
-        if str(metadata.get("classifier_kind") or "") != joblib_path.stem:
+        if metadata != metadata_preview:
             return None
         if not _estimator_calibration_matches_metadata(estimator, metadata):
             return None
@@ -349,6 +363,8 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         return False
     final_fit_calibration = metadata.get("final_fit_calibration")
     if not isinstance(final_fit_calibration, Mapping):
+        return False
+    if not _valid_artifact_manifest(metadata):
         return False
     try:
         effective_splits = int(validation.get("effective_splits") or 0)
@@ -453,6 +469,39 @@ def _runtime_eligible_metadata(metadata: Mapping[str, Any]) -> bool:
         and run_effective_splits >= 2
         and unique_run_groups >= 2
         and run_gate.get("passed") is True
+    )
+
+
+def _artifact_joblib_name(metadata: Mapping[str, Any]) -> str | None:
+    artifact = metadata.get("artifact")
+    if not isinstance(artifact, Mapping):
+        return None
+    value = str(artifact.get("joblib_file") or "")
+    if not value or Path(value).name != value:
+        return None
+    return value
+
+
+def _valid_artifact_manifest(metadata: Mapping[str, Any]) -> bool:
+    artifact = metadata.get("artifact")
+    if not isinstance(artifact, Mapping):
+        return False
+    classifier_kind = str(metadata.get("classifier_kind") or "")
+    joblib_file = _artifact_joblib_name(metadata)
+    digest = str(artifact.get("joblib_sha256") or "").lower()
+    try:
+        size_bytes = int(artifact.get("joblib_size_bytes"))
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        artifact.get("format") == "joblib"
+        and artifact.get("hash_algorithm") == "sha256"
+        and joblib_file
+        and joblib_file.startswith(f"{classifier_kind}-")
+        and joblib_file.endswith(".joblib")
+        and len(digest) == 64
+        and all(char in "0123456789abcdef" for char in digest)
+        and size_bytes > 0
     )
 
 

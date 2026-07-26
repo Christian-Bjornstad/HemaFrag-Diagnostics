@@ -1,6 +1,7 @@
 """Tests for ``core.analyses.clonality.ml_runtime`` — the runtime hook."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -67,11 +68,16 @@ def _make_model_dir(p: Path) -> Path:
     y = np.array(["monoklonal"] * 10 + ["polyklonal"] * 10)
     clf = DummyClassifier(strategy="most_frequent").fit(X, y)
     clf.hemafrag_calibration_ = _calibration_record(20)
-    joblib.dump(clf, p / "FR1" / "random_forest.joblib")
+    staged_model = p / "FR1" / ".random_forest.tmp"
+    joblib.dump(clf, staged_model)
+    payload = staged_model.read_bytes()
+    artifact_hash = hashlib.sha256(payload).hexdigest()
+    model_path = p / "FR1" / f"random_forest-{artifact_hash[:16]}.joblib"
+    staged_model.replace(model_path)
     joblib.dump(clf, p / "FR1" / "dummy.joblib")
     (p / "FR1" / "metadata.json").write_text(
         json.dumps({
-            "schema_version": "ml_training_pipeline_v8",
+            "schema_version": "ml_training_pipeline_v9",
             "assay": "FR1",
             "label_order": ["monoklonal", "polyklonal"],
             "accept_threshold_tau": 0.80,
@@ -82,6 +88,13 @@ def _make_model_dir(p: Path) -> Path:
             "trace_feature_schema_version": "clonality_trace_features_v1",
             "deployment_status": "validated",
             "runtime_eligible": True,
+            "artifact": {
+                "format": "joblib",
+                "hash_algorithm": "sha256",
+                "joblib_file": model_path.name,
+                "joblib_sha256": artifact_hash,
+                "joblib_size_bytes": len(payload),
+            },
             "training_rows": 20,
             "training_data_provenance": {
                 "method": "per_assay_fsa_content_hash_v1",
@@ -177,6 +190,29 @@ def _make_model_dir(p: Path) -> Path:
     return p
 
 
+def _replace_fixture_model(model_dir: Path, estimator) -> None:
+    assay_dir = model_dir / "FR1"
+    metadata_path = assay_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    old_path = assay_dir / metadata["artifact"]["joblib_file"]
+    staged = assay_dir / ".replacement.tmp"
+    joblib.dump(estimator, staged)
+    payload = staged.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    new_path = assay_dir / f"random_forest-{digest[:16]}.joblib"
+    staged.replace(new_path)
+    metadata["artifact"] = {
+        "format": "joblib",
+        "hash_algorithm": "sha256",
+        "joblib_file": new_path.name,
+        "joblib_sha256": digest,
+        "joblib_size_bytes": len(payload),
+    }
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    if old_path != new_path:
+        old_path.unlink()
+
+
 def _settings_with_dir(model_dir: Path) -> dict:
     return {
         "analyses": {
@@ -198,6 +234,18 @@ def test_is_ml_enabled_when_dir_set(tmp_path):
     settings = _settings_with_dir(tmp_path)
     assert is_ml_enabled(settings) is True
     assert ml_model_dir_for_settings(settings) == tmp_path
+
+
+def test_is_ml_disabled_when_artifact_integrity_fails(tmp_path):
+    _make_model_dir(tmp_path)
+    metadata = json.loads(
+        (tmp_path / "FR1" / "metadata.json").read_text(encoding="utf-8")
+    )
+    artifact_path = tmp_path / "FR1" / metadata["artifact"]["joblib_file"]
+    with artifact_path.open("ab") as handle:
+        handle.write(b"tampered")
+
+    assert is_ml_enabled(_settings_with_dir(tmp_path)) is False
 
 
 def test_is_ml_enabled_rejects_candidate_artifact(tmp_path):
@@ -287,7 +335,7 @@ def test_attach_stamps_ml_columns_when_assay_known(tmp_path):
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
         # Model version stamped
-        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v8"
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v9"
         assert out.get("ClonalityMLThreshold") == 0.8
         assert out.get("ClonalityMLEvidence")
     finally:
@@ -476,8 +524,7 @@ def test_attach_marks_review_when_disagreement(tmp_path):
         y = np.array(["monoklonal"] * 5 + ["polyklonal"] * 5)
         clf = RandomForestClassifier(n_estimators=20, random_state=0).fit(X, y)
         clf.hemafrag_calibration_ = _calibration_record(20)
-        # Overwrite fixture joblib with this one
-        joblib.dump(clf, tmp_path / "FR1" / "random_forest.joblib")
+        _replace_fixture_model(tmp_path, clf)
 
         # Force the predict to be 'monoklonal' (point 0) when rule is polyklonal
         entry = {

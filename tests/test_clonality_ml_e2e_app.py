@@ -24,6 +24,7 @@ Test outline:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -94,9 +95,14 @@ def _train_dummy_model(*, seed: int = 0) -> RandomForestClassifier:
 def _make_model_dir(p: Path) -> Path:
     (p / "FR1").mkdir(parents=True, exist_ok=True)
     clf = _train_dummy_model(seed=42)
-    joblib.dump(clf, p / "FR1" / "random_forest.joblib")
+    staged = p / "FR1" / ".random_forest.tmp"
+    joblib.dump(clf, staged)
+    payload = staged.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    model_path = p / "FR1" / f"random_forest-{digest[:16]}.joblib"
+    staged.replace(model_path)
     meta = {
-        "schema_version": "ml_training_pipeline_v8",
+        "schema_version": "ml_training_pipeline_v9",
         "assay": "FR1",
         "label_order": ["monoklonal", "polyklonal", "irregulaer",
                         "bi_oligoklonal", "pseudoklonal"],
@@ -113,6 +119,13 @@ def _make_model_dir(p: Path) -> Path:
         "trace_feature_schema_version": "clonality_trace_features_v1",
         "deployment_status": "validated",
         "runtime_eligible": True,
+        "artifact": {
+            "format": "joblib",
+            "hash_algorithm": "sha256",
+            "joblib_file": model_path.name,
+            "joblib_sha256": digest,
+            "joblib_size_bytes": len(payload),
+        },
         "training_rows": 20,
         "training_data_provenance": {
             "method": "per_assay_fsa_content_hash_v1",
@@ -313,7 +326,7 @@ def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch)
     }
     if out.get("ClonalityMLSuggestion"):
         # If ML emitted a label, the model_version stamp should be present
-        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v8"
+        assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v9"
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
 

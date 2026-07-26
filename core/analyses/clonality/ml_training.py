@@ -18,9 +18,12 @@ Public surface (re-exported via __all__):
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
+import os
 import platform
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -63,7 +66,7 @@ ANNOTATION_CLASSES_ORDER: tuple[str, ...] = (
     "qc_teknisk_fail",
     "usikker_review",
 )
-RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v8"
+RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v9"
 TREE_CLASSIFIER_KINDS = {"random_forest", "extra_trees"}
 CALIBRATION_FOLDS = 3
 CALIBRATION_MIN_CLASS_ROWS_PER_SPLIT = 2
@@ -121,6 +124,7 @@ __all__ = [
     "per_assay_metrics",
     "serialize_model",
     "deserialize_model",
+    "verify_model_artifact",
     "PerAssayDataset",
     "PerAssayMetrics",
     "summarize_class_support",
@@ -937,12 +941,6 @@ def serialize_model(
     """
     if output_dir is None:
         output_dir = Path.cwd() / "models"
-    out_dir = Path(output_dir) / assay
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    joblib_path = out_dir / f"{classifier_kind}.joblib"
-    metadata_path = out_dir / "metadata.json"
-    joblib.dump(estimator, joblib_path)
 
     metadata = {
         "schema_version": schema_version,
@@ -963,14 +961,57 @@ def serialize_model(
     if feature_columns is not None:
         metadata["feature_columns"] = [str(c) for c in feature_columns]
     if extra_metadata:
-        overlap = sorted(set(metadata) & set(extra_metadata))
+        overlap = sorted((set(metadata) | {"artifact"}) & set(extra_metadata))
         if overlap:
             raise ValueError(
                 "extra model metadata cannot replace reserved keys: "
                 + ", ".join(overlap)
             )
         metadata.update(dict(extra_metadata))
-    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+
+    out_dir = Path(output_dir) / assay
+    out_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = out_dir / "metadata.json"
+    transaction_id = uuid.uuid4().hex
+    staged_joblib = out_dir / f".model-{transaction_id}.tmp"
+    staged_metadata = out_dir / f".metadata-{transaction_id}.tmp"
+    joblib_path: Path | None = None
+    try:
+        joblib.dump(estimator, staged_joblib)
+        artifact_sha256 = _sha256_file(staged_joblib)
+        joblib_path = out_dir / (
+            f"{classifier_kind}-{artifact_sha256[:16]}.joblib"
+        )
+        metadata["artifact"] = {
+            "format": "joblib",
+            "hash_algorithm": "sha256",
+            "joblib_file": joblib_path.name,
+            "joblib_sha256": artifact_sha256,
+            "joblib_size_bytes": int(staged_joblib.stat().st_size),
+        }
+        staged_metadata.write_text(
+            json.dumps(metadata, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+        # Existing metadata remains valid until the new content-addressed
+        # artifact is complete. Replacing metadata activates the new model.
+        os.replace(staged_joblib, joblib_path)
+        os.replace(staged_metadata, metadata_path)
+        for old_joblib in out_dir.glob("*.joblib"):
+            if old_joblib != joblib_path:
+                try:
+                    old_joblib.unlink()
+                except OSError:
+                    pass
+    finally:
+        for staged in (staged_joblib, staged_metadata):
+            try:
+                staged.unlink()
+            except FileNotFoundError:
+                pass
+    if joblib_path is None:
+        raise RuntimeError("model artifact path was not created")
     return {"joblib": joblib_path, "metadata": metadata_path}
 
 
@@ -985,6 +1026,48 @@ def deserialize_model(
     metadata['schema_version'] matches the expected version -- a
     mismatch means the model was trained under a different code path.
     """
-    estimator = joblib.load(Path(joblib_path))
     metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+    verify_model_artifact(Path(joblib_path), metadata)
+    estimator = joblib.load(Path(joblib_path))
     return estimator, metadata
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_model_artifact(
+    joblib_path: Path,
+    metadata: Mapping[str, Any],
+) -> None:
+    """Fail closed when a serialized estimator differs from its manifest."""
+    artifact = metadata.get("artifact")
+    if not isinstance(artifact, Mapping):
+        raise ValueError("model metadata has no artifact integrity manifest")
+    expected_name = str(artifact.get("joblib_file") or "")
+    expected_hash = str(artifact.get("joblib_sha256") or "").lower()
+    try:
+        expected_size = int(artifact.get("joblib_size_bytes"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("model artifact size is invalid") from exc
+    if (
+        artifact.get("format") != "joblib"
+        or artifact.get("hash_algorithm") != "sha256"
+        or expected_name != joblib_path.name
+        or len(expected_hash) != 64
+        or any(char not in "0123456789abcdef" for char in expected_hash)
+        or expected_size <= 0
+    ):
+        raise ValueError("model artifact integrity manifest is invalid")
+    try:
+        actual_size = int(joblib_path.stat().st_size)
+    except OSError as exc:
+        raise ValueError("model artifact is unavailable") from exc
+    if actual_size != expected_size:
+        raise ValueError("model artifact size does not match metadata")
+    if _sha256_file(joblib_path) != expected_hash:
+        raise ValueError("model artifact SHA-256 does not match metadata")

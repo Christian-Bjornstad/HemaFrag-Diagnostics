@@ -127,7 +127,7 @@ Validated ML adds `ClonalityMLSuggestion`, `ClonalityMLConfidence`,
 - `INTERPRETATION_RULE_VERSION = "clonality_interpretation_rules_v1"`
 - `MODEL_VERSION = "clonality_interpretation_quick_model_v1"`
 - `TRACE_FEATURE_SCHEMA_VERSION = "clonality_trace_features_v1"`
-- validated runtime model schema: `ml_training_pipeline_v8`
+- validated runtime model schema: `ml_training_pipeline_v9`
 
 Keep all three under versioned definitions; bumping either triggers:
 - Tracking-column metadata update

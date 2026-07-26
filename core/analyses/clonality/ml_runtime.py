@@ -68,7 +68,7 @@ def ml_model_dir_for_settings(
     Order of precedence:
         ``analyses.clonality.interpretation.model_path``
     (single key, semantics changed in this revision: directory of
-    ``<assay>/<classifier>.joblib`` not a single file).
+    ``<assay>/<classifier>-<hash>.joblib`` artifacts, not a single file).
 
     ``None`` when the key is missing or empty. ``Path`` regardless of
     whether the dir exists — ``is_ml_enabled`` is the existence check.

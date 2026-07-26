@@ -11,6 +11,7 @@ Exercises:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -521,6 +522,10 @@ def test_serialize_model_writes_joblib_and_metadata(tmp_path):
     assert meta["accept_threshold_tau"] == 0.85
     assert meta["runtime_versions"]["python"]
     assert meta["runtime_versions"]["scikit_learn"]
+    assert paths["joblib"].name.startswith("random_forest-")
+    assert meta["artifact"]["joblib_file"] == paths["joblib"].name
+    assert len(meta["artifact"]["joblib_sha256"]) == 64
+    assert meta["artifact"]["joblib_size_bytes"] == paths["joblib"].stat().st_size
 
     # Roundtrip load: predict via loaded model
     roundtrip_model, roundtrip_meta = deserialize_model(
@@ -531,6 +536,109 @@ def test_serialize_model_writes_joblib_and_metadata(tmp_path):
     # Smoke: predict on the same X
     preds = roundtrip_model.predict(ds.X.iloc[:5])
     assert len(preds) == 5
+
+
+def test_deserialize_model_rejects_tampered_joblib(tmp_path):
+    df = _synth_combined()
+    ds = build_per_assay_datasets(df, min_samples_per_assay=100)["FR1"]
+    estimator = fit_classifier(ds.X, ds.y, kind="random_forest")
+    paths = serialize_model(
+        estimator,
+        label_order=list(ANNOTATION_CLASSES_ORDER),
+        assay="FR1",
+        accept_threshold_tau=0.85,
+        classifier_kind="random_forest",
+        rare_class_counts=ds.rare_class_counts,
+        output_dir=tmp_path,
+    )
+    with paths["joblib"].open("ab") as handle:
+        handle.write(b"tampered")
+
+    with pytest.raises(ValueError, match="does not match metadata"):
+        deserialize_model(
+            joblib_path=paths["joblib"],
+            metadata_path=paths["metadata"],
+        )
+
+
+def test_serialize_model_interrupted_publish_keeps_previous_artifact(
+    tmp_path,
+    monkeypatch,
+):
+    df = _synth_combined()
+    ds = build_per_assay_datasets(df, min_samples_per_assay=100)["FR1"]
+    first = fit_classifier(ds.X, ds.y, kind="random_forest", random_state=1)
+    first_paths = serialize_model(
+        first,
+        label_order=list(ANNOTATION_CLASSES_ORDER),
+        assay="FR1",
+        accept_threshold_tau=0.85,
+        classifier_kind="random_forest",
+        rare_class_counts=ds.rare_class_counts,
+        output_dir=tmp_path,
+    )
+    original_metadata = first_paths["metadata"].read_text(encoding="utf-8")
+    real_replace = os.replace
+
+    def fail_metadata_activation(source, destination):
+        if Path(destination).name == "metadata.json":
+            raise OSError("simulated activation failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_training.os.replace",
+        fail_metadata_activation,
+    )
+    second = fit_classifier(ds.X, ds.y, kind="extra_trees", random_state=2)
+    with pytest.raises(OSError, match="activation failure"):
+        serialize_model(
+            second,
+            label_order=list(ANNOTATION_CLASSES_ORDER),
+            assay="FR1",
+            accept_threshold_tau=0.85,
+            classifier_kind="extra_trees",
+            rare_class_counts=ds.rare_class_counts,
+            output_dir=tmp_path,
+        )
+
+    assert first_paths["metadata"].read_text(encoding="utf-8") == original_metadata
+    assert first_paths["joblib"].is_file()
+    loaded, _ = deserialize_model(
+        joblib_path=first_paths["joblib"],
+        metadata_path=first_paths["metadata"],
+    )
+    assert hasattr(loaded, "predict")
+
+
+def test_serialize_model_replacement_removes_stale_joblibs(tmp_path):
+    df = _synth_combined()
+    ds = build_per_assay_datasets(df, min_samples_per_assay=100)["FR1"]
+    first = fit_classifier(ds.X, ds.y, kind="random_forest", random_state=1)
+    first_paths = serialize_model(
+        first,
+        label_order=list(ANNOTATION_CLASSES_ORDER),
+        assay="FR1",
+        accept_threshold_tau=0.85,
+        classifier_kind="random_forest",
+        rare_class_counts=ds.rare_class_counts,
+        output_dir=tmp_path,
+    )
+    second = fit_classifier(ds.X, ds.y, kind="extra_trees", random_state=2)
+    second_paths = serialize_model(
+        second,
+        label_order=list(ANNOTATION_CLASSES_ORDER),
+        assay="FR1",
+        accept_threshold_tau=0.85,
+        classifier_kind="extra_trees",
+        rare_class_counts=ds.rare_class_counts,
+        output_dir=tmp_path,
+    )
+
+    assert not first_paths["joblib"].exists()
+    assert second_paths["joblib"].is_file()
+    assert list((tmp_path / "FR1").glob("*.joblib")) == [
+        second_paths["joblib"]
+    ]
 
 
 def test_serialize_model_persists_feature_columns(tmp_path):
@@ -626,3 +734,4 @@ def test_serialize_model_rejects_reserved_metadata_override(tmp_path):
             output_dir=tmp_path,
             extra_metadata={"assay": "TCRG-A"},
         )
+    assert not (tmp_path / "FR1").exists()

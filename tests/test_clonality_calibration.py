@@ -201,8 +201,8 @@ def test_attach_ml_suggestion_with_artifact_load_fails_returns_empty_columns(tmp
     assert out["ClonalityMLArtifact"] == ""
 
 
-def test_roundtrip_serialize_load_and_attach(tmp_path):
-    """End-to-end: serialize with ml_training, load via calibration, predict+attach."""
+def test_calibration_loader_rejects_unvalidated_roundtrip_artifact(tmp_path):
+    """The legacy calibration facade cannot bypass production promotion."""
     import pandas as pd
     from core.analyses.clonality.ml_training import (
         fit_classifier, serialize_model,
@@ -231,27 +231,12 @@ def test_roundtrip_serialize_load_and_attach(tmp_path):
     assert joblib_path.exists()
     assert paths["metadata"].exists()
 
-    # Now load via calibration namespace + predict on a row.
     from core.analyses.clonality.calibration import load_calibrated_pipeline
     loaded = load_calibrated_pipeline(
         assay="FR1", output_dir=tmp_path, classifier_kind="random_forest",
     )
-    assert not is_load_failed(loaded)
-    est, meta = loaded
-    assert meta["assay"] == "FR1"
-    assert meta["schema_version"] == "ml_training_pipeline_v1"
-
-    X_row = pd.Series(NP_RNG.uniform(0, 1, size=n_features),
-                       index=["f0", "f1", "f2", "f3", "f4"]).to_dict()
-    pred = predict_with_rejection(
-        est, X_row,
-        assay="FR1",
-        tau=meta["accept_threshold_tau"],
-        artifact_path=str(joblib_path),
-    )
-    assert pred.accepted
-    assert pred.label in ("monoklonal", "polyklonal", "bi_oligoklonal")
-    assert pred.confidence >= meta["accept_threshold_tau"]
+    assert is_load_failed(loaded)
+    assert "promotion-eligible v9" in loaded.reason
 
 
 def test_predict_with_rejection_force_review_ladder_qc_fail_short_circuits():

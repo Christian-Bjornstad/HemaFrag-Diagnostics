@@ -5,8 +5,8 @@ Plan 11 / Phase 3 / T-3.1 CLI driver.
 
 Trains per-assay clonality interpretation models on a labelled
 tracking workbook. Persists:
-  - One joblib artifact per (assay, classifier_kind)
-  - A metadata.json per (assay, classifier_kind)
+  - One content-addressed joblib artifact per selected assay model
+  - One integrity manifest in metadata.json per assay
   - A markdown per-assay report under <output-dir>/<date>/
 
 CLI:

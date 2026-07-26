@@ -31,10 +31,11 @@ remains the report source of truth.
 - Replicate and panel context is limited to the same DIT and sanitized source
   run, and controls/SL are excluded from patient context.
 - Training produces runtime-ineligible candidates by default.
-- Runtime only discovers explicitly promoted `ml_training_pipeline_v8`
+- Runtime only discovers explicitly promoted `ml_training_pipeline_v9`
   artifacts whose metadata proves complete DIT/content- and source-run-grouped
   out-of-fold validation, per-class support and fold coverage, and complete
-  grouped calibration for every fold plus the final refit.
+  grouped calibration for every fold plus the final refit. Before unpickling,
+  runtime also verifies the metadata-bound filename, byte size, and SHA-256.
 - Controls, SL, unavailable traces, failed quality gates, disagreement,
   low confidence, and rare-label predictions are never silently accepted.
 
@@ -284,24 +285,34 @@ Every candidate stores:
 - promotion thresholds, pass/fail state, and blocking reasons;
 - expected calibration error plus high-confidence coverage and accuracy;
 - Python, NumPy, pandas, scikit-learn, and joblib versions;
+- content-addressed joblib filename, byte size, and full SHA-256;
 - deployment status and runtime eligibility.
 
 The final estimator is refit on all labeled rows only after out-of-fold
 validation is complete. Validation predictions always come from fold models,
 never from the refitted candidate.
 
+Model publication writes the content-addressed joblib first and atomically
+replaces `metadata.json` last. Existing metadata therefore continues to point
+at the previous complete artifact if publication is interrupted. A successful
+replacement removes stale joblib files, and the trainer refuses to use an
+output directory that already contains assay artifacts.
+
 ## Runtime And Reports
 
 ML stays off unless both conditions are true:
 
 1. `analyses.clonality.interpretation.enabled` is true.
-2. `model_path` contains at least one eligible validated v8 assay artifact.
+2. `model_path` contains at least one eligible validated v9 assay artifact.
 
-Runtime rejects v1-v7 artifacts and v8 artifacts lacking complete content-hash
-deduplication/grouping, per-class independent support and fold coverage,
-acceptable per-class DIT concentration, grouped OOF/final-fit calibration, or
-a complete passing `SourceRunKey` stress test. This deliberately requires
-retraining before an older model can be enabled.
+Runtime rejects v1-v8 artifacts. A v9 artifact is also rejected when its
+integrity manifest, content-hash deduplication/grouping, per-class independent
+support and fold coverage, DIT concentration, grouped OOF/final-fit
+calibration, or complete passing `SourceRunKey` stress test is missing. This
+deliberately requires retraining before an older model can be enabled.
+The older calibration facade resolves models through the same validated v9
+store, so it cannot be used to load a candidate or legacy artifact around
+these gates.
 
 The batch pipeline attaches rule results first, computes same-run patient
 context across the completed batch, and only then invokes ML. The runtime

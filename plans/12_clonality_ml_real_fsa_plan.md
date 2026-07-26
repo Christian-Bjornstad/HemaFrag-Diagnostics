@@ -158,6 +158,9 @@ Completed on 2026-07-26 against the private January-April 2026 corpus:
   ladder-calibrated base-pair traces, assay interpretation windows, detected
   peaks, and ladder QC. A real pilot FSA completed successfully without
   persisting its raw trace.
+- Runtime model schema v9 publishes content-addressed joblib files atomically,
+  binds filename, byte size, and SHA-256 in metadata, rejects corruption before
+  unpickling, and removes stale classifier artifacts after activation.
 - The readiness baseline marks all 14 assays `awaiting_labels`, with zero
   candidate-ready or promotion-preflight-ready assays. Requiring a candidate
   exits with code 2 until real chemist support satisfies the configured gates.
