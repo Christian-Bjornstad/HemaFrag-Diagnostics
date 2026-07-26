@@ -97,6 +97,32 @@ def cleanup_temp(p: Optional[Path]) -> None:
         shutil.rmtree(p, ignore_errors=True)
 
 
+def _stamp_entry_source_provenance(
+    entries: List[Dict[str, Any]],
+    source_files: List[Path],
+) -> List[Dict[str, Any]]:
+    """Restore original paths after explicit files were staged."""
+    from core.utils import strip_stage_prefix
+
+    by_name = {Path(path).name: Path(path) for path in source_files}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        fsa = entry.get("fsa")
+        staged_name = str(
+            getattr(fsa, "file_name", "")
+            or entry.get("file_name")
+            or ""
+        )
+        source = by_name.get(strip_stage_prefix(staged_name))
+        if source is None:
+            continue
+        entry["file_name"] = source.name
+        entry["source_run_dir"] = source.parent.name
+        entry["original_file_path"] = str(source.resolve())
+    return entries
+
+
 def build_filtered_input(src: Path, needle: str) -> Optional[Path]:
     """Create a temp directory with staged .fsa files matching needle."""
     matched = [p for p in sorted(src.glob("*.fsa")) if needle.lower() in p.name.lower()]
@@ -379,7 +405,10 @@ def run_pipeline_job_collect(
                         update_tracking_workbook=update_tracking_workbook,
                         progress_callback=progress_callback,
                     )
-                    return entries or []
+                    return _stamp_entry_source_provenance(
+                        entries or [],
+                        selected_files,
+                    )
                 finally:
                     cleanup_temp(tmp_input)
                     tmp_input = None
@@ -405,7 +434,10 @@ def run_pipeline_job_collect(
                         update_tracking_workbook=update_tracking_workbook,
                         progress_callback=progress_callback,
                     )
-                    return entries or []
+                    return _stamp_entry_source_provenance(
+                        entries or [],
+                        selected_files,
+                    )
                 finally:
                     cleanup_temp(tmp_input)
                     tmp_input = None
@@ -446,7 +478,9 @@ def run_pipeline_job_collect(
                         update_tracking_workbook=update_tracking_workbook,
                         progress_callback=_chunk_progress,
                     )
-                    all_entries.extend(entries or [])
+                    all_entries.extend(
+                        _stamp_entry_source_provenance(entries or [], chunk)
+                    )
                 finally:
                     cleanup_temp(tmp_input)
                     tmp_input = None
@@ -541,6 +575,8 @@ def run_qc_job(
             update_tracking_workbook=update_tracking_workbook,
             progress_callback=progress_callback,
         )
+        if files:
+            entries = _stamp_entry_source_provenance(entries or [], files)
         if not entries:
             total_fsa, empty_or_bad = _empty_or_unreadable_fsa_summary(effective_in)
             if total_fsa > 0 and empty_or_bad == total_fsa:

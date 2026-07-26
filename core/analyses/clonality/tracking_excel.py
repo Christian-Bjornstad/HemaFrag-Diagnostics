@@ -269,6 +269,7 @@ def build_tracking_join_fields(entry: dict) -> dict[str, str]:
     source_run_dir = resolve_source_run_dir(entry)
     control = control_id_from_filename(file_name)
     is_control = control in CONTROL_IDS
+    dit = str(entry.get("dit") or extract_dit_from_name(file_name) or "").strip().upper()
     identity_key = (
         f"{source_run_dir}::{file_name}" if is_control else _build_patient_identity_key(source_run_dir, file_name)
     )
@@ -277,14 +278,14 @@ def build_tracking_join_fields(entry: dict) -> dict[str, str]:
         "file_name": file_name,
         "source_run_dir": source_run_dir,
         "assay": str(entry.get("assay") or ""),
-        "sample_kind": "control" if is_control else "patient",
+        "sample_kind": "control" if is_control else ("patient" if dit else "unassigned"),
         "group": str(entry.get("group") or ""),
         "control": control if is_control else "",
         "run_date": parse_pcr_date_from_filename(file_name) or "",
         "run_code": parse_run_code_from_filename(file_name) or "",
         "well": parse_well_from_filename(file_name) or "",
         "batch": parse_batch_from_filename(file_name) or "",
-        "dit": str(entry.get("dit") or ""),
+        "dit": dit,
         "ladder": str(entry.get("ladder") or ""),
     }
 
@@ -572,9 +573,9 @@ def _normalize_run_frame(df: pd.DataFrame, *, run_columns: list[str] | None = No
 
     for src, fname, legacy, skind, ctrl in zip(source_run_dir.tolist(), file_name.tolist(), legacy_identity.tolist(), sample_kind.tolist(), control.tolist()):
         legacy_value = str(legacy or "").strip()
-        is_control = ctrl in CONTROL_IDS or skind == "control"
+        entry_is_control = ctrl in CONTROL_IDS or skind == "control"
         
-        if is_control:
+        if entry_is_control:
             normalized_identity.append(f"{src}::{fname}")
         else:
             if legacy_value.startswith("PT-") and not str(fname or "").strip().lower().endswith(".fsa"):
@@ -591,7 +592,17 @@ def _normalize_run_frame(df: pd.DataFrame, *, run_columns: list[str] | None = No
         .str.strip()
     )
     derived_dit = file_name.map(lambda value: extract_dit_from_name(value) or "")
-    normalized["DIT"] = dit.where(dit.ne(""), derived_dit)
+    normalized["DIT"] = dit.where(dit.ne(""), derived_dit).str.upper()
+    normalized_dit = normalized["DIT"].fillna("").astype(str).str.strip()
+    normalized_sample_kind = sample_kind.str.strip().str.lower()
+    is_control = normalized_sample_kind.eq("control") | control.isin(CONTROL_IDS)
+    normalized["SampleKind"] = normalized_sample_kind.where(
+        normalized_sample_kind.ne(""),
+        "patient",
+    )
+    normalized.loc[normalized_dit.eq("") & ~is_control, "SampleKind"] = "unassigned"
+    normalized.loc[normalized_dit.ne("") & ~is_control, "SampleKind"] = "patient"
+    normalized.loc[is_control, "SampleKind"] = "control"
     return _reindex_columns(normalized, run_columns)
 
 
@@ -645,7 +656,8 @@ def _split_run_frames(runs: pd.DataFrame, *, run_columns: list[str] | None = Non
     sample_kind = runs.get("SampleKind", pd.Series("", index=runs.index)).fillna("").astype(str).str.lower()
     control = runs.get("Control", pd.Series("", index=runs.index)).fillna("").astype(str)
     is_control = sample_kind.eq("control") | control.isin(CONTROL_IDS)
-    patient_runs = _reindex_columns(runs.loc[~is_control].copy(), run_columns)
+    is_patient = sample_kind.eq("patient") | (sample_kind.eq("") & ~is_control)
+    patient_runs = _reindex_columns(runs.loc[is_patient].copy(), run_columns)
     control_runs = _reindex_columns(runs.loc[is_control].copy(), run_columns)
     return patient_runs, control_runs
 

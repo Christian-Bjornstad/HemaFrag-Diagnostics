@@ -181,6 +181,22 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             runs = pd.read_excel(workbook, sheet_name="Runs", engine="openpyxl")
             self.assertEqual(runs.iloc[0]["DIT"], "25OUM12345")
 
+    def test_tracking_workbook_keeps_unassigned_injection_out_of_patient_sheet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook = Path(tmp) / "Clonality_Tracking.xlsx"
+            entry = _entry("IKZF1_unknown__220526_A01_H9TEST01.fsa", dit="")
+
+            update_clonality_tracking_workbook(workbook, [entry])
+
+            runs = pd.read_excel(workbook, sheet_name="Runs", engine="openpyxl")
+            patients = pd.read_excel(
+                workbook,
+                sheet_name="Patient_Runs",
+                engine="openpyxl",
+            )
+            self.assertEqual(runs.iloc[0]["SampleKind"], "unassigned")
+            self.assertTrue(patients.empty)
+
     def test_aggregated_batch_uses_one_local_tracking_workbook_and_global_dashboard(self) -> None:
         import core.batch as batch
 

@@ -83,6 +83,19 @@ def _rows():
             "LadderR2": 0.999,
             "PeakCount": 5,
         },
+        {
+            "IdentityKey": "unassigned-1",
+            "File": "unassigned.fsa",
+            "SourceRunDir": "run-a",
+            "DIT": "",
+            "Assay": "IKZF1",
+            "SampleKind": "unassigned",
+            "Control": "",
+            CHEMIST_LABEL_COLUMN: "",
+            "ClonalitySuggestion": "",
+            "LadderR2": 0.999,
+            "PeakCount": 1,
+        },
     ]
 
 
@@ -97,6 +110,21 @@ def test_tracking_loader_prefers_runs_and_excludes_controls(tmp_path):
     assert len(loaded.frame) == 3
     assert set(loaded.frame["IdentityKey"]) == {"id-1", "id-2", "id-3"}
     assert CHEMIST_LABEL_COLUMN in loaded.frame.columns
+
+
+def test_tracking_loader_preserves_unassigned_rows_only_for_full_inventory(tmp_path):
+    workbook = tmp_path / "tracking.xlsx"
+    _write_tracking_workbook(workbook, _rows())
+
+    model_rows = load_tracking_run_table(workbook)
+    all_rows = load_tracking_run_table(workbook, include_controls=True)
+
+    assert "unassigned-1" not in set(model_rows.frame["IdentityKey"])
+    assert set(all_rows.frame["SampleKind"]) == {
+        "patient",
+        "control",
+        "unassigned",
+    }
 
 
 def test_tracking_loader_preserves_source_rows_for_split_only_workbook(tmp_path):

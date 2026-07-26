@@ -107,7 +107,7 @@ def load_tracking_run_table(
         frame["_TrackingSheet"] = primary
 
     if not include_controls:
-        frame = frame.loc[~_control_mask(frame)].reset_index(drop=True)
+        frame = frame.loc[_model_row_mask(frame)].reset_index(drop=True)
 
     return TrackingRunTable(
         frame=frame,
@@ -162,6 +162,18 @@ def _control_mask(frame: pd.DataFrame) -> pd.Series:
         sample_kind.fillna("").astype(str).str.strip().str.lower().eq("control")
         | control.fillna("").astype(str).str.strip().ne("")
     )
+
+
+def _model_row_mask(frame: pd.DataFrame) -> pd.Series:
+    sample_kind = (
+        frame.get("SampleKind", pd.Series("", index=frame.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+    is_control = _control_mask(frame)
+    return sample_kind.eq("patient") | (sample_kind.eq("") & ~is_control)
 
 
 __all__ = [
