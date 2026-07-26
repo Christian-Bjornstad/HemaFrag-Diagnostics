@@ -7,6 +7,7 @@
 ## Current Focus
 
 HemaFrag is now focused on FLT3 work. Clonality is considered parked for a while and should not drive new context unless explicitly requested.
+- 2026-07-26: User explicitly resumed clonality ML work from GitHub branch `clonality-ml-phase-5-real-data-2026-07-11`; local `master` now tracks that branch as the working baseline.
 
 ## Source Of Truth
 

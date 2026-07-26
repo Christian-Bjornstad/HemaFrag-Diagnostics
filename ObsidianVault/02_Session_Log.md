@@ -53,6 +53,12 @@ Phase 1 (delete-not-archive, per user):
 - Commits: `37112cb` (Phase 0), Phase 1 commit lands next.
 # HemaFrag Session Log
 
+## 2026-07-26 - Clonality ML Baseline Cleanup
+
+- Set local `master` to track GitHub branch `origin/clonality-ml-phase-5-real-data-2026-07-11` as the active working baseline.
+- Cleaned clonality ML inference edges: separator-free assay lookup (`TCRGA` -> `TCRG-A`), dotted per-channel feature expansion, and sklearn named-feature input handling for calibration/runtime.
+- Fixed Windows/Pandas hygiene exposed by full tests: closed Excel workbook/test handles and kept GUI labeling `ClonalitySuggestion` writable as string/object dtype. Verification: `python -m pytest tests -q` passed (`276 passed, 3 skipped`).
+
 ## 2026-06-04 - Assay-Specific Clonality Interpretation Dispatch
 
 - Refactored `interpret_entry` in `core/analyses/clonality/interpretation.py` to dispatch patient samples to assay-specific helpers via `_ASSAY_DISPATCH` map.

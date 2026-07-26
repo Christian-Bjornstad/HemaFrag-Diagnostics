@@ -58,7 +58,8 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             with patch("core.analyses.clonality.tracking_excel.markers_for_entry", return_value=[marker]):
                 update_clonality_tracking_workbook(workbook, entries)
 
-            sheets = pd.ExcelFile(workbook, engine="openpyxl").sheet_names
+            with pd.ExcelFile(workbook, engine="openpyxl") as xls:
+                sheets = xls.sheet_names
             self.assertIn("Runs", sheets)
             self.assertIn("Patient_Runs", sheets)
             self.assertIn("Control_Runs", sheets)

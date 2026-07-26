@@ -45,52 +45,55 @@ def refresh_clonality_tracking_dashboard(
             return
 
     wb = load_workbook(excel_path)
-    _ensure_abs_delta_column(wb["PK_Peaks"])
-    for name in DASHBOARD_SHEETS:
-        if name in wb.sheetnames:
-            del wb[name]
-
-    dashboard = wb.create_sheet("Dashboard", 0)
-    data_ws = wb.create_sheet("Dashboard_Data")
-    data_ws.sheet_state = "hidden"
-    assay_ws = wb.create_sheet("Assay_Summary")
-    run_ws = wb.create_sheet("Run_Summary")
-    control_ws = wb.create_sheet("Control_Summary")
-    pk_sample_ws = wb.create_sheet("PK_Sample_Delta")
-    pk_ladder_ws = wb.create_sheet("PK_Ladder_Delta")
-
     try:
-        wb.calculation.calcMode = "auto"
-        wb.calculation.fullCalcOnLoad = True
-        wb.calculation.forceFullCalc = True
-    except Exception:
-        pass
+        _ensure_abs_delta_column(wb["PK_Peaks"])
+        for name in DASHBOARD_SHEETS:
+            if name in wb.sheetnames:
+                del wb[name]
 
-    patient_cols = _col_map(wb["Patient_Runs"])
-    control_cols = _col_map(wb["Control_Runs"])
-    pk_cols = _col_map(wb["PK_Peaks"])
+        dashboard = wb.create_sheet("Dashboard", 0)
+        data_ws = wb.create_sheet("Dashboard_Data")
+        data_ws.sheet_state = "hidden"
+        assay_ws = wb.create_sheet("Assay_Summary")
+        run_ws = wb.create_sheet("Run_Summary")
+        control_ws = wb.create_sheet("Control_Summary")
+        pk_sample_ws = wb.create_sheet("PK_Sample_Delta")
+        pk_ladder_ws = wb.create_sheet("PK_Ladder_Delta")
 
-    assays = _sorted_unique_values(wb["Patient_Runs"], patient_cols.get("Assay"), wb["Control_Runs"], control_cols.get("Assay"))
-    controls = _sorted_unique_values(wb["Control_Runs"], control_cols.get("Control"))
-    review_pairs = _control_assay_pairs(wb["Control_Runs"], control_cols)
+        try:
+            wb.calculation.calcMode = "auto"
+            wb.calculation.fullCalcOnLoad = True
+            wb.calculation.forceFullCalc = True
+        except Exception:
+            pass
 
-    _write_helper_lists(data_ws, assays, controls, review_pairs)
-    _build_assay_summary(assay_ws, assays, patient_cols, control_cols)
-    _build_run_summary(run_ws, assays, patient_cols)
-    _build_control_summary(control_ws, review_pairs, control_cols)
-    _build_pk_summary(pk_sample_ws, assays, pk_cols, kind="sample")
-    _build_pk_summary(pk_ladder_ws, assays, pk_cols, kind="ladder")
-    _build_dashboard(
-        dashboard,
-        dashboard_title=dashboard_title,
-        assay_count=len(assays),
-        patient_cols=patient_cols,
-        control_cols=control_cols,
-        pk_cols=pk_cols,
-    )
-    _add_dashboard_charts(dashboard, assay_ws, pk_sample_ws)
+        patient_cols = _col_map(wb["Patient_Runs"])
+        control_cols = _col_map(wb["Control_Runs"])
+        pk_cols = _col_map(wb["PK_Peaks"])
 
-    wb.save(excel_path)
+        assays = _sorted_unique_values(wb["Patient_Runs"], patient_cols.get("Assay"), wb["Control_Runs"], control_cols.get("Assay"))
+        controls = _sorted_unique_values(wb["Control_Runs"], control_cols.get("Control"))
+        review_pairs = _control_assay_pairs(wb["Control_Runs"], control_cols)
+
+        _write_helper_lists(data_ws, assays, controls, review_pairs)
+        _build_assay_summary(assay_ws, assays, patient_cols, control_cols)
+        _build_run_summary(run_ws, assays, patient_cols)
+        _build_control_summary(control_ws, review_pairs, control_cols)
+        _build_pk_summary(pk_sample_ws, assays, pk_cols, kind="sample")
+        _build_pk_summary(pk_ladder_ws, assays, pk_cols, kind="ladder")
+        _build_dashboard(
+            dashboard,
+            dashboard_title=dashboard_title,
+            assay_count=len(assays),
+            patient_cols=patient_cols,
+            control_cols=control_cols,
+            pk_cols=pk_cols,
+        )
+        _add_dashboard_charts(dashboard, assay_ws, pk_sample_ws)
+
+        wb.save(excel_path)
+    finally:
+        wb.close()
 
 
 def _ensure_abs_delta_column(ws) -> None:

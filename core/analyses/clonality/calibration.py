@@ -246,7 +246,7 @@ def predict_with_rejection(
             cleaned[k] = float("nan")
     row = pd.Series(cleaned).to_frame().T
     try:
-        proba = estimator.predict_proba(row.to_numpy())
+        proba = estimator.predict_proba(_estimator_input(estimator, row))
     except Exception:
         return CalibratedMLPrediction(
             label="usikker_review",
@@ -296,6 +296,19 @@ def predict_with_rejection(
         reason="accepted (prob %.3f >= tau %.3f)" % (best_conf, tau),
         artifact_path=artifact_path,
     )
+
+
+def _estimator_input(estimator: Any, row: "pd.DataFrame") -> "pd.DataFrame | np.ndarray":
+    """Use named columns when sklearn recorded them, else preserve legacy arrays."""
+    import numpy as np
+
+    feature_names = getattr(estimator, "feature_names_in_", None)
+    if feature_names is None:
+        return row.to_numpy()
+    names = [str(name) for name in np.asarray(feature_names).tolist()]
+    if all(name in row.columns for name in names):
+        return row[names]
+    return row
 
 
 def attach_ml_suggestion_if_enabled(

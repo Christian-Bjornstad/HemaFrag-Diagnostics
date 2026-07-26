@@ -78,13 +78,15 @@ class LabelingSession:
 
     def load(self) -> None:
         """Load the Run sheet from the tracking Excel into ``samples``."""
-        xls = pd.ExcelFile(self.excel_path, engine="openpyxl")
-        if "Run" not in xls.sheet_names:
-            raise ValueError(
-                f"Excel '{self.excel_path}' has no 'Run' sheet. "
-                f"Sheets found: {xls.sheet_names}"
-            )
-        df = xls.parse("Run")
+        with pd.ExcelFile(self.excel_path, engine="openpyxl") as xls:
+            if "Run" not in xls.sheet_names:
+                raise ValueError(
+                    f"Excel '{self.excel_path}' has no 'Run' sheet. "
+                    f"Sheets found: {xls.sheet_names}"
+                )
+            df = xls.parse("Run")
+        if LABEL_COLUMN in df.columns:
+            df[LABEL_COLUMN] = df[LABEL_COLUMN].where(pd.notna(df[LABEL_COLUMN]), "").astype(object)
         self._df = df
 
         self.samples = []
@@ -144,6 +146,9 @@ class LabelingSession:
         # Ensure the label column exists
         if LABEL_COLUMN not in self._df.columns:
             self._df[LABEL_COLUMN] = ""
+        self._df[LABEL_COLUMN] = self._df[LABEL_COLUMN].where(
+            pd.notna(self._df[LABEL_COLUMN]), ""
+        ).astype(object)
 
         written = 0
         for sample in self.samples:

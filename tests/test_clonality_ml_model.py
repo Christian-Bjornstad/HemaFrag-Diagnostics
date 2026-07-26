@@ -86,8 +86,19 @@ def test_store_loads_joblib_for_known_assay(tmp_path):
     store = ClonalityModelStore(model_dir=model_dir)
 
     assert store.is_enabled("FR1") is True
+    assert store.is_enabled("TCRGA") is True
     assert store.is_enabled("TCRGB") is False
     assert store.is_enabled("UNKNOWN") is False
+
+
+def test_store_predicts_when_runtime_assay_omits_separator(tmp_path):
+    model_dir = _make_model_dir(tmp_path, ["TCRG-A"])
+    store = ClonalityModelStore(model_dir=model_dir)
+
+    feats = {"f_height": 100, "f_ratio": 0.5, "f_share": 0.3}
+    result = store.predict("TCRGA", feats)
+    assert result is not None
+    assert result["label"] in list(ANNOTATION_CLASSES_ORDER) + [""]
 
 
 def test_store_caches_after_first_load(tmp_path, monkeypatch):
@@ -183,6 +194,23 @@ def test_flatten_expands_per_channel_dicts():
     assert out["trace_peak_count_DATA1"].iloc[0] == 3
     assert out["trace_peak_count_DATA2"].iloc[0] == 5
     assert out["trace_peak_variance_DATA1"].iloc[0] == 1.0
+
+
+def test_flatten_expands_dotted_per_channel_columns():
+    """Training fixtures also use dotted nested-column names."""
+    from core.analyses.clonality.ml_model import flatten_features_for_inference
+    out = flatten_features_for_inference(
+        {
+            "peak_count_per_channel": {"DATA1": 3},
+            "mad_per_channel": {"DATA1": 0.12},
+        },
+        columns=[
+            "peak_count_per_channel.DATA1",
+            "mad_per_channel.DATA1",
+        ],
+    )
+    assert out["peak_count_per_channel.DATA1"].iloc[0] == 3
+    assert out["mad_per_channel.DATA1"].iloc[0] == 0.12
 
 
 def test_flatten_coerces_non_numeric_to_numeric():

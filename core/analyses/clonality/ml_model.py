@@ -135,11 +135,8 @@ class ClonalityModelStore:
         )
         if X.empty:
             return None
-        # Pass values (no DataFrame columns) to avoid the
-        # "X has feature names" UserWarning when the loaded estimator
-        # was trained without ``feature_names_in_``.
         try:
-            proba = artifact.estimator.predict_proba(X.values)
+            proba = artifact.estimator.predict_proba(_estimator_input(artifact.estimator, X))
         except Exception:  # noqa: BLE001 - defensive: any sklearn quirk
             return None
 
@@ -187,11 +184,11 @@ class ClonalityModelStore:
                 continue
             # Check that at least one preferred classifier exists.
             if any((child / f"{kind}.joblib").exists() for kind in _CLASSIFIER_PREFERENCE):
-                # Register under both the original spelling AND an
-                # uppercase variant — the trainer stores e.g. "FR1",
-                # while runtime features may use "TCRG-A" vs "TCRGA".
+                # Register common spellings plus the separator-free key used
+                # by runtime assay classifiers (TCRG-A vs TCRGA).
                 self._available.add(child.name)
                 self._available.add(child.name.upper())
+                self._available.add(_assay_key(child.name))
         self._discovered = True
 
     def _load_assay(self, norm_assay: str) -> _AssayArtifact | None:
@@ -242,9 +239,15 @@ def _normalise_assay(assay: str | None) -> str:
     s = str(assay).strip()
     if not s:
         return ""
-    # The trained pipeline saves the assay using the exact form
-    # passed in (e.g. "FR1", "TCRG-A"). Try both spellings.
-    return s
+    # The trained pipeline saves the assay using the exact form passed in
+    # (e.g. "FR1", "TCRG-A"), while runtime classifiers sometimes emit a
+    # compact form ("TCRGA"). Use the compact key for cache/discovery and let
+    # _resolve_assay_path map back to the on-disk spelling.
+    return _assay_key(s)
+
+
+def _assay_key(assay: str | None) -> str:
+    return str(assay or "").strip().replace(" ", "").replace("-", "").replace("_", "").upper()
 
 
 def _resolve_assay_path(model_dir: Path, raw_assay: str) -> list[Path]:
@@ -254,7 +257,22 @@ def _resolve_assay_path(model_dir: Path, raw_assay: str) -> list[Path]:
     for c in (s, s.upper(), s.replace("-", "_"), s.replace("_", "-")):
         if c and (model_dir / c).is_dir():
             candidates.append(model_dir / c)
+    raw_key = _assay_key(s)
+    for child in sorted(Path(model_dir).iterdir()):
+        if child.is_dir() and _assay_key(child.name) == raw_key and child not in candidates:
+            candidates.append(child)
     return candidates
+
+
+def _estimator_input(estimator: Any, X: pd.DataFrame) -> pd.DataFrame | np.ndarray:
+    """Return X in the shape least likely to trigger sklearn feature warnings."""
+    feature_names = getattr(estimator, "feature_names_in_", None)
+    if feature_names is None:
+        return X.values
+    names = [str(name) for name in np.asarray(feature_names).tolist()]
+    if all(name in X.columns for name in names):
+        return X[names]
+    return X
 
 
 def flatten_features_for_inference(
@@ -288,9 +306,13 @@ def flatten_features_for_inference(
         if not isinstance(nested, dict):
             continue
         for channel, sub_value in nested.items():
-            col = f"{prefix}_{str(channel).upper()}"
-            if col in columns:
-                flat[col] = sub_value
+            channel_key = str(channel).upper()
+            for col in (
+                f"{prefix}_{channel_key}",
+                f"{raw_key}.{channel_key}",
+            ):
+                if col in columns:
+                    flat[col] = sub_value
 
     # Third pass: ensure every required column is present with at least NaN
     for col in columns:

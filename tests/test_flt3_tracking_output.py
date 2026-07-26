@@ -68,7 +68,8 @@ class Flt3TrackingOutputTests(unittest.TestCase):
                 ],
             )
 
-            sheets = pd.ExcelFile(workbook, engine="openpyxl").sheet_names
+            with pd.ExcelFile(workbook, engine="openpyxl") as xls:
+                sheets = xls.sheet_names
             self.assertIn("Runs", sheets)
             self.assertIn("Patient_Runs", sheets)
             self.assertIn("Control_Runs", sheets)
@@ -111,7 +112,8 @@ class Flt3TrackingOutputTests(unittest.TestCase):
                 [_entry("26OUM00001_ITD__260526_A01_H9TEST01.fsa")],
             )
 
-            sheets = pd.ExcelFile(workbook, engine="openpyxl").sheet_names
+            with pd.ExcelFile(workbook, engine="openpyxl") as xls:
+                sheets = xls.sheet_names
             self.assertIn("Runs", sheets)
             self.assertIn("All_Analyzed_QC", sheets)
             self.assertIn("Raw_Metadata_All_FSA", sheets)
