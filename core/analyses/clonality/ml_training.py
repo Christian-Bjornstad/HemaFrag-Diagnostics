@@ -140,6 +140,11 @@ __all__ = [
 
 def normalize_annotation_label(value: Any) -> str:
     """Return the canonical chemist label, preserving blank labels."""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
     label = str(value or "").strip()
     return LEGACY_LABEL_ALIASES.get(label, label)
 

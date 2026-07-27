@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import openpyxl
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -181,6 +182,14 @@ def test_legacy_label_aliases_normalize_on_load_and_save(tmp_path):
     session.load()
     session.label_sample(1, "bi_oligoklonal")
     assert session.samples[1].current_label == "oligoklonal"
+
+
+def test_label_normalizer_preserves_blank_nan_values():
+    from core.analyses.clonality.ml_training import normalize_annotation_label
+
+    assert normalize_annotation_label(np.nan) == ""
+    assert normalize_annotation_label(None) == ""
+    assert normalize_annotation_label("") == ""
 
 
 def test_label_parallel_group_sets_same_dit_assay_rows(tmp_path):

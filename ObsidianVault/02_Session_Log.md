@@ -60,6 +60,7 @@ Phase 1 (delete-not-archive, per user):
 - Created a local private parallel-labeling workbook preserving 23 pilot labels; dry-run merge was clean. Verification: `python -m pytest tests -q` passed (`411 passed, 3 skipped`).
 - Follow-up: number-key labels now apply only to the selected injection, with compact per-plot label buttons for each parallel; wide view hides the app sidebar, metadata text is minimized, and known nonspecific peak bp values are drawn as dotted plot markers. Current private workbook dry-run: 152 labels, 0 conflicts/missing. Verification: `python -m pytest tests -q` passed (`412 passed, 3 skipped`).
 - Follow-up: removed per-plot label buttons, kept per-injection keyboard labeling, added assay-specific labeling x-axis starts, and paginated rerun groups to max two plots at a time. Current private workbook dry-run: 152 labels, 0 conflicts/missing. Verification: `python -m pytest tests -q` passed (`413 passed, 3 skipped`).
+- Completed first parallel labeling batch: 526/526 labels merged into the private full tracking workbook with 0 conflicts/missing. Strict readiness remains not ready (526/2263 labeled, 0 promotion-ready assays), but candidate-only RF/ExtraTrees training ran for 12 assays. Batch 2 private workbook prepared for the next labeling round. Fixed NaN label normalization. Verification: `python -m pytest tests -q` passed (`414 passed, 3 skipped`).
 
 ## 2026-07-26 - Clonality ML Baseline Cleanup
 
