@@ -92,11 +92,10 @@ def build_clonality_feature_tables(
     include_sl: bool = False,
 ) -> dict[str, pd.DataFrame]:
     workbook = Path(excel_path).expanduser()
-    xls = pd.ExcelFile(workbook, engine="openpyxl")
-
-    patient = _read_sheet(xls, "Patient_Runs")
-    control = _read_sheet(xls, "Control_Runs")
-    peaks = _read_sheet(xls, "PK_Peaks")
+    with pd.ExcelFile(workbook, engine="openpyxl") as xls:
+        patient = _read_sheet(xls, "Patient_Runs")
+        control = _read_sheet(xls, "Control_Runs")
+        peaks = _read_sheet(xls, "PK_Peaks")
     metadata_index = _normalize_entry_metadata(entry_metadata)
 
     ladder_rows = _build_ladder_rows(patient, scope="Patient", metadata_index=metadata_index, include_sl=include_sl)

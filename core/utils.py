@@ -10,13 +10,14 @@ CONTROL_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 WATER_RE = re.compile(
-    r"^(v(?:ann)?|water|h2o)(?:[_\-\s.]|(?=\d)|(?=\.fsa)|$)",
+    r"^(v(?:ann)?|water|h2o|mq|milliq|milli[-_ ]?q)(?:[_\-\s.]|(?=\d)|(?=\.fsa)|$)",
     re.IGNORECASE,
 )
 
 def strip_stage_prefix(name: str) -> str:
     """Removes the 5-digit prefix and 8-character hash from filenames."""
-    return re.sub(r"^\d{5}_[a-f0-9]{8}_", "", name, flags=re.IGNORECASE)
+    clean_name = re.sub(r"^\d{5}_[a-f0-9]{8}_", "", name, flags=re.IGNORECASE)
+    return re.sub(r"^\d+__", "", clean_name)
 
 def is_water_file(filename: str) -> bool:
     """Returns True if the filename looks like a water/negative control."""

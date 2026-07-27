@@ -15,7 +15,7 @@ import json
 import threading
 from pathlib import Path
 from typing import Dict, List, Any
-from datetime import datetime
+from datetime import date, datetime
 
 from config import resolve_analysis_excel_output_path
 from core.log import log
@@ -23,10 +23,82 @@ from core.runner import run_pipeline_job, run_pipeline_job_collect, run_qc_job, 
 
 # Lazy load fraggler modules to prevent global Panel state pollution on import
 
+KNOWN_CLONALITY_BACKFILL_SKIP_FILES = {
+    # User-requested overnight guardrail: this historical KDE file repeatedly
+    # entered an unbounded fallback path during the 2026-05-18 T7 backfill.
+    "26OUM01277_KDE_06022026_A08_H9C0VCG7.fsa",
+    "25OUM02663_TRG_mixB__190225_E03_C9U078YZ.fsa",
+    "24OUM02878_tcrgA__200224_H02_C9R0HJZA.fsa",
+    "24OUM02880_IGK__200224_B07_C9R0HJZA.fsa",
+    "24OUM02881_tcrgB__200224_A06_C9R0HJZA.fsa",
+    "24OUM03702_TCRg_mixB_070324_E04_C9R0HJPD.fsa",
+    "24OUM03767_KDE_070324_E12_C9R0HJPD.fsa",
+    "24OUM03995_TCRg_mixA_070324_A05_C9R0HJPD.fsa",
+    "24OUM03999_TCRg_mixA_070324_B05_C9R0HJPD.fsa",
+    "00004_392f3aea_PK_KDE__250124_D07_C9U02GP2.fsa",
+    "00008_00f61f6a_RK_tcrgB__240424_E07_C9R0HK4A.fsa",
+    "00002_161fca6c_24OUM07831_tcrgA__210524_C06_C9R0HJYY.fsa",
+    "25OUM06253_IGK__220425_B05_H9C0ZIYX.fsa",
+    "25OUM06278_tcrgA__220425_B02_H9C0ZIYX.fsa",
+    "25OUM06278_tcrgB__220425_B04_H9C0ZIYX.fsa",
+    "25OUM06153_tcrgB__220425_C04_H9C0ZIYX.fsa",
+    "25OUM06289_KDE__220425_D07_H9C0ZIYX.fsa",
+    "25OUM15319_TCRgB_08102025_A07_H9C0VCFS.fsa",
+    "25OUM15320_TCRgA_08102025_B05_H9C0VCFS.fsa",
+}
+
 
 # ============================================================
 # SCANNING UTILITIES
 # ============================================================
+
+RUN_DATE_UNDERSCORE_RE = re.compile(r"(?<!\d)(20\d{2})_(\d{2})_(\d{2})(?!\d)")
+RUN_DATE_ISO_RE = re.compile(r"(?<!\d)(20\d{2})-(\d{2})-(\d{2})(?!\d)")
+
+
+def extract_run_date_from_folder_name(name: str) -> date | None:
+    """Extract a run date from common HemaFrag/GeneMapper run folder names."""
+    value = str(name or "")
+    match = RUN_DATE_UNDERSCORE_RE.search(value) or RUN_DATE_ISO_RE.search(value)
+    if not match:
+        return None
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def filter_paths_by_latest_run_date(paths: list[Path]) -> tuple[list[Path], dict[str, Any]]:
+    dated: list[tuple[date, Path]] = []
+    undated: list[Path] = []
+    for path in paths:
+        run_date = extract_run_date_from_folder_name(path.name)
+        if run_date is None:
+            undated.append(path)
+        else:
+            dated.append((run_date, path))
+
+    if not dated:
+        return paths, {
+            "run_date_filter": "latest",
+            "filter_applied": False,
+            "warning": "No run dates found in folder names; using all folders.",
+            "selected_run_date": "",
+            "selected_folder_count": len(paths),
+            "candidate_folder_count": len(paths),
+        }
+
+    latest = max(run_date for run_date, _path in dated)
+    selected = [path for run_date, path in dated if run_date == latest]
+    return selected, {
+        "run_date_filter": "latest",
+        "filter_applied": True,
+        "warning": "",
+        "selected_run_date": latest.isoformat(),
+        "selected_folder_count": len(selected),
+        "candidate_folder_count": len(paths),
+        "undated_folder_count": len(undated),
+    }
 
 def scan_jobs_from_subfolders(base_dir: Path, target_depth: int = 1) -> List[Path]:
     """Scan base_dir for subdirectories at target_depth."""
@@ -93,6 +165,9 @@ def _scan_folder_fsa_files(path: Path, folder_files: Dict[Path, List[Path]]) -> 
 
         def _is_usable_fsa(candidate: Path) -> bool:
             if candidate.suffix.lower() != ".fsa" or is_water_file(candidate.name):
+                return False
+            if candidate.name in KNOWN_CLONALITY_BACKFILL_SKIP_FILES:
+                log(f"[WARN] Skipping known clonality backfill hang file: {candidate.name}")
                 return False
             try:
                 if candidate.stat().st_size <= 0:
@@ -184,7 +259,8 @@ def group_files_by_patient(fsa_files: List[Path], regex_pattern: str) -> Dict[st
 def generate_jobs(
     input_paths: List[Path], 
     aggregate_patients: bool = True,
-    patient_regex: str = r"\d{2}OUM\d{5}"
+    patient_regex: str = r"\d{2}OUM\d{5}",
+    run_date_filter: str = "all",
 ) -> List[Dict[str, Any]]:
     """
     Generate a list of standard job dicts from a list of folders.
@@ -218,6 +294,16 @@ def generate_jobs(
                     folders_to_scan.append(sub)
 
     folders_to_scan = list(dict.fromkeys(folders_to_scan))
+    scan_summary: dict[str, Any] = {
+        "run_date_filter": str(run_date_filter or "all"),
+        "filter_applied": False,
+        "warning": "",
+        "selected_run_date": "",
+        "selected_folder_count": len(folders_to_scan),
+        "candidate_folder_count": len(folders_to_scan),
+    }
+    if str(run_date_filter or "all") == "latest":
+        folders_to_scan, scan_summary = filter_paths_by_latest_run_date(folders_to_scan)
         
     if not folders_to_scan:
         log(f"[WARN] No folders with .fsa data found.")
@@ -238,7 +324,8 @@ def generate_jobs(
                 "name": pid,
                 "type": jtype,
                 "path": None,
-                "files": files
+                "files": files,
+                "_scan_summary": scan_summary,
             })
         if jobs:
             log(f"[INFO] Aggregated {len(all_fsa)} files into {len(jobs)} jobs.")
@@ -258,7 +345,8 @@ def generate_jobs(
                     "name": folder.name,
                     "type": "pipeline",
                     "path": folder,
-                    "files": pat_files
+                    "files": pat_files,
+                    "_scan_summary": scan_summary,
                 })
         
         if all_qc_files:
@@ -267,7 +355,8 @@ def generate_jobs(
                 "name": "QC",
                 "type": "qc",
                 "path": None,
-                "files": all_qc_files
+                "files": all_qc_files,
+                "_scan_summary": scan_summary,
             })
             
     return jobs
@@ -382,6 +471,27 @@ def run_batch_jobs(
     agg_outdir = output_base / (aggregate_outdir_name or OUTDIR_NAME) if aggregate_dit_reports else None
     if agg_outdir is not None:
         agg_outdir.mkdir(exist_ok=True, parents=True)
+
+    def _clonality_tracking_path(default_dir: Path) -> Path:
+        from core.analyses.clonality.tracking_excel import CLONALITY_TRACKING_FILENAME
+
+        return tracking_excel_path or resolve_analysis_excel_output_path(
+            "clonality",
+            default_dir,
+            CLONALITY_TRACKING_FILENAME,
+        )
+
+    def _update_global_clonality_tracking(entries: list[Any]) -> None:
+        if active_analysis != "clonality" or not entries:
+            return
+        try:
+            from core.analyses.clonality.tracking_excel import update_global_clonality_tracking_workbook
+
+            global_path = update_global_clonality_tracking_workbook(entries)
+            if global_path is not None:
+                log(f"[BATCH] Updated global clonality tracking workbook: {global_path}")
+        except Exception as exc:
+            log(f"[WARN] Could not update global clonality tracking workbook: {exc}")
     
     # Storage for cross-folder aggregation
     all_collected_entries_by_job: dict[int, list[Any]] = {}
@@ -593,12 +703,7 @@ def run_batch_jobs(
                                         "write_tracking_excel",
                                         f"updating clonality tracking workbook for {job_name}",
                                         update_clonality_tracking_workbook,
-                                        tracking_excel_path
-                                        or resolve_analysis_excel_output_path(
-                                            "clonality",
-                                            agg_outdir,
-                                            CLONALITY_TRACKING_FILENAME,
-                                            ),
+                                        _clonality_tracking_path(agg_outdir),
                                         entries,
                                     )
                         if defer_dit_html_reports:
@@ -653,6 +758,7 @@ def run_batch_jobs(
                         update_tracking_workbook=False,
                         return_entries=True,
                         skip_html_reports=skip_html_reports,
+                        update_qc_trends=False,
                         progress_callback=_job_progress,
                     )
                     if qc_entries:
@@ -686,14 +792,10 @@ def run_batch_jobs(
                                     "write_tracking_excel",
                                     f"updating clonality tracking workbook for {job_name}",
                                     update_clonality_tracking_workbook,
-                                    tracking_excel_path
-                                    or resolve_analysis_excel_output_path(
-                                        "clonality",
-                                        output_base,
-                                        CLONALITY_TRACKING_FILENAME,
-                                    ),
+                                    _clonality_tracking_path(agg_outdir or output_base),
                                     qc_entries,
                                 )
+                            _update_global_clonality_tracking(qc_entries)
                         log(f"[BATCH] Collected {len(qc_entries)} tracking entries from QC job {job_name}.")
                 else:
                     run_qc_job(
@@ -774,12 +876,7 @@ def run_batch_jobs(
                                         "write_tracking_excel",
                                         f"updating clonality tracking workbook for {job_name}",
                                         update_clonality_tracking_workbook,
-                                        tracking_excel_path
-                                        or resolve_analysis_excel_output_path(
-                                            "clonality",
-                                            agg_outdir,
-                                            CLONALITY_TRACKING_FILENAME,
-                                        ),
+                                        _clonality_tracking_path(agg_outdir),
                                         entries,
                                     )
                         if defer_dit_html_reports:
@@ -945,14 +1042,10 @@ def run_batch_jobs(
                     "write_tracking_excel",
                     "updating final clonality tracking workbook",
                     update_clonality_tracking_workbook,
-                    tracking_excel_path
-                    or resolve_analysis_excel_output_path(
-                        "clonality",
-                        agg_outdir,
-                        CLONALITY_TRACKING_FILENAME,
-                    ),
-                    all_collected_entries,
+                    _clonality_tracking_path(agg_outdir),
+                    dit_report_entries,
                 )
+                _update_global_clonality_tracking(dit_report_entries)
             log(f"[BATCH] Successfully built aggregated DIT reports in {agg_outdir}")
         except Exception as e:
             aggregation_failed = True
@@ -972,20 +1065,43 @@ def run_batch_jobs(
                 "write_tracking_excel",
                 "updating final clonality tracking workbook",
                 update_clonality_tracking_workbook,
-                tracking_excel_path
-                or resolve_analysis_excel_output_path(
-                    "clonality",
-                    agg_outdir,
-                    CLONALITY_TRACKING_FILENAME,
-                ),
-                all_collected_entries,
+                _clonality_tracking_path(agg_outdir),
+                dit_report_entries,
             )
+            _update_global_clonality_tracking(dit_report_entries)
         if block_dit_for_ladder_review:
             log("[BATCH] Blocked aggregated DIT HTML report generation due to unresolved ladder review cases.")
         else:
             log("[BATCH] Skipped aggregated DIT HTML report generation; entries were retained for deferred handling or skipped.")
     elif aggregate_dit_reports and stream_aggregated_dit:
         log("[BATCH] Aggregated DIT reports were streamed job-by-job to reduce memory pressure.")
+
+    learning_annotation_seed: dict[str, str] | None = None
+    if active_analysis == "clonality" and dit_report_entries:
+        try:
+            from config import APP_SETTINGS
+            from core.analyses.clonality.interpretation import (
+                learning_mode_enabled,
+                learning_output_dir,
+                write_learning_annotation_seed,
+            )
+
+            if learning_mode_enabled():
+                configured_dir = learning_output_dir()
+                target_dir = Path(configured_dir).expanduser() if configured_dir else Path(agg_outdir or output_base) / "clonality_learning_annotations"
+                annotator = str(APP_SETTINGS.get("general", {}).get("author", "") or "")
+                learning_annotation_seed = write_learning_annotation_seed(
+                    dit_report_entries,
+                    target_dir,
+                    annotator=annotator,
+                    source="batch_run",
+                )
+                log(
+                    "[BATCH] Wrote clonality learning annotation seed "
+                    f"({learning_annotation_seed.get('rows')} rows): {learning_annotation_seed.get('json')}"
+                )
+        except Exception as exc:
+            log(f"[WARN] Failed to write clonality learning annotation seed: {exc}")
 
     if aggregation_failed:
         log("[BATCH] Batch run complete with aggregation errors.")
@@ -998,6 +1114,9 @@ def run_batch_jobs(
         "completed_jobs": completed_jobs,
         "failed_jobs": failed_jobs,
         "collected_entries": deferred_tracking_entries if defer_tracking_workbook_refresh else all_collected_entries,
+        "dit_report_entries": dit_report_entries,
+        "qc_report_entries": qc_report_entries,
         "ladder_review_gate": ladder_review_gate,
         "dit_reports_blocked": block_dit_for_ladder_review,
+        "learning_annotation_seed": learning_annotation_seed,
     }

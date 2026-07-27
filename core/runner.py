@@ -97,6 +97,32 @@ def cleanup_temp(p: Optional[Path]) -> None:
         shutil.rmtree(p, ignore_errors=True)
 
 
+def _stamp_entry_source_provenance(
+    entries: List[Dict[str, Any]],
+    source_files: List[Path],
+) -> List[Dict[str, Any]]:
+    """Restore original paths after explicit files were staged."""
+    from core.utils import strip_stage_prefix
+
+    by_name = {Path(path).name: Path(path) for path in source_files}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        fsa = entry.get("fsa")
+        staged_name = str(
+            getattr(fsa, "file_name", "")
+            or entry.get("file_name")
+            or ""
+        )
+        source = by_name.get(strip_stage_prefix(staged_name))
+        if source is None:
+            continue
+        entry["file_name"] = source.name
+        entry["source_run_dir"] = source.parent.name
+        entry["original_file_path"] = str(source.resolve())
+    return entries
+
+
 def build_filtered_input(src: Path, needle: str) -> Optional[Path]:
     """Create a temp directory with staged .fsa files matching needle."""
     matched = [p for p in sorted(src.glob("*.fsa")) if needle.lower() in p.name.lower()]
@@ -332,9 +358,6 @@ def run_pipeline_job_collect(
     if not effective_files:
         return []
 
-    assay_outdir = base_outdir / out_folder_name
-    assay_outdir.mkdir(parents=True, exist_ok=True)
-
     # Original Python logic
     effective_mode = "all"
     if scope == "controls":
@@ -382,7 +405,10 @@ def run_pipeline_job_collect(
                         update_tracking_workbook=update_tracking_workbook,
                         progress_callback=progress_callback,
                     )
-                    return entries or []
+                    return _stamp_entry_source_provenance(
+                        entries or [],
+                        selected_files,
+                    )
                 finally:
                     cleanup_temp(tmp_input)
                     tmp_input = None
@@ -408,7 +434,10 @@ def run_pipeline_job_collect(
                         update_tracking_workbook=update_tracking_workbook,
                         progress_callback=progress_callback,
                     )
-                    return entries or []
+                    return _stamp_entry_source_provenance(
+                        entries or [],
+                        selected_files,
+                    )
                 finally:
                     cleanup_temp(tmp_input)
                     tmp_input = None
@@ -449,7 +478,9 @@ def run_pipeline_job_collect(
                         update_tracking_workbook=update_tracking_workbook,
                         progress_callback=_chunk_progress,
                     )
-                    all_entries.extend(entries or [])
+                    all_entries.extend(
+                        _stamp_entry_source_provenance(entries or [], chunk)
+                    )
                 finally:
                     cleanup_temp(tmp_input)
                     tmp_input = None
@@ -495,6 +526,7 @@ def run_qc_job(
     *,
     tracking_excel_path: Path | None = None,
     update_tracking_workbook: bool = True,
+    update_qc_trends: bool = True,
     return_entries: bool = False,
     skip_html_reports: bool = False,
     progress_callback=None,
@@ -543,6 +575,8 @@ def run_qc_job(
             update_tracking_workbook=update_tracking_workbook,
             progress_callback=progress_callback,
         )
+        if files:
+            entries = _stamp_entry_source_provenance(entries or [], files)
         if not entries:
             total_fsa, empty_or_bad = _empty_or_unreadable_fsa_summary(effective_in)
             if total_fsa > 0 and empty_or_bad == total_fsa:
@@ -550,8 +584,9 @@ def run_qc_job(
             raise RuntimeError("No QC entries found (check file names or skipped unreadable files).")
         if not skip_html_reports:
             build_qc_html(entries, out_html, rules, excel_path)
-        run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        update_excel_trends(excel_path, entries, rules, run_ts)
+        if update_qc_trends:
+            run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            update_excel_trends(excel_path, entries, rules, run_ts)
 
         if return_entries:
             return out_html, entries

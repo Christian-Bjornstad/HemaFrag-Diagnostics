@@ -68,6 +68,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "engine": {
         "use_rust": True,
+        "strict_rust_ladder": False,
         "rust_timeout_seconds": 60,
         "rust_timeout_seconds_rox": 120,
         "rust_timeout_seconds_liz": 60,
@@ -94,6 +95,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
+                "global_tracking_excel_path": "/Volumes/T7 Shield/HemaFrag_Clonality_All_Runs.xlsx",
+                "run_date_filter": "latest",
                 "aggregate_by_patient": True,
                 "patient_id_regex": r"\d{2}OUM\d{5}",
                 "aggregate_dit_reports": True,
@@ -122,6 +125,25 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
             "pipeline": {
                 "mode": "all",
                 "assay_filter_substring": "",
+                "file_timeout_seconds": 240,
+            },
+            "interpretation": {
+                "enabled": False,
+                "model_path": "",
+                "thresholds": {
+                    "FR1": 0.85, "FR2": 0.85, "FR3": 0.85,
+                    "TCRG-A": 0.75, "TCRG-B": 0.75,
+                    "TCRB-A": 0.75, "TCRB-B": 0.75, "TCRB-C": 0.75,
+                    "DHJH_D": 0.92, "DHJH_E": 0.92,
+                    "IGK": 0.92, "KDE": 0.92,
+                    "SL": 0.95, "IKZF1": 0.95,
+                    "Ktr-albumin": 0.92,
+                    "_default": 0.85,
+                },
+            },
+            "learning": {
+                "enabled": False,
+                "output_dir": "",
             },
         },
         "flt3": {
@@ -129,6 +151,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
+                "global_tracking_excel_path": "/Volumes/T7 Shield/HemaFrag_FLT3_All_Runs.xlsx",
+                "run_date_filter": "latest",
                 "aggregate_by_patient": True,
                 "patient_id_regex": r"\d{2}OUM\d{5}",
                 "aggregate_dit_reports": True,
@@ -144,7 +168,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "dit_only": False,
                 "timeout_seconds": 45,
                 "checkpoint_every": 100,
-                "require_run_name_contains": "3730DNA",
+                "require_run_name_contains": "",
                 "last_run_dir": "",
             },
             "pipeline": {
@@ -157,6 +181,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
+                "run_date_filter": "all",
                 "aggregate_by_patient": False,
                 "patient_id_regex": r"\d{2}OUM\d{5}",
                 "aggregate_dit_reports": False,
@@ -454,6 +479,10 @@ def _validate_settings(settings: Dict[str, Any]) -> None:
             profile_batch["output_base"] = defaults["batch"]["output_base"]
         if not isinstance(profile_batch.get("tracking_excel_path"), str):
             profile_batch["tracking_excel_path"] = defaults["batch"].get("tracking_excel_path", "")
+        if not isinstance(profile_batch.get("global_tracking_excel_path"), str):
+            profile_batch["global_tracking_excel_path"] = defaults["batch"].get("global_tracking_excel_path", "")
+        if profile_batch.get("run_date_filter") not in {"all", "latest"}:
+            profile_batch["run_date_filter"] = defaults["batch"].get("run_date_filter", "all")
         if not isinstance(profile_batch.get("patient_id_regex"), str):
             profile_batch["patient_id_regex"] = defaults["batch"]["patient_id_regex"]
         if not isinstance(profile_batch.get("aggregate_by_patient"), bool):

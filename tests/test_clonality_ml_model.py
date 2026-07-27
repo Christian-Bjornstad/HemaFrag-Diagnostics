@@ -1,0 +1,633 @@
+"""Tests for ClonalityModelStore — wrapper that loads + caches + predicts
+per-assay joblib models living under a model directory of shape
+``<model_dir>/<assay>/<classifier>-<hash>.joblib + metadata.json``.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+import pytest
+from sklearn.dummy import DummyClassifier
+from sklearn.ensemble import RandomForestClassifier
+
+from core.analyses.clonality.ml_model import ClonalityModelStore
+from core.analyses.clonality.ml_training import ANNOTATION_CLASSES_ORDER
+
+
+# --- helpers -------------------------------------------------------------
+
+
+def _calibration_record(unique_groups: int) -> dict:
+    return {
+        "status": "complete",
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "strategy": "StratifiedGroupKFold",
+        "group_column": "DITContentComponent",
+        "grouped": True,
+        "folds": 3,
+        "unique_groups": unique_groups,
+        "minimum_train_class_rows": 8,
+        "minimum_test_class_rows": 4,
+        "every_group_held_out_once": True,
+        "reason": "",
+    }
+
+
+def _calibration_manifest(fold_count: int, unique_groups: int) -> dict:
+    return {
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "group_column": "DITContentComponent",
+        "fold_count": fold_count,
+        "every_fold_complete": True,
+        "every_fold_grouped": True,
+        "folds": [
+            _calibration_record(unique_groups)
+            for _ in range(fold_count)
+        ],
+    }
+
+
+def _make_meta(*, assay: str, tau: float = 0.80, features: list[str] | None = None) -> dict:
+    return {
+        "schema_version": "ml_training_pipeline_v9",
+        "assay": assay,
+        "label_order": list(ANNOTATION_CLASSES_ORDER),
+        "accept_threshold_tau": float(tau),
+        "classifier_kind": "random_forest",
+        "rare_class_counts": {"monoklonal": 50, "polyklonal": 50},
+        "trained_at_utc": "2026-07-13T10:00:00Z",
+        "feature_columns": features or ["trace_runtime_signal", "f_ratio", "f_share"],
+        "trace_feature_schema_version": "clonality_trace_features_v1",
+        "deployment_status": "validated",
+        "runtime_eligible": True,
+        "training_rows": 50,
+        "training_data_provenance": {
+            "method": "per_assay_fsa_content_hash_v1",
+            "raw_row_count": 50,
+            "unique_trace_row_count": 50,
+            "duplicate_rows_removed": 0,
+            "content_hash_coverage": 1.0,
+            "conflicting_label_content_hashes": 0,
+            "conflicting_source_run_content_hashes": 0,
+        },
+        "training_class_support": {
+            "monoklonal": {
+                "rows": 25,
+                "unique_dit_groups": 25,
+                "effective_dit_groups": 25.0,
+                "max_rows_per_dit": 1,
+                "max_dit_row_fraction": 0.04,
+                "unique_source_run_groups": 3,
+                "rows_missing_source_run": 0,
+            },
+            "polyklonal": {
+                "rows": 25,
+                "unique_dit_groups": 25,
+                "effective_dit_groups": 25.0,
+                "max_rows_per_dit": 1,
+                "max_dit_row_fraction": 0.04,
+                "unique_source_run_groups": 3,
+                "rows_missing_source_run": 0,
+            },
+        },
+        "final_fit_calibration": _calibration_record(50),
+        "validation": {
+            "strategy": "StratifiedGroupKFold",
+            "group_column": "DITContentComponent",
+            "every_row_oof_once": True,
+            "effective_splits": 5,
+            "row_count": 50,
+            "unique_groups": 50,
+            "group_provenance": {
+                "method": "dit_fsa_content_connected_components",
+                "content_hash_coverage": 1.0,
+            },
+            "class_support_gate": {
+                "passed": True,
+                "thresholds": {"max_class_dit_row_fraction": 0.10},
+            },
+            "calibration_gate": {"passed": True},
+            "calibration": _calibration_manifest(5, 40),
+            "class_fold_support": {
+                "monoklonal": {
+                    "total_folds": 5,
+                    "training_folds_with_examples": 5,
+                    "evaluation_folds_with_examples": 5,
+                    "min_train_rows": 20,
+                },
+                "polyklonal": {
+                    "total_folds": 5,
+                    "training_folds_with_examples": 5,
+                    "evaluation_folds_with_examples": 5,
+                    "min_train_rows": 20,
+                },
+            },
+            "promotion_gate": {"passed": True},
+            "source_run_stress": {
+                "status": "complete",
+                "strategy": "StratifiedGroupKFold",
+                "group_column": "SourceRunKey",
+                "every_row_oof_once": True,
+                "effective_splits": 3,
+                "row_count": 50,
+                "unique_groups": 3,
+                "class_fold_support": {
+                    "monoklonal": {
+                        "total_folds": 3,
+                        "training_folds_with_examples": 3,
+                        "evaluation_folds_with_examples": 3,
+                        "min_train_rows": 16,
+                    },
+                    "polyklonal": {
+                        "total_folds": 3,
+                        "training_folds_with_examples": 3,
+                        "evaluation_folds_with_examples": 3,
+                        "min_train_rows": 16,
+                    },
+                },
+                "calibration": _calibration_manifest(3, 30),
+                "promotion_gate": {"passed": True},
+            },
+        },
+    }
+
+
+def _train_dummy_model(*, seed: int = 0) -> RandomForestClassifier:
+    """Build a tiny pretrained RF on 3 features with 2 labels.
+
+    A Real test fixture would carry accuracy risk; the store tests only
+    exercise the load + predict + threshold path, not the classifier
+    itself. A small RF that always predicts monoklonal is sufficient.
+    """
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(60, 3))
+    y = np.array(["monoklonal"] * 30 + ["polyklonal"] * 30)
+    clf = RandomForestClassifier(n_estimators=20, random_state=seed, n_jobs=1)
+    clf.fit(X, y)
+    clf.hemafrag_calibration_ = _calibration_record(50)
+    return clf
+
+
+def _make_model_dir(tmp_path: Path, assays: list[str]) -> Path:
+    """Write a synthetic model folder with one RF per listed assay."""
+    for assay in assays:
+        assay_dir = tmp_path / assay
+        assay_dir.mkdir(parents=True, exist_ok=True)
+        clf = _train_dummy_model(seed=abs(hash(assay)) % 1000)
+        model_path = _write_content_addressed_model(
+            assay_dir,
+            clf,
+            "random_forest",
+        )
+        # Every-assay default — also drop a DummyClassifier as the fallback
+        # so we have at least one joblib we can confirm gets ignored.
+        joblib.dump(DummyClassifier(strategy="most_frequent"),
+                    assay_dir / "dummy.joblib")
+        meta = _make_meta(assay=assay)
+        _stamp_artifact_manifest(meta, model_path)
+        (assay_dir / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+    return tmp_path
+
+
+def _write_content_addressed_model(
+    assay_dir: Path,
+    estimator,
+    classifier_kind: str,
+) -> Path:
+    staged = assay_dir / f".{classifier_kind}.tmp"
+    joblib.dump(estimator, staged)
+    digest = hashlib.sha256(staged.read_bytes()).hexdigest()
+    destination = assay_dir / f"{classifier_kind}-{digest[:16]}.joblib"
+    staged.replace(destination)
+    return destination
+
+
+def _stamp_artifact_manifest(metadata: dict, model_path: Path) -> None:
+    payload = model_path.read_bytes()
+    metadata["artifact"] = {
+        "format": "joblib",
+        "hash_algorithm": "sha256",
+        "joblib_file": model_path.name,
+        "joblib_sha256": hashlib.sha256(payload).hexdigest(),
+        "joblib_size_bytes": len(payload),
+    }
+
+
+# --- tests ---------------------------------------------------------------
+
+
+def test_store_returns_empty_when_dir_none(tmp_path):
+    store = ClonalityModelStore(model_dir=None)
+    assert store.is_enabled("FR1") is False
+    assert store.predict("FR1", {"anything": 1}) is None
+
+
+def test_store_returns_empty_when_dir_missing(tmp_path):
+    bogus = tmp_path / "does-not-exist"
+    store = ClonalityModelStore(model_dir=bogus)
+    assert store.is_enabled("FR1") is False
+    assert store.predict("FR1", {}) is None
+
+
+def test_store_ignores_candidate_model(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["deployment_status"] = "candidate"
+    metadata["runtime_eligible"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    store = ClonalityModelStore(model_dir=tmp_path)
+
+    assert store.is_enabled("FR1") is False
+    assert store.predict("FR1", {"f_height": 1.0}) is None
+
+
+def test_store_ignores_artifact_without_grouped_validation(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["validation"]["every_row_oof_once"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_legacy_v3_artifact(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["schema_version"] = "ml_training_pipeline_v3"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_without_content_grouping_provenance(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["validation"].pop("group_provenance")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_without_training_dedup_provenance(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("training_data_provenance")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_inconsistent_training_and_validation_row_counts(
+    tmp_path,
+):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["training_rows"] = 49
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_without_passing_source_run_stress(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["validation"]["source_run_stress"]["promotion_gate"][
+        "passed"
+    ] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_without_class_support_evidence(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["training_class_support"]["monoklonal"][
+        "unique_source_run_groups"
+    ] = 0
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_with_concentrated_class_support(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    support = metadata["training_class_support"]["monoklonal"]
+    support["max_rows_per_dit"] = 13
+    support["max_dit_row_fraction"] = 13.0 / 25.0
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_without_core_class_fold_coverage(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["validation"]["class_fold_support"]["monoklonal"][
+        "evaluation_folds_with_examples"
+    ] = 1
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_without_grouped_calibration(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["final_fit_calibration"]["strategy"] = "StratifiedKFold"
+    metadata["final_fit_calibration"]["grouped"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_ignores_artifact_with_incomplete_oof_calibration(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["validation"]["calibration"]["every_fold_complete"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_refuses_loaded_estimator_with_mismatched_calibration(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata = json.loads(
+        (tmp_path / "FR1" / "metadata.json").read_text(encoding="utf-8")
+    )
+    model_path = tmp_path / "FR1" / metadata["artifact"]["joblib_file"]
+    estimator = joblib.load(model_path)
+    estimator.hemafrag_calibration_["grouped"] = False
+    joblib.dump(estimator, model_path)
+    _stamp_artifact_manifest(metadata, model_path)
+    (tmp_path / "FR1" / "metadata.json").write_text(
+        json.dumps(metadata),
+        encoding="utf-8",
+    )
+    store = ClonalityModelStore(model_dir=tmp_path)
+
+    assert store.is_enabled("FR1") is False
+    assert store.required_feature_columns("FR1") == []
+    assert store.predict("FR1", {"trace_runtime_signal": 1.0}) is None
+
+
+def test_store_refuses_artifact_with_tampered_bytes(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata = json.loads(
+        (tmp_path / "FR1" / "metadata.json").read_text(encoding="utf-8")
+    )
+    model_path = tmp_path / "FR1" / metadata["artifact"]["joblib_file"]
+    with model_path.open("ab") as handle:
+        handle.write(b"tampered")
+
+    store = ClonalityModelStore(model_dir=tmp_path)
+
+    assert store.is_enabled("FR1") is False
+    assert store.required_feature_columns("FR1") == []
+    assert store.predict("FR1", {"trace_runtime_signal": 1.0}) is None
+
+
+def test_store_ignores_classifier_filename_metadata_mismatch(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["classifier_kind"] = "extra_trees"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+
+def test_store_rejects_cohort_model_without_matching_schema(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    metadata_path = tmp_path / "FR1" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["feature_columns"].append("cohort_context_available")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is False
+
+    metadata["cohort_feature_schema_version"] = "clonality_cohort_features_v1"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    assert ClonalityModelStore(model_dir=tmp_path).is_enabled("FR1") is True
+
+
+def test_store_loads_joblib_for_known_assay(tmp_path):
+    model_dir = _make_model_dir(tmp_path, ["FR1", "TCRG-A"])
+    store = ClonalityModelStore(model_dir=model_dir)
+
+    assert store.is_enabled("FR1") is True
+    assert store.is_enabled("TCRGA") is True
+    assert store.is_enabled("TCRGB") is False
+    assert store.is_enabled("UNKNOWN") is False
+
+
+def test_store_exposes_only_validated_integrity_checked_artifact(tmp_path):
+    model_dir = _make_model_dir(tmp_path, ["FR1"])
+    loaded = ClonalityModelStore(
+        model_dir=model_dir
+    ).load_validated_artifact("FR1")
+
+    assert loaded is not None
+    estimator, metadata = loaded
+    assert hasattr(estimator, "predict_proba")
+    assert metadata["schema_version"] == "ml_training_pipeline_v9"
+    assert metadata["artifact"]["joblib_file"].startswith("random_forest-")
+
+
+def test_store_loads_validated_extra_trees_artifact(tmp_path):
+    _make_model_dir(tmp_path, ["FR1"])
+    assay_dir = tmp_path / "FR1"
+    metadata_path = assay_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    old_path = assay_dir / metadata["artifact"]["joblib_file"]
+    digest_prefix = metadata["artifact"]["joblib_sha256"][:16]
+    new_path = assay_dir / f"extra_trees-{digest_prefix}.joblib"
+    old_path.replace(new_path)
+    metadata["classifier_kind"] = "extra_trees"
+    _stamp_artifact_manifest(metadata, new_path)
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    store = ClonalityModelStore(model_dir=tmp_path)
+
+    assert store.is_enabled("FR1") is True
+    assert store.predict(
+        "FR1",
+        {
+            "trace_runtime_signal": 1.0,
+            "f_ratio": 0.5,
+            "f_share": 0.3,
+        },
+    ) is not None
+
+
+def test_store_predicts_when_runtime_assay_omits_separator(tmp_path):
+    model_dir = _make_model_dir(tmp_path, ["TCRG-A"])
+    store = ClonalityModelStore(model_dir=model_dir)
+
+    feats = {"f_height": 100, "f_ratio": 0.5, "f_share": 0.3}
+    result = store.predict("TCRGA", feats)
+    assert result is not None
+    assert result["label"] in list(ANNOTATION_CLASSES_ORDER) + [""]
+
+
+def test_store_caches_after_first_load(tmp_path, monkeypatch):
+    model_dir = _make_model_dir(tmp_path, ["FR1"])
+    store = ClonalityModelStore(model_dir=model_dir)
+
+    # Patch joblib.load to count invocations via the module import
+    import core.analyses.clonality.ml_model as ml_model_mod
+    import joblib as _joblib
+    load_calls = {"n": 0}
+    real_load = _joblib.load
+
+    def counting_load(path):
+        load_calls["n"] += 1
+        return real_load(path)
+
+    monkeypatch.setattr(ml_model_mod.joblib, "load", counting_load)
+
+    # First call to predict triggers load; second should hit cache
+    feats = {"f_height": 100, "f_ratio": 0.5, "f_share": 0.3}
+    store.predict("FR1", feats)
+    store.predict("FR1", feats)
+    assert load_calls["n"] == 1
+
+
+def test_predict_handles_missing_assay_gracefully(tmp_path):
+    model_dir = _make_model_dir(tmp_path, ["FR1"])
+    store = ClonalityModelStore(model_dir=model_dir)
+    result = store.predict("DHJH_D", {"f_height": 100, "f_ratio": 0.5, "f_share": 0.3})
+    assert result is None
+
+
+def test_predict_returns_label_confidence_after_threshold(tmp_path):
+    model_dir = _make_model_dir(tmp_path, ["FR1"])
+    store = ClonalityModelStore(model_dir=model_dir)
+
+    feats = {
+        "f_height": 100.0,
+        "f_ratio": 0.5,
+        "f_share": 0.3,
+        "peak_count": 5,
+        "peak_count_per_channel_DATA1": 3,
+        "peak_count_per_channel_DATA2": 2,
+        "trace_peak_variance_DATA1": 1.0,
+    }
+    result = store.predict("FR1", features=feats)
+    assert result is not None
+    assert "label" in result
+    assert "confidence" in result
+    assert "review_needed" in result
+    assert "model_version" in result
+    # Confidence must be a finite probability between 0 and 1
+    assert 0.0 <= result["confidence"] <= 1.0
+    # Label is one of the canonical class strings
+    assert result["label"] in list(ANNOTATION_CLASSES_ORDER) + [""]
+
+
+# ----- Task 2: feature vector adapter -----------------------------------
+
+
+def test_flatten_handles_unknown_columns(tmp_path):
+    """flattener must pass-through required columns even if missing."""
+    df = pd.DataFrame()
+    flat_clf = ClonalityModelStore
+    # Use the free function
+    from core.analyses.clonality.ml_model import flatten_features_for_inference
+    out = flatten_features_for_inference(
+        {"f_height": 1.0, "f_ratio": 0.5, "f_share": 0.3},
+        columns=["f_height", "f_ratio", "f_share", "extra_col"],
+    )
+    assert list(out.columns) == ["f_height", "f_ratio", "f_share", "extra_col"]
+    assert out["f_height"].iloc[0] == 1.0
+    assert out["extra_col"].iloc[0] == 0.0  # default to 0.0
+
+
+def test_flatten_expands_per_channel_dicts():
+    """Nested per-channel dicts expand to flat columns with a prefix."""
+    from core.analyses.clonality.ml_model import flatten_features_for_inference
+    out = flatten_features_for_inference(
+        {
+            "peak_count_per_channel": {"DATA1": 3, "DATA2": 5},
+            "peak_variance_per_channel": {"DATA1": 1.0, "DATA2": 2.0},
+            "f_height": 100.0,
+        },
+        columns=[
+            "f_height",
+            "trace_peak_count_DATA1",
+            "trace_peak_count_DATA2",
+            "trace_peak_variance_DATA1",
+            "trace_peak_variance_DATA2",
+        ],
+    )
+    assert out["trace_peak_count_DATA1"].iloc[0] == 3
+    assert out["trace_peak_count_DATA2"].iloc[0] == 5
+    assert out["trace_peak_variance_DATA1"].iloc[0] == 1.0
+
+
+def test_flatten_expands_dotted_per_channel_columns():
+    """Training fixtures also use dotted nested-column names."""
+    from core.analyses.clonality.ml_model import flatten_features_for_inference
+    out = flatten_features_for_inference(
+        {
+            "peak_count_per_channel": {"DATA1": 3},
+            "mad_per_channel": {"DATA1": 0.12},
+        },
+        columns=[
+            "peak_count_per_channel.DATA1",
+            "mad_per_channel.DATA1",
+        ],
+    )
+    assert out["peak_count_per_channel.DATA1"].iloc[0] == 3
+    assert out["mad_per_channel.DATA1"].iloc[0] == 0.12
+
+
+def test_flatten_expands_generic_trace_channel_columns():
+    from core.analyses.clonality.ml_model import flatten_features_for_inference
+
+    columns = [
+        "trace_dominant_height_raw_per_channel.DATA1",
+        "trace_signal_to_noise_per_channel.DATA2",
+    ]
+    out = flatten_features_for_inference(
+        {
+            "trace_dominant_height_raw_per_channel": {"DATA1": 1234.0},
+            "trace_signal_to_noise_per_channel": {"DATA2": 18.5},
+        },
+        columns=columns,
+    )
+
+    assert out.iloc[0][columns[0]] == 1234.0
+    assert out.iloc[0][columns[1]] == 18.5
+
+
+def test_flatten_coerces_non_numeric_to_numeric():
+    from core.analyses.clonality.ml_model import flatten_features_for_inference
+    out = flatten_features_for_inference(
+        {"f_height": "100", "f_ratio": True, "f_share": None},
+        columns=["f_height", "f_ratio", "f_share", "inf"],
+    )
+    assert out["f_height"].iloc[0] == 100.0
+    assert out["f_ratio"].iloc[0] == 1.0
+    assert out["f_share"].iloc[0] == 0.0  # None/NaN -> 0.0

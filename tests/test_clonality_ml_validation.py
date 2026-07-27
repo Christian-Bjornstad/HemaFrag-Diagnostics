@@ -1,0 +1,446 @@
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+
+from core.analyses.clonality.ml_training import PerAssayDataset
+from core.analyses.clonality.ml_validation import (
+    assess_calibration_gate,
+    assess_class_support_gate,
+    assess_promotion_gate,
+    assess_source_run_gate,
+    dit_content_validation_groups,
+    dit_content_grouped_validate,
+    grouped_oof_validate,
+    render_review_panel_html,
+    source_run_grouped_validate,
+)
+
+
+def _dataset() -> PerAssayDataset:
+    rng = np.random.default_rng(123)
+    rows = []
+    features = []
+    labels = []
+    dits = []
+    for group_index in range(30):
+        label = "monoklonal" if group_index % 2 == 0 else "polyklonal"
+        for replicate in range(2):
+            signal = 1.0 if label == "monoklonal" else 0.0
+            features.append(
+                {
+                    "trace_dominant_area_share_raw_per_channel.DATA1": (
+                        signal + float(rng.normal(0, 0.08))
+                    ),
+                    "trace_peak_count_raw_per_channel.DATA1": (
+                        2.0 if label == "monoklonal" else 10.0
+                    ),
+                }
+            )
+            labels.append(label)
+            dit = f"DIT-{group_index:03d}"
+            dits.append(dit)
+            rows.append(
+                {
+                    "IdentityKey": f"{dit}-{replicate}",
+                    "FsaContentHash": (
+                        f"content-{group_index:03d}-{replicate}"
+                    ),
+                    "DIT": dit,
+                    "Assay": "FR1",
+                    "RunDate": f"2026-07-{1 + group_index % 3:02d}",
+                    "SourceRunKey": f"run-{group_index % 3}",
+                    "RuleSuggestion": (
+                        label if group_index % 5 else "usikker_review"
+                    ),
+                    "RuleConfidence": 0.8,
+                    "RuleReviewNeeded": group_index % 5 == 0,
+                }
+            )
+    return PerAssayDataset(
+        X=pd.DataFrame(features),
+        y=pd.Series(labels),
+        dit=pd.Series(dits),
+        assay="FR1",
+        rows=pd.DataFrame(rows),
+        rare_class_counts={"monoklonal": 30, "polyklonal": 30},
+    )
+
+
+def _fast_fit(
+    X,
+    y,
+    *,
+    kind,
+    random_state,
+    calibration_groups=None,
+    calibration_group_column="DITContentComponent",
+):
+    del kind
+    estimator = RandomForestClassifier(
+        n_estimators=20,
+        max_depth=4,
+        random_state=random_state,
+        n_jobs=1,
+    ).fit(X, y)
+    estimator.hemafrag_calibration_ = {
+        "status": "complete",
+        "required_for_runtime": True,
+        "method": "sigmoid",
+        "strategy": "StratifiedGroupKFold",
+        "group_column": calibration_group_column,
+        "grouped": True,
+        "folds": 3,
+        "unique_groups": int(pd.Series(calibration_groups).nunique()),
+        "minimum_train_class_rows": 4,
+        "minimum_test_class_rows": 2,
+        "every_group_held_out_once": True,
+        "reason": "",
+    }
+    return estimator
+
+
+def test_grouped_oof_validation_predicts_every_row_without_dit_leakage(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+
+    result = grouped_oof_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=5,
+        random_state=44,
+        accept_threshold_tau=0.8,
+    )
+
+    assert len(result.predictions) == dataset.n_samples
+    assert result.predictions["RowIndex"].nunique() == dataset.n_samples
+    assert result.predictions.groupby("DIT")["Fold"].nunique().eq(1).all()
+    assert result.split_manifest["every_row_oof_once"] is True
+    assert result.split_manifest["effective_splits"] == 5
+    assert result.split_manifest["class_fold_support"]["monoklonal"][
+        "training_folds_with_examples"
+    ] == 5
+    assert result.split_manifest["class_fold_support"]["monoklonal"][
+        "evaluation_folds_with_examples"
+    ] >= 2
+    assert result.split_manifest["calibration"]["every_fold_complete"] is True
+    assert result.split_manifest["calibration"]["every_fold_grouped"] is True
+    assert len(result.fold_metrics) == 5
+    assert set(result.drift_summary["Dimension"]) == {"SourceRunKey", "RunDate"}
+    assert not result.feature_importance.empty
+    assert result.feature_importance["Rank"].tolist() == list(
+        range(1, len(result.feature_importance) + 1)
+    )
+    assert set(result.feature_importance["Feature"]).issubset(dataset.X.columns)
+    assert result.feature_importance["FoldCoverage"].between(0, 1).all()
+    assert (
+        result.split_manifest["feature_importance"]["method"]
+        == "held_out_permutation_balanced_accuracy"
+    )
+
+
+def test_grouped_validation_exports_disagreements_and_review_html(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+    dataset.rows.loc[0, "SourceRunKey"] = "<private>"
+    dataset.rows.loc[0, "RuleSuggestion"] = "polyklonal"
+
+    result = grouped_oof_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=3,
+        accept_threshold_tau=0.99,
+    )
+    gate = assess_promotion_gate(
+        result,
+        min_macro_f1=0.5,
+        min_monoklonal_f1=0.5,
+        min_monoklonal_precision=0.5,
+        min_dit_groups=20,
+    )
+    panel = render_review_panel_html(result, promotion_gate=gate)
+
+    assert not result.review_cases.empty
+    assert result.review_cases["ReviewReason"].str.contains(
+        "low_confidence|rule_ml_disagreement"
+    ).any()
+    assert "<table>" in panel
+    assert "&lt;private&gt;" in panel
+    assert "<private>" not in panel
+
+
+def test_promotion_gate_reports_each_failed_requirement(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    result = grouped_oof_validate(
+        _dataset(),
+        classifier_kind="random_forest",
+        n_splits=3,
+    )
+
+    gate = assess_promotion_gate(
+        result,
+        min_macro_f1=1.01,
+        min_monoklonal_f1=1.01,
+        min_monoklonal_precision=1.01,
+        min_dit_groups=100,
+    )
+
+    assert gate.passed is False
+    assert len(gate.reasons) >= 4
+
+
+def test_grouped_validation_can_disable_feature_importance(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+
+    result = grouped_oof_validate(
+        _dataset(),
+        classifier_kind="random_forest",
+        n_splits=3,
+        importance_max_features=0,
+    )
+
+    assert result.feature_importance.empty
+    assert list(result.feature_importance.columns) == [
+        "Rank",
+        "Feature",
+        "PermutationImportanceMean",
+        "PermutationImportanceStd",
+        "ScreeningImportanceMean",
+        "FoldsEvaluated",
+        "FoldCoverage",
+        "PositiveImpactFoldFraction",
+    ]
+
+
+def test_source_run_stress_holds_complete_runs_out(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+
+    result = source_run_grouped_validate(
+        _dataset(),
+        classifier_kind="random_forest",
+        n_splits=3,
+        random_state=44,
+    )
+    gate = assess_source_run_gate(
+        result,
+        min_run_groups=3,
+        min_macro_f1=0.5,
+        min_monoklonal_precision=0.5,
+    )
+
+    assert result.split_manifest["group_column"] == "SourceRunKey"
+    assert result.split_manifest["unique_groups"] == 3
+    assert result.predictions.groupby("SourceRunKey")["Fold"].nunique().eq(1).all()
+    assert result.feature_importance.empty
+    assert gate.passed is True
+
+
+def test_source_run_stress_rejects_missing_run_provenance(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+    dataset.rows.loc[0, "SourceRunKey"] = ""
+
+    with np.testing.assert_raises_regex(ValueError, "non-empty group"):
+        source_run_grouped_validate(
+            dataset,
+            classifier_kind="random_forest",
+        )
+
+
+def test_class_support_gate_requires_independent_patients_runs_and_folds(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+    dit_validation = dit_content_grouped_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=3,
+        importance_max_features=0,
+    )
+    run_validation = source_run_grouped_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=3,
+    )
+
+    passing = assess_class_support_gate(
+        dataset,
+        dit_validation,
+        source_run_validation=run_validation,
+        min_class_dit_groups=10,
+        min_core_class_dit_groups=10,
+        min_class_source_run_groups=3,
+        min_class_evaluation_folds=2,
+        min_class_training_rows_per_fold=6,
+        max_class_dit_row_fraction=0.10,
+    )
+    assert passing.passed is True
+
+    run_validation.split_manifest["class_fold_support"]["monoklonal"][
+        "min_train_rows"
+    ] = 5
+    calibration_blocked = assess_class_support_gate(
+        dataset,
+        dit_validation,
+        source_run_validation=run_validation,
+        min_class_dit_groups=10,
+        min_core_class_dit_groups=10,
+        min_class_source_run_groups=3,
+        min_class_evaluation_folds=2,
+        min_class_training_rows_per_fold=6,
+        max_class_dit_row_fraction=0.10,
+    )
+    assert any(
+        "source_run_oof.class[monoklonal].min_train_rows=5 below 6"
+        in reason
+        for reason in calibration_blocked.reasons
+    )
+    run_validation.split_manifest["class_fold_support"]["monoklonal"][
+        "min_train_rows"
+    ] = 20
+
+    dataset.class_support["monoklonal"]["unique_dit_groups"] = 1
+    dataset.class_support["monoklonal"]["unique_source_run_groups"] = 1
+    dataset.class_support["monoklonal"]["max_dit_row_fraction"] = 0.5
+    blocked = assess_class_support_gate(
+        dataset,
+        dit_validation,
+        source_run_validation=run_validation,
+        min_class_dit_groups=10,
+        min_core_class_dit_groups=10,
+        min_class_source_run_groups=3,
+        min_class_evaluation_folds=2,
+        min_class_training_rows_per_fold=6,
+        max_class_dit_row_fraction=0.10,
+    )
+
+    assert blocked.passed is False
+    assert any("monoklonal" in reason for reason in blocked.reasons)
+    assert any("unique_dit_groups=1" in reason for reason in blocked.reasons)
+    assert any(
+        "unique_source_run_groups=1" in reason
+        for reason in blocked.reasons
+    )
+    assert any(
+        "max_dit_row_fraction=0.500 above 0.100" in reason
+        for reason in blocked.reasons
+    )
+
+
+def test_calibration_gate_requires_grouped_oof_and_final_fit(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+    dit_validation = dit_content_grouped_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=3,
+        importance_max_features=0,
+    )
+    run_validation = source_run_grouped_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=3,
+    )
+    groups, _ = dit_content_validation_groups(dataset)
+    final_estimator = _fast_fit(
+        dataset.X,
+        dataset.y,
+        kind="random_forest",
+        random_state=123,
+        calibration_groups=groups,
+    )
+
+    passing = assess_calibration_gate(
+        dit_validation,
+        source_run_validation=run_validation,
+        final_estimator=final_estimator,
+        classifier_kind="random_forest",
+    )
+    assert passing.passed is True
+
+    final_estimator.hemafrag_calibration_["status"] = "skipped"
+    final_estimator.hemafrag_calibration_["reason"] = "insufficient groups"
+    blocked = assess_calibration_gate(
+        dit_validation,
+        source_run_validation=run_validation,
+        final_estimator=final_estimator,
+        classifier_kind="random_forest",
+    )
+
+    assert blocked.passed is False
+    assert any(
+        "final_fit.calibration_status=insufficient groups" in reason
+        for reason in blocked.reasons
+    )
+
+
+def test_dit_content_validation_coalesces_cross_dit_duplicate_traces(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+    dataset.rows.loc[0, "FsaContentHash"] = "shared-content"
+    dataset.rows.loc[2, "FsaContentHash"] = "shared-content"
+
+    result = dit_content_grouped_validate(
+        dataset,
+        classifier_kind="random_forest",
+        n_splits=5,
+        random_state=44,
+        importance_max_features=0,
+    )
+    linked = result.predictions.loc[
+        result.predictions["DIT"].isin(["DIT-000", "DIT-001"])
+    ]
+    provenance = result.split_manifest["group_provenance"]
+
+    assert linked["Fold"].nunique() == 1
+    assert result.split_manifest["group_column"] == "DITContentComponent"
+    assert result.split_manifest["unique_dit_groups"] == 30
+    assert result.split_manifest["unique_groups"] == 29
+    assert provenance["cross_dit_duplicate_content_hashes"] == 1
+    assert provenance["coalesced_dit_group_count"] == 1
+
+
+def test_dit_content_validation_requires_complete_hash_coverage(monkeypatch):
+    monkeypatch.setattr(
+        "core.analyses.clonality.ml_validation.fit_classifier",
+        _fast_fit,
+    )
+    dataset = _dataset()
+    dataset.rows.loc[0, "FsaContentHash"] = ""
+
+    with np.testing.assert_raises_regex(ValueError, "non-empty hash"):
+        dit_content_grouped_validate(
+            dataset,
+            classifier_kind="random_forest",
+        )

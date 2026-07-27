@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "fraggler-kernels"
+version = "0.1.0"
+description = "In-process fraggler-core Rust engine for HemaFrag, exposed via PyO3"
+requires-python = ">=3.10,<3.16"
+authors = [{ name = "HemaFrag Diagnostics" }]
+license = { text = "Proprietary" }
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.maturin]
+# Compiles Cargo.toml [lib] into a cdylib named `_fraggler_native`,
+# installs it next to python/fraggler_native/__init__.py
+module-name = "fraggler_native"
+python-source = "python"
+features = ["pyo3/extension-module"]

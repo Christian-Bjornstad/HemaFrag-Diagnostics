@@ -1,0 +1,19 @@
+[package]
+name = "fraggler-kernels-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "PyO3 Python extension exposing fraggler-core engine primitives"
+
+[lib]
+name = "fraggler_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow.workspace = true
+camino.workspace = true
+pyo3 = { version = ">=0.26,<0.30", features = ["extension-module", "abi3-py312"] }
+fraggler-core = { path = "../fraggler-core" }
+serde.workspace = true
+serde_json.workspace = true
