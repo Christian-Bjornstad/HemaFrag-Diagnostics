@@ -1,3 +1,8 @@
+## 2026-07-27 - Cleanup Triage
+
+- Removed stale cleanup/planning/install docs and Windows batch helpers from git, including old `plans/00-10`, `.hermes/plans`, Py3.14 migration docs, setup docs, `AGENTS.md`, and `memory.md`.
+- Cleaned ignored generated output from the worktree: `fraggler-v2/target/`, Python `__pycache__/` dirs, and `.pytest_cache/`; updated active references in README, requirements, Obsidian start note, plot cache, and About metadata.
+
 ## 2026-06-27 - code-review planning notes
 
 - Six review plans landed under `plans/` (commit `40afabf`, pushed to origin/code-cleanup). 33/33 tests still green.

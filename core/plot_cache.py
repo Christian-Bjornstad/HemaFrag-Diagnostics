@@ -16,8 +16,7 @@ Two caches:
                    display signals keyed off upstream trace identity.
 
 Behaviour is preserved bit-for-bit relative to the inline helpers
-they replace; this module is a pure refactor (Pass 2 of the deep
-review, see plans/09_quality_dry_review.md).
+they replace; this module is a pure refactor.
 """
 from __future__ import annotations
 

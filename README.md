@@ -18,12 +18,8 @@ Dette holdes utenfor Git:
 
 ## Viktig oppstart
 
-Start alltid med a lese:
-1. `memory.md`
-2. `AGENTS.md`
-3. `ObsidianVault/00_Start_Here.md`
-
-Disse filene beskriver arbeidsregler, prosjektminne og hva som skal loggfores videre.
+Start med `ObsidianVault/00_Start_Here.md`. Prosjektminne og arbeidslogg
+ligger i `ObsidianVault/`.
 
 ## Kjore appen fra source
 
@@ -61,7 +57,6 @@ For Linux og Windows brukes skriptene i `packaging/`.
 - `core/`: analysemotor og pipelines
 - `data/`: lokal data-mappe, ikke versjonert
 - `fraggler-v2/`: Rust-kildekode
-- `gui/`: legacy Panel-GUI
 - `gui_qt/`: primar PyQt6-app
 - `ObsidianVault/`: prosjektets memory-bank og logg
 
