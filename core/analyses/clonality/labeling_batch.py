@@ -18,7 +18,10 @@ from core.analyses.clonality.ml_data_contract import (
     CHEMIST_LABEL_COLUMN,
     load_tracking_run_table,
 )
-from core.analyses.clonality.ml_training import ANNOTATION_CLASSES_ORDER
+from core.analyses.clonality.ml_training import (
+    ANNOTATION_CLASSES_ORDER,
+    normalize_annotation_label,
+)
 
 
 LABELING_BATCH_SCHEMA_VERSION = "clonality_labeling_batch_v1"
@@ -31,6 +34,7 @@ LABELING_BATCH_COLUMNS = (
     "LabelingRuleStratum",
     "LabelingSourceRunKey",
 )
+DEFAULT_EXCLUDED_ASSAYS = {"IKZF1", "Ktr-albumin"}
 
 _SELECTION_NON_FEATURE_COLUMNS = {
     "RuleConfidence",
@@ -57,6 +61,7 @@ def build_clonality_labeling_batch(
     max_rows: int | None = None,
     review_fraction: float = 0.65,
     random_state: int = 20260726,
+    exclude_assays: set[str] | None = None,
 ) -> LabelingBatch:
     """Select a deterministic, diverse, unlabeled cohort for chemist review."""
     if per_assay < 1:
@@ -77,11 +82,14 @@ def build_clonality_labeling_batch(
 
     if CHEMIST_LABEL_COLUMN not in tracking.columns:
         tracking[CHEMIST_LABEL_COLUMN] = ""
+    excluded = DEFAULT_EXCLUDED_ASSAYS if exclude_assays is None else set(exclude_assays)
+    if excluded and "Assay" in tracking.columns:
+        assay_names = tracking["Assay"].fillna("").astype(str).str.strip()
+        tracking = tracking.loc[~assay_names.isin(excluded)].copy()
     labels = (
         tracking[CHEMIST_LABEL_COLUMN]
         .fillna("")
-        .astype(str)
-        .str.strip()
+        .map(normalize_annotation_label)
     )
     tracking = tracking.loc[labels.eq("")].copy()
     if tracking.empty:
@@ -198,6 +206,7 @@ def build_clonality_labeling_batch(
     if not ordered_pieces:
         raise ValueError("labeling selection produced no rows")
     selected = pd.concat(ordered_pieces, ignore_index=True, sort=False)
+    selected = _expand_selected_to_parallel_rows(selected, merged)
 
     selected["LabelingBatchId"] = str(batch_id).strip()
     selected["LabelingRuleStratum"] = selected["_RuleSuggestion"]
@@ -272,6 +281,7 @@ def build_clonality_labeling_batch(
         "selected_rule_strata": int(rows["LabelingRuleStratum"].nunique()),
         "selection_feature_count": int(len(numeric_feature_columns)),
         "rule_suggestions_used_as_labels": False,
+        "excluded_assays": sorted(excluded),
     }
     return LabelingBatch(
         rows=rows,
@@ -349,8 +359,7 @@ def merge_clonality_labeling_batch(
     labels = (
         batch[CHEMIST_LABEL_COLUMN]
         .fillna("")
-        .astype(str)
-        .str.strip()
+        .map(normalize_annotation_label)
     )
     labeled = batch.loc[labels.ne(""), key_columns + [CHEMIST_LABEL_COLUMN]].copy()
     labeled[CHEMIST_LABEL_COLUMN] = labels.loc[labels.ne("")]
@@ -514,6 +523,60 @@ def _select_diverse_rows(
     result["LabelingSelectionReason"] = [reasons[index] for index in selected]
     result["LabelingFeatureDistance"] = [distances[index] for index in selected]
     return result
+
+
+def _expand_selected_to_parallel_rows(
+    selected: pd.DataFrame,
+    eligible_rows: pd.DataFrame,
+) -> pd.DataFrame:
+    """Include every unlabeled row for each selected DIT+assay pair."""
+    if selected.empty:
+        return selected
+    seed_keys = selected[["DIT", "_AssayKey"]].drop_duplicates()
+    expanded = eligible_rows.merge(
+        seed_keys,
+        on=["DIT", "_AssayKey"],
+        how="inner",
+        validate="many_to_one",
+    )
+    seed_meta = selected[
+        [
+            "DIT",
+            "_AssayKey",
+            "LabelingBatchRank",
+            "LabelingAssayRank",
+            "LabelingSelectionReason",
+            "LabelingFeatureDistance",
+        ]
+    ].drop_duplicates(subset=["DIT", "_AssayKey"], keep="first")
+    expanded = expanded.merge(
+        seed_meta,
+        on=["DIT", "_AssayKey"],
+        how="left",
+        validate="many_to_one",
+    )
+    expanded["_ParallelOrder"] = (
+        expanded.get("Well", pd.Series("", index=expanded.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        + "|"
+        + expanded.get("File", pd.Series("", index=expanded.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    expanded["LabelingSelectionReason"] = expanded["LabelingSelectionReason"].where(
+        expanded["IdentityKey"].isin(set(selected["IdentityKey"])),
+        expanded["LabelingSelectionReason"].fillna("") + "+parallel_pair",
+    )
+    expanded = expanded.sort_values(
+        ["LabelingBatchRank", "_ParallelOrder"],
+        kind="stable",
+    ).reset_index(drop=True)
+    expanded["LabelingBatchRank"] = np.arange(1, len(expanded) + 1, dtype=int)
+    expanded = expanded.drop(columns=["_ParallelOrder"])
+    return expanded
 
 
 def _standardized_matrix(frame: pd.DataFrame, columns: list[str]) -> np.ndarray:

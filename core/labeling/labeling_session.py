@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # Re-export the canonical label order so the GUI and the trainer never
 # drift. These are Norwegian — the chemist's working language.
 from core.analyses.clonality.ml_training import ANNOTATION_CLASSES_ORDER
+from core.analyses.clonality.ml_training import normalize_annotation_label
 from core.analyses.clonality.ml_data_contract import (
     CHEMIST_LABEL_COLUMN,
     load_tracking_run_table,
@@ -35,13 +36,14 @@ from core.analyses.clonality.ml_data_contract import (
 # Mirrors the order in ANNOTATION_CLASSES_ORDER.
 LABEL_KEYS: dict[str, str] = {
     "1": "monoklonal",
-    "2": "polyklonal",
-    "3": "bi_oligoklonal",
-    "4": "irregulaer",
-    "5": "pseudoklonal",
-    "6": "intet_pcr_produkt_darlig_dna",
-    "7": "qc_teknisk_fail",
-    "8": "usikker_review",
+    "2": "monoklonal_pa_poly",
+    "3": "polyklonal",
+    "4": "oligoklonal",
+    "5": "irregulaer",
+    "6": "lite_pcr_produkt",
+    "7": "intet_pcr_produkt",
+    "8": "qc_teknisk_fail",
+    "9": "usikker_review",
 }
 
 # Reverse lookup: label → shortcut key.
@@ -49,6 +51,7 @@ LABEL_TO_KEY: dict[str, str] = {v: k for k, v in LABEL_KEYS.items()}
 
 # Keep the chemist annotation separate from the rule-based suggestion.
 LABEL_COLUMN = CHEMIST_LABEL_COLUMN
+EXCLUDED_LABELING_ASSAYS = {"IKZF1", "Ktr-albumin"}
 
 
 @dataclass
@@ -100,9 +103,17 @@ class LabelingSession:
         self._primary_sheet = table.primary_sheet
         self._available_sheets = table.available_sheets
         if LABEL_COLUMN in df.columns:
-            df[LABEL_COLUMN] = df[LABEL_COLUMN].where(pd.notna(df[LABEL_COLUMN]), "").astype(object)
+            df[LABEL_COLUMN] = (
+                df[LABEL_COLUMN]
+                .where(pd.notna(df[LABEL_COLUMN]), "")
+                .map(normalize_annotation_label)
+                .astype(object)
+            )
         else:
             df[LABEL_COLUMN] = ""
+        if "Assay" in df.columns:
+            assay = df["Assay"].fillna("").astype(str).str.strip()
+            df = df.loc[~assay.isin(EXCLUDED_LABELING_ASSAYS)].reset_index(drop=True)
         self._df = df
 
         self.samples = []
@@ -146,6 +157,7 @@ class LabelingSession:
         """Set the label on sample at ``sample_index`` (0-based in ``self.samples``)."""
         if not (0 <= sample_index < len(self.samples)):
             raise IndexError(f"sample_index {sample_index} out of range (0-{len(self.samples) - 1})")
+        label = normalize_annotation_label(label)
         if label and label not in ANNOTATION_CLASSES_ORDER:
             raise ValueError(
                 f"Unknown label '{label}'. Valid: {list(ANNOTATION_CLASSES_ORDER)}"
@@ -153,6 +165,13 @@ class LabelingSession:
         sample = self.samples[sample_index]
         sample.current_label = label
         self._dirty = True
+
+    def label_parallel_group(self, sample_index: int, label: str) -> int:
+        """Apply one chemist label to all rows for the same DIT+assay pair."""
+        indices = self.parallel_indices_for(sample_index)
+        for index in indices:
+            self.label_sample(index, label)
+        return len(indices)
 
     def clear_label(self, sample_index: int) -> None:
         """Remove the label from a sample."""
@@ -234,6 +253,22 @@ class LabelingSession:
     def filter_review_needed(self) -> list[int]:
         """Return indices whose rule interpretation requires chemist review."""
         return [i for i, sample in enumerate(self.samples) if sample.rule_review_needed]
+
+    def parallel_indices_for(self, sample_index: int) -> list[int]:
+        """Return row indices for the same patient DIT and assay as a sample."""
+        if not (0 <= sample_index < len(self.samples)):
+            return []
+        sample = self.samples[sample_index]
+        dit = sample.dit.strip()
+        assay = sample.assay.strip()
+        if not dit or not assay:
+            return [sample_index]
+        indices = [
+            index
+            for index, candidate in enumerate(self.samples)
+            if candidate.dit.strip() == dit and candidate.assay.strip() == assay
+        ]
+        return sorted(indices, key=lambda index: (self.samples[index].well, self.samples[index].file_name))
 
     def fsa_path_for(self, sample_index: int, fsa_root: str) -> Path | None:
         """Resolve the FSA file path for a sample, given the FSA root dir."""

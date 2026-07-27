@@ -45,11 +45,12 @@ The canonical classes are:
 
 ```text
 monoklonal
+monoklonal_pa_poly
 polyklonal
-bi_oligoklonal
+oligoklonal
 irregulaer
-pseudoklonal
-intet_pcr_produkt_darlig_dna
+lite_pcr_produkt
+intet_pcr_produkt
 qc_teknisk_fail
 usikker_review
 ```
@@ -352,13 +353,16 @@ python -m scripts.prepare_clonality_labeling_batch `
 
 Selection is deterministic for the same inputs and random state. It balances
 assay quotas and favors feature diversity, unseen source runs, rule strata,
-and review-needed rows. Rule suggestions are sampling context only;
+and review-needed rows, then expands every selected DIT+assay to all available
+parallel patient traces. IKZF1 and Ktr-albumin are excluded from labeling
+batches by default. Rule suggestions are sampling context only;
 `ClonalityChemistLabel` is always blank in a new batch.
 
 Open the generated workbook and raw FSA root in the app's Labeling tab. The
 workbook uses the normal `Runs` contract, so keyboard labels and save behavior
-are unchanged. `Batch_Summary`, `Rule_Summary`, and `Batch_Metadata` document
-coverage and provenance.
+are unchanged. The labeling tab displays same-DIT same-assay parallels together
+and applies one keypress to the parallel group. `Batch_Summary`,
+`Rule_Summary`, and `Batch_Metadata` document coverage and provenance.
 
 The plot is produced by the same clonality analysis pipeline used for reports.
 It runs outside the GUI thread and shows ladder-calibrated base pairs, assay

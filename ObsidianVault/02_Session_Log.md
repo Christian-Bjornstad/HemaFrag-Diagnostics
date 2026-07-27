@@ -53,6 +53,12 @@ Phase 1 (delete-not-archive, per user):
 - Commits: `37112cb` (Phase 0), Phase 1 commit lands next.
 # HemaFrag Session Log
 
+## 2026-07-27 - Clonality Parallel Labeling Workflow
+
+- Updated chemist label vocabulary to `monoklonal`, `monoklonal_pa_poly`, `polyklonal`, `oligoklonal`, `irregulaer`, `lite_pcr_produkt`, `intet_pcr_produkt`, `qc_teknisk_fail`, and `usikker_review`; legacy saved labels normalize forward.
+- Labeling tab now displays same-DIT same-assay parallels together, applies label/clear to the parallel group, excludes IKZF1/Ktr-albumin, and shows a wider bp plot margin around assay windows.
+- Created a local private parallel-labeling workbook preserving 23 pilot labels; dry-run merge was clean. Verification: `python -m pytest tests -q` passed (`411 passed, 3 skipped`).
+
 ## 2026-07-26 - Clonality ML Baseline Cleanup
 
 - Set local `master` to track GitHub branch `origin/clonality-ml-phase-5-real-data-2026-07-11` as the active working baseline.

@@ -19,10 +19,10 @@ Triggering conditions (independently enforce), per entry:
      -> force to usikker_review (no ML inference)
   2. control_flag in {"kontroll_avvik", "kontaminasjon_mistenkt"}
      -> force to usikker_review
-  3. any of {intet_pcr_produkt_darlig_dna, qc_teknisk_fail}
+  3. any of {intet_pcr_produkt, qc_teknisk_fail}
      appearing as rule-derived fields
      -> force to usikker_review
-  4. ML argmax in {monoklonal, polyklonal, bi_oligoklonal} AND
+  4. ML argmax in {monoklonal, monoklonal_pa_poly, polyklonal} AND
      ML probability >= per_assay_accept_threshold[assay]
      -> accept; output ClonalityMLSuggestion / ClonalityMLConfidence
   5. Else
@@ -81,7 +81,7 @@ class CalibratedMLPrediction:
 _FORCED_REVIEW_REASON = {
     "ladder_qc": "ladder_qc_status did not pass (forbidden to auto-apply ML)",
     "control_flag": "control_flag triggered manual review",
-    "qc_or_dna_fail": "rule-derived qc_teknisk_fail / intet_pcr_produkt_darlig_dna",
+    "qc_or_dna_fail": "rule-derived qc_teknisk_fail / intet_pcr_produkt",
 }
 
 
@@ -91,10 +91,14 @@ _LADDER_QC_ACCEPTED = {"", "ok", "manual_adjustment"}
 _FORCE_REVIEW_CONTROL_FLAGS = {"kontroll_avvik", "kontaminasjon_mistenkt"}
 
 
-_RULE_FORCE_REVIEW_LABELS = {"qc_teknisk_fail", "intet_pcr_produkt_darlig_dna"}
+_RULE_FORCE_REVIEW_LABELS = {
+    "qc_teknisk_fail",
+    "intet_pcr_produkt",
+    "intet_pcr_produkt_darlig_dna",
+}
 
 
-_ACCEPTED_LABELS = {"monoklonal", "polyklonal", "bi_oligoklonal"}
+_ACCEPTED_LABELS = {"monoklonal", "monoklonal_pa_poly", "polyklonal"}
 
 
 def per_assay_threshold(assay: str, settings: dict[str, Any] | None = None) -> float:

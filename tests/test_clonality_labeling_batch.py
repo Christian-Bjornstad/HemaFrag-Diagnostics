@@ -139,6 +139,29 @@ def test_labeling_batch_workbook_loads_in_existing_gui_session(tmp_path):
         }.issubset(workbook.sheet_names)
 
 
+def test_labeling_batch_expands_selected_cases_to_parallel_rows():
+    tracking = _tracking_rows()
+    parallel = tracking.iloc[[1]].copy()
+    parallel["IdentityKey"] = "id-parallel"
+    parallel["File"] = "sample-parallel.fsa"
+    parallel["Well"] = "H12"
+    tracking = pd.concat([tracking, parallel], ignore_index=True)
+    features = _feature_rows(tracking)
+
+    batch = build_clonality_labeling_batch(
+        tracking.loc[tracking["IdentityKey"].isin(["id-2", "id-parallel"])],
+        features.loc[features["IdentityKey"].isin(["id-2", "id-parallel"])],
+        batch_id="parallel",
+        per_assay=1,
+        max_rows=1,
+        random_state=123,
+    )
+
+    assert set(batch.rows["IdentityKey"]) == {"id-2", "id-parallel"}
+    assert batch.rows["DIT"].nunique() == 1
+    assert batch.rows["Assay"].nunique() == 1
+
+
 def test_merge_labeling_batch_adds_safe_labels_and_preserves_conflicts(tmp_path):
     target = _tracking_rows().head(4).copy()
     target[CHEMIST_LABEL_COLUMN] = ["", "", "monoklonal", ""]
@@ -148,7 +171,7 @@ def test_merge_labeling_batch_adds_safe_labels_and_preserves_conflicts(tmp_path)
     batch = target.copy()
     batch[CHEMIST_LABEL_COLUMN] = [
         "polyklonal",
-        "bi_oligoklonal",
+        "oligoklonal",
         "polyklonal",
         "",
     ]
@@ -167,7 +190,7 @@ def test_merge_labeling_batch_adds_safe_labels_and_preserves_conflicts(tmp_path)
     )
     assert list(runs[CHEMIST_LABEL_COLUMN].fillna("")) == [
         "polyklonal",
-        "bi_oligoklonal",
+            "oligoklonal",
         "monoklonal",
         "",
     ]

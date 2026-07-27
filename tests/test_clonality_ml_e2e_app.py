@@ -105,7 +105,7 @@ def _make_model_dir(p: Path) -> Path:
         "schema_version": "ml_training_pipeline_v9",
         "assay": "FR1",
         "label_order": ["monoklonal", "polyklonal", "irregulaer",
-                        "bi_oligoklonal", "pseudoklonal"],
+                        "oligoklonal", "lite_pcr_produkt"],
         "accept_threshold_tau": 0.50,
         "classifier_kind": "random_forest",
         "rare_class_counts": {},
@@ -322,7 +322,7 @@ def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch)
     # ML columns are stamped
     assert out.get("ClonalityMLSuggestion") in {
         "monoklonal", "polyklonal", "irregulaer",
-        "bi_oligoklonal", "pseudoklonal", "",
+        "oligoklonal", "lite_pcr_produkt", "",
     }
     if out.get("ClonalityMLSuggestion"):
         # If ML emitted a label, the model_version stamp should be present

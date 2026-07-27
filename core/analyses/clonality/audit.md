@@ -87,10 +87,11 @@ Walked from `interpret_entry()` and `_interpret_<assay>()` functions. Each row b
 |--------------|-------------|-------|
 | `polyklonal` | zero peaks in window OR many small close-in-BP peaks | broad reference range, low signal-to-noise |
 | `monoklonal` | one dominant peak at expected bp height ≥ 2× second-tallest | FR1/FR2/FR3, TCRG/TCRB, IGK |
-| `bi_oligoklonal` | 2-3 dominant peaks in window, all near expected bp, height comparable | rare |
+| `monoklonal_pa_poly` | dominant monoclonal signal on polyclonal background | requires chemist label |
+| `oligoklonal` | 2-3 dominant peaks in window, all near expected bp, height comparable | rare |
 | `irregulaer` | peaks in window but no clean dominant pattern | noisy but not failing |
-| `pseudoklonal` | single dominant at bp just outside expected window | suspected pipetting artifact |
-| `intet_pcr_produkt_darlig_dna` | zero total peaks across all channels | sample-quality failure |
+| `lite_pcr_produkt` | weak but not absent PCR product | distinct from no-product |
+| `intet_pcr_produkt` | zero total peaks across all channels | sample-quality failure |
 | `qc_teknisk_fail` | input-DNA control failed | OR carry-over from `_interpret_*` |
 | `usikker_review` | forced rule fallback for ladder/QC/control uncertainty | always terminal in rule tracking; ML disagreement is stored separately as review evidence |
 
@@ -146,10 +147,11 @@ Keep all three under versioned definitions; bumping either triggers:
 
 ## Canonical ANNOTATION_CLASSES values
 
-`["polyklonal", "monoklonal", "bi_oligoklonal", "irregulaer", "pseudoklonal",
-  "intet_pcr_produkt_darlig_dna", "qc_teknisk_fail", "usikker_review"]`
+`["monoklonal", "monoklonal_pa_poly", "polyklonal", "oligoklonal",
+  "irregulaer", "lite_pcr_produkt", "intet_pcr_produkt",
+  "qc_teknisk_fail", "usikker_review"]`
 
-Eight classes total. Define new annotation classes ONLY after chemist sign-off,
+Nine classes total. Define new annotation classes ONLY after chemist sign-off,
 and bump `ANNOTATION_SCHEMA_VERSION`.
 
 ## OPEN: what this map does NOT (yet) cover

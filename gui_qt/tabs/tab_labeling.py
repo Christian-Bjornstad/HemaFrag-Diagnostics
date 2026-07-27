@@ -13,9 +13,9 @@ Daily workflow for the chemist:
 7. Progress bar shows X/N labeled
 
 Keyboard-only:
-  1=monoklonal, 2=polyklonal, 3=bi_oligoklonal, 4=irregulaer,
-  5=pseudoklonal, 6=intet_pcr_produkt_darlig_dna, 7=qc_teknisk_fail,
-  8=usikker_review
+  1=monoklonal, 2=monoklonal_pa_poly, 3=polyklonal, 4=oligoklonal,
+  5=irregulaer, 6=lite_pcr_produkt, 7=intet_pcr_produkt,
+  8=qc_teknisk_fail, 9=usikker_review
   Up/Down = navigate
   Backspace = clear label
   Ctrl+S = save to Excel
@@ -46,35 +46,58 @@ logger = logging.getLogger(__name__)
 
 
 class _PlotWorker(QThread):
-    """Analyze one FSA away from the GUI thread."""
+    """Analyze one or more parallel FSAs away from the GUI thread."""
 
     completed = pyqtSignal(int, str, object, str)
 
-    def __init__(self, generation: int, fsa_path: Path, parent=None):
+    def __init__(self, generation: int, fsa_paths: list[tuple[int, Path]], parent=None):
         super().__init__(parent)
         self._generation = generation
-        self._fsa_path = Path(fsa_path)
+        self._fsa_paths = [(index, Path(path)) for index, path in fsa_paths]
+        self.cached_items: list[dict] = []
 
     def run(self):
         try:
             from core.analyses.clonality.pipeline import _analyze_single_file
             from core.labeling.labeling_plot import build_labeling_plot_data
 
-            entry = _analyze_single_file(self._fsa_path)
-            if entry is None:
-                raise ValueError("The file was not recognized as a clonality assay.")
-            plot_data = build_labeling_plot_data(entry)
+            items = []
+            errors = []
+            for sample_index, fsa_path in self._fsa_paths:
+                try:
+                    entry = _analyze_single_file(fsa_path)
+                    if entry is None:
+                        raise ValueError("The file was not recognized as a clonality assay.")
+                    items.append(
+                        {
+                            "sample_index": sample_index,
+                            "fsa_path": str(fsa_path),
+                            "plot_data": build_labeling_plot_data(entry),
+                            "error": "",
+                        }
+                    )
+                except Exception as exc:  # noqa: BLE001 - keep other parallels visible
+                    logger.exception("Labeling plot analysis failed for %s", fsa_path)
+                    errors.append(f"{fsa_path.name}: {exc}")
+                    items.append(
+                        {
+                            "sample_index": sample_index,
+                            "fsa_path": str(fsa_path),
+                            "plot_data": None,
+                            "error": str(exc),
+                        }
+                    )
             self.completed.emit(
                 self._generation,
-                str(self._fsa_path),
-                plot_data,
                 "",
+                items,
+                "; ".join(errors),
             )
         except Exception as exc:
-            logger.exception("Labeling plot analysis failed for %s", self._fsa_path)
+            logger.exception("Labeling plot analysis failed")
             self.completed.emit(
                 self._generation,
-                str(self._fsa_path),
+                "",
                 None,
                 str(exc),
             )
@@ -103,6 +126,7 @@ class TabLabeling(QWidget):
         self._plot_worker = None
         self._pending_plot_request = None
         self._plot_cache = {}
+        self._plot_widgets = []
         self._build_ui()
         self._setup_shortcuts()
 
@@ -189,10 +213,11 @@ class TabLabeling(QWidget):
 
         # Label hint
         self.lbl_hint = QLabel(
-            "Keys: <b>1</b>=monoklonal &nbsp; <b>2</b>=polyklonal &nbsp; "
-            "<b>3</b>=bi_oligoklonal &nbsp; <b>4</b>=irregulaer<br>"
-            "<b>5</b>=pseudoklonal &nbsp; <b>6</b>=intet PCR &nbsp; "
-            "<b>7</b>=QC fail &nbsp; <b>8</b>=usikker<br>"
+            "Keys: <b>1</b>=monoklonal &nbsp; <b>2</b>=monoklonal på poly &nbsp; "
+            "<b>3</b>=polyklonal &nbsp; <b>4</b>=oligoklonal &nbsp; "
+            "<b>5</b>=irregulær<br>"
+            "<b>6</b>=lite PCR &nbsp; <b>7</b>=intet PCR &nbsp; "
+            "<b>8</b>=QC feil &nbsp; <b>9</b>=usikker<br>"
             "<b>↑/↓</b>=navigate &nbsp; <b>Backspace</b>=clear &nbsp; "
             "<b>Ctrl+S</b>=save &nbsp; <b>F</b>=filter"
         )
@@ -212,7 +237,13 @@ class TabLabeling(QWidget):
             self.plot_widget.setLabel("bottom", "Base pairs", units="bp")
             self.plot_widget.showGrid(x=False, y=True, alpha=0.3)
             self.plot_widget.addLegend()
-            detail_layout.addWidget(self.plot_widget, stretch=1)
+            self._plot_widgets = [self.plot_widget]
+            self.plot_stack = QWidget()
+            self.plot_stack_layout = QVBoxLayout(self.plot_stack)
+            self.plot_stack_layout.setContentsMargins(0, 0, 0, 0)
+            self.plot_stack_layout.setSpacing(6)
+            self.plot_stack_layout.addWidget(self.plot_widget, stretch=1)
+            detail_layout.addWidget(self.plot_stack, stretch=1)
         except Exception:
             self.plot_widget = QLabel("pyqtgraph not available — plots disabled")
             detail_layout.addWidget(self.plot_widget, stretch=1)
@@ -313,12 +344,22 @@ class TabLabeling(QWidget):
         sample = self._session.samples[idx]
         from core.labeling.labeling_session import LABEL_TO_KEY
         key = LABEL_TO_KEY.get(sample.current_label, "")
+        parallel_indices = self._session.parallel_indices_for(idx)
+        parallel_bits = []
+        for position, parallel_index in enumerate(parallel_indices, start=1):
+            parallel = self._session.samples[parallel_index]
+            parallel_key = LABEL_TO_KEY.get(parallel.current_label, "")
+            parallel_bits.append(
+                f"P{position}: {parallel.well or '?'} {parallel.file_name} "
+                f"[{parallel_key or '-'} {parallel.current_label or 'unlabeled'}]"
+            )
         self.lbl_metadata.setText(
             f"<b>DIT:</b> {sample.dit} &nbsp; "
             f"<b>Assay:</b> {sample.assay} &nbsp; "
             f"<b>Well:</b> {sample.well} &nbsp; "
             f"<b>Group:</b> {sample.group}<br>"
-            f"<b>File:</b> {sample.file_name}<br>"
+            f"<b>Parallels:</b> {len(parallel_indices)}<br>"
+            f"{'<br>'.join(parallel_bits)}<br>"
             f"<b>Run dir:</b> {sample.source_run_dir}<br>"
             f"<b>Rule:</b> {sample.rule_suggestion or 'none'}"
             f"{' (review)' if sample.rule_review_needed else ''}<br>"
@@ -327,51 +368,77 @@ class TabLabeling(QWidget):
             f"padding: 2px 6px; border-radius: 3px;'>"
             f"{key}: {sample.current_label or 'unlabeled'}</span>"
         )
-        self._render_plot(sample, idx)
+        self._render_plot_group(parallel_indices)
 
     def _render_current_plot(self):
         idx = self._current_sample_index()
         if idx < 0 or not self._session:
             return
-        self._render_plot(self._session.samples[idx], idx)
+        self._render_plot_group(self._session.parallel_indices_for(idx))
 
-    def _render_plot(self, sample, sample_index: int | None = None):
-        """Queue a calibrated FSA plot without blocking sample navigation."""
+    def _render_plot_group(self, sample_indices: list[int]):
+        """Queue calibrated FSA plots without blocking sample navigation."""
         if not hasattr(self.plot_widget, "clear"):
             return
         self._plot_generation += 1
         generation = self._plot_generation
         self._pending_plot_request = None
-        self.plot_widget.clear()
+        for widget in self._plot_widgets:
+            widget.clear()
         if not self._fsa_root:
             self.lbl_plot_status.setText("Select an FSA root to load the calibrated trace")
             return
-        if sample_index is None:
-            sample_index = self._session.samples.index(sample)
-        fsa_path = self._session.fsa_path_for(
-            sample_index,
-            self._fsa_root,
-        )
-        if fsa_path is None:
-            self.lbl_plot_status.setText("FSA file not found under the selected root")
-            return
-        fsa_path = Path(fsa_path)
-        cache_key = str(fsa_path.resolve())
-        cached = self._plot_cache.get(cache_key)
-        if cached is not None and cached[0] == _file_mtime(fsa_path):
-            self._apply_plot_data(cached[1])
+        cached_items: list[dict] = []
+        requests: list[tuple[int, Path]] = []
+        for sample_index in sample_indices:
+            fsa_path = self._session.fsa_path_for(sample_index, self._fsa_root)
+            if fsa_path is None:
+                cached_items.append(
+                    {
+                        "sample_index": sample_index,
+                        "fsa_path": "",
+                        "plot_data": None,
+                        "error": "FSA file not found under the selected root",
+                    }
+                )
+                continue
+            fsa_path = Path(fsa_path)
+            cache_key = str(fsa_path.resolve())
+            cached = self._plot_cache.get(cache_key)
+            if cached is not None and cached[0] == _file_mtime(fsa_path):
+                cached_items.append(
+                    {
+                        "sample_index": sample_index,
+                        "fsa_path": str(fsa_path),
+                        "plot_data": cached[1],
+                        "error": "",
+                    }
+                )
+            else:
+                requests.append((sample_index, fsa_path))
+        if not requests:
+            self._apply_plot_group(cached_items)
             return
 
-        self.lbl_plot_status.setText(f"Analyzing {sample.assay} trace...")
-        request = (generation, fsa_path)
+        first = self._session.samples[sample_indices[0]]
+        self.lbl_plot_status.setText(
+            f"Analyzing {first.assay} parallels ({len(sample_indices)} traces)..."
+        )
+        request = (generation, requests, cached_items)
         if self._plot_worker is not None and self._plot_worker.isRunning():
             self._pending_plot_request = request
             return
         self._start_plot_worker(*request)
 
-    def _start_plot_worker(self, generation: int, fsa_path: Path):
+    def _start_plot_worker(
+        self,
+        generation: int,
+        fsa_paths: list[tuple[int, Path]],
+        cached_items: list[dict] | None = None,
+    ):
         self._pending_plot_request = None
-        worker = _PlotWorker(generation, fsa_path, self)
+        worker = _PlotWorker(generation, fsa_paths, self)
+        worker.cached_items = list(cached_items or [])
         self._plot_worker = worker
         worker.completed.connect(self._on_plot_ready)
         worker.finished.connect(
@@ -386,18 +453,23 @@ class TabLabeling(QWidget):
         plot_data,
         error: str,
     ):
-        if plot_data is not None:
-            cache_key = str(Path(fsa_path).resolve())
-            self._plot_cache[cache_key] = (_file_mtime(Path(fsa_path)), plot_data)
-            while len(self._plot_cache) > 32:
-                self._plot_cache.pop(next(iter(self._plot_cache)))
         if generation != self._plot_generation:
             return
-        if error:
-            self.plot_widget.clear()
+        if plot_data is None:
+            for widget in self._plot_widgets:
+                widget.clear()
             self.lbl_plot_status.setText(f"Plot unavailable: {error}")
             return
-        self._apply_plot_data(plot_data)
+        items = [*getattr(self._plot_worker, "cached_items", []), *list(plot_data)]
+        for item in items:
+            item_data = item.get("plot_data")
+            item_path = item.get("fsa_path")
+            if item_data is not None and item_path:
+                path = Path(item_path)
+                self._plot_cache[str(path.resolve())] = (_file_mtime(path), item_data)
+        while len(self._plot_cache) > 64:
+            self._plot_cache.pop(next(iter(self._plot_cache)))
+        self._apply_plot_group(items)
 
     def _on_plot_worker_finished(self, worker=None):
         worker = worker or self._plot_worker
@@ -412,85 +484,138 @@ class TabLabeling(QWidget):
             self._start_plot_worker(*pending)
 
     def _apply_plot_data(self, plot_data):
-        if plot_data is None or not hasattr(self.plot_widget, "clear"):
+        self._apply_plot_group(
+            [{"sample_index": self._current_sample_index(), "plot_data": plot_data, "error": ""}]
+        )
+
+    def _apply_plot_group(self, items):
+        if not hasattr(self.plot_widget, "clear"):
+            return
+        items = list(items or [])
+        if not items:
             return
         try:
-            pg = _import_pyqtgraph()
-            colors = {
-                "DATA1": "#2563eb",
-                "DATA2": "#16a34a",
-                "DATA3": "#ea580c",
-            }
-            self.plot_widget.clear()
-            for start, end in plot_data.interpretation_ranges:
-                region = pg.LinearRegionItem(
-                    values=(start, end),
-                    movable=False,
-                    brush=pg.mkBrush(214, 198, 105, 55),
-                    pen=pg.mkPen(168, 145, 42, 100),
+            self._ensure_plot_widgets(len(items))
+            status_parts = []
+            for widget, item in zip(self._plot_widgets, items):
+                plot_data = item.get("plot_data")
+                sample_index = item.get("sample_index", -1)
+                sample = (
+                    self._session.samples[sample_index]
+                    if self._session
+                    and isinstance(sample_index, int)
+                    and 0 <= sample_index < len(self._session.samples)
+                    else None
                 )
-                region.setZValue(-20)
-                self.plot_widget.addItem(region)
-
-            for trace in plot_data.traces:
-                self.plot_widget.plot(
-                    trace.basepairs,
-                    trace.rfu,
-                    pen=pg.mkPen(colors.get(trace.channel, "#475569"), width=1.1),
-                    name=trace.channel,
+                if plot_data is None:
+                    widget.clear()
+                    title = f"{sample.well if sample else 'Parallel'}: plot unavailable"
+                    widget.setTitle(title)
+                    status_parts.append(f"{title} ({item.get('error') or 'error'})")
+                    continue
+                self._draw_plot_data(widget, plot_data, sample=sample)
+                ranges = ", ".join(
+                    f"{start:g}-{end:g} bp"
+                    for start, end in plot_data.interpretation_ranges
+                ) or "none configured"
+                status_parts.append(
+                    f"{sample.well if sample else plot_data.assay}: "
+                    f"{plot_data.ladder_qc_status}, {len(plot_data.peaks)} peaks, "
+                    f"review windows: {ranges}"
                 )
-
-            for channel in sorted({peak.channel for peak in plot_data.peaks}):
-                peaks = [peak for peak in plot_data.peaks if peak.channel == channel]
-                self.plot_widget.plot(
-                    [peak.basepair for peak in peaks],
-                    [peak.rfu for peak in peaks],
-                    pen=None,
-                    symbol="o",
-                    symbolSize=7,
-                    symbolPen=pg.mkPen(colors.get(channel, "#111827"), width=1.5),
-                    symbolBrush=pg.mkBrush("#ffffff"),
-                    name=f"{channel} peaks",
-                )
-
-            labeled_peaks = sorted(
-                (peak for peak in plot_data.peaks if peak.kept),
-                key=lambda peak: peak.rfu,
-                reverse=True,
-            )[:12]
-            for peak in labeled_peaks:
-                label = pg.TextItem(
-                    text=f"{peak.basepair:.1f}",
-                    color=colors.get(peak.channel, "#111827"),
-                    anchor=(0.5, 1.15),
-                )
-                label.setPos(peak.basepair, peak.rfu)
-                self.plot_widget.addItem(label)
-
-            self.plot_widget.setXRange(
-                plot_data.bp_min,
-                plot_data.bp_max,
-                padding=0,
-            )
-            self.plot_widget.enableAutoRange(axis="y", enable=True)
-            ranges = ", ".join(
-                f"{start:g}-{end:g} bp"
-                for start, end in plot_data.interpretation_ranges
-            ) or "none configured"
-            self.lbl_plot_status.setText(
-                f"{plot_data.assay} | ladder QC: {plot_data.ladder_qc_status} | "
-                f"{len(plot_data.peaks)} detected peaks | review windows: {ranges}"
-            )
+            self.lbl_plot_status.setText(" | ".join(status_parts))
         except Exception as exc:
             logger.exception("Plot rendering failed")
             self.lbl_plot_status.setText(f"Plot unavailable: {exc}")
+
+    def _draw_plot_data(self, widget, plot_data, *, sample=None):
+        pg = _import_pyqtgraph()
+        colors = {
+            "DATA1": "#2563eb",
+            "DATA2": "#16a34a",
+            "DATA3": "#ea580c",
+        }
+        widget.clear()
+        title_parts = []
+        if sample is not None:
+            title_parts.extend([sample.well or "?", sample.file_name])
+            if sample.current_label:
+                title_parts.append(sample.current_label)
+        widget.setTitle(" | ".join(title_parts) if title_parts else plot_data.assay)
+        for start, end in plot_data.interpretation_ranges:
+            region = pg.LinearRegionItem(
+                values=(start, end),
+                movable=False,
+                brush=pg.mkBrush(214, 198, 105, 55),
+                pen=pg.mkPen(168, 145, 42, 100),
+            )
+            region.setZValue(-20)
+            widget.addItem(region)
+
+        for trace in plot_data.traces:
+            widget.plot(
+                trace.basepairs,
+                trace.rfu,
+                pen=pg.mkPen(colors.get(trace.channel, "#475569"), width=1.1),
+                name=trace.channel,
+            )
+
+        for channel in sorted({peak.channel for peak in plot_data.peaks}):
+            peaks = [peak for peak in plot_data.peaks if peak.channel == channel]
+            widget.plot(
+                [peak.basepair for peak in peaks],
+                [peak.rfu for peak in peaks],
+                pen=None,
+                symbol="o",
+                symbolSize=7,
+                symbolPen=pg.mkPen(colors.get(channel, "#111827"), width=1.5),
+                symbolBrush=pg.mkBrush("#ffffff"),
+                name=f"{channel} peaks",
+            )
+
+        labeled_peaks = sorted(
+            (peak for peak in plot_data.peaks if peak.kept),
+            key=lambda peak: peak.rfu,
+            reverse=True,
+        )[:12]
+        for peak in labeled_peaks:
+            label = pg.TextItem(
+                text=f"{peak.basepair:.1f}",
+                color=colors.get(peak.channel, "#111827"),
+                anchor=(0.5, 1.15),
+            )
+            label.setPos(peak.basepair, peak.rfu)
+            widget.addItem(label)
+
+        widget.setXRange(plot_data.bp_min, plot_data.bp_max, padding=0.02)
+        widget.enableAutoRange(axis="y", enable=True)
+
+    def _ensure_plot_widgets(self, count: int):
+        if not hasattr(self, "plot_stack_layout"):
+            return
+        pg = _import_pyqtgraph()
+        count = max(1, int(count))
+        while len(self._plot_widgets) < count:
+            widget = pg.PlotWidget()
+            widget.setLabel("left", "RFU")
+            widget.setLabel("bottom", "Base pairs", units="bp")
+            widget.showGrid(x=False, y=True, alpha=0.3)
+            widget.addLegend()
+            widget.setXLink(self._plot_widgets[0])
+            self._plot_widgets.append(widget)
+            self.plot_stack_layout.addWidget(widget, stretch=1)
+        while len(self._plot_widgets) > count:
+            widget = self._plot_widgets.pop()
+            self.plot_stack_layout.removeWidget(widget)
+            widget.setParent(None)
+            widget.deleteLater()
 
     def _on_label_key(self, label: str):
         visible_row = self.sample_list.currentRow()
         idx = self._current_sample_index()
         if idx < 0 or not self._session:
             return
-        self._session.label_sample(idx, label)
+        self._session.label_parallel_group(idx, label)
         self._refresh_sample_list()
         if self.sample_list.count() == 0:
             return
@@ -503,7 +628,8 @@ class TabLabeling(QWidget):
         idx = self._current_sample_index()
         if idx < 0 or not self._session:
             return
-        self._session.clear_label(idx)
+        for index in self._session.parallel_indices_for(idx):
+            self._session.clear_label(index)
         self._refresh_sample_list()
 
     def _on_next_sample(self):

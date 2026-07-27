@@ -135,7 +135,7 @@ def _quality_review_reasons(
     if bool(entry.get("ClonalityReviewNeeded", False)):
         reasons.append("rule_review")
     rule_label = str(entry.get("ClonalitySuggestion") or "").strip()
-    if rule_label in {"usikker_review", "qc_teknisk_fail", "intet_pcr_produkt_darlig_dna"}:
+    if rule_label in {"usikker_review", "qc_teknisk_fail", "intet_pcr_produkt_darlig_dna", "intet_pcr_produkt"}:
         reasons.append("rule_quality")
     return list(dict.fromkeys(reasons))
 
@@ -232,10 +232,11 @@ def _do_attach(entry: dict[str, Any], store: ClonalityModelStore) -> dict[str, A
     if bool(result["review_needed"]):
         reasons.append("low_confidence")
     if label in {
-        "bi_oligoklonal",
+        "monoklonal_pa_poly",
+        "oligoklonal",
         "irregulaer",
-        "pseudoklonal",
-        "intet_pcr_produkt_darlig_dna",
+        "lite_pcr_produkt",
+        "intet_pcr_produkt",
         "qc_teknisk_fail",
         "usikker_review",
     }:

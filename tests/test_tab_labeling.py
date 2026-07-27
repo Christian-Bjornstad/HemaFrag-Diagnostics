@@ -238,7 +238,7 @@ def test_tab_applies_calibrated_plot_data(qapp):
 
     assert "FR1" in tab.lbl_plot_status.text()
     assert "310-360 bp" in tab.lbl_plot_status.text()
-    assert "1 detected peaks" in tab.lbl_plot_status.text()
+    assert "1 peaks" in tab.lbl_plot_status.text()
     assert tab.plot_widget.getAxis("bottom").labelText == "Base pairs"
 
 

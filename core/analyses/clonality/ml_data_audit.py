@@ -19,7 +19,10 @@ from core.analyses.clonality.ml_data_contract import (
     load_tracking_run_table,
     missing_required_columns,
 )
-from core.analyses.clonality.ml_training import ANNOTATION_CLASSES_ORDER
+from core.analyses.clonality.ml_training import (
+    ANNOTATION_CLASSES_ORDER,
+    normalize_annotation_label,
+)
 
 
 ML_DATA_AUDIT_VERSION = "v1"
@@ -113,8 +116,9 @@ def audit_clonality_ml_data(
         if column not in rows.columns:
             rows[column] = ""
 
-    for column in (*REQUIRED_TRAINING_COLUMNS, label_column):
+    for column in REQUIRED_TRAINING_COLUMNS:
         rows[column] = rows[column].map(_clean_text)
+    rows[label_column] = rows[label_column].map(normalize_annotation_label)
 
     if rows.empty:
         _add_issue(issues, "error", "no_training_rows", 0, "No patient rows were found.")

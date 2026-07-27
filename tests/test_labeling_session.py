@@ -162,7 +162,7 @@ def test_save_round_trip(tmp_path):
     session = LabelingSession(excel_path=path)
     session.load()
     session.label_sample(0, "polyklonal")
-    session.label_sample(1, "bi_oligoklonal")
+    session.label_sample(1, "oligoklonal")
     written = session.save_to_excel()
     assert written == 2
 
@@ -170,9 +170,28 @@ def test_save_round_trip(tmp_path):
     session2 = LabelingSession(excel_path=path)
     session2.load()
     assert session2.samples[0].current_label == "polyklonal"
-    assert session2.samples[1].current_label == "bi_oligoklonal"
+    assert session2.samples[1].current_label == "oligoklonal"
     assert session2.samples[2].current_label == "monoklonal"  # preserved
     assert session2.labeled_count == 3
+
+
+def test_legacy_label_aliases_normalize_on_load_and_save(tmp_path):
+    path = _make_test_excel(tmp_path)
+    session = LabelingSession(excel_path=path)
+    session.load()
+    session.label_sample(1, "bi_oligoklonal")
+    assert session.samples[1].current_label == "oligoklonal"
+
+
+def test_label_parallel_group_sets_same_dit_assay_rows(tmp_path):
+    path = _make_test_excel(tmp_path)
+    session = LabelingSession(excel_path=path)
+    session.load()
+
+    assert session.parallel_indices_for(0) == [0]
+    session.label_parallel_group(0, "monoklonal_pa_poly")
+
+    assert session.samples[0].current_label == "monoklonal_pa_poly"
 
 
 def test_save_only_writes_changed_labels(tmp_path):

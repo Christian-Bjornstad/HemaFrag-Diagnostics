@@ -67,13 +67,18 @@ def build_labeling_plot_data(entry: Mapping) -> LabelingPlotData:
         bp_max = float(np.nanmax(basepairs))
     if bp_max <= bp_min:
         raise ValueError(f"Invalid base-pair plot range: {bp_min:g}-{bp_max:g}.")
+    reference_bp_min = float(bp_min)
+    reference_bp_max = float(bp_max)
+    display_margin = max(20.0, (reference_bp_max - reference_bp_min) * 0.08)
+    display_bp_min = max(float(np.nanmin(basepairs)), reference_bp_min - display_margin)
+    display_bp_max = min(float(np.nanmax(basepairs)), reference_bp_max + display_margin)
 
     configured_channels = entry.get("trace_channels") or config.get("trace_channels") or []
     if isinstance(configured_channels, str):
         configured_channels = [configured_channels]
 
     traces: list[LabelingTrace] = []
-    window = (basepairs >= bp_min) & (basepairs <= bp_max)
+    window = (basepairs >= display_bp_min) & (basepairs <= display_bp_max)
     for channel_value in configured_channels:
         channel = str(channel_value)
         raw_trace = raw_channels.get(channel)
@@ -111,7 +116,7 @@ def build_labeling_plot_data(entry: Mapping) -> LabelingPlotData:
                 peak_rfu = _finite_float(row.get("peaks"))
                 if peak_bp is None or peak_rfu is None:
                     continue
-                if not bp_min <= peak_bp <= bp_max:
+                if not display_bp_min <= peak_bp <= display_bp_max:
                     continue
                 peaks.append(
                     LabelingPeak(
@@ -123,17 +128,17 @@ def build_labeling_plot_data(entry: Mapping) -> LabelingPlotData:
                 )
 
     ranges = tuple(
-        (max(bp_min, float(start)), min(bp_max, float(end)))
+        (max(reference_bp_min, float(start)), min(reference_bp_max, float(end)))
         for start, end in assay_interpretation_ranges(assay)
-        if min(bp_max, float(end)) > max(bp_min, float(start))
+        if min(reference_bp_max, float(end)) > max(reference_bp_min, float(start))
     )
     return LabelingPlotData(
         assay=assay,
         traces=tuple(traces),
         peaks=tuple(peaks),
         interpretation_ranges=ranges,
-        bp_min=bp_min,
-        bp_max=bp_max,
+        bp_min=display_bp_min,
+        bp_max=display_bp_max,
         ladder_qc_status=str(entry.get("ladder_qc_status") or "unknown"),
     )
 

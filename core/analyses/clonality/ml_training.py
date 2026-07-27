@@ -58,14 +58,19 @@ from core.analyses.clonality.ml_data_contract import (
 # off on a new annotation class.
 ANNOTATION_CLASSES_ORDER: tuple[str, ...] = (
     "monoklonal",
+    "monoklonal_pa_poly",
     "polyklonal",
-    "bi_oligoklonal",
+    "oligoklonal",
     "irregulaer",
-    "pseudoklonal",
-    "intet_pcr_produkt_darlig_dna",
+    "lite_pcr_produkt",
+    "intet_pcr_produkt",
     "qc_teknisk_fail",
     "usikker_review",
 )
+LEGACY_LABEL_ALIASES: dict[str, str] = {
+    "bi_oligoklonal": "oligoklonal",
+    "intet_pcr_produkt_darlig_dna": "intet_pcr_produkt",
+}
 RUNTIME_MODEL_SCHEMA_VERSION = "ml_training_pipeline_v9"
 TREE_CLASSIFIER_KINDS = {"random_forest", "extra_trees"}
 CALIBRATION_FOLDS = 3
@@ -117,6 +122,8 @@ DEFAULT_NON_FEATURE_COLUMNS = {
 
 __all__ = [
     "ANNOTATION_CLASSES_ORDER",
+    "LEGACY_LABEL_ALIASES",
+    "normalize_annotation_label",
     "RUNTIME_MODEL_SCHEMA_VERSION",
     "build_per_assay_datasets",
     "group_shuffle_split_by_dit",
@@ -129,6 +136,12 @@ __all__ = [
     "PerAssayMetrics",
     "summarize_class_support",
 ]
+
+
+def normalize_annotation_label(value: Any) -> str:
+    """Return the canonical chemist label, preserving blank labels."""
+    label = str(value or "").strip()
+    return LEGACY_LABEL_ALIASES.get(label, label)
 
 
 def summarize_class_support(
@@ -321,7 +334,7 @@ def build_per_assay_datasets(
     if dit_col not in combined_df.columns:
         raise KeyError(f"column {dit_col!r} not in dataframe")
 
-    labels = combined_df[label_col].fillna("").astype(str).str.strip()
+    labels = combined_df[label_col].fillna("").map(normalize_annotation_label)
     combined_df = combined_df.loc[labels.ne("")].copy()
     combined_df[label_col] = labels.loc[labels.ne("")]
     invalid_labels = sorted(

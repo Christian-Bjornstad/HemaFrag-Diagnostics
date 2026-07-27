@@ -13,6 +13,7 @@ import pandas as pd
 from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
 from core.analyses.clonality.ml_training import (
     ANNOTATION_CLASSES_ORDER,
+    normalize_annotation_label,
     summarize_class_support,
 )
 from core.analyses.clonality.ml_validation import CORE_CLONALITY_LABELS
@@ -100,8 +101,7 @@ def assess_clonality_label_readiness(
     merged[CHEMIST_LABEL_COLUMN] = (
         merged[CHEMIST_LABEL_COLUMN]
         .fillna("")
-        .astype(str)
-        .str.strip()
+        .map(normalize_annotation_label)
     )
     invalid = sorted(
         set(merged[CHEMIST_LABEL_COLUMN].unique())

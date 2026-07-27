@@ -88,7 +88,7 @@ def _make_tiny_rf(n_classes=3, n_samples=200, n_features=10):
     from sklearn.calibration import CalibratedClassifierCV
     X = NP_RNG.uniform(0, 1, size=(n_samples, n_features))
     label_idx = NP_RNG.choice(n_classes, size=n_samples)
-    labels = ["monoklonal", "polyklonal", "bi_oligoklonal"][:n_classes]
+    labels = ["monoklonal", "polyklonal", "oligoklonal"][:n_classes]
     y = NP_RNG.choice(labels, size=n_samples)
     base = RandomForestClassifier(n_estimators=20, random_state=42)
     calibrated = CalibratedClassifierCV(base, method="sigmoid", cv=3)
@@ -97,7 +97,7 @@ def _make_tiny_rf(n_classes=3, n_samples=200, n_features=10):
 
 
 def test_predict_with_rejection_accepts_high_probability():
-    calibrated, _ = _make_tiny_rf()
+    calibrated, _ = _make_tiny_rf(n_classes=2)
     n_features = 10
     X = NP_RNG.uniform(0, 1, size=(1, n_features))
     pred = predict_with_rejection(
@@ -106,7 +106,7 @@ def test_predict_with_rejection_accepts_high_probability():
         artifact_path="/tmp/test.whl",
     )
     assert pred.accepted
-    assert pred.label in ("monoklonal", "polyklonal", "bi_oligoklonal")
+    assert pred.label in ("monoklonal", "polyklonal")
     assert 0.0 < pred.confidence < 1.0
     assert pred.artifact_path == "/tmp/test.whl"
 
@@ -213,12 +213,12 @@ def test_calibration_loader_rejects_unvalidated_roundtrip_artifact(tmp_path):
     n_features = 5
     X = pd.DataFrame(NP_RNG.uniform(0, 1, size=(n_samples, n_features)),
                       columns=["f0", "f1", "f2", "f3", "f4"])
-    y = pd.Series(NP_RNG.choice(["monoklonal", "polyklonal", "bi_oligoklonal"],
+    y = pd.Series(NP_RNG.choice(["monoklonal", "polyklonal", "oligoklonal"],
                                   size=n_samples))
     estimator = fit_classifier(X, y, kind="random_forest")
     paths = serialize_model(
         estimator,
-        label_order=["monoklonal", "polyklonal", "bi_oligoklonal", "_default=8"],
+        label_order=["monoklonal", "polyklonal", "oligoklonal", "_default=8"],
         assay="FR1",
         accept_threshold_tau=0.20,        # accept almost anything
         classifier_kind="random_forest",
@@ -278,7 +278,7 @@ def test_predict_with_rejection_handles_uncoercible_feature_values():
         assay="FR1", tau=0.20,   # low tau so even mediocre confidence accepts
     )
     # Whether accepted or rejected, the function must NOT raise.
-    assert pred.label in ("monoklonal", "polyklonal", "bi_oligoklonal",
-                          "irregulaer", "pseudoklonal",
-                          "intet_pcr_produkt_darlig_dna", "qc_teknisk_fail",
+    assert pred.label in ("monoklonal", "monoklonal_pa_poly", "polyklonal", "oligoklonal",
+                          "irregulaer", "lite_pcr_produkt",
+                          "intet_pcr_produkt", "qc_teknisk_fail",
                           "usikker_review")

@@ -22,10 +22,11 @@ from core.analyses.clonality.ml_training import (
 
 
 REVIEW_ROUTED_LABELS = {
-    "bi_oligoklonal",
+    "monoklonal_pa_poly",
+    "oligoklonal",
     "irregulaer",
-    "pseudoklonal",
-    "intet_pcr_produkt_darlig_dna",
+    "lite_pcr_produkt",
+    "intet_pcr_produkt",
     "qc_teknisk_fail",
     "usikker_review",
 }

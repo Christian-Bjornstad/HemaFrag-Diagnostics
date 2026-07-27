@@ -45,17 +45,17 @@ def test_build_labeling_plot_data_uses_calibrated_bp_axis_and_assay_window():
     result = build_labeling_plot_data(_entry())
 
     assert result.assay == "IGK"
-    assert result.bp_min == 90.0
-    assert result.bp_max == 330.0
+    assert result.bp_min == 80.0
+    assert result.bp_max == 340.0
     assert result.interpretation_ranges == ((120.0, 160.0), (190.0, 300.0))
     assert [trace.channel for trace in result.traces] == ["DATA1", "DATA2"]
     np.testing.assert_array_equal(
         result.traces[0].basepairs,
-        [90.0, 120.0, 150.0, 200.0, 250.0, 330.0],
+        [80.0, 90.0, 120.0, 150.0, 200.0, 250.0, 330.0, 340.0],
     )
     np.testing.assert_array_equal(
         result.traces[0].rfu,
-        [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+        [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0],
     )
 
 
@@ -65,6 +65,7 @@ def test_build_labeling_plot_data_filters_out_of_window_peaks_and_preserves_keep
     assert [(peak.basepair, peak.kept) for peak in result.peaks] == [
         (120.0, True),
         (250.0, False),
+        (340.0, True),
     ]
     assert result.ladder_qc_status == "ok"
 
