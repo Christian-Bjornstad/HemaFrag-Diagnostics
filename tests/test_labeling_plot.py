@@ -45,18 +45,18 @@ def test_build_labeling_plot_data_uses_calibrated_bp_axis_and_assay_window():
     result = build_labeling_plot_data(_entry())
 
     assert result.assay == "IGK"
-    assert result.bp_min == 80.0
+    assert result.bp_min == 100.0
     assert result.bp_max == 340.0
     assert result.interpretation_ranges == ((120.0, 160.0), (190.0, 300.0))
     assert result.nonspecific_peaks == (217.0,)
     assert [trace.channel for trace in result.traces] == ["DATA1", "DATA2"]
     np.testing.assert_array_equal(
         result.traces[0].basepairs,
-        [80.0, 90.0, 120.0, 150.0, 200.0, 250.0, 330.0, 340.0],
+        [120.0, 150.0, 200.0, 250.0, 330.0, 340.0],
     )
     np.testing.assert_array_equal(
         result.traces[0].rfu,
-        [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0],
+        [20.0, 30.0, 40.0, 50.0, 60.0, 70.0],
     )
 
 

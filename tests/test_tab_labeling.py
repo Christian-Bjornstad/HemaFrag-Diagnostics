@@ -260,6 +260,49 @@ def test_tab_applies_calibrated_plot_data(qapp):
     assert tab.plot_widget.getAxis("bottom").labelText == "Base pairs"
 
 
+def test_tab_paginates_more_than_two_parallel_plots(qapp):
+    pytest.importorskip("pyqtgraph")
+
+    from core.labeling.labeling_plot import LabelingPlotData, LabelingTrace
+    from gui_qt.tabs.tab_labeling import TabLabeling
+
+    tab = TabLabeling()
+    items = []
+    for index in range(4):
+        items.append(
+            {
+                "sample_index": index,
+                "plot_data": LabelingPlotData(
+                    assay="FR1",
+                    traces=(
+                        LabelingTrace(
+                            channel="DATA1",
+                            basepairs=np.asarray([280.0, 320.0]),
+                            rfu=np.asarray([5.0, 80.0]),
+                        ),
+                    ),
+                    peaks=(),
+                    interpretation_ranges=((310.0, 360.0),),
+                    bp_min=280.0,
+                    bp_max=420.0,
+                    ladder_qc_status="ok",
+                ),
+                "error": "",
+            }
+        )
+
+    tab._apply_plot_group(items)
+
+    assert len(tab._plot_widgets) == 2
+    assert not tab.plot_page_nav.isHidden()
+    assert "Plots 1-2 of 4" in tab.lbl_plot_page.text()
+
+    tab._on_next_plot_page()
+
+    assert len(tab._plot_widgets) == 2
+    assert "Plots 3-4 of 4" in tab.lbl_plot_page.text()
+
+
 def test_tab_ignores_stale_plot_result(qapp, monkeypatch):
     from gui_qt.tabs.tab_labeling import TabLabeling
 

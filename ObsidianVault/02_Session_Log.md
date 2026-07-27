@@ -59,6 +59,7 @@ Phase 1 (delete-not-archive, per user):
 - Labeling tab now displays same-DIT same-assay parallels together, applies label/clear to the parallel group, excludes IKZF1/Ktr-albumin, and shows a wider bp plot margin around assay windows.
 - Created a local private parallel-labeling workbook preserving 23 pilot labels; dry-run merge was clean. Verification: `python -m pytest tests -q` passed (`411 passed, 3 skipped`).
 - Follow-up: number-key labels now apply only to the selected injection, with compact per-plot label buttons for each parallel; wide view hides the app sidebar, metadata text is minimized, and known nonspecific peak bp values are drawn as dotted plot markers. Current private workbook dry-run: 152 labels, 0 conflicts/missing. Verification: `python -m pytest tests -q` passed (`412 passed, 3 skipped`).
+- Follow-up: removed per-plot label buttons, kept per-injection keyboard labeling, added assay-specific labeling x-axis starts, and paginated rerun groups to max two plots at a time. Current private workbook dry-run: 152 labels, 0 conflicts/missing. Verification: `python -m pytest tests -q` passed (`413 passed, 3 skipped`).
 
 ## 2026-07-26 - Clonality ML Baseline Cleanup
 

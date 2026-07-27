@@ -11,6 +11,18 @@ from core.analyses.clonality.config import ASSAY_CONFIG, NONSPECIFIC_PEAKS
 from core.analyses.clonality.interpretation import assay_interpretation_ranges
 
 
+LABELING_BP_START_OVERRIDES: dict[str, float] = {
+    "IGK": 100.0,
+    "TCRBA": 210.0,
+    "TCRBB": 210.0,
+    "TCRBC": 150.0,
+    "TCRGA": 110.0,
+    "TCRGB": 60.0,
+    "DHJHE": 60.0,
+    "KDE": 200.0,
+}
+
+
 @dataclass(frozen=True)
 class LabelingTrace:
     channel: str
@@ -73,6 +85,9 @@ def build_labeling_plot_data(entry: Mapping) -> LabelingPlotData:
     display_margin = max(20.0, (reference_bp_max - reference_bp_min) * 0.08)
     display_bp_min = max(float(np.nanmin(basepairs)), reference_bp_min - display_margin)
     display_bp_max = min(float(np.nanmax(basepairs)), reference_bp_max + display_margin)
+    start_override = LABELING_BP_START_OVERRIDES.get(_assay_key(assay))
+    if start_override is not None:
+        display_bp_min = max(display_bp_min, float(start_override))
 
     configured_channels = entry.get("trace_channels") or config.get("trace_channels") or []
     if isinstance(configured_channels, str):
@@ -171,3 +186,14 @@ def _as_bool(value, *, default: bool) -> bool:
         if normalized in {"false", "0", "no", "nei"}:
             return False
     return bool(value)
+
+
+def _assay_key(value: object) -> str:
+    return (
+        str(value or "")
+        .strip()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .upper()
+    )

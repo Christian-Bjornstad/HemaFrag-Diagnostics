@@ -127,8 +127,10 @@ class TabLabeling(QWidget):
         self._pending_plot_request = None
         self._plot_cache = {}
         self._plot_widgets = []
-        self._plot_label_rows = []
-        self._current_plot_items = []
+        self._plot_all_items = []
+        self._plot_page_index = 0
+        self._plot_page_size = 2
+        self._pending_plot_order = []
         self._wide_mode = False
         self._sidebar_widget = None
         self._build_ui()
@@ -236,6 +238,24 @@ class TabLabeling(QWidget):
         self.lbl_plot_status.setStyleSheet("font-size: 11px; color: #555; padding: 0 4px;")
         self.lbl_plot_status.setWordWrap(True)
         detail_layout.addWidget(self.lbl_plot_status)
+
+        page_row = QHBoxLayout()
+        page_row.setContentsMargins(0, 0, 0, 0)
+        page_row.setSpacing(4)
+        self.btn_prev_plot_page = QPushButton("Prev")
+        self.btn_prev_plot_page.clicked.connect(self._on_prev_plot_page)
+        page_row.addWidget(self.btn_prev_plot_page)
+        self.lbl_plot_page = QLabel("")
+        self.lbl_plot_page.setStyleSheet("font-size: 11px; color: #475569;")
+        page_row.addWidget(self.lbl_plot_page)
+        self.btn_next_plot_page = QPushButton("Next")
+        self.btn_next_plot_page.clicked.connect(self._on_next_plot_page)
+        page_row.addWidget(self.btn_next_plot_page)
+        page_row.addStretch()
+        self.plot_page_nav = QWidget()
+        self.plot_page_nav.setLayout(page_row)
+        self.plot_page_nav.setVisible(False)
+        detail_layout.addWidget(self.plot_page_nav)
 
         # Plot area (pyqtgraph) — lazy import
         try:
@@ -375,6 +395,13 @@ class TabLabeling(QWidget):
         self._plot_generation += 1
         generation = self._plot_generation
         self._pending_plot_request = None
+        self._pending_plot_order = list(sample_indices)
+        self.plot_page_nav.setVisible(False)
+        current_index = self._current_sample_index()
+        if current_index in sample_indices:
+            self._plot_page_index = sample_indices.index(current_index) // self._plot_page_size
+        else:
+            self._plot_page_index = 0
         for widget in self._plot_widgets:
             widget.clear()
         if not self._fsa_root:
@@ -487,10 +514,34 @@ class TabLabeling(QWidget):
         if not items:
             return
         try:
-            self._current_plot_items = items
-            self._ensure_plot_widgets(len(items))
+            self._plot_all_items = self._ordered_plot_items(items)
+            self._show_plot_page()
+        except Exception as exc:
+            logger.exception("Plot rendering failed")
+            self.lbl_plot_status.setText(f"Plot unavailable: {exc}")
+
+    def _ordered_plot_items(self, items: list[dict]) -> list[dict]:
+        order = {
+            sample_index: position
+            for position, sample_index in enumerate(self._pending_plot_order)
+        }
+        return sorted(
+            items,
+            key=lambda item: order.get(item.get("sample_index"), len(order)),
+        )
+
+    def _show_plot_page(self):
+        items = list(self._plot_all_items or [])
+        if not items:
+            return
+        page_count = max(1, (len(items) + self._plot_page_size - 1) // self._plot_page_size)
+        self._plot_page_index = min(max(self._plot_page_index, 0), page_count - 1)
+        start = self._plot_page_index * self._plot_page_size
+        visible_items = items[start:start + self._plot_page_size]
+        self._ensure_plot_widgets(len(visible_items))
+        try:
             status_parts = []
-            for widget, item in zip(self._plot_widgets, items):
+            for widget, item in zip(self._plot_widgets, visible_items):
                 plot_data = item.get("plot_data")
                 sample_index = item.get("sample_index", -1)
                 sample = (
@@ -517,6 +568,11 @@ class TabLabeling(QWidget):
                     f"review windows: {ranges}"
                 )
             self.lbl_plot_status.setText(" | ".join(status_parts))
+            self.plot_page_nav.setVisible(len(items) > self._plot_page_size)
+            self.btn_prev_plot_page.setEnabled(self._plot_page_index > 0)
+            self.btn_next_plot_page.setEnabled(self._plot_page_index + 1 < page_count)
+            end = min(start + len(visible_items), len(items))
+            self.lbl_plot_page.setText(f"Plots {start + 1}-{end} of {len(items)}")
         except Exception as exc:
             logger.exception("Plot rendering failed")
             self.lbl_plot_status.setText(f"Plot unavailable: {exc}")
@@ -597,17 +653,8 @@ class TabLabeling(QWidget):
         if not hasattr(self, "plot_stack_layout"):
             return
         pg = _import_pyqtgraph()
-        count = max(1, int(count))
+        count = max(1, min(int(count), self._plot_page_size))
         while len(self._plot_widgets) < count:
-            container = QWidget()
-            container_layout = QVBoxLayout(container)
-            container_layout.setContentsMargins(0, 0, 0, 0)
-            container_layout.setSpacing(1)
-            label_row = QWidget()
-            label_layout = QHBoxLayout(label_row)
-            label_layout.setContentsMargins(0, 0, 0, 0)
-            label_layout.setSpacing(3)
-            container_layout.addWidget(label_row)
             widget = pg.PlotWidget()
             widget.setLabel("left", "RFU")
             widget.setLabel("bottom", "Base pairs", units="bp")
@@ -615,94 +662,27 @@ class TabLabeling(QWidget):
             widget.addLegend()
             widget.setXLink(self._plot_widgets[0])
             self._plot_widgets.append(widget)
-            self._plot_label_rows.append(label_row)
-            container_layout.addWidget(widget, stretch=1)
-            self.plot_stack_layout.addWidget(container, stretch=1)
-        while len(self._plot_label_rows) < len(self._plot_widgets):
-            label_row = QWidget()
-            label_layout = QHBoxLayout(label_row)
-            label_layout.setContentsMargins(0, 0, 0, 0)
-            label_layout.setSpacing(3)
-            self._plot_label_rows.append(label_row)
-            self.plot_stack_layout.insertWidget(0, label_row)
+            self.plot_stack_layout.addWidget(widget, stretch=1)
         while len(self._plot_widgets) > count:
             widget = self._plot_widgets.pop()
-            label_row = self._plot_label_rows.pop() if self._plot_label_rows else None
-            parent = widget.parentWidget()
-            if parent is not None:
-                self.plot_stack_layout.removeWidget(parent)
-                parent.setParent(None)
-                parent.deleteLater()
-            else:
-                self.plot_stack_layout.removeWidget(widget)
-                widget.setParent(None)
-                widget.deleteLater()
-            if label_row is not None and label_row.parentWidget() is None:
-                label_row.deleteLater()
-        self._refresh_plot_label_rows()
+            self.plot_stack_layout.removeWidget(widget)
+            widget.setParent(None)
+            widget.deleteLater()
 
-    def _refresh_plot_label_rows(self):
-        from core.labeling.labeling_session import LABEL_KEYS, LABEL_TO_KEY
-
-        items = getattr(self, "_current_plot_items", [])
-        for row_index, label_row in enumerate(self._plot_label_rows):
-            layout = label_row.layout()
-            if layout is None:
-                layout = QHBoxLayout(label_row)
-                layout.setContentsMargins(0, 0, 0, 0)
-                layout.setSpacing(3)
-            while layout.count():
-                item = layout.takeAt(0)
-                widget = item.widget()
-                if widget is not None:
-                    widget.deleteLater()
-            sample = None
-            if row_index < len(items) and self._session:
-                sample_index = items[row_index].get("sample_index", -1)
-                if isinstance(sample_index, int) and 0 <= sample_index < len(self._session.samples):
-                    sample = self._session.samples[sample_index]
-            if sample is None:
-                continue
-            current_key = LABEL_TO_KEY.get(sample.current_label, "")
-            title = QLabel(f"{sample.well or '?'}")
-            title.setStyleSheet("font-size: 11px; font-weight: 700; color: #334155;")
-            layout.addWidget(title)
-            for key, label in LABEL_KEYS.items():
-                button = QPushButton(key)
-                button.setFixedWidth(26)
-                button.setToolTip(label)
-                button.setCheckable(True)
-                button.setChecked(key == current_key)
-                button.clicked.connect(
-                    lambda _checked=False, idx=sample_index, lbl=label: self._label_exact_sample(idx, lbl)
-                )
-                layout.addWidget(button)
-            clear = QPushButton("X")
-            clear.setFixedWidth(26)
-            clear.setToolTip("Clear label")
-            clear.clicked.connect(lambda _checked=False, idx=sample_index: self._clear_exact_sample(idx))
-            layout.addWidget(clear)
-            layout.addStretch()
-
-    def _label_exact_sample(self, sample_index: int, label: str):
-        if not self._session or not (0 <= sample_index < len(self._session.samples)):
+    def _on_prev_plot_page(self):
+        if self._plot_page_index <= 0:
             return
-        current = self.sample_list.currentRow()
-        self._session.label_sample(sample_index, label)
-        self._refresh_sample_list()
-        if self.sample_list.count():
-            self.sample_list.setCurrentRow(min(max(current, 0), self.sample_list.count() - 1))
-        self._render_current_plot()
+        self._plot_page_index -= 1
+        self._show_plot_page()
 
-    def _clear_exact_sample(self, sample_index: int):
-        if not self._session or not (0 <= sample_index < len(self._session.samples)):
+    def _on_next_plot_page(self):
+        if not self._plot_all_items:
             return
-        current = self.sample_list.currentRow()
-        self._session.clear_label(sample_index)
-        self._refresh_sample_list()
-        if self.sample_list.count():
-            self.sample_list.setCurrentRow(min(max(current, 0), self.sample_list.count() - 1))
-        self._render_current_plot()
+        max_page = (len(self._plot_all_items) - 1) // self._plot_page_size
+        if self._plot_page_index >= max_page:
+            return
+        self._plot_page_index += 1
+        self._show_plot_page()
 
     def _on_label_key(self, label: str):
         visible_row = self.sample_list.currentRow()
