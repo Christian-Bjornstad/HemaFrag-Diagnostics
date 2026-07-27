@@ -127,13 +127,17 @@ class TabLabeling(QWidget):
         self._pending_plot_request = None
         self._plot_cache = {}
         self._plot_widgets = []
+        self._plot_label_rows = []
+        self._current_plot_items = []
+        self._wide_mode = False
+        self._sidebar_widget = None
         self._build_ui()
         self._setup_shortcuts()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
 
         # --- Top bar: file pickers + progress ---
         top = QHBoxLayout()
@@ -157,6 +161,11 @@ class TabLabeling(QWidget):
         self.btn_save = QPushButton("Save to Excel (Ctrl+S)")
         self.btn_save.clicked.connect(self._on_save)
         top.addWidget(self.btn_save)
+
+        self.btn_wide = QPushButton("Wide view")
+        self.btn_wide.setCheckable(True)
+        self.btn_wide.clicked.connect(self._on_toggle_wide_view)
+        top.addWidget(self.btn_wide)
 
         layout.addLayout(top)
 
@@ -200,13 +209,13 @@ class TabLabeling(QWidget):
         # Right: metadata + plot
         detail_panel = QWidget()
         detail_layout = QVBoxLayout(detail_panel)
-        detail_layout.setContentsMargins(8, 0, 0, 0)
-        detail_layout.setSpacing(8)
+        detail_layout.setContentsMargins(4, 0, 0, 0)
+        detail_layout.setSpacing(3)
 
         # Metadata block
         self.lbl_metadata = QLabel("Select a sample to view its plot")
         self.lbl_metadata.setStyleSheet(
-            "font-size: 14px; padding: 8px; background: #f5f5f5; border-radius: 4px;"
+            "font-size: 12px; padding: 4px 6px; background: #f5f5f5; border-radius: 4px;"
         )
         self.lbl_metadata.setWordWrap(True)
         detail_layout.addWidget(self.lbl_metadata)
@@ -215,17 +224,16 @@ class TabLabeling(QWidget):
         self.lbl_hint = QLabel(
             "Keys: <b>1</b>=monoklonal &nbsp; <b>2</b>=monoklonal på poly &nbsp; "
             "<b>3</b>=polyklonal &nbsp; <b>4</b>=oligoklonal &nbsp; "
-            "<b>5</b>=irregulær<br>"
+            "<b>5</b>=irregulær &nbsp; "
             "<b>6</b>=lite PCR &nbsp; <b>7</b>=intet PCR &nbsp; "
-            "<b>8</b>=QC feil &nbsp; <b>9</b>=usikker<br>"
-            "<b>↑/↓</b>=navigate &nbsp; <b>Backspace</b>=clear &nbsp; "
-            "<b>Ctrl+S</b>=save &nbsp; <b>F</b>=filter"
+            "<b>8</b>=QC feil &nbsp; <b>9</b>=usikker &nbsp; "
+            "<b>↑/↓</b>=navigate &nbsp; <b>Backspace</b>=clear &nbsp; <b>Ctrl+S</b>=save"
         )
-        self.lbl_hint.setStyleSheet("font-size: 12px; color: #666; padding: 4px;")
+        self.lbl_hint.setStyleSheet("font-size: 11px; color: #666; padding: 1px 4px;")
         detail_layout.addWidget(self.lbl_hint)
 
         self.lbl_plot_status = QLabel("Select an FSA root to load calibrated traces")
-        self.lbl_plot_status.setStyleSheet("font-size: 12px; color: #555; padding: 0 4px;")
+        self.lbl_plot_status.setStyleSheet("font-size: 11px; color: #555; padding: 0 4px;")
         self.lbl_plot_status.setWordWrap(True)
         detail_layout.addWidget(self.lbl_plot_status)
 
@@ -241,7 +249,7 @@ class TabLabeling(QWidget):
             self.plot_stack = QWidget()
             self.plot_stack_layout = QVBoxLayout(self.plot_stack)
             self.plot_stack_layout.setContentsMargins(0, 0, 0, 0)
-            self.plot_stack_layout.setSpacing(6)
+            self.plot_stack_layout.setSpacing(2)
             self.plot_stack_layout.addWidget(self.plot_widget, stretch=1)
             detail_layout.addWidget(self.plot_stack, stretch=1)
         except Exception:
@@ -249,7 +257,7 @@ class TabLabeling(QWidget):
             detail_layout.addWidget(self.plot_widget, stretch=1)
 
         splitter.addWidget(detail_panel)
-        splitter.setSizes([300, 700])
+        splitter.setSizes([220, 900])
 
         layout.addWidget(splitter, stretch=1)
 
@@ -266,6 +274,7 @@ class TabLabeling(QWidget):
         QShortcut(QKeySequence("Backspace"), self, activated=self._on_clear_label)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self._on_save)
         QShortcut(QKeySequence("F"), self, activated=self._on_toggle_filter)
+        QShortcut(QKeySequence("Ctrl+B"), self, activated=self._on_toggle_wide_view)
 
     def _on_browse_xlsx(self):
         from core.labeling.labeling_session import LabelingSession
@@ -345,25 +354,8 @@ class TabLabeling(QWidget):
         from core.labeling.labeling_session import LABEL_TO_KEY
         key = LABEL_TO_KEY.get(sample.current_label, "")
         parallel_indices = self._session.parallel_indices_for(idx)
-        parallel_bits = []
-        for position, parallel_index in enumerate(parallel_indices, start=1):
-            parallel = self._session.samples[parallel_index]
-            parallel_key = LABEL_TO_KEY.get(parallel.current_label, "")
-            parallel_bits.append(
-                f"P{position}: {parallel.well or '?'} {parallel.file_name} "
-                f"[{parallel_key or '-'} {parallel.current_label or 'unlabeled'}]"
-            )
         self.lbl_metadata.setText(
-            f"<b>DIT:</b> {sample.dit} &nbsp; "
-            f"<b>Assay:</b> {sample.assay} &nbsp; "
-            f"<b>Well:</b> {sample.well} &nbsp; "
-            f"<b>Group:</b> {sample.group}<br>"
-            f"<b>Parallels:</b> {len(parallel_indices)}<br>"
-            f"{'<br>'.join(parallel_bits)}<br>"
-            f"<b>Run dir:</b> {sample.source_run_dir}<br>"
-            f"<b>Rule:</b> {sample.rule_suggestion or 'none'}"
-            f"{' (review)' if sample.rule_review_needed else ''}<br>"
-            f"<b>Label:</b> "
+            f"<b>{sample.dit}</b> &nbsp; {sample.assay} &nbsp; {sample.well} &nbsp; "
             f"<span style='background: {'#e8f5e9' if key else '#fff3e0'}; "
             f"padding: 2px 6px; border-radius: 3px;'>"
             f"{key}: {sample.current_label or 'unlabeled'}</span>"
@@ -495,6 +487,7 @@ class TabLabeling(QWidget):
         if not items:
             return
         try:
+            self._current_plot_items = items
             self._ensure_plot_widgets(len(items))
             status_parts = []
             for widget, item in zip(self._plot_widgets, items):
@@ -552,6 +545,16 @@ class TabLabeling(QWidget):
             region.setZValue(-20)
             widget.addItem(region)
 
+        for bp in getattr(plot_data, "nonspecific_peaks", ()):
+            line = pg.InfiniteLine(
+                pos=float(bp),
+                angle=90,
+                movable=False,
+                pen=pg.mkPen("#7c3aed", width=1.1, style=Qt.PenStyle.DotLine),
+            )
+            line.setZValue(-5)
+            widget.addItem(line)
+
         for trace in plot_data.traces:
             widget.plot(
                 trace.basepairs,
@@ -596,6 +599,15 @@ class TabLabeling(QWidget):
         pg = _import_pyqtgraph()
         count = max(1, int(count))
         while len(self._plot_widgets) < count:
+            container = QWidget()
+            container_layout = QVBoxLayout(container)
+            container_layout.setContentsMargins(0, 0, 0, 0)
+            container_layout.setSpacing(1)
+            label_row = QWidget()
+            label_layout = QHBoxLayout(label_row)
+            label_layout.setContentsMargins(0, 0, 0, 0)
+            label_layout.setSpacing(3)
+            container_layout.addWidget(label_row)
             widget = pg.PlotWidget()
             widget.setLabel("left", "RFU")
             widget.setLabel("bottom", "Base pairs", units="bp")
@@ -603,19 +615,101 @@ class TabLabeling(QWidget):
             widget.addLegend()
             widget.setXLink(self._plot_widgets[0])
             self._plot_widgets.append(widget)
-            self.plot_stack_layout.addWidget(widget, stretch=1)
+            self._plot_label_rows.append(label_row)
+            container_layout.addWidget(widget, stretch=1)
+            self.plot_stack_layout.addWidget(container, stretch=1)
+        while len(self._plot_label_rows) < len(self._plot_widgets):
+            label_row = QWidget()
+            label_layout = QHBoxLayout(label_row)
+            label_layout.setContentsMargins(0, 0, 0, 0)
+            label_layout.setSpacing(3)
+            self._plot_label_rows.append(label_row)
+            self.plot_stack_layout.insertWidget(0, label_row)
         while len(self._plot_widgets) > count:
             widget = self._plot_widgets.pop()
-            self.plot_stack_layout.removeWidget(widget)
-            widget.setParent(None)
-            widget.deleteLater()
+            label_row = self._plot_label_rows.pop() if self._plot_label_rows else None
+            parent = widget.parentWidget()
+            if parent is not None:
+                self.plot_stack_layout.removeWidget(parent)
+                parent.setParent(None)
+                parent.deleteLater()
+            else:
+                self.plot_stack_layout.removeWidget(widget)
+                widget.setParent(None)
+                widget.deleteLater()
+            if label_row is not None and label_row.parentWidget() is None:
+                label_row.deleteLater()
+        self._refresh_plot_label_rows()
+
+    def _refresh_plot_label_rows(self):
+        from core.labeling.labeling_session import LABEL_KEYS, LABEL_TO_KEY
+
+        items = getattr(self, "_current_plot_items", [])
+        for row_index, label_row in enumerate(self._plot_label_rows):
+            layout = label_row.layout()
+            if layout is None:
+                layout = QHBoxLayout(label_row)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(3)
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            sample = None
+            if row_index < len(items) and self._session:
+                sample_index = items[row_index].get("sample_index", -1)
+                if isinstance(sample_index, int) and 0 <= sample_index < len(self._session.samples):
+                    sample = self._session.samples[sample_index]
+            if sample is None:
+                continue
+            current_key = LABEL_TO_KEY.get(sample.current_label, "")
+            title = QLabel(f"{sample.well or '?'}")
+            title.setStyleSheet("font-size: 11px; font-weight: 700; color: #334155;")
+            layout.addWidget(title)
+            for key, label in LABEL_KEYS.items():
+                button = QPushButton(key)
+                button.setFixedWidth(26)
+                button.setToolTip(label)
+                button.setCheckable(True)
+                button.setChecked(key == current_key)
+                button.clicked.connect(
+                    lambda _checked=False, idx=sample_index, lbl=label: self._label_exact_sample(idx, lbl)
+                )
+                layout.addWidget(button)
+            clear = QPushButton("X")
+            clear.setFixedWidth(26)
+            clear.setToolTip("Clear label")
+            clear.clicked.connect(lambda _checked=False, idx=sample_index: self._clear_exact_sample(idx))
+            layout.addWidget(clear)
+            layout.addStretch()
+
+    def _label_exact_sample(self, sample_index: int, label: str):
+        if not self._session or not (0 <= sample_index < len(self._session.samples)):
+            return
+        current = self.sample_list.currentRow()
+        self._session.label_sample(sample_index, label)
+        self._refresh_sample_list()
+        if self.sample_list.count():
+            self.sample_list.setCurrentRow(min(max(current, 0), self.sample_list.count() - 1))
+        self._render_current_plot()
+
+    def _clear_exact_sample(self, sample_index: int):
+        if not self._session or not (0 <= sample_index < len(self._session.samples)):
+            return
+        current = self.sample_list.currentRow()
+        self._session.clear_label(sample_index)
+        self._refresh_sample_list()
+        if self.sample_list.count():
+            self.sample_list.setCurrentRow(min(max(current, 0), self.sample_list.count() - 1))
+        self._render_current_plot()
 
     def _on_label_key(self, label: str):
         visible_row = self.sample_list.currentRow()
         idx = self._current_sample_index()
         if idx < 0 or not self._session:
             return
-        self._session.label_parallel_group(idx, label)
+        self._session.label_sample(idx, label)
         self._refresh_sample_list()
         if self.sample_list.count() == 0:
             return
@@ -628,8 +722,7 @@ class TabLabeling(QWidget):
         idx = self._current_sample_index()
         if idx < 0 or not self._session:
             return
-        for index in self._session.parallel_indices_for(idx):
-            self._session.clear_label(index)
+        self._session.clear_label(idx)
         self._refresh_sample_list()
 
     def _on_next_sample(self):
@@ -651,6 +744,30 @@ class TabLabeling(QWidget):
         except Exception as exc:
             self.lbl_xlsx.setText(f"Save error: {exc}")
             self.lbl_xlsx.setStyleSheet("color: red;")
+
+    def _on_toggle_wide_view(self):
+        self._wide_mode = not self._wide_mode
+        self.btn_wide.setChecked(self._wide_mode)
+        sidebar = self._sidebar_widget or self._find_sidebar_widget()
+        self._sidebar_widget = sidebar
+        if sidebar is not None:
+            sidebar.setVisible(not self._wide_mode)
+        window = self.window()
+        if window is not None:
+            container = getattr(window, "centralWidget", lambda: None)()
+            layout = container.layout() if container is not None else None
+            if layout is not None:
+                layout.setContentsMargins(0, 0, 0, 0)
+        self.btn_wide.setText("Show nav" if self._wide_mode else "Wide view")
+
+    def _find_sidebar_widget(self):
+        window = self.window()
+        if window is None:
+            return None
+        for widget in window.findChildren(QWidget):
+            if widget.objectName() == "Sidebar":
+                return widget
+        return None
 
     def _on_toggle_filter(self):
         target = "all" if self._filter_mode == "unlabeled" else "unlabeled"

@@ -7,7 +7,7 @@ from typing import Mapping
 import numpy as np
 import pandas as pd
 
-from core.analyses.clonality.config import ASSAY_CONFIG
+from core.analyses.clonality.config import ASSAY_CONFIG, NONSPECIFIC_PEAKS
 from core.analyses.clonality.interpretation import assay_interpretation_ranges
 
 
@@ -35,6 +35,7 @@ class LabelingPlotData:
     bp_min: float
     bp_max: float
     ladder_qc_status: str
+    nonspecific_peaks: tuple[float, ...] = ()
 
 
 def build_labeling_plot_data(entry: Mapping) -> LabelingPlotData:
@@ -132,10 +133,16 @@ def build_labeling_plot_data(entry: Mapping) -> LabelingPlotData:
         for start, end in assay_interpretation_ranges(assay)
         if min(reference_bp_max, float(end)) > max(reference_bp_min, float(start))
     )
+    nonspecific_peaks = tuple(
+        float(value)
+        for value in NONSPECIFIC_PEAKS.get(assay, [])
+        if display_bp_min <= float(value) <= display_bp_max
+    )
     return LabelingPlotData(
         assay=assay,
         traces=tuple(traces),
         peaks=tuple(peaks),
+        nonspecific_peaks=nonspecific_peaks,
         interpretation_ranges=ranges,
         bp_min=display_bp_min,
         bp_max=display_bp_max,

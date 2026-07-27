@@ -101,6 +101,24 @@ def test_tab_label_key_advances_to_next_visible_sample(qapp, tmp_path):
     assert tab.sample_list.currentRow() == 1
 
 
+def test_tab_label_key_labels_only_selected_parallel(qapp, tmp_path):
+    from gui_qt.tabs.tab_labeling import TabLabeling
+    from core.labeling.labeling_session import LabelingSession
+
+    path = _make_test_excel(tmp_path)
+    tab = TabLabeling()
+    tab._session = LabelingSession(excel_path=path)
+    tab._session.load()
+    tab._refresh_sample_list()
+    tab.sample_list.setCurrentRow(2)
+
+    assert tab._session.parallel_indices_for(2) == [2, 3]
+    tab._on_label_key("qc_teknisk_fail")
+
+    assert tab._session.samples[2].current_label == "qc_teknisk_fail"
+    assert tab._session.samples[3].current_label == ""
+
+
 def test_tab_navigation_next_prev(qapp, tmp_path):
     from gui_qt.tabs.tab_labeling import TabLabeling
     from core.labeling.labeling_session import LabelingSession

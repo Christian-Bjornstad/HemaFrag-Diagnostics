@@ -48,6 +48,7 @@ def test_build_labeling_plot_data_uses_calibrated_bp_axis_and_assay_window():
     assert result.bp_min == 80.0
     assert result.bp_max == 340.0
     assert result.interpretation_ranges == ((120.0, 160.0), (190.0, 300.0))
+    assert result.nonspecific_peaks == (217.0,)
     assert [trace.channel for trace in result.traces] == ["DATA1", "DATA2"]
     np.testing.assert_array_equal(
         result.traces[0].basepairs,
