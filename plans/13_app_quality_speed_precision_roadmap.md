@@ -25,6 +25,8 @@ Current execution note:
 - Phase 0 remains open for worker counts `1/2/4/6/8`, general-mode coverage, reviewed failure/artifact classes, finer stage timing, and a larger balanced corpus. The native PyO3 wheel contract and tracking-marker Rust attribution are explicit follow-up items.
 - Phase 1 is complete: atomic per-run manifests preserve hashed patient/QC membership and stage state; review bundles link back to an absolute manifest path; restart reruns recover the full original cohort; v2 manual sidecars carry source/ladder/channel/review provenance and reject mismatches; final HTML/workbook publication is atomic, idempotent, and count-gated.
 - Real Phase 1 smoke: the manifest recorded `22` input files, `8` patient entries, `14` QC entries, two HTML artifacts, and one workbook with matching `Runs=22`, `Patient_Runs=8`, and `Control_Runs=14` sheet counts.
+- Phase 2 sizing shadow has started with deterministic leave-one-ladder-anchor comparisons for linear, global quadratic, monotone PCHIP, and Local Southern. It is hard-coded as `promotion_eligible=false` because ladder-anchor holdout is only an interpolation-stability proxy.
+- First real shadow observations: LIZ favored linear in this proxy (`1.03 bp` MAE; PCHIP `1.27`, Local Southern `1.35`, quadratic `1.93`), while ROX narrowly favored Local Southern (`0.15 bp`; linear/PCHIP both about `0.16`, quadratic `0.90`). Runtime sizing is unchanged pending independent reviewed fragment references and assay-window gates.
 
 ## Objective
 
@@ -119,6 +121,11 @@ Compare the current model against:
 - the existing polynomial/linear models.
 
 Evaluate by assay and clinically relevant bp window. Local Southern is especially worth testing because it uses nearby standard fragments rather than one global curve, but an anomalous neighboring standard can distort the result. No model becomes a default based only on global R2.
+
+Research basis:
+
+- Thermo Fisher documents Local Southern as two overlapping three-standard fits around the unknown, averaged together, and warns that anomalous standards can distort the estimate: `https://apps.thermofisher.com/apps/peak-scanner/help/GUID-0FF79E69-77A3-4188-BB04-329664C4CBC3.html`.
+- The monotone PCHIP comparison follows the shape-preserving interpolation family described by Fritsch and Butland (1984): `https://doi.org/10.1137/0905021`.
 
 Metrics:
 

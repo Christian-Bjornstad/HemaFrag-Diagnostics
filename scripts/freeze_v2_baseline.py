@@ -281,6 +281,27 @@ def _run_clonality_file_scenario(
         entry = pipeline._analyze_single_file(input_file)
     finally:
         APP_SETTINGS["active_analysis"] = previous
+    sizing_shadow: dict[str, object] | None = None
+    if isinstance(entry, dict) and entry.get("fsa") is not None:
+        fsa = entry["fsa"]
+        anchor_times = getattr(fsa, "best_size_standard", None)
+        anchor_sizes = getattr(fsa, "expected_ladder_steps", None)
+        if anchor_sizes is None or len(anchor_sizes) == 0:
+            anchor_sizes = getattr(fsa, "ladder_steps", None)
+        if anchor_times is not None and anchor_sizes is not None:
+            try:
+                from core.precision import evaluate_anchor_leave_one_out
+
+                sizing_shadow = evaluate_anchor_leave_one_out(
+                    anchor_times,
+                    anchor_sizes,
+                )
+            except ValueError as exc:
+                sizing_shadow = {
+                    "evaluation": "ladder_anchor_leave_one_out_proxy",
+                    "promotion_eligible": False,
+                    "unavailable_reason": str(exc),
+                }
     return {
         "input": {
             "file_name": input_file.name,
@@ -288,6 +309,7 @@ def _run_clonality_file_scenario(
             "sha256": _sha256_file(input_file),
         },
         "entry": _compact_entry(entry),
+        "sizing_shadow": sizing_shadow,
     }
 
 

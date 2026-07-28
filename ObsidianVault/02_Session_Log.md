@@ -70,6 +70,11 @@ Phase 1 (delete-not-archive, per user):
 - Final correction rebuilds validate original total/QC counts before publication. DIT HTML and clonality tracking workbooks publish atomically, and workbook identity-key replacement remains idempotent.
 - Real smoke recorded 22 inputs as 8 patient plus 14 QC entries with matching workbook rows; verification passed (`444 passed, 3 skipped`) plus focused recovery/transaction tests.
 
+## 2026-07-28 - Plan 13 Sizing Shadow
+
+- Added deterministic, non-promotable leave-one-anchor comparisons for linear, quadratic, monotone PCHIP, and Local Southern sizing; benchmark single-file scenarios now retain this evidence.
+- Initial real proxy split by assay: LIZ favored linear (~1.03 bp MAE), while ROX slightly favored Local Southern (~0.15 bp). Runtime sizing remains unchanged until independent reviewed fragment references and assay-window gates exist.
+
 ## 2026-07-27 - Manual Ladder Rerun Reliability And Improvement Roadmap
 
 - Fixed false-success ladder saves with atomic write/reload verification; saved manual mappings now remain usable when Rust returns no fit, including FLT3 Rust-only handling.
