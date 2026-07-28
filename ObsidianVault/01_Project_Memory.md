@@ -118,6 +118,8 @@ HemaFrag is now focused on FLT3 work. Clonality is considered parked for a while
 
 ## Current Verification Baseline
 
+- 2026-07-27: Manual ladder adjustments are written atomically and reloaded before a review case is marked resolved. Valid saved mappings are attempted when Rust returns no fit, before strict/Rust-only exits, including FLT3 GS500ROX. Active batch review finalization preserves cached QC entries while replacing rerun entries by source path.
+
 - 2026-05-14: FLT3 channel contract fixed in code.
 - `flt3_size_standard_mode()` default returns `ROX500` / `GS500ROX` / `DATA4`.
 - Explicit LIZ override returns `LIZ500_250` / `LIZ500_250` / `DATA105`.

@@ -9,6 +9,7 @@ MIT-licensed components from `willros/fraggler`.
 """
 from __future__ import annotations
 import os
+import tempfile
 
 from pathlib import Path
 import copy
@@ -3732,9 +3733,10 @@ def save_ladder_adjustment(
     *,
     manual_candidates: list[float] | None = None,
     mapping_times: dict[int, float] | None = None,
-) -> None:
-    """Saves a manual mapping payload to a .json file alongside the .fsa file."""
+) -> Path:
+    """Atomically save and verify a manual ladder mapping beside the FSA file."""
     adj_path = Path(fsa.file).resolve().with_suffix(".ladder_adj.json")
+    temp_path: Path | None = None
     try:
         if manual_candidates is not None or mapping_times is not None:
             payload = {
@@ -3748,11 +3750,40 @@ def save_ladder_adjustment(
                 "mapping_times": {},
                 "manual_candidates": [],
             }
-        with open(adj_path, "w") as f:
-            json.dump(payload, f)
+        normalized = _normalize_ladder_adjustment_payload(payload)
+        if normalized is None or not (normalized["mapping"] or normalized["mapping_times"]):
+            raise ValueError("Ladder adjustment has no persisted peak mapping.")
+
+        adj_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=adj_path.parent,
+            prefix=f".{adj_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(normalized, handle, indent=2, ensure_ascii=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, adj_path)
+        temp_path = None
+
+        verified = json.loads(adj_path.read_text(encoding="utf-8"))
+        if _normalize_ladder_adjustment_payload(verified) != normalized:
+            raise OSError(f"Saved ladder adjustment could not be verified: {adj_path}")
         print_green(f"Saved ladder adjustment to {adj_path.name}")
+        return adj_path
     except Exception as e:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
         print_warning(f"Could not save ladder adjustment: {e}")
+        raise RuntimeError(f"Could not save ladder adjustment to {adj_path}: {e}") from e
 
 
 def load_ladder_adjustment(fsa: FsaFile) -> dict | None:
@@ -3861,6 +3892,13 @@ def analyse_fsa_liz(
             if applied is not None:
                 return applied
             return hybrid_fsa
+        applied = _try_apply_saved_ladder_adjustment(
+            base_fsa,
+            load_ladder_adjustment(base_fsa),
+            "LIZ",
+        )
+        if applied is not None:
+            return applied
         if strict_rust_ladder_enabled():
             print_warning(
                 f"[LIZ] Strict Rust ladder mode is enabled; Python ladder fitting fallback is disabled for {fsa_path.name}."
@@ -4209,6 +4247,13 @@ def analyse_fsa_rox(
             if applied is not None:
                 return applied
             return hybrid_fsa
+        applied = _try_apply_saved_ladder_adjustment(
+            base_fsa,
+            load_ladder_adjustment(base_fsa),
+            "ROX",
+        )
+        if applied is not None:
+            return applied
         if str(getattr(base_fsa, "analysis_id", "") or "").lower() == "flt3" and str(ladder_name).upper() == "GS500ROX":
             print_warning(
                 f"[ROX] FLT3 GS500ROX is Rust-only; Python ladder fitting fallback is disabled for {fsa_path.name}."

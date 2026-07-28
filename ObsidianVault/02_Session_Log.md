@@ -58,6 +58,12 @@ Phase 1 (delete-not-archive, per user):
 - Commits: `37112cb` (Phase 0), Phase 1 commit lands next.
 # HemaFrag Session Log
 
+## 2026-07-27 - Manual Ladder Rerun Reliability And Improvement Roadmap
+
+- Fixed false-success ladder saves with atomic write/reload verification; saved manual mappings now remain usable when Rust returns no fit, including FLT3 Rust-only handling.
+- Added regression coverage for sidecar persistence, Rust-failure recovery, and preservation of cached QC entries during final report rebuild; also removed the stale About-tab import left by the prior notice-file cleanup.
+- Activated the gated roadmap at `plans/13_app_quality_speed_precision_roadmap.md` on branch `codex/plan-13-quality-speed-precision`; algorithm changes remain gated by reviewed real-FSA benchmarks.
+
 ## 2026-07-27 - Clonality Parallel Labeling Workflow
 
 - Updated chemist label vocabulary to `monoklonal`, `monoklonal_pa_poly`, `polyklonal`, `oligoklonal`, `irregulaer`, `lite_pcr_produkt`, `intet_pcr_produkt`, `qc_teknisk_fail`, and `usikker_review`; legacy saved labels normalize forward.

@@ -5,7 +5,6 @@ from PyQt6.QtWidgets import QLabel, QTextBrowser, QVBoxLayout, QWidget
 
 from gui_qt.about_content import (
     APP_OVERVIEW,
-    THIRD_PARTY_NOTICE_PATH,
     THIRD_PARTY_SOFTWARE,
     UPSTREAM_LICENSE_PATH,
     load_text,
@@ -32,7 +31,6 @@ class TabAbout(QWidget):
 
         layout.addWidget(self._build_summary_card())
         layout.addWidget(self._build_third_party_card())
-        layout.addWidget(self._build_notice_card())
         layout.addWidget(self._build_license_card())
         layout.addStretch()
 
@@ -74,28 +72,6 @@ class TabAbout(QWidget):
         text.setReadOnly(True)
         text.setMarkdown(self._third_party_markdown())
         body.addWidget(text)
-        return card
-
-    def _build_notice_card(self) -> QWidget:
-        card = QWidget()
-        card.setObjectName("Card")
-        body = QVBoxLayout(card)
-        body.setContentsMargins(18, 18, 18, 18)
-        body.setSpacing(8)
-
-        title = QLabel("Repository notice")
-        title.setObjectName("CardTitle")
-        title.setContentsMargins(0, 0, 0, 0)
-        body.addWidget(title)
-
-        note = QTextBrowser()
-        note.setOpenExternalLinks(True)
-        note.setReadOnly(True)
-        note.setMinimumHeight(210)
-        note.setMarkdown(
-            f"Full notice file: `{THIRD_PARTY_NOTICE_PATH.name}`\n\n{load_text(THIRD_PARTY_NOTICE_PATH)}"
-        )
-        body.addWidget(note)
         return card
 
     def _build_license_card(self) -> QWidget:

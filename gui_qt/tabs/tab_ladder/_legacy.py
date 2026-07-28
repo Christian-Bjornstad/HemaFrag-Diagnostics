@@ -664,7 +664,24 @@ class TabLadder(QWidget):
             review_payload = dialog.get_review_payload()
             if review_payload.get("action") != "note_only":
                 adjustment = dialog.get_adjustment_payload()
-                save_ladder_adjustment(fsa, adjustment)
+                try:
+                    saved_path = save_ladder_adjustment(fsa, adjustment)
+                    if load_ladder_adjustment(fsa) is None:
+                        raise RuntimeError(f"Saved adjustment could not be loaded from {saved_path}.")
+                except Exception as exc:
+                    self._set_status(
+                        f"Could not save ladder adjustment for {self._current_file.name}: {exc}",
+                        error=True,
+                    )
+                    QMessageBox.critical(
+                        self,
+                        "Adjustment Not Saved",
+                        (
+                            "The ladder correction was not saved, so this review case remains unresolved.\n\n"
+                            f"{exc}"
+                        ),
+                    )
+                    return
                 preview_fsa = getattr(dialog, "_preview_fsa", None)
                 if preview_fsa is not None:
                     cache_key = self._resolve_cache_key(self._current_file)
