@@ -75,6 +75,12 @@ Phase 1 (delete-not-archive, per user):
 - Added deterministic, non-promotable leave-one-anchor comparisons for linear, quadratic, monotone PCHIP, and Local Southern sizing; benchmark single-file scenarios now retain this evidence.
 - Initial real proxy split by assay: LIZ favored linear (~1.03 bp MAE), while ROX slightly favored Local Southern (~0.15 bp). Runtime sizing remains unchanged until independent reviewed fragment references and assay-window gates exist.
 
+## 2026-07-28 - Plan 13 Confidence, Artifact, And Baseline Shadows
+
+- Added read-only top-K local ladder ambiguity, threshold-perturbation, clipping/pull-up/morphology/tail, and arPLS/airPLS/rolling-quantile evidence to single-file benchmarks; every result is explicitly non-promotable.
+- Three-repeat real LIZ/ROX evidence is deterministic at `validation_outputs/plan13_phase2_shadow_repeat3/`; runtime anchors ranked first, but LIZ threshold support was unstable and baseline alternatives materially changed peak counts and quantitative signal.
+- Production analysis remains unchanged. Full verification passed (`452 passed, 3 skipped`); reviewed artifact/peak labels, independent sizing references, and assay-specific bias gates remain required.
+
 ## 2026-07-27 - Manual Ladder Rerun Reliability And Improvement Roadmap
 
 - Fixed false-success ladder saves with atomic write/reload verification; saved manual mappings now remain usable when Rust returns no fit, including FLT3 Rust-only handling.

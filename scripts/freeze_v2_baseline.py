@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
+
 
 MANIFEST_VERSION = "hemafrag_plan13_benchmark_v1"
 DEFAULT_TIMEOUT_SECONDS = 3600.0
@@ -282,6 +284,9 @@ def _run_clonality_file_scenario(
     finally:
         APP_SETTINGS["active_analysis"] = previous
     sizing_shadow: dict[str, object] | None = None
+    ladder_confidence_shadow: dict[str, object] | None = None
+    artifact_shadow: dict[str, object] | None = None
+    baseline_detection_shadow: dict[str, object] | None = None
     if isinstance(entry, dict) and entry.get("fsa") is not None:
         fsa = entry["fsa"]
         anchor_times = getattr(fsa, "best_size_standard", None)
@@ -302,6 +307,46 @@ def _run_clonality_file_scenario(
                     "promotion_eligible": False,
                     "unavailable_reason": str(exc),
                 }
+        from core.precision import (
+            evaluate_artifact_shadow,
+            evaluate_baseline_detection_shadow,
+            evaluate_ladder_confidence_shadow,
+        )
+
+        try:
+            ladder_confidence_shadow = evaluate_ladder_confidence_shadow(fsa)
+        except ValueError as exc:
+            ladder_confidence_shadow = {
+                "evaluation": "bounded_local_sequence_and_threshold_perturbation_proxy",
+                "promotion_eligible": False,
+                "unavailable_reason": str(exc),
+            }
+        try:
+            artifact_shadow = evaluate_artifact_shadow(fsa)
+        except ValueError as exc:
+            artifact_shadow = {
+                "evaluation": "raw_trace_artifact_candidate_screen",
+                "promotion_eligible": False,
+                "unavailable_reason": str(exc),
+            }
+        try:
+            baseline_detection_shadow = evaluate_baseline_detection_shadow(
+                np.asarray(getattr(fsa, "sample_data", []), dtype=float),
+                min_height=max(
+                    1.0,
+                    float(getattr(fsa, "min_sample_peak_height", 50.0) or 50.0),
+                ),
+                min_distance=max(
+                    1,
+                    int(getattr(fsa, "min_distance_between_peaks", 5) or 5),
+                ),
+            )
+        except ValueError as exc:
+            baseline_detection_shadow = {
+                "evaluation": "current_preprocessing_relative_bakeoff",
+                "promotion_eligible": False,
+                "unavailable_reason": str(exc),
+            }
     return {
         "input": {
             "file_name": input_file.name,
@@ -310,6 +355,9 @@ def _run_clonality_file_scenario(
         },
         "entry": _compact_entry(entry),
         "sizing_shadow": sizing_shadow,
+        "ladder_confidence_shadow": ladder_confidence_shadow,
+        "artifact_shadow": artifact_shadow,
+        "baseline_detection_shadow": baseline_detection_shadow,
     }
 
 
