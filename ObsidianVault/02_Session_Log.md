@@ -64,6 +64,12 @@ Phase 1 (delete-not-archive, per user):
 - Built the ignored Rust CLI and froze three deterministic repeats at `validation_outputs/plan13_phase0_repeat3_final/`: combined output retained 22 DIT plus 14 QC entries; FLT3 passed 25/25 with one saved manual correction.
 - Phase 0 remains open for the 1/2/4/6/8 worker matrix, general mode, reviewed artifact/failure cases, and finer stage metrics; native-wheel Python compatibility and Rust tracking-marker attribution are recorded follow-ups.
 
+## 2026-07-28 - Plan 13 Recovery And Provenance
+
+- Added atomic batch run manifests and v2 manual-correction provenance; review bundles now link to the originating run, and restart reruns recover the full original patient/QC job cohort.
+- Final correction rebuilds validate original total/QC counts before publication. DIT HTML and clonality tracking workbooks publish atomically, and workbook identity-key replacement remains idempotent.
+- Real smoke recorded 22 inputs as 8 patient plus 14 QC entries with matching workbook rows; verification passed (`444 passed, 3 skipped`) plus focused recovery/transaction tests.
+
 ## 2026-07-27 - Manual Ladder Rerun Reliability And Improvement Roadmap
 
 - Fixed false-success ladder saves with atomic write/reload verification; saved manual mappings now remain usable when Rust returns no fit, including FLT3 Rust-only handling.

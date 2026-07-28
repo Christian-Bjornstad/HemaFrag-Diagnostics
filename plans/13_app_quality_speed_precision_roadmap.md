@@ -11,7 +11,7 @@ Execute Plan 13 end to end: establish a reproducible real-FSA benchmark and timi
 Progress:
 
 - [ ] Phase 0 - measurement baseline
-- [ ] Phase 1 - recovery and provenance
+- [x] Phase 1 - recovery and provenance
 - [ ] Phase 2 - precision experiments
 - [ ] Phase 3 - throughput
 - [ ] Phase 4 - reporting and workflow
@@ -23,6 +23,8 @@ Current execution note:
 - All four result fingerprints are deterministic. Measured p50/p95 wall times are LIZ `2.75/3.10 s`, ROX `0.18/0.18 s`, combined patient/QC `43.00/47.49 s`, and 25-file FLT3 `15.08/15.33 s`.
 - The combined run preserved `22` DIT entries and `14` QC entries with no failed jobs. FLT3 produced `25/25` PASS results: `24` automatic Rust CLI fits and one valid saved manual adjustment.
 - Phase 0 remains open for worker counts `1/2/4/6/8`, general-mode coverage, reviewed failure/artifact classes, finer stage timing, and a larger balanced corpus. The native PyO3 wheel contract and tracking-marker Rust attribution are explicit follow-up items.
+- Phase 1 is complete: atomic per-run manifests preserve hashed patient/QC membership and stage state; review bundles link back to an absolute manifest path; restart reruns recover the full original cohort; v2 manual sidecars carry source/ladder/channel/review provenance and reject mismatches; final HTML/workbook publication is atomic, idempotent, and count-gated.
+- Real Phase 1 smoke: the manifest recorded `22` input files, `8` patient entries, `14` QC entries, two HTML artifacts, and one workbook with matching `Runs=22`, `Patient_Runs=8`, and `Control_Runs=14` sheet counts.
 
 ## Objective
 

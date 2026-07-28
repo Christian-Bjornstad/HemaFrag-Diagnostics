@@ -8,9 +8,11 @@ This module builds on the local `fraggler` runtime, which includes upstream-deri
 MIT-licensed components from `willros/fraggler`.
 """
 from __future__ import annotations
+import hashlib
 import os
 import tempfile
 
+from datetime import datetime, timezone
 from pathlib import Path
 import copy
 import time
@@ -3705,6 +3707,20 @@ def _try_core_anchored_step_completion(fsa: FsaFile, label: str, fsa_path: Path)
 # ==================== ANALYSEFUNKSJONER ===========================
 # ==================================================================
 
+LADDER_ADJUSTMENT_SCHEMA_V2 = "hemafrag_ladder_adjustment_v2"
+LADDER_ADJUSTMENT_SCHEMA_LEGACY = "legacy"
+
+
+def _ladder_adjustment_file_hash(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _normalize_ladder_adjustment_payload(adjustment: dict | None) -> dict | None:
     """Normalizes legacy and enriched ladder adjustment payloads."""
     if not adjustment:
@@ -3714,13 +3730,23 @@ def _normalize_ladder_adjustment_payload(adjustment: dict | None) -> dict | None
         mapping_raw = adjustment.get("mapping", {})
         mapping_times_raw = adjustment.get("mapping_times", {})
         manual_candidates_raw = adjustment.get("manual_candidates", [])
-        return {
+        normalized = {
             "mapping": {int(k): int(v) for k, v in mapping_raw.items()},
             "mapping_times": {int(k): float(v) for k, v in mapping_times_raw.items()},
             "manual_candidates": [float(v) for v in manual_candidates_raw],
         }
+        if adjustment.get("schema_version"):
+            normalized["schema_version"] = str(adjustment["schema_version"])
+        else:
+            normalized["schema_version"] = LADDER_ADJUSTMENT_SCHEMA_LEGACY
+        for key in ("source", "analysis", "selected_peaks", "review", "validation"):
+            value = adjustment.get(key)
+            if isinstance(value, (dict, list)):
+                normalized[key] = copy.deepcopy(value)
+        return normalized
 
     return {
+        "schema_version": LADDER_ADJUSTMENT_SCHEMA_LEGACY,
         "mapping": {int(k): int(v) for k, v in adjustment.items()},
         "mapping_times": {},
         "manual_candidates": [],
@@ -3733,6 +3759,10 @@ def save_ladder_adjustment(
     *,
     manual_candidates: list[float] | None = None,
     mapping_times: dict[int, float] | None = None,
+    operator: str = "",
+    comment: str = "",
+    before_qc: dict[str, Any] | None = None,
+    after_qc: dict[str, Any] | None = None,
 ) -> Path:
     """Atomically save and verify a manual ladder mapping beside the FSA file."""
     adj_path = Path(fsa.file).resolve().with_suffix(".ladder_adj.json")
@@ -3750,10 +3780,77 @@ def save_ladder_adjustment(
                 "mapping_times": {},
                 "manual_candidates": [],
             }
-        normalized = _normalize_ladder_adjustment_payload(payload)
-        if normalized is None or not (normalized["mapping"] or normalized["mapping_times"]):
+        mapping_payload = _normalize_ladder_adjustment_payload(payload)
+        if mapping_payload is None or not (
+            mapping_payload["mapping"] or mapping_payload["mapping_times"]
+        ):
             raise ValueError("Ladder adjustment has no persisted peak mapping.")
 
+        source_path = Path(fsa.file).resolve()
+        expected_steps_raw = getattr(fsa, "expected_ladder_steps", None)
+        if expected_steps_raw is None or len(expected_steps_raw) == 0:
+            expected_steps_raw = getattr(fsa, "ladder_steps", None)
+        expected_steps = np.asarray(
+            [] if expected_steps_raw is None else expected_steps_raw,
+            dtype=float,
+        )
+        selected_peaks = []
+        for step_index, candidate_index in sorted(mapping_payload["mapping"].items()):
+            observed_time = mapping_payload["mapping_times"].get(step_index)
+            selected_peaks.append(
+                {
+                    "step_index": int(step_index),
+                    "candidate_index": int(candidate_index),
+                    "expected_bp": (
+                        float(expected_steps[step_index])
+                        if 0 <= step_index < expected_steps.size
+                        else None
+                    ),
+                    "observed_time": (
+                        float(observed_time) if observed_time is not None else None
+                    ),
+                }
+            )
+        try:
+            from app_meta import APP_VERSION
+        except Exception:
+            APP_VERSION = "unknown"
+        normalized = {
+            "schema_version": LADDER_ADJUSTMENT_SCHEMA_V2,
+            "source": {
+                "file_name": source_path.name,
+                "sha256": _ladder_adjustment_file_hash(source_path),
+            },
+            "analysis": {
+                "analysis_id": str(getattr(fsa, "analysis_id", "") or ""),
+                "assay": str(
+                    getattr(fsa, "assay", "")
+                    or getattr(fsa, "assay_name", "")
+                    or ""
+                ),
+                "ladder": str(getattr(fsa, "ladder", "") or ""),
+                "size_standard_channel": str(
+                    getattr(fsa, "rust_size_standard_channel", "")
+                    or getattr(fsa, "size_standard_channel", "")
+                    or ""
+                ),
+            },
+            "mapping": mapping_payload["mapping"],
+            "mapping_times": mapping_payload["mapping_times"],
+            "manual_candidates": mapping_payload["manual_candidates"],
+            "selected_peaks": selected_peaks,
+            "review": {
+                "operator": str(operator or ""),
+                "comment": str(comment or ""),
+                "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+                "app_version": str(APP_VERSION),
+                "before_qc": copy.deepcopy(before_qc or {}),
+                "after_qc": copy.deepcopy(after_qc or {}),
+            },
+            "validation": {
+                "save_verified": True,
+            },
+        }
         adj_path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -3803,7 +3900,45 @@ def load_ladder_adjustment(fsa: FsaFile) -> dict | None:
         try:
             with open(adj_path, "r", encoding="utf-8", errors="replace") as f:
                 payload = json.load(f)
-                return _normalize_ladder_adjustment_payload(payload)
+                normalized = _normalize_ladder_adjustment_payload(payload)
+                source = normalized.get("source", {}) if normalized else {}
+                expected_hash = str(source.get("sha256") or "")
+                current_hash = _ladder_adjustment_file_hash(candidate_file)
+                if expected_hash and current_hash and expected_hash != current_hash:
+                    print_warning(
+                        f"Ignoring ladder adjustment {adj_path.name}: source FSA hash does not match."
+                    )
+                    continue
+                analysis = normalized.get("analysis", {}) if normalized else {}
+                expected_ladder = str(analysis.get("ladder") or "").strip().upper()
+                current_ladder = str(getattr(fsa, "ladder", "") or "").strip().upper()
+                if (
+                    expected_ladder
+                    and current_ladder
+                    and expected_ladder != current_ladder
+                ):
+                    print_warning(
+                        f"Ignoring ladder adjustment {adj_path.name}: ladder identity does not match."
+                    )
+                    continue
+                expected_channel = str(
+                    analysis.get("size_standard_channel") or ""
+                ).strip().upper()
+                current_channel = str(
+                    getattr(fsa, "rust_size_standard_channel", "")
+                    or getattr(fsa, "size_standard_channel", "")
+                    or ""
+                ).strip().upper()
+                if (
+                    expected_channel
+                    and current_channel
+                    and expected_channel != current_channel
+                ):
+                    print_warning(
+                        f"Ignoring ladder adjustment {adj_path.name}: size-standard channel does not match."
+                    )
+                    continue
+                return normalized
         except Exception as e:
             print_warning(f"Could not load ladder adjustment {adj_path.name}: {e}")
     return None

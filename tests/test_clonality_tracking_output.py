@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -243,6 +244,13 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
                 )
 
             self.assertEqual(result["failed_jobs"], [])
+            manifest_path = Path(result["run_manifest_path"])
+            self.assertTrue(manifest_path.is_file())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["status"], "completed")
+            self.assertEqual(manifest["counts"]["expected_jobs"], 2)
+            self.assertEqual(manifest["counts"]["dit_entries"], 2)
+            self.assertEqual(manifest["counts"]["qc_entries"], 1)
             self.assertFalse(qc_kwargs["update_qc_trends"])
             self.assertFalse((output_root / "ASSAY_REPORTS").exists())
             self.assertFalse((output_root / "HemaFrag_QC_Trends.xlsx").exists())

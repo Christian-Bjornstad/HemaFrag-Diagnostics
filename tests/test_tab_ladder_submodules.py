@@ -160,6 +160,25 @@ class TabLadderIOHelperTests(unittest.TestCase):
             self.assertEqual(len(result["rows"]), 2)
             self.assertEqual(len(result["missing_paths"]), 1)
 
+    def test_load_review_bundle_worker_links_existing_run_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fsa = Path(td) / "real.fsa"
+            fsa.write_bytes(b"x")
+            self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            manifest = Path(td) / "hemafrag_run_test.json"
+            manifest.write_text("{}", encoding="utf-8")
+            (Path(td) / "ladder_review_summary.json").write_text(
+                __import__("json").dumps({"run_manifest_path": str(manifest)}),
+                encoding="utf-8",
+            )
+
+            result = load_review_bundle_worker(Path(td))
+
+            self.assertEqual(result["run_manifest_path"], manifest)
+
     def test_load_review_bundle_worker_raises_when_csv_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(FileNotFoundError):

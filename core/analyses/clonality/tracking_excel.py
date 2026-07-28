@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import os
 import secrets
+import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -220,20 +222,43 @@ def update_clonality_tracking_workbook(
         all_runs = _normalize_run_frame(all_runs, run_columns=run_columns)
         all_peaks = _reindex_columns(all_peaks, PEAK_SHEET_COLUMNS)
 
-        writer_kwargs = {"engine": "openpyxl"}
-        if excel_path.exists():
-            writer_kwargs.update({"mode": "a", "if_sheet_exists": "replace"})
-
         patient_runs, control_runs = _split_run_frames(all_runs, run_columns=run_columns)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=excel_path.parent,
+                prefix=f".{excel_path.stem}.",
+                suffix=".tmp.xlsx",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+            if excel_path.exists():
+                shutil.copy2(excel_path, temporary_path)
+                writer_kwargs = {
+                    "engine": "openpyxl",
+                    "mode": "a",
+                    "if_sheet_exists": "replace",
+                }
+            else:
+                temporary_path.unlink(missing_ok=True)
+                writer_kwargs = {"engine": "openpyxl"}
 
-        with pd.ExcelWriter(excel_path, **writer_kwargs) as writer:
-            all_runs.to_excel(writer, sheet_name="Runs", index=False)
-            patient_runs.to_excel(writer, sheet_name="Patient_Runs", index=False)
-            control_runs.to_excel(writer, sheet_name="Control_Runs", index=False)
-            all_peaks.to_excel(writer, sheet_name="PK_Peaks", index=False)
-        _apply_reference_tracking_headers(excel_path, run_columns=run_columns)
-        if refresh_dashboard:
-            refresh_clonality_tracking_dashboard(excel_path)
+            with pd.ExcelWriter(temporary_path, **writer_kwargs) as writer:
+                all_runs.to_excel(writer, sheet_name="Runs", index=False)
+                patient_runs.to_excel(writer, sheet_name="Patient_Runs", index=False)
+                control_runs.to_excel(writer, sheet_name="Control_Runs", index=False)
+                all_peaks.to_excel(writer, sheet_name="PK_Peaks", index=False)
+            _apply_reference_tracking_headers(
+                temporary_path,
+                run_columns=run_columns,
+            )
+            if refresh_dashboard:
+                refresh_clonality_tracking_dashboard(temporary_path)
+            os.replace(temporary_path, excel_path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
         print_green(f"Clonality tracking workbook updated in {excel_path}")
 
 

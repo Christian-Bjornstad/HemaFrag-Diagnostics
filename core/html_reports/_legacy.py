@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 import uuid
 import json
+import os
+import tempfile
 import time
 from pathlib import Path
 from collections import defaultdict
@@ -39,6 +41,30 @@ from core.qc.qc_markers import control_id_from_filename
 from core.qc.qc_plots import build_interactive_peak_plot_for_entry_qc
 from core.qc.qc_rules import QCRules, normalize_assay_qc
 from config import APP_SETTINGS
+
+
+def _atomic_write_html(path: Path, html: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(html)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
 
 def _assay_config() -> dict:
     return getattr(assay_config, "ASSAY_CONFIG", {})
@@ -1638,7 +1664,7 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
 </body></html>""")
 
     out_html = assay_outdir / "QC_FLT3_Injections.html"
-    out_html.write_text("\n".join(html_lines), encoding="utf-8")
+    _atomic_write_html(out_html, "\n".join(html_lines))
     print_green(f"FLT3 QC HTML report saved to {out_html}")
     print_green(
         _format_report_metrics_summary(
@@ -1719,7 +1745,7 @@ def build_dit_html_reports(entries: list[dict], assay_outdir: Path):
 </body></html>""")
             
             out_html = assay_outdir / f"{dit}_{display_name}_Resultater.html"
-            out_html.write_text("\n".join(html_lines), encoding="utf-8")
+            _atomic_write_html(out_html, "\n".join(html_lines))
             print_green(f"[DIT] Lagret: {out_html}")
             print_green(
                 _format_report_metrics_summary(
@@ -1764,7 +1790,7 @@ def build_dit_html_reports(entries: list[dict], assay_outdir: Path):
 </body></html>""")
         
         out_html = assay_outdir / f"{dit}_{display_name}_Resultater.html"
-        out_html.write_text("\n".join(html_lines), encoding="utf-8")
+        _atomic_write_html(out_html, "\n".join(html_lines))
         print_green(f"[DIT] Lagret: {out_html}")
         print_green(
             _format_report_metrics_summary(

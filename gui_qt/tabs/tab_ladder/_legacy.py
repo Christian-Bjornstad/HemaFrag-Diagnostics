@@ -53,6 +53,7 @@ class TabLadder(QWidget):
         self._current_fsa = None
         self._report_matches: list[Path] = []
         self._review_bundle_dir: Path | None = None
+        self._review_bundle_run_manifest_path: Path | None = None
         self._review_bundle_cases: list[dict] = []
         self._review_case_by_path: dict[Path, dict] = {}
         self._review_runtime_cache: dict[Path, dict] = {}
@@ -665,7 +666,20 @@ class TabLadder(QWidget):
             if review_payload.get("action") != "note_only":
                 adjustment = dialog.get_adjustment_payload()
                 try:
-                    saved_path = save_ladder_adjustment(fsa, adjustment)
+                    saved_path = save_ladder_adjustment(
+                        fsa,
+                        adjustment,
+                        operator=str(
+                            APP_SETTINGS.get("general", {}).get("author", "") or ""
+                        ),
+                        comment=str(review_payload.get("comment", "") or ""),
+                        before_qc={
+                            "linear_max": review_payload.get("linear_max"),
+                            "linear_mean": review_payload.get("linear_mean"),
+                            "linear_r2": review_payload.get("linear_r2"),
+                        },
+                        after_qc=dict(review_payload.get("after_qc") or {}),
+                    )
                     if load_ladder_adjustment(fsa) is None:
                         raise RuntimeError(f"Saved adjustment could not be loaded from {saved_path}.")
                 except Exception as exc:
@@ -864,6 +878,7 @@ class TabLadder(QWidget):
             settings["aggregate_by_patient"],
             settings["patient_regex"],
             settings["aggregate_outdir_name"],
+            self._review_bundle_run_manifest_path,
         )
         worker.signals.result.connect(lambda result, rid=request_id: self._on_single_rerun_finished(rid, result))
         worker.signals.error.connect(lambda err, rid=request_id: self._on_single_rerun_error(rid, err))
@@ -1056,7 +1071,6 @@ class TabLadder(QWidget):
         self.threadpool.start(worker)
 
     @staticmethod
-    @staticmethod
     def _review_bundle_rerun_worker(
         file_paths: list[Path],
         session_entries: list[dict],
@@ -1068,6 +1082,7 @@ class TabLadder(QWidget):
         aggregate_by_patient: bool,
         patient_regex: str,
         aggregate_outdir_name: str | None,
+        run_manifest_path: Path | None = None,
     ) -> dict:
         """Phase 12.1 — body lives in `_workers.py`.
 
@@ -1088,6 +1103,7 @@ class TabLadder(QWidget):
             aggregate_by_patient,
             patient_regex,
             aggregate_outdir_name,
+            run_manifest_path,
         )
 
     def _on_single_rerun_finished(self, request_id: int, payload: dict) -> None:
@@ -1490,6 +1506,7 @@ class TabLadder(QWidget):
             return
         self.btn_load_bundle.setEnabled(True)
         self._review_bundle_dir = result["bundle_dir"]
+        self._review_bundle_run_manifest_path = result.get("run_manifest_path")
         self._review_bundle_cases = result["rows"]
         bundle_output_root, _ = self._review_bundle_output_context()
         if bundle_output_root is not None:

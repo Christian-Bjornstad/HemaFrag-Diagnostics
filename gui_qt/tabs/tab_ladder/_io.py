@@ -66,11 +66,25 @@ def load_review_bundle_worker(bundle_dir: Path) -> dict:
             row["full_path"] = raw_path
             rows.append(row)
 
+    run_manifest_path: Path | None = None
+    summary_path = bundle_dir / "ladder_review_summary.json"
+    if summary_path.is_file():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            raw_manifest_path = str(summary.get("run_manifest_path") or "").strip()
+            if raw_manifest_path:
+                candidate = Path(raw_manifest_path).expanduser()
+                if candidate.is_file():
+                    run_manifest_path = candidate
+        except Exception:
+            run_manifest_path = None
+
     return {
         "bundle_dir": bundle_dir,
         "cases_path": cases_path,
         "rows": rows,
         "missing_paths": missing_paths,
+        "run_manifest_path": run_manifest_path,
     }
 
 

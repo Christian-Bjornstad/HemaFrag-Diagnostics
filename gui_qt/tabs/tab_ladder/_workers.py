@@ -71,6 +71,7 @@ def review_bundle_rerun_worker(
     aggregate_by_patient: bool,
     patient_regex: str,
     aggregate_outdir_name: str | None,
+    run_manifest_path: Path | None = None,
 ) -> dict:
     """Run batch_jobs() over the bundle's resolved files only.
 
@@ -101,6 +102,39 @@ def review_bundle_rerun_worker(
         and aggregate_dit_reports
         and analysis_id == "clonality"
     )
+    recovered_from_manifest = False
+    if not has_session_cache and run_manifest_path is not None:
+        from core.run_manifest import jobs_from_run_manifest
+
+        recovered_jobs = jobs_from_run_manifest(run_manifest_path)
+        relocated_by_name = {path.name.lower(): path for path in file_paths}
+        missing: list[Path] = []
+        for recovered_job in recovered_jobs:
+            resolved_files: list[Path] = []
+            for original_path in recovered_job.get("files") or []:
+                original_path = Path(original_path)
+                replacement = relocated_by_name.get(original_path.name.lower())
+                resolved_path = (
+                    replacement
+                    if not original_path.is_file() and replacement is not None
+                    else original_path
+                )
+                resolved_files.append(resolved_path)
+                if not resolved_path.is_file():
+                    missing.append(resolved_path)
+            recovered_job["files"] = resolved_files
+        if missing:
+            names = ", ".join(path.name for path in missing[:8])
+            if len(missing) > 8:
+                names += ", ..."
+            raise FileNotFoundError(
+                "The original run manifest references missing FSA files: " + names
+            )
+        if not recovered_jobs:
+            raise RuntimeError("The linked run manifest contains no recoverable jobs.")
+        jobs = recovered_jobs
+        recovered_from_manifest = True
+
     result = run_batch_jobs(
         jobs=jobs,
         output_base=output_root,
@@ -116,7 +150,9 @@ def review_bundle_rerun_worker(
         defer_tracking_workbook_refresh=has_session_cache,
         defer_dit_html_reports=has_session_cache,
         preserve_deferred_entries=has_session_cache,
+        parent_run_manifest_path=run_manifest_path if recovered_from_manifest else None,
     )
+    result["recovered_from_run_manifest"] = recovered_from_manifest
 
     final_session_reports_built = False
     final_session_entry_count = 0
@@ -188,6 +224,7 @@ def review_bundle_rerun_worker(
         "matches_by_file": matches_by_file,
         "final_session_reports_built": final_session_reports_built,
         "final_session_entry_count": final_session_entry_count,
+        "recovered_from_run_manifest": recovered_from_manifest,
     }
 
 

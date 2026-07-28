@@ -187,6 +187,7 @@ class TabBatch(QWidget):
         self._review_session_bundle_dir: Path | None = None
         self._review_session_output_root: Path | None = None
         self._review_session_aggregate_outdir_name: str | None = None
+        self._review_session_run_manifest_path: Path | None = None
         self._review_corrected_paths: set[Path] = set()
         self._review_finalize_request_id = 0
         
@@ -558,6 +559,7 @@ class TabBatch(QWidget):
         self._review_session_bundle_dir = None
         self._review_session_output_root = None
         self._review_session_aggregate_outdir_name = None
+        self._review_session_run_manifest_path = None
         self._review_corrected_paths = set()
         self.btn_run_reviewed.setVisible(False)
         self.btn_run_reviewed.setEnabled(False)
@@ -1291,6 +1293,10 @@ class TabBatch(QWidget):
         self._review_session_bundle_dir = bundle_dir
         self._review_session_output_root = output_root
         self._review_session_aggregate_outdir_name = aggregate_outdir_name
+        raw_manifest_path = (result or {}).get("run_manifest_path")
+        self._review_session_run_manifest_path = (
+            Path(raw_manifest_path) if raw_manifest_path else None
+        )
         self._review_corrected_paths = set()
         self._set_review_session_entries(
             list((result or {}).get("dit_report_entries") or (result or {}).get("collected_entries") or [])
@@ -1379,6 +1385,7 @@ class TabBatch(QWidget):
             assay_filter=a_filter,
             aggregate_dit_reports=aggregate_dit_reports,
             aggregate_outdir_name=self._review_session_aggregate_outdir_name,
+            parent_run_manifest_path=self._review_session_run_manifest_path,
             update_callback=None,
         )
         worker.kwargs["update_callback"] = worker.signals.progress_ext.emit
@@ -1400,6 +1407,7 @@ class TabBatch(QWidget):
         assay_filter: str,
         aggregate_dit_reports: bool,
         aggregate_outdir_name: str | None,
+        parent_run_manifest_path: Path | None = None,
         update_callback=None,
     ) -> dict:
         from config import APP_SETTINGS, resolve_analysis_excel_output_path
@@ -1421,6 +1429,7 @@ class TabBatch(QWidget):
             defer_tracking_workbook_refresh=True,
             defer_dit_html_reports=True,
             preserve_deferred_entries=True,
+            parent_run_manifest_path=parent_run_manifest_path,
         )
 
         combined_by_path: dict[Path, dict] = {}
@@ -1443,6 +1452,53 @@ class TabBatch(QWidget):
         failed_jobs = list(result.get("failed_jobs") or [])
         final_reports_built = False
         agg_outdir = None
+        finalization_validation = {
+            "passed": bool(
+                combined_entries and not failed_jobs and review_count <= 0
+            ),
+            "expected_dit_entries": None,
+            "actual_dit_entries": len(combined_entries),
+            "expected_qc_entries": None,
+            "actual_qc_entries": None,
+        }
+
+        if parent_run_manifest_path is not None and parent_run_manifest_path.is_file():
+            from core.run_manifest import load_run_manifest
+
+            parent_manifest = load_run_manifest(parent_run_manifest_path)
+            expected_dit = int(
+                parent_manifest.get("counts", {}).get("dit_entries") or 0
+            )
+            expected_qc = int(
+                parent_manifest.get("counts", {}).get("qc_entries") or 0
+            )
+            qc_paths = {
+                TabBatch._resolve_cache_key(Path(str(file_record["path"])))
+                for job in parent_manifest.get("jobs") or []
+                if str(job.get("type") or "") == "qc"
+                for file_record in job.get("files") or []
+                if file_record.get("path")
+            }
+            actual_qc = sum(
+                1
+                for entry in combined_entries
+                if TabBatch._entry_cache_key(entry) in qc_paths
+            )
+            finalization_validation.update(
+                {
+                    "expected_dit_entries": expected_dit,
+                    "actual_dit_entries": len(combined_entries),
+                    "expected_qc_entries": expected_qc,
+                    "actual_qc_entries": actual_qc,
+                }
+            )
+            finalization_validation["passed"] = bool(
+                finalization_validation["passed"]
+                and len(combined_entries) == expected_dit
+                and actual_qc == expected_qc
+            )
+            if not finalization_validation["passed"]:
+                failed_jobs.append("finalization cohort validation")
 
         if aggregate_dit_reports and not failed_jobs and review_count <= 0 and combined_entries:
             from core.assay_config import OUTDIR_NAME
@@ -1470,6 +1526,19 @@ class TabBatch(QWidget):
                 pass
             final_reports_built = True
 
+        child_manifest_path = result.get("run_manifest_path")
+        if child_manifest_path:
+            try:
+                from core.run_manifest import record_report_finalization
+
+                record_report_finalization(
+                    Path(child_manifest_path),
+                    aggregate_output_dir=agg_outdir,
+                    validation=finalization_validation,
+                )
+            except Exception:
+                pass
+
         return {
             "result": result,
             "output_root": output_root,
@@ -1478,6 +1547,7 @@ class TabBatch(QWidget):
             "corrected_paths": corrected_paths,
             "linked_jobs": jobs_to_run,
             "final_reports_built": final_reports_built,
+            "finalization_validation": finalization_validation,
         }
         
     def _update_progress_from_thread(self, idx, total, name, state):
