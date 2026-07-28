@@ -75,6 +75,9 @@ class Flt3TrackingOutputTests(unittest.TestCase):
             self.assertIn("Control_Runs", sheets)
             self.assertIn("PK_Peaks", sheets)
             self.assertIn("Dashboard", sheets)
+            self.assertIn("QC_Run_Trends", sheets)
+            self.assertIn("QC_Control_Signals", sheets)
+            self.assertIn("QC_Baseline_Config", sheets)
 
             patients = pd.read_excel(workbook, sheet_name="Patient_Runs", engine="openpyxl")
             controls = pd.read_excel(workbook, sheet_name="Control_Runs", engine="openpyxl")

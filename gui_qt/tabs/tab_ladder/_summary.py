@@ -9,6 +9,7 @@ Pure functions only; no Qt widgets, no instance-state reads/writes.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,129 @@ def entry_cache_key(entry: dict) -> Path | None:
     if original_path is None:
         return None
     return resolve_cache_key(original_path)
+
+
+def manual_adjustment_consumption(
+    result: dict,
+    file_path: Path,
+) -> dict[str, Any]:
+    """Summarize whether a saved correction produced a successful entry."""
+    target = resolve_cache_key(file_path)
+    adjustment_path = file_path.with_suffix(".ladder_adj.json")
+    adjustment_present = adjustment_path.is_file()
+    adjustment_hash = (
+        hashlib.sha256(adjustment_path.read_bytes()).hexdigest()
+        if adjustment_present
+        else ""
+    )
+    entries = list(result.get("dit_report_entries") or [])
+    if not entries:
+        entries = list(result.get("collected_entries") or [])
+        entries.extend(result.get("qc_report_entries") or [])
+
+    matching_entry: dict | None = None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry_cache_key(entry) == target:
+            matching_entry = entry
+            break
+
+    failed = bool(result.get("failed_jobs"))
+    gate = result.get("ladder_review_gate") or {}
+    review_count = (
+        int(gate.get("review_case_count") or 0)
+        if isinstance(gate, dict)
+        else 0
+    )
+    if matching_entry is None:
+        return {
+            "status": (
+                "not_consumed"
+                if adjustment_present
+                else "not_applicable"
+            ),
+            "consumed": False,
+            "adjustment_present": adjustment_present,
+            "reason": "No completed analysis entry was returned for this file.",
+        }
+
+    provenance = matching_entry.get("analysis_provenance")
+    if not isinstance(provenance, dict):
+        provenance = {}
+    strategy = str(
+        provenance.get("ladder_fit_strategy")
+        or matching_entry.get("ladder_fit_strategy")
+        or ""
+    )
+    entry_claims_consumed = bool(
+        provenance.get("manual_adjustment_consumed")
+        or strategy == "manual_adjustment"
+    )
+    analyzed_adjustment_hash = str(
+        provenance.get("manual_adjustment_sha256") or ""
+    )
+    hash_matches = bool(
+        adjustment_hash
+        and analyzed_adjustment_hash
+        and adjustment_hash == analyzed_adjustment_hash
+    )
+    successful = (
+        adjustment_present
+        and entry_claims_consumed
+        and hash_matches
+        and not failed
+        and review_count <= 0
+    )
+    if successful:
+        reason = "Saved correction was consumed by a successful rerun."
+    elif entry_claims_consumed and adjustment_present and not hash_matches:
+        reason = (
+            "The rerun consumed a different correction hash than the "
+            "currently saved sidecar."
+        )
+    elif not entry_claims_consumed and adjustment_present:
+        reason = "The rerun entry did not use the saved manual correction."
+    elif not adjustment_present:
+        reason = "No saved manual correction was present for this file."
+    elif failed:
+        reason = "The correction was loaded, but the rerun reported failed jobs."
+    else:
+        reason = "The correction was loaded, but ladder review is still required."
+    return {
+        "status": (
+            "consumed"
+            if successful
+            else "not_consumed"
+            if adjustment_present
+            else "not_applicable"
+        ),
+        "consumed": successful,
+        "adjustment_present": adjustment_present,
+        "reason": reason,
+        "strategy": strategy,
+        "source_sha256": str(provenance.get("source_sha256") or ""),
+        "manual_adjustment_sha256": analyzed_adjustment_hash,
+        "saved_adjustment_sha256": adjustment_hash,
+    }
+
+
+def format_ladder_confidence_shadow(payload: dict | None) -> str:
+    """Format read-only candidate ambiguity evidence for Ladder Studio."""
+    if not isinstance(payload, dict):
+        return "Unavailable"
+    rank = payload.get("runtime_selected_rank")
+    margin = payload.get("top1_top2_score_margin")
+    stable = payload.get("stable_under_tested_thresholds")
+    parts = [f"Selected rank {rank}" if rank is not None else "Selected rank unavailable"]
+    if margin is not None:
+        parts.append(f"top-2 margin {float(margin):.3f}")
+    if stable is True:
+        parts.append("threshold stable")
+    elif stable is False:
+        parts.append("threshold unstable")
+    parts.append("shadow only")
+    return " · ".join(parts)
 
 
 def metadata_from_entry(file_path: Path, entry: dict) -> dict:

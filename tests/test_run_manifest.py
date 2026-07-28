@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -136,3 +137,53 @@ def test_load_run_manifest_rejects_unknown_schema(tmp_path):
         assert "future" in str(exc)
     else:
         raise AssertionError("Unknown manifest schema should fail closed.")
+
+
+def test_run_manifest_records_exact_consumed_manual_adjustment(tmp_path):
+    patient = tmp_path / "patient.fsa"
+    patient.write_bytes(b"patient-trace")
+    adjustment = patient.with_suffix(".ladder_adj.json")
+    adjustment.write_text('{"schema_version":"v2"}', encoding="utf-8")
+    adjustment_hash = hashlib.sha256(adjustment.read_bytes()).hexdigest()
+    output_dir = tmp_path / "reports"
+    output_dir.mkdir()
+    recorder = BatchRunManifest.create(
+        output_dir=output_dir,
+        jobs=[
+            {
+                "name": "patient",
+                "type": "pipeline",
+                "path": tmp_path,
+                "files": [patient],
+            }
+        ],
+        analysis="clonality",
+        settings={},
+        execution={},
+    )
+
+    recorder.finalize(
+        result={
+            "completed_jobs": ["patient"],
+            "failed_jobs": [],
+            "dit_report_entries": [
+                {
+                    "original_file_path": str(patient),
+                    "analysis_provenance": {
+                        "manual_adjustment_consumed": True,
+                        "manual_adjustment_sha256": adjustment_hash,
+                    },
+                }
+            ],
+            "qc_report_entries": [],
+        },
+        aggregate_output_dir=output_dir,
+        review_gate={},
+    )
+
+    file_record = load_run_manifest(recorder.path)["jobs"][0]["files"][0]
+    assert file_record["manual_adjustment"]["consumed"] is True
+    assert (
+        file_record["manual_adjustment"]["consumed_sha256"]
+        == adjustment_hash
+    )

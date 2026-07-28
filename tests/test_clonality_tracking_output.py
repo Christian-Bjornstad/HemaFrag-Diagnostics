@@ -68,14 +68,26 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             self.assertIn("Control_Runs", sheets)
             self.assertIn("PK_Peaks", sheets)
             self.assertIn("Dashboard", sheets)
+            self.assertIn("QC_Run_Trends", sheets)
+            self.assertIn("QC_Control_Signals", sheets)
+            self.assertIn("QC_Baseline_Config", sheets)
 
             patients = pd.read_excel(workbook, sheet_name="Patient_Runs", engine="openpyxl")
             controls = pd.read_excel(workbook, sheet_name="Control_Runs", engine="openpyxl")
             peaks = pd.read_excel(workbook, sheet_name="PK_Peaks", engine="openpyxl")
+            signals = pd.read_excel(
+                workbook,
+                sheet_name="QC_Control_Signals",
+                engine="openpyxl",
+            )
             self.assertEqual(len(patients), 1)
             self.assertEqual(len(controls), 1)
             self.assertEqual(controls.iloc[0]["Control"], "PK")
             self.assertEqual(len(peaks), 1)
+            self.assertEqual(
+                set(signals["Status"]),
+                {"baseline_not_selected"},
+            )
 
     def test_tracking_workbook_writes_ml_columns_when_present(self) -> None:
         import math

@@ -7,6 +7,7 @@ FSA files unless an explicit future scenario implementation requests it.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -393,6 +394,88 @@ def _run_clonality_file_scenario(
     }
 
 
+def _run_general_file_scenario(
+    scenario: dict[str, Any],
+    *,
+    repo_root: Path,
+    scenario_dir: Path,
+    scenario_file_dir: Path,
+) -> dict[str, object]:
+    del repo_root
+    input_file = _resolve_path(
+        scenario.get("input_file"),
+        base_dir=scenario_file_dir,
+    )
+    if not input_file.is_file():
+        raise FileNotFoundError(input_file)
+    from config import APP_SETTINGS
+    from core.analyses.general import pipeline
+    from core.analyses.general.reporting import build_general_html_report
+
+    previous_analysis = APP_SETTINGS.get("active_analysis")
+    general = APP_SETTINGS.setdefault("analyses", {}).setdefault(
+        "general",
+        {},
+    )
+    previous_pipeline = copy.deepcopy(general.get("pipeline") or {})
+    profile_pipeline = general.setdefault("pipeline", {})
+    for key in (
+        "profile_id",
+        "profile_version",
+        "validation_status",
+        "ladder",
+        "size_standard_channel",
+        "trace_channels",
+        "peak_channels",
+        "primary_peak_channel",
+        "bp_min",
+        "bp_max",
+        "report_fields",
+    ):
+        if key in scenario:
+            profile_pipeline[key] = copy.deepcopy(scenario[key])
+    APP_SETTINGS["active_analysis"] = "general"
+    try:
+        entries, skipped = pipeline._analyze_files([input_file])
+        report = build_general_html_report(
+            entries,
+            scenario_dir / "general_report",
+            run_label="plan13_general",
+        )
+    finally:
+        APP_SETTINGS["active_analysis"] = previous_analysis
+        general["pipeline"] = previous_pipeline
+
+    entry = entries[0] if entries else {}
+    provenance = entry.get("analysis_provenance") or {}
+    report_text = (
+        report.read_text(encoding="utf-8")
+        if report is not None and report.is_file()
+        else ""
+    )
+    return {
+        "input": {
+            "file_name": input_file.name,
+            "size_bytes": int(input_file.stat().st_size),
+            "sha256": _sha256_file(input_file),
+        },
+        "entry": _compact_entry(entry),
+        "general_profile": entry.get("general_profile") or {},
+        "analyzed_count": len(entries),
+        "skipped_count": skipped,
+        "report_created": bool(report is not None and report.is_file()),
+        "report_contains_source_sha256": bool(
+            provenance.get("source_sha256")
+            and str(provenance["source_sha256"]) in report_text
+        ),
+        "report_contains_profile_fingerprint": bool(
+            (entry.get("general_profile") or {}).get("profile_fingerprint")
+            and (entry.get("general_profile") or {})["profile_fingerprint"]
+            in report_text
+        ),
+    }
+
+
 def _run_combined_qc_dit_scenario(
     scenario: dict[str, Any],
     *,
@@ -533,6 +616,7 @@ def _run_flt3_rox500_qc_scenario(
 SCENARIO_RUNNERS: dict[str, Callable[..., dict[str, object]]] = {
     "command": _run_command_scenario,
     "clonality_file_analysis": _run_clonality_file_scenario,
+    "general_file_analysis": _run_general_file_scenario,
     "combined_qc_dit": _run_combined_qc_dit_scenario,
     "flt3_rox500_qc": _run_flt3_rox500_qc_scenario,
 }

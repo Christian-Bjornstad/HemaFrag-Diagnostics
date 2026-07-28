@@ -17,7 +17,10 @@ from typing import Any
 from gui_qt.ladder_utils import detect_fsa_for_ladder, load_adjustable_fsa
 from core.html_reports import extract_dit_from_name
 
-from gui_qt.tabs.tab_ladder._summary import entry_cache_key
+from gui_qt.tabs.tab_ladder._summary import (
+    entry_cache_key,
+    manual_adjustment_consumption,
+)
 
 
 def scan_fsa_files_worker(source: Path) -> list[Path]:
@@ -29,11 +32,30 @@ def load_metadata_worker(file_path: Path, analysis_id: str | None) -> dict:
     """Detect + load an FSA + return a dict for the GUI to apply."""
     meta = detect_fsa_for_ladder(file_path, preferred_analysis=analysis_id)
     if not meta:
-        return {"file_path": file_path, "meta": None, "fsa": None}
+        return {
+            "file_path": file_path,
+            "meta": None,
+            "fsa": None,
+            "confidence_shadow": None,
+        }
     fsa, refreshed_meta = load_adjustable_fsa(
         file_path, preferred_analysis=analysis_id, metadata=meta
     )
-    return {"file_path": file_path, "meta": refreshed_meta, "fsa": fsa}
+    confidence_shadow = None
+    try:
+        from core.precision.ladder_confidence_shadow import (
+            evaluate_ladder_confidence_shadow,
+        )
+
+        confidence_shadow = evaluate_ladder_confidence_shadow(fsa, top_k=5)
+    except Exception:
+        pass
+    return {
+        "file_path": file_path,
+        "meta": refreshed_meta,
+        "fsa": fsa,
+        "confidence_shadow": confidence_shadow,
+    }
 
 
 def find_report_matches_worker(file_path: Path, root_text: str) -> dict:
@@ -221,6 +243,10 @@ def review_bundle_rerun_worker(
         "output_root": output_root,
         "jobs": jobs,
         "result": result,
+        "consumption_by_file": {
+            str(file_path): manual_adjustment_consumption(result, file_path)
+            for file_path in file_paths
+        },
         "matches_by_file": matches_by_file,
         "final_session_reports_built": final_session_reports_built,
         "final_session_entry_count": final_session_entry_count,
@@ -277,5 +303,9 @@ def single_file_rerun_worker(
         "output_root": output_root,
         "jobs": jobs,
         "result": result,
+        "manual_adjustment_consumption": manual_adjustment_consumption(
+            result,
+            file_path,
+        ),
         "matches": matches,
     }

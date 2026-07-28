@@ -2,7 +2,7 @@
 
 Date: 2026-07-27
 Branch: `codex/plan-13-quality-speed-precision`
-Status: active
+Status: engineering implementation complete; clinical promotion gated
 
 ## Execution Goal
 
@@ -14,7 +14,7 @@ Progress:
 - [x] Phase 1 - recovery and provenance
 - [ ] Phase 2 - precision experiments
 - [ ] Phase 3 - throughput
-- [ ] Phase 4 - reporting and workflow
+- [x] Phase 4 - reporting and workflow
 - [ ] Phase 5 - assay-specific validation and promotion
 
 Current execution note:
@@ -35,7 +35,13 @@ Current execution note:
 - The PyO3 crate now targets the project's Python `>=3.10` contract and converts Rust results directly from `serde_json::Value` instead of serializing and reparsing JSON text. Cargo checks and core tests pass; a native-wheel/NumPy-buffer benchmark remains open.
 - The append-safe SQLite run-ledger prototype round-trips workbook sheets row-for-row and supports idempotent snapshot replacement, but Excel remains the production source/export until real large-workbook formulas, styles, update behavior, and latency are validated.
 - Phase 4 provenance has started: clonality and FLT3 entries carry full source hashes, engine/strategy, reason codes, app version, and consumed manual-sidecar hashes into HTML and tracking workbooks. A real combined smoke preserved all `22` entries (`8` patient, `14` QC), with provenance hashes on `22/22` workbook rows and both reports.
-- Phase 3 remains open for cross-process artifact reuse, native typed/NumPy bridge measurements, and production-ledger migration. Phase 4 remains open for Ladder Studio rerun evidence and run-level QC trend monitoring.
+- Phase 3 remains open for cross-process artifact reuse, native typed/NumPy bridge measurements, and production-ledger migration.
+- Phase 4 is complete: Ladder Studio now distinguishes saved/not-rerun from an exact sidecar hash consumed by a successful rerun, persists that status in review bundles and child run manifests, and displays bounded top-K candidate rank/margin/threshold stability as shadow-only context. Its existing trace view overlays model and manual selections and recalculates residuals before save.
+- Both clonality and FLT3 workbooks now include run-level QC trends for residuals, anchor intensity, pass/review/fail rates, and conservative pull-up/saturation candidates. Shewhart/EWMA sheets remain advisory and fail closed until at least `20` stable runs are explicitly selected in `QC_Baseline_Config`; they never alter analysis thresholds.
+- General mode now resolves a fingerprinted `hemafrag_general_profile_v1` contract declaring profile/version/validation status, ladder steps, size-standard channel, trace channels, bp range, and report fields. Three real ROX repeats were deterministic with one analyzed file, zero skips, and source/profile provenance in the report; this coverage also fixed two dormant General report/runtime errors.
+- The machine-readable release audit at `validation_outputs/plan13_release_gate_audit.json` passes all automated engineering/performance gates: zero unexplained ladder regressions, `1/1` manual correction rerun, `22/22` report entries, `14/14` QC entries, exact performance-output parity, `13.88%` p95 improvement, and complete provenance.
+- Clinical algorithm promotion correctly remains blocked: no independent FLT3 quantitative area-bias study, no reviewed clinical-interpretation comparison, and no chemist sign-off on the Phase 2 shadow evidence were supplied. No sizing, baseline, artifact, confidence, FLT3 quantitation, or clonality interpretation default was changed.
+- Final verification: Python `479 passed, 3 skipped`; Rust core `81 passed, 1 ignored` plus `5` contract tests; PyO3 crate `cargo check` passed. Phase 0/2/3/5 checkboxes remain open only where they require a larger reviewed corpus, clinical labels/tolerances, cross-process/native-wheel evidence, or explicit chemist approval.
 
 ## Objective
 

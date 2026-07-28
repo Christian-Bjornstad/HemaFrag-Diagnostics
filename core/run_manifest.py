@@ -295,6 +295,18 @@ class BatchRunManifest:
         with self._lock:
             completed = {str(value) for value in result.get("completed_jobs") or []}
             failed = {str(value) for value in result.get("failed_jobs") or []}
+            result_entries = list(result.get("dit_report_entries") or [])
+            entries_by_path: dict[Path, Mapping[str, Any]] = {}
+            for entry in result_entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                fsa = entry.get("fsa")
+                raw_path = (
+                    entry.get("original_file_path")
+                    or getattr(fsa, "file", None)
+                )
+                if raw_path:
+                    entries_by_path[Path(str(raw_path)).expanduser().resolve()] = entry
             for job in self.payload.get("jobs", []):
                 name = str(job.get("name") or "")
                 if name in failed:
@@ -306,13 +318,32 @@ class BatchRunManifest:
                     source_path = Path(str(file_record.get("path") or ""))
                     adjustment = source_path.with_suffix(".ladder_adj.json")
                     if adjustment.is_file():
-                        file_record["manual_adjustment"] = {
+                        adjustment_record = {
                             "path": str(adjustment.resolve()),
                             "size_bytes": int(adjustment.stat().st_size),
                             "sha256": _sha256_file(adjustment),
                         }
+                        entry = entries_by_path.get(source_path.expanduser().resolve())
+                        provenance = (
+                            entry.get("analysis_provenance")
+                            if isinstance(entry, Mapping)
+                            and isinstance(entry.get("analysis_provenance"), Mapping)
+                            else {}
+                        )
+                        consumed_hash = str(
+                            provenance.get("manual_adjustment_sha256") or ""
+                        )
+                        consumed = bool(
+                            provenance.get("manual_adjustment_consumed")
+                            and consumed_hash == adjustment_record["sha256"]
+                        )
+                        adjustment_record["consumed"] = consumed
+                        adjustment_record["consumed_sha256"] = (
+                            consumed_hash if consumed else ""
+                        )
+                        file_record["manual_adjustment"] = adjustment_record
 
-            dit_entries = list(result.get("dit_report_entries") or [])
+            dit_entries = result_entries
             qc_entries = list(result.get("qc_report_entries") or [])
             artifacts = _output_records(aggregate_output_dir)
             self.payload["counts"].update(

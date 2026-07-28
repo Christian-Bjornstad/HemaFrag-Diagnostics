@@ -189,12 +189,24 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
             "pipeline": {
                 "mode": "all",
                 "assay_filter_substring": "",
+                "profile_schema_version": "hemafrag_general_profile_v1",
+                "profile_id": "general_default",
+                "profile_version": 1,
+                "validation_status": "unvalidated",
                 "ladder": GENERAL_DEFAULT_LADDER,
+                "size_standard_channel": "DATA4",
                 "trace_channels": list(GENERAL_DEFAULT_TRACE_CHANNELS),
                 "peak_channels": list(GENERAL_DEFAULT_TRACE_CHANNELS),
                 "primary_peak_channel": GENERAL_DEFAULT_PRIMARY_CHANNEL,
                 "bp_min": GENERAL_DEFAULT_BP_MIN,
                 "bp_max": GENERAL_DEFAULT_BP_MAX,
+                "report_fields": [
+                    "source_sha256",
+                    "profile",
+                    "ladder_qc",
+                    "trace_channels",
+                    "bp_range",
+                ],
             },
         },
     },
@@ -346,12 +358,50 @@ def _migrate_legacy_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
         if not profile_pipeline.get("assay_filter_substring"):
             profile_pipeline["assay_filter_substring"] = pipeline.get("assay_filter_substring", default_pipeline.get("assay_filter_substring", ""))
         if analysis_id == "general":
+            profile_pipeline.setdefault(
+                "profile_schema_version",
+                default_pipeline.get(
+                    "profile_schema_version",
+                    "hemafrag_general_profile_v1",
+                ),
+            )
+            profile_pipeline.setdefault(
+                "profile_id",
+                default_pipeline.get("profile_id", "general_default"),
+            )
+            profile_pipeline.setdefault(
+                "profile_version",
+                default_pipeline.get("profile_version", 1),
+            )
+            profile_pipeline.setdefault(
+                "validation_status",
+                default_pipeline.get("validation_status", "unvalidated"),
+            )
             profile_pipeline.setdefault("ladder", default_pipeline.get("ladder", GENERAL_DEFAULT_LADDER))
+            profile_pipeline.setdefault(
+                "size_standard_channel",
+                default_pipeline.get("size_standard_channel", "DATA4"),
+            )
             profile_pipeline.setdefault("trace_channels", copy.deepcopy(default_pipeline.get("trace_channels", list(GENERAL_DEFAULT_TRACE_CHANNELS))))
             profile_pipeline.setdefault("peak_channels", copy.deepcopy(default_pipeline.get("peak_channels", list(GENERAL_DEFAULT_TRACE_CHANNELS))))
             profile_pipeline.setdefault("primary_peak_channel", default_pipeline.get("primary_peak_channel", GENERAL_DEFAULT_PRIMARY_CHANNEL))
             profile_pipeline.setdefault("bp_min", default_pipeline.get("bp_min", GENERAL_DEFAULT_BP_MIN))
             profile_pipeline.setdefault("bp_max", default_pipeline.get("bp_max", GENERAL_DEFAULT_BP_MAX))
+            profile_pipeline.setdefault(
+                "report_fields",
+                copy.deepcopy(
+                    default_pipeline.get(
+                        "report_fields",
+                        [
+                            "source_sha256",
+                            "profile",
+                            "ladder_qc",
+                            "trace_channels",
+                            "bp_range",
+                        ],
+                    )
+                ),
+            )
         if analysis_id == "clonality":
             archive_runner = profile.setdefault("archive_runner", {})
             if not isinstance(archive_runner.get("input_root"), str) or not archive_runner.get("input_root"):
@@ -380,12 +430,39 @@ def _migrate_legacy_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
 
 def _normalize_general_pipeline_settings(profile_pipeline: Dict[str, Any]) -> None:
     """Clamp general runtime settings to the supported ladder/channel contract."""
+    profile_pipeline["profile_schema_version"] = "hemafrag_general_profile_v1"
+    profile_id = str(profile_pipeline.get("profile_id") or "general_default").strip()
+    profile_pipeline["profile_id"] = profile_id or "general_default"
+    try:
+        profile_pipeline["profile_version"] = max(
+            1,
+            int(profile_pipeline.get("profile_version") or 1),
+        )
+    except (TypeError, ValueError):
+        profile_pipeline["profile_version"] = 1
+    validation_status = str(
+        profile_pipeline.get("validation_status") or "unvalidated"
+    ).strip().lower()
+    if validation_status not in {"unvalidated", "validated", "retired"}:
+        validation_status = "unvalidated"
+    profile_pipeline["validation_status"] = validation_status
+
     ladder = str(profile_pipeline.get("ladder", GENERAL_DEFAULT_LADDER)).strip() or GENERAL_DEFAULT_LADDER
     if ladder.upper() == "LIZ500":
         ladder = "LIZ500_250"
     if ladder not in GENERAL_LADDERS:
         ladder = GENERAL_DEFAULT_LADDER
     profile_pipeline["ladder"] = ladder
+    default_size_standard_channel = (
+        "DATA105" if ladder == "LIZ500_250" else "DATA4"
+    )
+    size_standard_channel = str(
+        profile_pipeline.get("size_standard_channel")
+        or default_size_standard_channel
+    ).strip().upper()
+    if size_standard_channel not in {"DATA4", "DATA5", "DATA105"}:
+        size_standard_channel = default_size_standard_channel
+    profile_pipeline["size_standard_channel"] = size_standard_channel
 
     trace_channels = profile_pipeline.get("trace_channels", GENERAL_DEFAULT_TRACE_CHANNELS)
     if not isinstance(trace_channels, list):
@@ -416,6 +493,21 @@ def _normalize_general_pipeline_settings(profile_pipeline: Dict[str, Any]) -> No
         profile_pipeline["bp_max"] = float(profile_pipeline.get("bp_max", GENERAL_DEFAULT_BP_MAX))
     except (TypeError, ValueError):
         profile_pipeline["bp_max"] = GENERAL_DEFAULT_BP_MAX
+    report_fields = profile_pipeline.get("report_fields")
+    if not isinstance(report_fields, list):
+        report_fields = []
+    report_fields = [
+        str(value).strip()
+        for value in report_fields
+        if str(value).strip()
+    ]
+    profile_pipeline["report_fields"] = report_fields or [
+        "source_sha256",
+        "profile",
+        "ladder_qc",
+        "trace_channels",
+        "bp_range",
+    ]
 
 def _validate_settings(settings: Dict[str, Any]) -> None:
     """Basic validation for critical settings."""

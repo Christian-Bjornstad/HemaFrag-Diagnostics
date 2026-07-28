@@ -64,6 +64,12 @@ Phase 1 (delete-not-archive, per user):
 - Removed the PyO3 JSON text reparse, aligned its ABI floor with Python 3.10, and added an append-safe SQLite workbook-snapshot prototype. Native NumPy bridge benchmarking and production-ledger migration remain gated.
 - Added source/engine/correction provenance to entries, HTML, and tracking. The real combined smoke retained `8` patient plus `14` QC entries with hashes on `22/22` workbook rows; full verification passed (`466 passed, 3 skipped`).
 
+## 2026-07-28 - Plan 13 Workflow, Trends, And Release Audit
+
+- Ladder Studio now persists exact correction-consumption evidence and shows read-only candidate margins; child manifests only mark a correction consumed when the analyzed sidecar hash matches. Review/report rerun tests remain green.
+- Added advisory QC trend sheets with explicit 20-run baseline selection, plus versioned General profiles and provenance. Three real General ROX repeats were deterministic and exposed/fixed two dormant General-path failures.
+- Automated engineering gates pass; clinical promotion remains blocked pending FLT3 area-bias evidence and chemist review. Final verification: Python `479 passed, 3 skipped`; Rust core `81 passed, 1 ignored` plus `5` contract tests; PyO3 check passed.
+
 ## 2026-07-28 - Plan 13 Benchmark Foundation
 
 - Added a reproducible, atomic benchmark runner with input hashes, engine provenance, deterministic output fingerprints, stage timing, RSS observations, and portable real-data scenarios for LIZ, ROX, combined DIT/QC, and FLT3.

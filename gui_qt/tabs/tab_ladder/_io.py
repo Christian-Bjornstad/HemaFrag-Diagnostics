@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 from gui_qt.tabs.tab_ladder._summary import resolve_cache_key
@@ -31,6 +33,33 @@ def _read_bundle_csv(cases_path: Path) -> tuple[list[str], list[dict[str, Any]]]
         fieldnames = list(reader.fieldnames or [])
         rows = list(reader)
     return fieldnames, rows
+
+
+def _write_bundle_csv_atomic(
+    cases_path: Path,
+    fieldnames: list[str],
+    rows: list[dict[str, Any]],
+) -> None:
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=cases_path.parent,
+            prefix=f".{cases_path.name}.",
+            suffix=".tmp",
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(temporary_path, cases_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def load_review_bundle_worker(bundle_dir: Path) -> dict:
@@ -158,10 +187,7 @@ def save_review_bundle_annotation_worker(
             f"Could not find review bundle row for {full_path_text}"
         )
 
-    with cases_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    _write_bundle_csv_atomic(cases_path, fieldnames, rows)
 
     annotations_path = bundle_dir / "ladder_review_annotations.json"
     existing: dict[str, dict] = {}
@@ -175,3 +201,52 @@ def save_review_bundle_annotation_worker(
         json.dumps(existing, indent=2, ensure_ascii=True), encoding="utf-8"
     )
     return annotation
+
+
+def save_review_bundle_rerun_status_worker(
+    bundle_dir: Path,
+    consumption_by_file: dict[str, dict[str, Any]],
+    *,
+    run_manifest_path: Path | None,
+    rerun_at_utc: str,
+) -> int:
+    """Persist per-file correction-consumption evidence in a review bundle."""
+    cases_path = bundle_dir / "ladder_review_cases.csv"
+    if not cases_path.exists():
+        raise FileNotFoundError(f"Missing review bundle file: {cases_path.name}")
+
+    fieldnames, rows = _read_bundle_csv(cases_path)
+    rerun_fields = (
+        "rerun_status",
+        "rerun_at_utc",
+        "rerun_manifest_path",
+        "consumed_adjustment_sha256",
+    )
+    for field in rerun_fields:
+        if field not in fieldnames:
+            fieldnames.append(field)
+
+    statuses_by_key = {
+        resolve_cache_key(Path(raw_path)): status
+        for raw_path, status in consumption_by_file.items()
+    }
+    updated = 0
+    for row in rows:
+        raw_path = str(row.get("full_path") or "").strip()
+        if not raw_path:
+            continue
+        status = statuses_by_key.get(resolve_cache_key(Path(raw_path)))
+        if status is None:
+            continue
+        row["rerun_status"] = str(status.get("status") or "not_consumed")
+        row["rerun_at_utc"] = rerun_at_utc
+        row["rerun_manifest_path"] = (
+            str(run_manifest_path.resolve()) if run_manifest_path else ""
+        )
+        row["consumed_adjustment_sha256"] = str(
+            status.get("manual_adjustment_sha256") or ""
+        )
+        updated += 1
+
+    _write_bundle_csv_atomic(cases_path, fieldnames, rows)
+    return updated

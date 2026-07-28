@@ -72,6 +72,9 @@ RUN_SHEET_COLUMNS = [
     "LadderLinearMeanResidualBp",
     "LadderLinearMaxResidualBp",
     "LadderCurvature",
+    "LadderMedianAnchorIntensity",
+    "PullUpCandidate",
+    "SaturationCandidate",
     CHEMIST_LABEL_COLUMN,
 ]
 RUN_SHEET_COLUMNS_WITH_INTERPRETATION = RUN_SHEET_COLUMNS + CLONALITY_INTERPRETATION_COLUMNS
@@ -371,6 +374,8 @@ def build_tracking_row_key(*, artifact_kind: str, identity_key: str, marker_name
 
 
 def _build_run_row(entry: dict) -> dict:
+    from core.qc.trend_monitor import build_entry_qc_trend_evidence
+
     join_fields = build_tracking_join_fields(entry)
     if not join_fields:
         return {}
@@ -415,6 +420,7 @@ def _build_run_row(entry: dict) -> dict:
         if isinstance(entry.get("analysis_provenance"), dict)
         else {}
     )
+    trend_evidence = build_entry_qc_trend_evidence(entry)
 
     return {
         "Month": _month_bucket(join_fields["run_date"]),
@@ -447,6 +453,7 @@ def _build_run_row(entry: dict) -> dict:
         "LadderLinearMeanResidualBp": ladder_linear_mean_residual_bp,
         "LadderLinearMaxResidualBp": ladder_linear_max_residual_bp,
         "LadderCurvature": ladder_curvature,
+        **trend_evidence,
         "ClonalityInterpretationEnabled": entry.get("ClonalityInterpretationEnabled", ""),
         "ClonalitySuggestion": entry.get("ClonalitySuggestion", ""),
         "ClonalityConfidence": entry.get("ClonalityConfidence", ""),

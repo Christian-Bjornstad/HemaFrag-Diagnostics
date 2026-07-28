@@ -73,8 +73,7 @@ def _analyze_files(fsa_files: list[Path]) -> tuple[list[dict], int]:
         elif ladder_missing:
             ladder_status = "review_required"
 
-        entries.append(
-            {
+        entry = {
                 "analysis": "general",
                 "assay": classified.get("assay", "GENERAL"),
                 "group": classified.get("group", "sample"),
@@ -86,6 +85,13 @@ def _analyze_files(fsa_files: list[Path]) -> tuple[list[dict], int]:
                 "bp_min": float(classified.get("bp_min", DEFAULT_BP_MIN)),
                 "bp_max": float(classified.get("bp_max", DEFAULT_BP_MAX)),
                 "ladder": classified.get("ladder") or ROX_LADDER,
+                "internal_ladder": classified.get("ladder") or ROX_LADDER,
+                "size_standard_channel": str(
+                    getattr(fsa, "size_standard_channel", "")
+                    or classified.get("size_standard_channel")
+                    or ""
+                ),
+                "general_profile": dict(classified.get("general_profile") or {}),
                 "ladder_qc_status": ladder_status,
                 "ladder_r2": ladder_r2,
                 "ladder_fit_strategy": ladder_strategy,
@@ -95,12 +101,18 @@ def _analyze_files(fsa_files: list[Path]) -> tuple[list[dict], int]:
                 "ladder_expected_step_count": int(getattr(fsa, "ladder_expected_step_count", 0)),
                 "ladder_fitted_step_count": int(getattr(fsa, "ladder_fitted_step_count", 0)),
                 "n_ladder_steps": int(len(getattr(fsa, "ladder_steps", []))),
-                "n_size_standard_peaks": int(len(getattr(fsa, "size_standard_peaks", []))),
+                "n_size_standard_peaks": int(
+                    len(getattr(fsa, "size_standard_peaks"))
+                    if getattr(fsa, "size_standard_peaks", None) is not None
+                    else 0
+                ),
                 "peaks_by_channel": peaks_by_channel,
                 "source_run_dir": classified.get("source_run_dir") or fsa_path.parent.name,
                 "file_name": fsa.file_name,
             }
-        )
+        from core.analysis_provenance import attach_analysis_provenance
+
+        entries.append(attach_analysis_provenance(entry))
 
     print_green(f"[GENERAL] Totalt {len(entries)} filer analysert. {skipped} skippet.")
     return entries, skipped

@@ -8,6 +8,7 @@ a QApplication or constructing a TabLadder widget.
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -18,13 +19,16 @@ from gui_qt.tabs.tab_ladder._io import (
     load_review_bundle_worker,
     review_case_paths_from_bundle,
     save_review_bundle_annotation_worker,
+    save_review_bundle_rerun_status_worker,
 )
 from gui_qt.tabs.tab_ladder._summary import (
     chip_state,
     count_chip_states,
     entry_cache_key,
     entry_original_path,
+    format_ladder_confidence_shadow,
     format_file_item,
+    manual_adjustment_consumption,
     metadata_from_entry,
     resolve_cache_key,
 )
@@ -52,6 +56,64 @@ class TabLadderSummaryHelperTests(unittest.TestCase):
         # str-based comparison that ignores the leading "C:/..." Windows
         # prefix issue: both are resolved via the same mechanism.
         self.assertIsInstance(result, Path)
+
+    def test_manual_adjustment_consumption_requires_successful_manual_entry(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fsa = Path(td) / "sample.fsa"
+            fsa.write_bytes(b"trace")
+            adjustment = fsa.with_suffix(".ladder_adj.json")
+            adjustment.write_text("{}", encoding="utf-8")
+            adjustment_hash = hashlib.sha256(
+                adjustment.read_bytes()
+            ).hexdigest()
+            result = {
+                "failed_jobs": [],
+                "ladder_review_gate": {"review_case_count": 0},
+                "dit_report_entries": [
+                    {
+                        "original_file_path": str(fsa),
+                        "ladder_fit_strategy": "manual_adjustment",
+                        "analysis_provenance": {
+                            "ladder_fit_strategy": "manual_adjustment",
+                            "manual_adjustment_consumed": True,
+                            "manual_adjustment_sha256": adjustment_hash,
+                            "source_sha256": "b" * 64,
+                        },
+                    }
+                ],
+            }
+
+            status = manual_adjustment_consumption(result, fsa)
+
+            self.assertTrue(status["consumed"])
+            self.assertEqual(status["status"], "consumed")
+            self.assertEqual(
+                status["manual_adjustment_sha256"],
+                adjustment_hash,
+            )
+
+            result["ladder_review_gate"]["review_case_count"] = 1
+            status = manual_adjustment_consumption(result, fsa)
+            self.assertFalse(status["consumed"])
+            self.assertIn("review", status["reason"].lower())
+
+    def test_format_ladder_confidence_shadow_is_explicitly_read_only(
+        self,
+    ) -> None:
+        text = format_ladder_confidence_shadow(
+            {
+                "runtime_selected_rank": 1,
+                "top1_top2_score_margin": 0.403,
+                "stable_under_tested_thresholds": True,
+            }
+        )
+
+        self.assertIn("Selected rank 1", text)
+        self.assertIn("top-2 margin 0.403", text)
+        self.assertIn("threshold stable", text)
+        self.assertIn("shadow only", text)
 
     def test_resolve_cache_key_handles_unresolvable(self) -> None:
         # A non-existent file should still resolve via expanduser().
@@ -246,6 +308,42 @@ class TabLadderIOHelperTests(unittest.TestCase):
                     Path(_posix_text("/never/seen.fsa")),
                     {"label": "reviewed_no_change"},
                 )
+
+    def test_save_review_bundle_rerun_status_worker_persists_consumption(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "sample.fsa"
+            fsa.write_bytes(b"trace")
+            cases = bundle / "ladder_review_cases.csv"
+            cases.write_text(
+                f"full_path,label\n{fsa},manual_adjusted\n",
+                encoding="utf-8",
+            )
+            manifest = bundle / "run_manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+
+            updated = save_review_bundle_rerun_status_worker(
+                bundle,
+                {
+                    str(fsa): {
+                        "status": "consumed",
+                        "manual_adjustment_sha256": "c" * 64,
+                    }
+                },
+                run_manifest_path=manifest,
+                rerun_at_utc="2026-07-28T12:00:00+00:00",
+            )
+            loaded = load_review_bundle_worker(bundle)["rows"][0]
+
+            self.assertEqual(updated, 1)
+            self.assertEqual(loaded["rerun_status"], "consumed")
+            self.assertEqual(loaded["consumed_adjustment_sha256"], "c" * 64)
+            self.assertEqual(
+                loaded["rerun_manifest_path"],
+                str(manifest.resolve()),
+            )
 
 
 class TabLadderWorkersHelperTests(unittest.TestCase):

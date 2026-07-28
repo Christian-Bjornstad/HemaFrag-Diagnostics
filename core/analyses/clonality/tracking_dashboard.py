@@ -8,6 +8,13 @@ from openpyxl.chart import BarChart, Reference
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.dataframe import dataframe_to_rows
+
+from core.qc.trend_monitor import (
+    build_control_signals,
+    build_run_summary,
+    selected_baseline_run_keys,
+)
 
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
@@ -28,7 +35,10 @@ DASHBOARD_SHEETS = [
     "Control_Summary",
     "PK_Sample_Delta",
     "PK_Ladder_Delta",
+    "QC_Run_Trends",
+    "QC_Control_Signals",
 ]
+QC_BASELINE_CONFIG_SHEET = "QC_Baseline_Config"
 
 
 def refresh_clonality_tracking_dashboard(
@@ -40,9 +50,28 @@ def refresh_clonality_tracking_dashboard(
         return
 
     with pd.ExcelFile(excel_path, engine="openpyxl") as xls:
-        required = {"Patient_Runs", "Control_Runs", "PK_Peaks"}
+        required = {"Runs", "Patient_Runs", "Control_Runs", "PK_Peaks"}
         if not required.issubset(set(xls.sheet_names)):
             return
+        runs_frame = pd.read_excel(
+            excel_path,
+            sheet_name="Runs",
+            engine="openpyxl",
+        )
+        baseline_config = (
+            pd.read_excel(
+                excel_path,
+                sheet_name=QC_BASELINE_CONFIG_SHEET,
+                engine="openpyxl",
+            )
+            if QC_BASELINE_CONFIG_SHEET in xls.sheet_names
+            else pd.DataFrame()
+        )
+    run_trends = build_run_summary(runs_frame)
+    control_signals = build_control_signals(
+        run_trends,
+        baseline_run_keys=selected_baseline_run_keys(baseline_config),
+    )
 
     wb = load_workbook(excel_path)
     try:
@@ -59,6 +88,13 @@ def refresh_clonality_tracking_dashboard(
         control_ws = wb.create_sheet("Control_Summary")
         pk_sample_ws = wb.create_sheet("PK_Sample_Delta")
         pk_ladder_ws = wb.create_sheet("PK_Ladder_Delta")
+        run_trends_ws = wb.create_sheet("QC_Run_Trends")
+        control_signals_ws = wb.create_sheet("QC_Control_Signals")
+        baseline_config_ws = (
+            wb[QC_BASELINE_CONFIG_SHEET]
+            if QC_BASELINE_CONFIG_SHEET in wb.sheetnames
+            else wb.create_sheet(QC_BASELINE_CONFIG_SHEET)
+        )
 
         try:
             wb.calculation.calcMode = "auto"
@@ -81,6 +117,13 @@ def refresh_clonality_tracking_dashboard(
         _build_control_summary(control_ws, review_pairs, control_cols)
         _build_pk_summary(pk_sample_ws, assays, pk_cols, kind="sample")
         _build_pk_summary(pk_ladder_ws, assays, pk_cols, kind="ladder")
+        _write_frame(run_trends_ws, run_trends)
+        _write_frame(control_signals_ws, control_signals)
+        _refresh_baseline_config(
+            baseline_config_ws,
+            run_trends,
+            baseline_config,
+        )
         _build_dashboard(
             dashboard,
             dashboard_title=dashboard_title,
@@ -94,6 +137,52 @@ def refresh_clonality_tracking_dashboard(
         wb.save(excel_path)
     finally:
         wb.close()
+
+
+def _write_frame(ws, frame: pd.DataFrame) -> None:
+    clean = frame.astype(object).where(pd.notna(frame), None)
+    for row in dataframe_to_rows(clean, index=False, header=True):
+        ws.append(row)
+    _style_table(
+        ws,
+        1,
+        max(len(clean) + 1, 2),
+        1,
+        max(len(clean.columns), 1),
+    )
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    _autofit(ws)
+
+
+def _refresh_baseline_config(
+    ws,
+    run_trends: pd.DataFrame,
+    existing: pd.DataFrame,
+) -> None:
+    selections = selected_baseline_run_keys(existing)
+    notes: dict[str, str] = {}
+    dates: dict[str, str] = {}
+    if not existing.empty and "RunKey" in existing.columns:
+        for _, row in existing.iterrows():
+            key = str(row.get("RunKey") or "").strip()
+            if key:
+                notes[key] = str(row.get("Note") or "")
+                dates[key] = str(row.get("RunDate") or "")
+    if not run_trends.empty:
+        for _, row in run_trends[["RunKey", "RunDate"]].drop_duplicates().iterrows():
+            key = str(row["RunKey"])
+            dates[key] = str(row["RunDate"] or dates.get(key, ""))
+
+    if ws.max_row:
+        ws.delete_rows(1, ws.max_row)
+    ws.append(["RunKey", "RunDate", "IncludeInBaseline", "Note"])
+    for key in sorted(dates, key=lambda value: (dates[value], value)):
+        ws.append([key, dates[key], key in selections, notes.get(key, "")])
+    _style_table(ws, 1, max(len(dates) + 1, 2), 1, 4)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    _autofit(ws)
 
 
 def _ensure_abs_delta_column(ws) -> None:

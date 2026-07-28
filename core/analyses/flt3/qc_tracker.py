@@ -49,6 +49,9 @@ RUN_SHEET_COLUMNS = [
     "LadderExpectedStepCount",
     "LadderFittedStepCount",
     "LadderR2",
+    "LadderMedianAnchorIntensity",
+    "PullUpCandidate",
+    "SaturationCandidate",
     "PeakQC",
 ]
 
@@ -227,6 +230,8 @@ def marker_specs_for_entry(entry: dict) -> list[dict]:
 
 
 def build_tracking_base_row(entry: dict) -> dict:
+    from core.qc.trend_monitor import build_entry_qc_trend_evidence
+
     file_name = resolve_entry_file_name(entry)
     if not file_name:
         return {}
@@ -250,6 +255,7 @@ def build_tracking_base_row(entry: dict) -> dict:
         if isinstance(entry.get("analysis_provenance"), dict)
         else {}
     )
+    trend_evidence = build_entry_qc_trend_evidence(entry)
 
     return {
         "Month": _month_bucket(run_date),
@@ -284,6 +290,7 @@ def build_tracking_base_row(entry: dict) -> dict:
         "LadderExpectedStepCount": int(entry.get("ladder_expected_step_count", 0) or 0),
         "LadderFittedStepCount": int(entry.get("ladder_fitted_step_count", 0) or 0),
         "LadderR2": ladder_r2 if ladder_r2 is not None else "",
+        **trend_evidence,
     }
 
 
