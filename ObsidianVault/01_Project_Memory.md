@@ -118,6 +118,8 @@ HemaFrag is now focused on FLT3 work. Clonality is considered parked for a while
 
 ## Current Verification Baseline
 
+- 2026-07-28: Plan 13 real-FSA benchmarks must record Rust engine availability and binary hash. The first deterministic three-repeat reference is local at `validation_outputs/plan13_phase0_repeat3_final/`; FLT3 strict ROX500 requires a built Rust engine and reached 25/25 PASS with the CLI available.
+
 - 2026-07-27: Manual ladder adjustments are written atomically and reloaded before a review case is marked resolved. Valid saved mappings are attempted when Rust returns no fit, before strict/Rust-only exits, including FLT3 GS500ROX. Active batch review finalization preserves cached QC entries while replacing rerun entries by source path.
 
 - 2026-05-14: FLT3 channel contract fixed in code.

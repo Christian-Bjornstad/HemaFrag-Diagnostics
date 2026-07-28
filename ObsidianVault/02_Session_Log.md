@@ -58,6 +58,12 @@ Phase 1 (delete-not-archive, per user):
 - Commits: `37112cb` (Phase 0), Phase 1 commit lands next.
 # HemaFrag Session Log
 
+## 2026-07-28 - Plan 13 Benchmark Foundation
+
+- Added a reproducible, atomic benchmark runner with input hashes, engine provenance, deterministic output fingerprints, stage timing, RSS observations, and portable real-data scenarios for LIZ, ROX, combined DIT/QC, and FLT3.
+- Built the ignored Rust CLI and froze three deterministic repeats at `validation_outputs/plan13_phase0_repeat3_final/`: combined output retained 22 DIT plus 14 QC entries; FLT3 passed 25/25 with one saved manual correction.
+- Phase 0 remains open for the 1/2/4/6/8 worker matrix, general mode, reviewed artifact/failure cases, and finer stage metrics; native-wheel Python compatibility and Rust tracking-marker attribution are recorded follow-ups.
+
 ## 2026-07-27 - Manual Ladder Rerun Reliability And Improvement Roadmap
 
 - Fixed false-success ladder saves with atomic write/reload verification; saved manual mappings now remain usable when Rust returns no fit, including FLT3 Rust-only handling.

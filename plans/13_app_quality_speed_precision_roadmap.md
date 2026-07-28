@@ -17,6 +17,13 @@ Progress:
 - [ ] Phase 4 - reporting and workflow
 - [ ] Phase 5 - assay-specific validation and promotion
 
+Current execution note:
+
+- Phase 0 benchmark tooling is implemented and tested. The first Rust-enabled, three-repeat real-FSA freeze is stored locally at `validation_outputs/plan13_phase0_repeat3_final/` and is excluded from git.
+- All four result fingerprints are deterministic. Measured p50/p95 wall times are LIZ `2.75/3.10 s`, ROX `0.18/0.18 s`, combined patient/QC `43.00/47.49 s`, and 25-file FLT3 `15.08/15.33 s`.
+- The combined run preserved `22` DIT entries and `14` QC entries with no failed jobs. FLT3 produced `25/25` PASS results: `24` automatic Rust CLI fits and one valid saved manual adjustment.
+- Phase 0 remains open for worker counts `1/2/4/6/8`, general-mode coverage, reviewed failure/artifact classes, finer stage timing, and a larger balanced corpus. The native PyO3 wheel contract and tracking-marker Rust attribution are explicit follow-up items.
+
 ## Objective
 
 Improve HemaFrag's correctness, precision, throughput, recoverability, and operator workflow without changing validated behavior by accident. Every algorithmic idea starts as an offline comparison against reviewed FSA data and ships only after assay-specific acceptance.
