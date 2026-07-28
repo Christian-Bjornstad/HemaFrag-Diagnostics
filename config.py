@@ -162,7 +162,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "output_root": str(Path.home()),
                 "run_name": "",
                 "years": ["2025", "2026"],
-                "workers": 6,
+                "workers": min(8, max(1, int(os.cpu_count() or 1) - 1)),
                 "limit": 0,
                 "include_npm1": False,
                 "dit_only": False,

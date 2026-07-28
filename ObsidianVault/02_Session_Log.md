@@ -58,6 +58,12 @@ Phase 1 (delete-not-archive, per user):
 - Commits: `37112cb` (Phase 0), Phase 1 commit lands next.
 # HemaFrag Session Log
 
+## 2026-07-28 - Plan 13 Throughput And Report Provenance
+
+- Added per-process immutable FSA reuse and unified Python/Rust/numeric concurrency budgeting. Real alternating A/B preserved exact output parity while improving median/p95 by `5.42%/13.88%`; the deterministic 25-file FLT3 matrix favored eight workers (`13.59 s` p95) over six (`14.59 s`).
+- Removed the PyO3 JSON text reparse, aligned its ABI floor with Python 3.10, and added an append-safe SQLite workbook-snapshot prototype. Native NumPy bridge benchmarking and production-ledger migration remain gated.
+- Added source/engine/correction provenance to entries, HTML, and tracking. The real combined smoke retained `8` patient plus `14` QC entries with hashes on `22/22` workbook rows; full verification passed (`466 passed, 3 skipped`).
+
 ## 2026-07-28 - Plan 13 Benchmark Foundation
 
 - Added a reproducible, atomic benchmark runner with input hashes, engine provenance, deterministic output fingerprints, stage timing, RSS observations, and portable real-data scenarios for LIZ, ROX, combined DIT/QC, and FLT3.

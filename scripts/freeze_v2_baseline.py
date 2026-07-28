@@ -276,18 +276,42 @@ def _run_clonality_file_scenario(
         raise FileNotFoundError(input_file)
     from config import APP_SETTINGS
     from core.analyses.clonality import pipeline
+    from core.fsa_artifact import clear_fsa_artifact_cache, get_fsa_artifact_stats
 
     previous = APP_SETTINGS.get("active_analysis")
+    engine_settings = APP_SETTINGS.setdefault("engine", {})
+    previous_use_rust = engine_settings.get("use_rust")
+    previous_cache_bypass = os.environ.get("HEMAFRAG_DISABLE_FSA_ARTIFACT_CACHE")
     APP_SETTINGS["active_analysis"] = "clonality"
+    if "use_rust" in scenario:
+        engine_settings["use_rust"] = bool(scenario.get("use_rust"))
+    cache_bypass = bool(scenario.get("disable_fsa_artifact_cache", False))
+    if cache_bypass:
+        os.environ["HEMAFRAG_DISABLE_FSA_ARTIFACT_CACHE"] = "1"
+    else:
+        os.environ.pop("HEMAFRAG_DISABLE_FSA_ARTIFACT_CACHE", None)
+    clear_fsa_artifact_cache()
     try:
         entry = pipeline._analyze_single_file(input_file)
     finally:
         APP_SETTINGS["active_analysis"] = previous
+        if previous_use_rust is None:
+            engine_settings.pop("use_rust", None)
+        else:
+            engine_settings["use_rust"] = previous_use_rust
+        if previous_cache_bypass is None:
+            os.environ.pop("HEMAFRAG_DISABLE_FSA_ARTIFACT_CACHE", None)
+        else:
+            os.environ["HEMAFRAG_DISABLE_FSA_ARTIFACT_CACHE"] = previous_cache_bypass
     sizing_shadow: dict[str, object] | None = None
     ladder_confidence_shadow: dict[str, object] | None = None
     artifact_shadow: dict[str, object] | None = None
     baseline_detection_shadow: dict[str, object] | None = None
-    if isinstance(entry, dict) and entry.get("fsa") is not None:
+    if (
+        bool(scenario.get("include_precision_shadows", True))
+        and isinstance(entry, dict)
+        and entry.get("fsa") is not None
+    ):
         fsa = entry["fsa"]
         anchor_times = getattr(fsa, "best_size_standard", None)
         anchor_sizes = getattr(fsa, "expected_ladder_steps", None)
@@ -354,6 +378,14 @@ def _run_clonality_file_scenario(
             "sha256": _sha256_file(input_file),
         },
         "entry": _compact_entry(entry),
+        "analysis_configuration": {
+            "use_rust": bool(scenario.get("use_rust", previous_use_rust)),
+            "fsa_artifact_cache_enabled": not cache_bypass,
+            "precision_shadows_included": bool(
+                scenario.get("include_precision_shadows", True)
+            ),
+        },
+        "fsa_artifact": get_fsa_artifact_stats(),
         "sizing_shadow": sizing_shadow,
         "ladder_confidence_shadow": ladder_confidence_shadow,
         "artifact_shadow": artifact_shadow,
@@ -384,7 +416,16 @@ def _run_combined_qc_dit_scenario(
     from core.batch import generate_jobs, run_batch_jobs
 
     previous = APP_SETTINGS.get("active_analysis")
+    clonality_batch = (
+        APP_SETTINGS.setdefault("analyses", {})
+        .setdefault("clonality", {})
+        .setdefault("batch", {})
+    )
+    previous_global_path = clonality_batch.get("global_tracking_excel_path")
     APP_SETTINGS["active_analysis"] = "clonality"
+    clonality_batch["global_tracking_excel_path"] = str(
+        scenario_dir / "benchmark_global_clonality_tracking.xlsx"
+    )
     recorder = _StageRecorder()
     output_root = scenario_dir / str(scenario.get("output_folder_name") or "combined_qc_dit")
     try:
@@ -407,6 +448,10 @@ def _run_combined_qc_dit_scenario(
         )
     finally:
         APP_SETTINGS["active_analysis"] = previous
+        if previous_global_path is None:
+            clonality_batch.pop("global_tracking_excel_path", None)
+        else:
+            clonality_batch["global_tracking_excel_path"] = previous_global_path
 
     gate = result.get("ladder_review_gate") or {}
     return {
@@ -437,17 +482,33 @@ def _run_flt3_rox500_qc_scenario(
     source_dir = _resolve_path(scenario.get("source_dir"), base_dir=scenario_file_dir)
     if not source_dir.is_dir():
         raise FileNotFoundError(source_dir)
+    from config import APP_SETTINGS
     from scripts.run_flt3_rox500_qc_all_injections import run_qc
 
-    result = run_qc(
-        source_dir,
-        scenario_dir / "flt3_rox500_qc",
-        years=[str(value) for value in scenario.get("years") or []] or None,
-        require_run_name_contains=str(scenario.get("require_run_name_contains") or ""),
-        exclude_run_name_contains=str(scenario.get("exclude_run_name_contains") or ""),
-        limit=int(scenario.get("limit") or 0),
-        workers=int(scenario.get("workers") or 1),
+    batch_settings = (
+        APP_SETTINGS.setdefault("analyses", {})
+        .setdefault("flt3", {})
+        .setdefault("batch", {})
     )
+    previous_global_path = batch_settings.get("global_tracking_excel_path")
+    batch_settings["global_tracking_excel_path"] = str(
+        scenario_dir / "benchmark_global_flt3_tracking.xlsx"
+    )
+    try:
+        result = run_qc(
+            source_dir,
+            scenario_dir / "flt3_rox500_qc",
+            years=[str(value) for value in scenario.get("years") or []] or None,
+            require_run_name_contains=str(scenario.get("require_run_name_contains") or ""),
+            exclude_run_name_contains=str(scenario.get("exclude_run_name_contains") or ""),
+            limit=int(scenario.get("limit") or 0),
+            workers=int(scenario.get("workers") or 1),
+        )
+    finally:
+        if previous_global_path is None:
+            batch_settings.pop("global_tracking_excel_path", None)
+        else:
+            batch_settings["global_tracking_excel_path"] = previous_global_path
     summary = dict(result.get("summary") or {})
     return {
         key: summary.get(key)
@@ -464,6 +525,7 @@ def _run_flt3_rox500_qc_scenario(
             "ladder_qc_counts",
             "peak_qc_counts",
             "rust_engine_stats",
+            "concurrency_plan",
         )
     }
 

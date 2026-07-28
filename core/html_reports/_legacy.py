@@ -851,6 +851,58 @@ def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
                 f"<td>{status_badge}</td><td>{r2_str}</td></tr>"
             )
     html_lines.append("</table>")
+    _render_analysis_provenance_table(dit_entries, html_lines)
+
+
+def _render_analysis_provenance_table(
+    dit_entries: list[dict],
+    html_lines: list[str],
+) -> None:
+    rows = [
+        (entry, entry.get("analysis_provenance"))
+        for entry in dit_entries
+        if isinstance(entry.get("analysis_provenance"), dict)
+    ]
+    if not rows:
+        return
+    html_lines.append(
+        "<details class='provenance'><summary>Analyseproveniens</summary>"
+        "<table><tr><th>Fil</th><th>SHA-256</th><th>Motor</th>"
+        "<th>Ladderstrategi</th><th>Korreksjon</th><th>QC-koder</th>"
+        "<th>Versjon</th></tr>"
+    )
+    for entry, provenance in sorted(
+        rows,
+        key=lambda item: str(
+            item[0].get("file_name")
+            or getattr(item[0].get("fsa"), "file_name", "")
+        ),
+    ):
+        file_name = str(
+            provenance.get("source_file")
+            or entry.get("file_name")
+            or getattr(entry.get("fsa"), "file_name", "")
+        )
+        correction = (
+            f"{provenance.get('manual_adjustment_schema') or 'manual'}"
+            if provenance.get("manual_adjustment_consumed")
+            else "Ingen"
+        )
+        reason_codes = ", ".join(
+            str(value) for value in provenance.get("ladder_reason_codes") or []
+        )
+        html_lines.append(
+            "<tr>"
+            f"<td>{escape(file_name)}</td>"
+            f"<td><code>{escape(str(provenance.get('source_sha256') or ''))}</code></td>"
+            f"<td>{escape(str(provenance.get('ladder_engine') or ''))}</td>"
+            f"<td>{escape(str(provenance.get('ladder_fit_strategy') or ''))}</td>"
+            f"<td>{escape(correction)}</td>"
+            f"<td>{escape(reason_codes)}</td>"
+            f"<td>{escape(str(provenance.get('app_version') or ''))}</td>"
+            "</tr>"
+        )
+    html_lines.append("</table></details>")
 
 
 def _ladder_status_payload(entry: dict) -> tuple[str, str, str]:

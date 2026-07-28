@@ -50,6 +50,7 @@ from core.analyses.flt3.rox500_exclusions import (
     FLT3_ROX500_USER_GOOD_OVERRIDES,
     FLT3_ROX500_USER_REVIEW_OVERRIDES,
 )
+from core.concurrency import initialize_worker_concurrency, resolve_concurrency_plan
 from core.utils import is_water_file
 
 
@@ -949,7 +950,11 @@ def _run_qc_impl(
     total = len(classified)
     if progress_max_callback is not None:
         progress_max_callback(total)
-    worker_count = max(1, min(int(workers or 1), total or 1))
+    concurrency_plan = resolve_concurrency_plan(
+        requested_outer_workers=int(workers or 1),
+        task_count=total,
+    )
+    worker_count = concurrency_plan.outer_workers
     parallel = worker_count > 1
     payloads = [
         (idx, total, str(path), meta, parallel)
@@ -959,7 +964,14 @@ def _run_qc_impl(
     if parallel:
         print(f"[INFO] FLT3 ROX500 QC running with {worker_count} parallel workers.", flush=True)
         try:
-            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            with ProcessPoolExecutor(
+                max_workers=worker_count,
+                initializer=initialize_worker_concurrency,
+                initargs=(
+                    concurrency_plan.rust_threads_per_worker,
+                    concurrency_plan.numeric_threads_per_worker,
+                ),
+            ) as executor:
                 future_to_job = {}
                 for payload, (path, meta) in zip(payloads, classified, strict=False):
                     idx = payload[0]
@@ -1123,6 +1135,7 @@ def _run_qc_impl(
         "ladder_qc_counts": dict(Counter(qc_df["LadderQC"].astype(str))) if "LadderQC" in qc_df.columns else {},
         "peak_qc_counts": dict(Counter(qc_df["PeakQC"].astype(str))) if "PeakQC" in qc_df.columns else {},
         "rust_engine_stats": dict(rust_engine_stats),
+        "concurrency_plan": concurrency_plan.to_dict(),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
     print(f"[RUST] Engine usage: {_format_rust_engine_stats(rust_engine_stats)}", flush=True)

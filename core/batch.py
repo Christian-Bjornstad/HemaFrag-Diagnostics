@@ -972,23 +972,29 @@ def run_batch_jobs(
 
     # Perform multi-threaded patient processing
     # Max workers = 3 (modest to prevent over-subscription of child Pool processes)
-    max_patient_workers = int(max_workers) if max_workers is not None else min(3, max(1, os.cpu_count() // 2 or 1))
-    max_patient_workers = max(1, max_patient_workers)
+    from core.concurrency import concurrency_environment, resolve_concurrency_plan
+
+    concurrency_plan = resolve_concurrency_plan(
+        requested_outer_workers=max_workers,
+        task_count=len(jobs),
+    )
+    max_patient_workers = concurrency_plan.outer_workers
     
     try:
-        with ThreadPoolExecutor(max_workers=max_patient_workers) as executor:
-            futures = [
-                executor.submit(process_job, i, job)
-                for i, job in enumerate(jobs)
-            ]
-            from concurrent.futures import as_completed
-            for future in as_completed(futures):
-                try:
-                    future.result()
-                except Exception as ex:
-                    if not continue_on_error:
-                        raise
-                    log(f"[BATCH] Worker future failed: {ex}")
+        with concurrency_environment(concurrency_plan):
+            with ThreadPoolExecutor(max_workers=max_patient_workers) as executor:
+                futures = [
+                    executor.submit(process_job, i, job)
+                    for i, job in enumerate(jobs)
+                ]
+                from concurrent.futures import as_completed
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as ex:
+                        if not continue_on_error:
+                            raise
+                        log(f"[BATCH] Worker future failed: {ex}")
     except Exception as ex:
         if not continue_on_error:
             log(f"[BATCH] Batch execution halted after error: {ex}")

@@ -4,9 +4,9 @@ from functools import lru_cache
 import re
 from pathlib import Path
 
-from Bio import SeqIO
 from fraggler.fraggler import print_warning
 from core.analyses.flt3.config import ASSAY_CONFIG, PREFERRED_INJECTION_TIME
+from core.fsa_artifact import load_fsa_artifact
 
 PARALLEL_RE = re.compile(r"(^|[_-])(p[12])([_-]|$)", re.IGNORECASE)
 DIT_RE = re.compile(r"(\d{2}OUM\d{5})", re.IGNORECASE)
@@ -85,8 +85,7 @@ def _read_injection_metadata_cached(path_str: str) -> dict:
     """Extract ABI metadata once per file path for the current process."""
     fsa_path = Path(path_str)
     try:
-        record = SeqIO.read(path_str, "abi")
-        tags = record.annotations.get("abif_raw", {})
+        tags = load_fsa_artifact(fsa_path).abif_raw
         return {
             "injection_time": tags.get("InSc1", 0),
             "injection_voltage": tags.get("InVt1", 0),

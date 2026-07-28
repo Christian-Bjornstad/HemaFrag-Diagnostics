@@ -731,7 +731,9 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
         else np.nan,
         "sl_metrics": sl_metrics,
     }
-    return attach_interpretation_if_enabled(entry)
+    from core.analysis_provenance import attach_analysis_provenance
+
+    return attach_interpretation_if_enabled(attach_analysis_provenance(entry))
 
 
 def _run_analyze_single_file_child(fsa_path: Path, queue) -> None:
@@ -966,11 +968,25 @@ def _analyze_files(
             )
     else:
         from multiprocessing import Pool, cpu_count
+        from core.concurrency import (
+            initialize_worker_concurrency,
+            resolve_concurrency_plan,
+        )
 
-        n_workers = max(1, cpu_count() - 1)
+        concurrency_plan = resolve_concurrency_plan(
+            requested_outer_workers=max(1, cpu_count() - 1),
+            task_count=total_files,
+        )
 
         try:
-            with Pool(n_workers) as pool:
+            with Pool(
+                concurrency_plan.outer_workers,
+                initializer=initialize_worker_concurrency,
+                initargs=(
+                    concurrency_plan.rust_threads_per_worker,
+                    concurrency_plan.numeric_threads_per_worker,
+                ),
+            ) as pool:
                 results = pool.map(_analyze_single_file, fsa_files)
         except Exception as ex:
             # Fallback to sequential if multiprocessing fails (e.g. frozen app)

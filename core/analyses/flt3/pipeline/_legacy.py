@@ -5870,7 +5870,7 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
     else:
         peak_qc_pass, peak_qc_reason = _peak_qc_status(peaks, meta.get("group", "sample"))
 
-    return {
+    entry = {
         "fsa": fsa,
         "peaks_by_channel": {meta["primary_peak_channel"]: peaks},
         "trace_channels": meta["trace_channels"],
@@ -5998,6 +5998,9 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         "peak_qc_pass": peak_qc_pass,
         "peak_qc_status": peak_qc_reason,
     }
+    from core.analysis_provenance import attach_analysis_provenance
+
+    return attach_analysis_provenance(entry)
 
 
 def _candidate_audit_record(path: Path, meta: dict, status: str, reason: str) -> dict:
@@ -6835,9 +6838,24 @@ def run_pipeline(
 
     if _should_use_multiprocessing() and len(raw_files) >= 2:
         from multiprocessing import Pool, cpu_count
-        n_workers = max(1, cpu_count() - 1)
+        from core.concurrency import (
+            initialize_worker_concurrency,
+            resolve_concurrency_plan,
+        )
+
+        concurrency_plan = resolve_concurrency_plan(
+            requested_outer_workers=max(1, cpu_count() - 1),
+            task_count=len(raw_files),
+        )
         try:
-            with Pool(n_workers) as pool:
+            with Pool(
+                concurrency_plan.outer_workers,
+                initializer=initialize_worker_concurrency,
+                initargs=(
+                    concurrency_plan.rust_threads_per_worker,
+                    concurrency_plan.numeric_threads_per_worker,
+                ),
+            ) as pool:
                 meta_results = pool.map(classify_fsa, raw_files)
         except Exception:
             meta_results = [classify_fsa(p) for p in raw_files]
@@ -6857,9 +6875,24 @@ def run_pipeline(
 
     if _should_use_multiprocessing() and len(candidates_list) >= 2:
         from multiprocessing import Pool, cpu_count
-        n_workers = max(1, cpu_count() - 1)
+        from core.concurrency import (
+            initialize_worker_concurrency,
+            resolve_concurrency_plan,
+        )
+
+        concurrency_plan = resolve_concurrency_plan(
+            requested_outer_workers=max(1, cpu_count() - 1),
+            task_count=len(candidates_list),
+        )
         try:
-            with Pool(n_workers) as pool:
+            with Pool(
+                concurrency_plan.outer_workers,
+                initializer=initialize_worker_concurrency,
+                initargs=(
+                    concurrency_plan.rust_threads_per_worker,
+                    concurrency_plan.numeric_threads_per_worker,
+                ),
+            ) as pool:
                 results = pool.map(_select_best_entry, candidates_list)
         except Exception as ex:
             print_warning(f"[PARALLEL] Multiprocessing failed during FLT3 selection ({ex}), falling back to sequential.")

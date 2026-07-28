@@ -234,6 +234,7 @@ class FsaFile:
         min_size_standard_height: int,
         normalize: bool = False,
         size_standard_channel: Optional[str] = None,
+        artifact=None,
     ) -> None:
         """
         A class to represent and process fragment size analysis (FSA) files.
@@ -318,7 +319,12 @@ class FsaFile:
                 self.size_standard_channel = None
             # ----------------------------------------------------
 
-        self.fsa = SeqIO.read(file, "abi").annotations["abif_raw"]
+        if artifact is None:
+            from core.fsa_artifact import load_fsa_artifact
+
+            artifact = load_fsa_artifact(self.file)
+        self.fsa_artifact = artifact
+        self.fsa = artifact.abif_raw
         self.sample_channel = sample_channel
         self.normalize = normalize
 

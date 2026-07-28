@@ -37,6 +37,11 @@ RUN_SHEET_COLUMNS = [
     "Ladder",
     "LadderQC",
     "LadderFitStrategy",
+    "LadderEngine",
+    "LadderReasonCodes",
+    "SourceFsaSha256",
+    "ManualAdjustmentSha256",
+    "AnalysisVersion",
     "RustPreviewPositiveCall",
     "RustPreviewWTBP",
     "RustPreviewMutantBPs",
@@ -240,6 +245,11 @@ def build_tracking_base_row(entry: dict) -> dict:
     rust_preview_ratio = entry.get("rust_preview_strongest_mutant_ratio")
     if rust_preview_ratio is None or not np.isfinite(rust_preview_ratio):
         rust_preview_ratio = ""
+    provenance = (
+        entry.get("analysis_provenance")
+        if isinstance(entry.get("analysis_provenance"), dict)
+        else {}
+    )
 
     return {
         "Month": _month_bucket(run_date),
@@ -258,6 +268,15 @@ def build_tracking_base_row(entry: dict) -> dict:
         "Ladder": str(entry.get("ladder") or ""),
         "LadderQC": str(entry.get("ladder_qc_status") or ""),
         "LadderFitStrategy": str(entry.get("ladder_fit_strategy") or ""),
+        "LadderEngine": str(provenance.get("ladder_engine") or ""),
+        "LadderReasonCodes": ";".join(
+            str(value) for value in provenance.get("ladder_reason_codes") or []
+        ),
+        "SourceFsaSha256": str(provenance.get("source_sha256") or ""),
+        "ManualAdjustmentSha256": str(
+            provenance.get("manual_adjustment_sha256") or ""
+        ),
+        "AnalysisVersion": str(provenance.get("app_version") or ""),
         "RustPreviewPositiveCall": bool(entry.get("rust_preview_positive_call", False)),
         "RustPreviewWTBP": rust_preview_wt_bp,
         "RustPreviewMutantBPs": ", ".join(f"{float(v):.2f}" for v in list(entry.get("rust_preview_mutant_bps") or [])),

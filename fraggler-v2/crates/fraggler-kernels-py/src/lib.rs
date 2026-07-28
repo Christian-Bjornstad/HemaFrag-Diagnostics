@@ -53,11 +53,9 @@ fn analyze_fsa<'py>(
 
     let result = analyze_fsa_primitives(utf8_path, kind.as_ref()).map_err(engine_error_to_py)?;
 
-    let json_str = serde_json::to_string(&result).map_err(|e| {
-        PyRuntimeError::new_err(format!("serialise PrimitiveAnalysisResult: {}", e))
+    let value = serde_json::to_value(&result).map_err(|e| {
+        PyRuntimeError::new_err(format!("convert PrimitiveAnalysisResult: {}", e))
     })?;
-    let value: Value = serde_json::from_str(&json_str)
-        .map_err(|e| PyRuntimeError::new_err(format!("parse serde_json Value: {}", e)))?;
 
     let dict = PyDict::new(py);
     if let Value::Object(map) = value {
