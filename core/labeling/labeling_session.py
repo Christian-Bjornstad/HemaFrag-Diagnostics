@@ -31,6 +31,12 @@ from core.analyses.clonality.ml_data_contract import (
     CHEMIST_LABEL_COLUMN,
     load_tracking_run_table,
 )
+from core.analyses.clonality.interpretation_units import (
+    CHANNEL_CHEMIST_LABEL_COLUMNS,
+    InterpretationUnit,
+    channel_labels_from_row,
+    interpretation_units_for_assay,
+)
 
 # Keyboard shortcut map — number key → label string.
 # Mirrors the order in ANNOTATION_CLASSES_ORDER.
@@ -71,10 +77,31 @@ class LabelingSample:
     rule_review_needed: bool = False
     tracking_sheet: str = ""
     tracking_row_number: int = 0
+    interpretation_units: tuple[InterpretationUnit, ...] = ()
+    channel_labels: dict[str, str] = field(default_factory=dict)
+    original_channel_labels: dict[str, str] = field(default_factory=dict)
+    legacy_label: str = ""
 
     @property
     def is_labeled(self) -> bool:
-        return bool(self.current_label and self.current_label.strip())
+        if not self.interpretation_units:
+            return bool(self.current_label and self.current_label.strip())
+        return all(
+            bool(self.channel_labels.get(unit.channel, "").strip())
+            for unit in self.interpretation_units
+        )
+
+    @property
+    def labeled_unit_count(self) -> int:
+        if not self.interpretation_units:
+            return int(bool(self.current_label.strip()))
+        return sum(
+            bool(self.channel_labels.get(unit.channel, "").strip())
+            for unit in self.interpretation_units
+        )
+
+    def label_for_channel(self, channel: str) -> str:
+        return self.channel_labels.get(str(channel).strip().upper(), "")
 
 
 @dataclass
@@ -102,15 +129,23 @@ class LabelingSession:
         df = table.frame
         self._primary_sheet = table.primary_sheet
         self._available_sheets = table.available_sheets
-        if LABEL_COLUMN in df.columns:
-            df[LABEL_COLUMN] = (
-                df[LABEL_COLUMN]
-                .where(pd.notna(df[LABEL_COLUMN]), "")
-                .map(normalize_annotation_label)
-                .astype(object)
-            )
-        else:
-            df[LABEL_COLUMN] = ""
+        for label_column in (
+            LABEL_COLUMN,
+            *CHANNEL_CHEMIST_LABEL_COLUMNS,
+        ):
+            if label_column in df.columns:
+                df[label_column] = (
+                    df[label_column]
+                    .where(pd.notna(df[label_column]), "")
+                    .map(normalize_annotation_label)
+                    .astype(object)
+                )
+            else:
+                df[label_column] = pd.Series(
+                    [""] * len(df),
+                    index=df.index,
+                    dtype=object,
+                )
         if "Assay" in df.columns:
             assay = df["Assay"].fillna("").astype(str).str.strip()
             df = df.loc[~assay.isin(EXCLUDED_LABELING_ASSAYS)].reset_index(drop=True)
@@ -121,14 +156,25 @@ class LabelingSession:
             def _str(col):
                 v = row.get(col, "")
                 return str(v) if pd.notna(v) else ""
+            assay = _str("Assay")
+            units = interpretation_units_for_assay(assay)
+            channel_labels = {
+                channel: normalize_annotation_label(label)
+                for channel, label in channel_labels_from_row(row, assay).items()
+            }
+            primary_label = (
+                channel_labels.get(units[0].channel, "")
+                if units
+                else _str(LABEL_COLUMN)
+            )
             sample = LabelingSample(
                 index=int(idx) if pd.notna(idx) else len(self.samples),
                 dit=_str("DIT"),
-                assay=_str("Assay"),
+                assay=assay,
                 well=_str("Well"),
                 file_name=_str("File"),
                 source_run_dir=_str("SourceRunDir"),
-                current_label=_str(LABEL_COLUMN),
+                current_label=primary_label,
                 identity_key=_str("IdentityKey"),
                 sample_kind=_str("SampleKind"),
                 group=_str("Group"),
@@ -136,6 +182,10 @@ class LabelingSession:
                 rule_review_needed=_as_bool(row.get("ClonalityReviewNeeded", False)),
                 tracking_sheet=_str("_TrackingSheet"),
                 tracking_row_number=int(row.get("_TrackingRowNumber", idx + 2) or idx + 2),
+                interpretation_units=units,
+                channel_labels=dict(channel_labels),
+                original_channel_labels=dict(channel_labels),
+                legacy_label=_str(LABEL_COLUMN),
             )
             self.samples.append(sample)
 
@@ -153,7 +203,21 @@ class LabelingSession:
     def unlabeled_count(self) -> int:
         return self.total_count - self.labeled_count
 
-    def label_sample(self, sample_index: int, label: str) -> None:
+    @property
+    def total_unit_count(self) -> int:
+        return sum(max(1, len(sample.interpretation_units)) for sample in self.samples)
+
+    @property
+    def labeled_unit_count(self) -> int:
+        return sum(sample.labeled_unit_count for sample in self.samples)
+
+    def label_sample(
+        self,
+        sample_index: int,
+        label: str,
+        *,
+        channel: str | None = None,
+    ) -> None:
         """Set the label on sample at ``sample_index`` (0-based in ``self.samples``)."""
         if not (0 <= sample_index < len(self.samples)):
             raise IndexError(f"sample_index {sample_index} out of range (0-{len(self.samples) - 1})")
@@ -163,53 +227,119 @@ class LabelingSession:
                 f"Unknown label '{label}'. Valid: {list(ANNOTATION_CLASSES_ORDER)}"
             )
         sample = self.samples[sample_index]
-        sample.current_label = label
+        if sample.interpretation_units:
+            selected = str(channel or sample.interpretation_units[0].channel).upper()
+            valid_channels = {
+                unit.channel for unit in sample.interpretation_units
+            }
+            if selected not in valid_channels:
+                raise ValueError(
+                    f"Channel {selected!r} is not configured for {sample.assay}"
+                )
+            sample.channel_labels[selected] = label
+            sample.current_label = sample.channel_labels.get(
+                sample.interpretation_units[0].channel,
+                "",
+            )
+        else:
+            sample.current_label = label
         self._dirty = True
 
-    def label_parallel_group(self, sample_index: int, label: str) -> int:
+    def label_all_channels(self, sample_index: int, label: str) -> int:
+        if not (0 <= sample_index < len(self.samples)):
+            raise IndexError(
+                f"sample_index {sample_index} out of range (0-{len(self.samples) - 1})"
+            )
+        sample = self.samples[sample_index]
+        channels = [unit.channel for unit in sample.interpretation_units]
+        if not channels:
+            self.label_sample(sample_index, label)
+            return 1
+        for channel in channels:
+            self.label_sample(sample_index, label, channel=channel)
+        return len(channels)
+
+    def label_parallel_group(
+        self,
+        sample_index: int,
+        label: str,
+        *,
+        channel: str | None = None,
+    ) -> int:
         """Apply one chemist label to all rows for the same DIT+assay pair."""
         indices = self.parallel_indices_for(sample_index)
         for index in indices:
-            self.label_sample(index, label)
+            self.label_sample(index, label, channel=channel)
         return len(indices)
 
-    def clear_label(self, sample_index: int) -> None:
+    def clear_label(self, sample_index: int, *, channel: str | None = None) -> None:
         """Remove the label from a sample."""
-        self.label_sample(sample_index, "")
+        self.label_sample(sample_index, "", channel=channel)
 
     def save_to_excel(self) -> int:
         """Write current labels back to the Excel. Returns number of labels written."""
         if self._df is None:
             raise RuntimeError("No Excel loaded — call load() first")
 
-        if LABEL_COLUMN not in self._df.columns:
-            self._df[LABEL_COLUMN] = ""
-        self._df[LABEL_COLUMN] = self._df[LABEL_COLUMN].where(
-            pd.notna(self._df[LABEL_COLUMN]), ""
-        ).astype(object)
-
-        changed: list[LabelingSample] = []
+        changed: list[tuple[LabelingSample, str, str]] = []
         for sample in self.samples:
             if 0 <= sample.index < len(self._df):
-                old_raw = self._df.at[self._df.index[sample.index], LABEL_COLUMN]
-                old_val = str(old_raw) if pd.notna(old_raw) else ""
-                new_val = sample.current_label
-                if old_val != new_val:
-                    self._df.at[self._df.index[sample.index], LABEL_COLUMN] = new_val
-                    changed.append(sample)
+                if sample.interpretation_units:
+                    for unit in sample.interpretation_units:
+                        new_val = sample.channel_labels.get(unit.channel, "")
+                        old_val = sample.original_channel_labels.get(unit.channel, "")
+                        if old_val == new_val:
+                            continue
+                        if unit.label_column not in self._df.columns:
+                            self._df[unit.label_column] = ""
+                        self._df.at[
+                            self._df.index[sample.index],
+                            unit.label_column,
+                        ] = new_val
+                        changed.append((sample, unit.label_column, new_val))
+                        if len(sample.interpretation_units) == 1:
+                            if LABEL_COLUMN not in self._df.columns:
+                                self._df[LABEL_COLUMN] = ""
+                            self._df.at[
+                                self._df.index[sample.index],
+                                LABEL_COLUMN,
+                            ] = new_val
+                else:
+                    old_val = sample.legacy_label
+                    new_val = sample.current_label
+                    if old_val != new_val:
+                        if LABEL_COLUMN not in self._df.columns:
+                            self._df[LABEL_COLUMN] = ""
+                        self._df.at[
+                            self._df.index[sample.index],
+                            LABEL_COLUMN,
+                        ] = new_val
+                        changed.append((sample, LABEL_COLUMN, new_val))
 
         if changed:
             self._write_changed_labels(changed)
+            for sample in self.samples:
+                sample.original_channel_labels = dict(sample.channel_labels)
+                if len(sample.interpretation_units) <= 1:
+                    sample.legacy_label = sample.current_label
 
         self._dirty = False
         logger.info("Wrote %d labels to %s", len(changed), self.excel_path)
         return len(changed)
 
-    def _write_changed_labels(self, changed: list[LabelingSample]) -> None:
+    def _write_changed_labels(
+        self,
+        changed: list[tuple[LabelingSample, str, str]],
+    ) -> None:
         """Update label cells in-place so workbook formatting is preserved."""
         wb = load_workbook(self.excel_path)
         try:
-            target_names = {sample.tracking_sheet for sample in changed if sample.tracking_sheet}
+            samples = [sample for sample, _column, _value in changed]
+            target_names = {
+                sample.tracking_sheet
+                for sample in samples
+                if sample.tracking_sheet
+            }
             target_names.add(self._primary_sheet)
             if self._primary_sheet == "Runs":
                 target_names.update({"Patient_Runs", "Control_Runs"})
@@ -223,10 +353,6 @@ class LabelingSession:
                     for cell in ws[1]
                     if str(cell.value or "").strip()
                 }
-                label_col = headers.get(LABEL_COLUMN)
-                if label_col is None:
-                    label_col = ws.max_column + 1
-                    ws.cell(1, label_col, LABEL_COLUMN)
                 identity_col = headers.get("IdentityKey")
 
                 identity_rows: dict[str, list[int]] = {}
@@ -236,12 +362,24 @@ class LabelingSession:
                         if identity:
                             identity_rows.setdefault(identity, []).append(row_number)
 
-                for sample in changed:
+                for sample, label_column, new_value in changed:
+                    label_col = headers.get(label_column)
+                    if label_col is None:
+                        label_col = ws.max_column + 1
+                        ws.cell(1, label_col, label_column)
+                        headers[label_column] = label_col
                     row_numbers = identity_rows.get(sample.identity_key, []) if sample.identity_key else []
                     if not row_numbers and sheet_name == sample.tracking_sheet and sample.tracking_row_number >= 2:
                         row_numbers = [sample.tracking_row_number]
                     for row_number in row_numbers:
-                        ws.cell(row_number, label_col, sample.current_label)
+                        ws.cell(row_number, label_col, new_value)
+                        if len(sample.interpretation_units) == 1:
+                            legacy_col = headers.get(LABEL_COLUMN)
+                            if legacy_col is None:
+                                legacy_col = ws.max_column + 1
+                                ws.cell(1, legacy_col, LABEL_COLUMN)
+                                headers[LABEL_COLUMN] = legacy_col
+                            ws.cell(row_number, legacy_col, new_value)
             wb.save(self.excel_path)
         finally:
             wb.close()

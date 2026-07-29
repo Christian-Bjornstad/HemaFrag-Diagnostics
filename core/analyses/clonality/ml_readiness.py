@@ -10,6 +10,10 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from core.analyses.clonality.interpretation_units import (
+    CHANNEL_CHEMIST_LABEL_COLUMNS,
+    interpretation_units_for_assay,
+)
 from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
 from core.analyses.clonality.ml_training import (
     ANNOTATION_CLASSES_ORDER,
@@ -74,30 +78,74 @@ def assess_clonality_label_readiness(
         {"IdentityKey", "Assay", "SourceRunKey", "FsaContentHash"},
         "feature rows",
     )
+    channel_level = {
+        "InterpretationUnit",
+        "Channel",
+    }.issubset(features.columns)
     if CHEMIST_LABEL_COLUMN not in tracking.columns:
         tracking[CHEMIST_LABEL_COLUMN] = ""
     tracking["_AssayKey"] = tracking["Assay"].map(_assay_key)
     features["_AssayKey"] = features["Assay"].map(_assay_key)
     join_columns = ["IdentityKey", "_AssayKey"]
     _reject_duplicate_keys(tracking, join_columns, "tracking")
-    _reject_duplicate_keys(features, join_columns, "features")
+    feature_identity_columns = (
+        [*join_columns, "InterpretationUnit"]
+        if channel_level
+        else join_columns
+    )
+    _reject_duplicate_keys(features, feature_identity_columns, "features")
 
-    metadata = features[
-        [*join_columns, "SourceRunKey", "FsaContentHash"]
-    ].copy()
-    merged = tracking.merge(
-        metadata,
+    metadata_columns = [
+        *join_columns,
+        "SourceRunKey",
+        "FsaContentHash",
+    ]
+    if channel_level:
+        metadata_columns.extend(
+            ["InterpretationUnit", "Channel", "TargetName"]
+        )
+    metadata = features[metadata_columns].copy()
+    merged = metadata.merge(
+        tracking,
         on=join_columns,
         how="left",
-        validate="one_to_one",
+        validate="many_to_one" if channel_level else "one_to_one",
         indicator=True,
     )
     unmatched = merged["_merge"].ne("both")
     if unmatched.any():
         raise ValueError(
-            f"{int(unmatched.sum())} tracking row(s) have no feature metadata"
+            f"{int(unmatched.sum())} feature row(s) have no tracking metadata"
         )
     merged = merged.drop(columns=["_merge"])
+    if channel_level:
+        merged["_ChannelChemistLabel"] = ""
+        for channel, label_column in zip(
+            ("DATA1", "DATA2", "DATA3"),
+            CHANNEL_CHEMIST_LABEL_COLUMNS,
+        ):
+            if label_column not in merged.columns:
+                continue
+            mask = merged["Channel"].fillna("").astype(str).str.upper().eq(
+                channel
+            )
+            merged.loc[mask, "_ChannelChemistLabel"] = (
+                merged.loc[mask, label_column]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+        missing = merged["_ChannelChemistLabel"].eq("")
+        single_channel = merged["Assay"].map(
+            lambda assay: len(interpretation_units_for_assay(assay)) == 1
+        )
+        merged.loc[missing & single_channel, "_ChannelChemistLabel"] = (
+            merged.loc[missing & single_channel, CHEMIST_LABEL_COLUMN]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+        merged[CHEMIST_LABEL_COLUMN] = merged["_ChannelChemistLabel"]
     merged[CHEMIST_LABEL_COLUMN] = (
         merged[CHEMIST_LABEL_COLUMN]
         .fillna("")
@@ -114,7 +162,12 @@ def assess_clonality_label_readiness(
     assay_records: list[dict[str, Any]] = []
     class_records: list[dict[str, Any]] = []
     duplicate_rows_removed = 0
-    for assay, assay_rows in merged.groupby("Assay", sort=True, dropna=False):
+    target_column = "InterpretationUnit" if channel_level else "Assay"
+    for assay, assay_rows in merged.groupby(
+        target_column,
+        sort=True,
+        dropna=False,
+    ):
         available_rows = int(len(assay_rows))
         labeled = assay_rows.loc[
             assay_rows[CHEMIST_LABEL_COLUMN].ne("")

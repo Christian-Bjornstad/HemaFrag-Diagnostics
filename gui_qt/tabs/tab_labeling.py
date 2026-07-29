@@ -131,6 +131,7 @@ class TabLabeling(QWidget):
         self._plot_page_index = 0
         self._plot_page_size = 2
         self._pending_plot_order = []
+        self._selected_channel = ""
         self._wide_mode = False
         self._sidebar_widget = None
         self._build_ui()
@@ -222,6 +223,31 @@ class TabLabeling(QWidget):
         self.lbl_metadata.setWordWrap(True)
         detail_layout.addWidget(self.lbl_metadata)
 
+        channel_row = QHBoxLayout()
+        self.channel_selector = QComboBox()
+        self.channel_selector.setToolTip("Trace channel and biological target")
+        self.channel_selector.currentIndexChanged.connect(
+            self._on_channel_changed
+        )
+        channel_row.addWidget(self.channel_selector, stretch=1)
+        self.btn_overlay_channels = QPushButton("Overlay")
+        self.btn_overlay_channels.setCheckable(True)
+        self.btn_overlay_channels.setChecked(True)
+        self.btn_overlay_channels.setToolTip(
+            "Show other assay channels faintly for context"
+        )
+        self.btn_overlay_channels.clicked.connect(self._render_current_plot)
+        channel_row.addWidget(self.btn_overlay_channels)
+        self.btn_apply_all_channels = QPushButton("Apply to all")
+        self.btn_apply_all_channels.setToolTip(
+            "Apply the selected channel's current label to every assay channel"
+        )
+        self.btn_apply_all_channels.clicked.connect(
+            self._on_apply_label_to_all_channels
+        )
+        channel_row.addWidget(self.btn_apply_all_channels)
+        detail_layout.addLayout(channel_row)
+
         # Label hint
         self.lbl_hint = QLabel(
             "Keys: <b>1</b>=monoklonal &nbsp; <b>2</b>=monoklonal på poly &nbsp; "
@@ -295,6 +321,7 @@ class TabLabeling(QWidget):
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self._on_save)
         QShortcut(QKeySequence("F"), self, activated=self._on_toggle_filter)
         QShortcut(QKeySequence("Ctrl+B"), self, activated=self._on_toggle_wide_view)
+        QShortcut(QKeySequence("Tab"), self, activated=self._on_next_channel)
 
     def _on_browse_xlsx(self):
         from core.labeling.labeling_session import LabelingSession
@@ -336,10 +363,24 @@ class TabLabeling(QWidget):
             if self._assay_filter and sample.assay != self._assay_filter:
                 continue
             self._visible_sample_indices.append(index)
-            key = LABEL_TO_KEY.get(sample.current_label, "")
-            prefix = f"[{key}] " if key else "  "
-            short_label = sample.current_label if sample.is_labeled else "—"
-            text = f"{prefix}{sample.dit} {sample.assay} {sample.well}  →  {short_label}"
+            labels = [
+                (
+                    unit.channel.replace("DATA", "D"),
+                    sample.label_for_channel(unit.channel),
+                )
+                for unit in sample.interpretation_units
+            ]
+            if labels:
+                label_text = " | ".join(
+                    f"{channel}:{label or '-'}" for channel, label in labels
+                )
+            else:
+                key = LABEL_TO_KEY.get(sample.current_label, "")
+                label_text = f"{key}:{sample.current_label}" if key else "-"
+            text = (
+                f"{sample.dit} {sample.assay} {sample.well}"
+                f"  ->  {label_text}"
+            )
             item = QListWidgetItem(text)
             self.sample_list.addItem(item)
         self._update_progress()
@@ -348,8 +389,8 @@ class TabLabeling(QWidget):
         if not self._session:
             self.progress.setFormat("0 / 0 labeled")
             return
-        total = self._session.total_count
-        labeled = self._session.labeled_count
+        total = self._session.total_unit_count
+        labeled = self._session.labeled_unit_count
         pct = int(100 * labeled / total) if total else 0
         self.progress.setValue(pct)
         self.progress.setFormat(f"{labeled} / {total} labeled")
@@ -371,16 +412,59 @@ class TabLabeling(QWidget):
                 self.plot_widget.clear()
             return
         sample = self._session.samples[idx]
-        from core.labeling.labeling_session import LABEL_TO_KEY
-        key = LABEL_TO_KEY.get(sample.current_label, "")
+        self._populate_channel_selector(sample)
+        channel = self._selected_channel
+        channel_label = sample.label_for_channel(channel)
+        unit = next(
+            (
+                candidate
+                for candidate in sample.interpretation_units
+                if candidate.channel == channel
+            ),
+            None,
+        )
+        target = unit.target_name if unit is not None else channel
         parallel_indices = self._session.parallel_indices_for(idx)
         self.lbl_metadata.setText(
             f"<b>{sample.dit}</b> &nbsp; {sample.assay} &nbsp; {sample.well} &nbsp; "
-            f"<span style='background: {'#e8f5e9' if key else '#fff3e0'}; "
+            f"<span style='background: {'#e8f5e9' if channel_label else '#fff3e0'}; "
             f"padding: 2px 6px; border-radius: 3px;'>"
-            f"{key}: {sample.current_label or 'unlabeled'}</span>"
+            f"{target} / {channel}: {channel_label or 'unlabeled'}</span>"
         )
         self._render_plot_group(parallel_indices)
+
+    def _populate_channel_selector(self, sample) -> None:
+        previous = self._selected_channel
+        self.channel_selector.blockSignals(True)
+        self.channel_selector.clear()
+        for unit in sample.interpretation_units:
+            label = sample.label_for_channel(unit.channel) or "unlabeled"
+            self.channel_selector.addItem(
+                f"{unit.channel} | {unit.target_name} | {label}",
+                unit.channel,
+            )
+        self.channel_selector.blockSignals(False)
+        index = self.channel_selector.findData(previous)
+        if index < 0 and self.channel_selector.count():
+            index = 0
+        if index >= 0:
+            self.channel_selector.setCurrentIndex(index)
+            self._selected_channel = str(
+                self.channel_selector.itemData(index) or ""
+            )
+        else:
+            self._selected_channel = ""
+        self.btn_apply_all_channels.setVisible(
+            len(sample.interpretation_units) > 1
+        )
+
+    def _on_channel_changed(self) -> None:
+        self._selected_channel = str(
+            self.channel_selector.currentData() or ""
+        )
+        idx = self._current_sample_index()
+        if idx >= 0:
+            self._on_sample_selected(self.sample_list.currentRow())
 
     def _render_current_plot(self):
         idx = self._current_sample_index()
@@ -611,15 +695,31 @@ class TabLabeling(QWidget):
             line.setZValue(-5)
             widget.addItem(line)
 
+        selected_channel = self._selected_channel
+        overlay = self.btn_overlay_channels.isChecked()
         for trace in plot_data.traces:
+            is_selected = not selected_channel or trace.channel == selected_channel
+            if not is_selected and not overlay:
+                continue
             widget.plot(
                 trace.basepairs,
                 trace.rfu,
-                pen=pg.mkPen(colors.get(trace.channel, "#475569"), width=1.1),
-                name=trace.channel,
+                pen=pg.mkPen(
+                    colors.get(trace.channel, "#475569")
+                    if is_selected
+                    else "#cbd5e1",
+                    width=1.4 if is_selected else 0.8,
+                ),
+                name=(
+                    trace.channel
+                    if is_selected
+                    else f"{trace.channel} context"
+                ),
             )
 
         for channel in sorted({peak.channel for peak in plot_data.peaks}):
+            if selected_channel and channel != selected_channel:
+                continue
             peaks = [peak for peak in plot_data.peaks if peak.channel == channel]
             widget.plot(
                 [peak.basepair for peak in peaks],
@@ -633,7 +733,15 @@ class TabLabeling(QWidget):
             )
 
         labeled_peaks = sorted(
-            (peak for peak in plot_data.peaks if peak.kept),
+            (
+                peak
+                for peak in plot_data.peaks
+                if peak.kept
+                and (
+                    not selected_channel
+                    or peak.channel == selected_channel
+                )
+            ),
             key=lambda peak: peak.rfu,
             reverse=True,
         )[:12]
@@ -689,21 +797,75 @@ class TabLabeling(QWidget):
         idx = self._current_sample_index()
         if idx < 0 or not self._session:
             return
-        self._session.label_sample(idx, label)
+        self._session.label_sample(
+            idx,
+            label,
+            channel=self._selected_channel or None,
+        )
+        sample = self._session.samples[idx]
+        next_channel = next(
+            (
+                unit.channel
+                for unit in sample.interpretation_units
+                if not sample.label_for_channel(unit.channel)
+            ),
+            "",
+        )
         self._refresh_sample_list()
         if self.sample_list.count() == 0:
             return
-        target_row = visible_row if self._filter_mode == "unlabeled" else visible_row + 1
+        if next_channel and self._filter_mode != "unlabeled":
+            target_row = visible_row
+        else:
+            target_row = (
+                visible_row
+                if self._filter_mode == "unlabeled"
+                else visible_row + 1
+            )
         self.sample_list.setCurrentRow(
             min(max(target_row, 0), self.sample_list.count() - 1)
         )
+        if next_channel and self._filter_mode != "unlabeled":
+            index = self.channel_selector.findData(next_channel)
+            if index >= 0:
+                self.channel_selector.setCurrentIndex(index)
 
     def _on_clear_label(self):
         idx = self._current_sample_index()
         if idx < 0 or not self._session:
             return
-        self._session.clear_label(idx)
+        self._session.clear_label(
+            idx,
+            channel=self._selected_channel or None,
+        )
         self._refresh_sample_list()
+
+    def _on_apply_label_to_all_channels(self):
+        idx = self._current_sample_index()
+        if idx < 0 or not self._session:
+            return
+        sample = self._session.samples[idx]
+        label = sample.label_for_channel(self._selected_channel)
+        if not label:
+            return
+        self._session.label_all_channels(idx, label)
+        current_row = self.sample_list.currentRow()
+        self._refresh_sample_list()
+        if self.sample_list.count():
+            self.sample_list.setCurrentRow(
+                min(max(current_row, 0), self.sample_list.count() - 1)
+            )
+
+    def _on_next_channel(self):
+        if self.channel_selector.count() <= 1:
+            self._on_next_sample()
+            return
+        current = self.channel_selector.currentIndex()
+        if current + 1 < self.channel_selector.count():
+            self.channel_selector.setCurrentIndex(current + 1)
+        else:
+            self.channel_selector.setCurrentIndex(0)
+            self._on_next_sample()
 
     def _on_next_sample(self):
         row = self.sample_list.currentRow()

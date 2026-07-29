@@ -16,6 +16,10 @@ from core.analyses.clonality.interpretation import (
     TRACKING_COLUMNS as CLONALITY_INTERPRETATION_COLUMNS,
     interpretation_enabled,
 )
+from core.analyses.clonality.interpretation_units import (
+    CHANNEL_CHEMIST_LABEL_COLUMNS,
+    CHANNEL_ML_COLUMNS,
+)
 from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
 from fraggler.fraggler import print_green
 from core.analyses.clonality.tracking_dashboard import refresh_clonality_tracking_dashboard
@@ -70,6 +74,7 @@ RUN_SHEET_COLUMNS = [
     "LadderCurvature",
     "LadderMedianAnchorIntensity",
     CHEMIST_LABEL_COLUMN,
+    *CHANNEL_CHEMIST_LABEL_COLUMNS,
 ]
 RUN_SHEET_COLUMNS_WITH_INTERPRETATION = RUN_SHEET_COLUMNS + CLONALITY_INTERPRETATION_COLUMNS
 RUN_SHEET_COLUMNS_WITH_ML = RUN_SHEET_COLUMNS_WITH_INTERPRETATION + [
@@ -79,6 +84,7 @@ RUN_SHEET_COLUMNS_WITH_ML = RUN_SHEET_COLUMNS_WITH_INTERPRETATION + [
     "ClonalityMLReviewNeeded",
     "ClonalityMLEvidence",
     "ClonalityMLModelVersion",
+    *CHANNEL_ML_COLUMNS,
 ]
 PEAK_SHEET_COLUMNS = [
     "Month",
@@ -454,6 +460,10 @@ def _build_run_row(entry: dict) -> dict:
         "ClonalityMLReviewNeeded": entry.get("ClonalityMLReviewNeeded", ""),
         "ClonalityMLEvidence": entry.get("ClonalityMLEvidence", ""),
         "ClonalityMLModelVersion": entry.get("ClonalityMLModelVersion", ""),
+        **{
+            column: entry.get(column, "")
+            for column in (*CHANNEL_CHEMIST_LABEL_COLUMNS, *CHANNEL_ML_COLUMNS)
+        },
     }
 
 
@@ -650,31 +660,40 @@ def _carry_forward_chemist_labels(
         or new_runs.empty
         or "IdentityKey" not in old_runs.columns
         or "IdentityKey" not in new_runs.columns
-        or CHEMIST_LABEL_COLUMN not in old_runs.columns
     ):
         return new_runs
 
-    old_labels = old_runs[["IdentityKey", CHEMIST_LABEL_COLUMN]].copy()
-    old_labels["IdentityKey"] = old_labels["IdentityKey"].fillna("").astype(str)
-    old_labels[CHEMIST_LABEL_COLUMN] = (
-        old_labels[CHEMIST_LABEL_COLUMN].fillna("").astype(str).str.strip()
-    )
-    old_labels = old_labels.loc[
-        old_labels["IdentityKey"].str.strip().ne("")
-        & old_labels[CHEMIST_LABEL_COLUMN].ne("")
-    ].drop_duplicates(subset=["IdentityKey"], keep="last")
-    if old_labels.empty:
-        return new_runs
-
-    label_by_identity = old_labels.set_index("IdentityKey")[CHEMIST_LABEL_COLUMN]
     carried = new_runs.copy()
-    if CHEMIST_LABEL_COLUMN not in carried.columns:
-        carried[CHEMIST_LABEL_COLUMN] = ""
-    current = carried[CHEMIST_LABEL_COLUMN].fillna("").astype(str).str.strip()
-    inherited = (
-        carried["IdentityKey"].fillna("").astype(str).map(label_by_identity).fillna("")
+    label_columns = (
+        CHEMIST_LABEL_COLUMN,
+        *CHANNEL_CHEMIST_LABEL_COLUMNS,
     )
-    carried[CHEMIST_LABEL_COLUMN] = current.where(current.ne(""), inherited)
+    for label_column in label_columns:
+        if label_column not in old_runs.columns:
+            continue
+        old_labels = old_runs[["IdentityKey", label_column]].copy()
+        old_labels["IdentityKey"] = old_labels["IdentityKey"].fillna("").astype(str)
+        old_labels[label_column] = (
+            old_labels[label_column].fillna("").astype(str).str.strip()
+        )
+        old_labels = old_labels.loc[
+            old_labels["IdentityKey"].str.strip().ne("")
+            & old_labels[label_column].ne("")
+        ].drop_duplicates(subset=["IdentityKey"], keep="last")
+        if old_labels.empty:
+            continue
+        label_by_identity = old_labels.set_index("IdentityKey")[label_column]
+        if label_column not in carried.columns:
+            carried[label_column] = ""
+        current = carried[label_column].fillna("").astype(str).str.strip()
+        inherited = (
+            carried["IdentityKey"]
+            .fillna("")
+            .astype(str)
+            .map(label_by_identity)
+            .fillna("")
+        )
+        carried[label_column] = current.where(current.ne(""), inherited)
     return carried
 
 
@@ -778,6 +797,7 @@ _ML_INTERPRETATION_COLUMNS = (
     "ClonalityMLReviewNeeded",
     "ClonalityMLEvidence",
     "ClonalityMLModelVersion",
+    *CHANNEL_ML_COLUMNS,
 )
 
 

@@ -1324,6 +1324,53 @@ def _render_clonality_ml_badge(entry: dict, html_lines: list[str]) -> None:
     )
 
 
+def _render_clonality_channel_ml_results(
+    entry: dict,
+    html_lines: list[str],
+) -> None:
+    """Render independent channel-level technical suggestions in shadow mode."""
+    results = entry.get("ClonalityMLChannelResults")
+    if not isinstance(results, list) or not results:
+        return
+    rows = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        channel = str(result.get("channel") or "")
+        target = str(result.get("target_name") or channel)
+        label = str(result.get("label") or "")
+        if not label:
+            continue
+        try:
+            confidence = f"{float(result.get('confidence')):.2f}"
+        except (TypeError, ValueError):
+            confidence = ""
+        status = (
+            "Vurder"
+            if bool(result.get("review_needed", False))
+            else "Akseptert skyggeforslag"
+        )
+        rows.append(
+            "<tr>"
+            f"<td>{escape(channel)}</td>"
+            f"<td>{escape(target)}</td>"
+            f"<td><strong>{escape(label)}</strong></td>"
+            f"<td>{escape(confidence)}</td>"
+            f"<td>{escape(status)}</td>"
+            "</tr>"
+        )
+    if not rows:
+        return
+    html_lines.append(
+        "<div class='clonality-channel-ml' style='margin:8px 0 14px;'>"
+        "<table style='width:100%;border:1px solid #e2e8f0;'>"
+        "<tr><th>Kanal</th><th>Teknisk mal</th><th>ML-forslag</th>"
+        "<th>Konfidens</th><th>Status</th></tr>"
+        + "".join(rows)
+        + "</table></div>"
+    )
+
+
 def _render_assay_block(
     assay_name: str,
     assay_entries: list[dict],
@@ -1360,6 +1407,7 @@ def _render_assay_block(
         # table so the dismiss buttons line up vertically. We also call
         # this for FLT3 entries; they just won't render anything since
         # the entry has no ClonalityML* keys.
+        _render_clonality_channel_ml_results(e, html_lines)
         _render_clonality_ml_badge(e, html_lines)
 
         if reference_assay in {"FLT3-ITD", "FLT3-D835", "NPM1"}:

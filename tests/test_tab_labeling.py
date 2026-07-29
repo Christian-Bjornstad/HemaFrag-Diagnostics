@@ -119,6 +119,29 @@ def test_tab_label_key_labels_only_selected_parallel(qapp, tmp_path):
     assert tab._session.samples[3].current_label == ""
 
 
+def test_tab_labels_dual_channels_separately_before_advancing(qapp, tmp_path):
+    from gui_qt.tabs.tab_labeling import TabLabeling
+    from core.labeling.labeling_session import LabelingSession
+
+    path = _make_test_excel(tmp_path)
+    tab = TabLabeling()
+    tab._session = LabelingSession(excel_path=path)
+    tab._session.load()
+    tab._refresh_sample_list()
+    tab.sample_list.setCurrentRow(1)
+
+    assert tab.channel_selector.count() == 2
+    assert tab.channel_selector.currentData() == "DATA1"
+
+    tab._on_label_key("polyklonal")
+    assert tab._session.samples[1].label_for_channel("DATA1") == "polyklonal"
+    assert tab.channel_selector.currentData() == "DATA2"
+
+    tab._on_label_key("monoklonal")
+    assert tab._session.samples[1].label_for_channel("DATA2") == "monoklonal"
+    assert tab._session.samples[1].is_labeled
+
+
 def test_tab_navigation_next_prev(qapp, tmp_path):
     from gui_qt.tabs.tab_labeling import TabLabeling
     from core.labeling.labeling_session import LabelingSession
@@ -160,7 +183,7 @@ def test_tab_filter_shows_unlabeled_only(qapp, tmp_path):
 
     tab._on_toggle_filter()
     assert tab._show_unlabeled_only is True
-    assert tab.sample_list.count() == 3  # only unlabeled
+    assert tab.sample_list.count() == 4  # IGK still has one unlabeled channel
 
     tab._on_toggle_filter()
     assert tab._show_unlabeled_only is False
@@ -198,12 +221,12 @@ def test_progress_bar_updates(qapp, tmp_path):
     tab._refresh_sample_list()
 
     tab._update_progress()
-    assert "0 / 5" in tab.progress.format()
+    assert "0 / 7" in tab.progress.format()
 
     tab._session.label_sample(0, "monoklonal")
     tab._session.label_sample(1, "polyklonal")
     tab._update_progress()
-    assert "2 / 5" in tab.progress.format()
+    assert "2 / 7" in tab.progress.format()
 
 
 def test_save_round_trip(qapp, tmp_path):

@@ -104,6 +104,62 @@ def test_readiness_blocks_single_class_and_low_support():
     assert readiness.report["status"] == "not_ready"
 
 
+def test_readiness_is_reported_per_interpretation_unit():
+    tracking = pd.DataFrame(
+        [
+            {
+                "IdentityKey": f"id-{index}",
+                "DIT": f"26-{index}",
+                "Assay": "IGK",
+                "ClonalityChemistLabel_DATA1": (
+                    "monoklonal" if index % 2 == 0 else "polyklonal"
+                ),
+                "ClonalityChemistLabel_DATA2": (
+                    "polyklonal" if index % 2 == 0 else "monoklonal"
+                ),
+            }
+            for index in range(4)
+        ]
+    )
+    features = pd.DataFrame(
+        [
+            {
+                "IdentityKey": f"id-{index}",
+                "Assay": "IGK",
+                "InterpretationUnit": unit,
+                "Channel": channel,
+                "TargetName": target,
+                "SourceRunKey": f"run-{index % 2}",
+                "FsaContentHash": f"hash-{index}",
+            }
+            for index in range(4)
+            for unit, channel, target in (
+                ("IGK_JK5", "DATA1", "Jk5"),
+                ("IGK_JK1_4", "DATA2", "Jk1-4"),
+            )
+        ]
+    )
+
+    readiness = assess_clonality_label_readiness(
+        tracking,
+        features,
+        min_samples=2,
+        validation_folds=2,
+        source_run_validation_folds=2,
+        min_dit_groups=2,
+        min_class_dit_groups=1,
+        min_core_class_dit_groups=1,
+        min_class_source_run_groups=1,
+        min_class_evaluation_folds=1,
+        min_class_training_rows_per_fold=1,
+        max_class_dit_row_fraction=1.0,
+    )
+
+    assert set(readiness.assays["Assay"]) == {"IGK_JK5", "IGK_JK1_4"}
+    assert readiness.report["available_rows"] == 8
+    assert readiness.report["labeled_rows"] == 8
+
+
 def test_readiness_rejects_conflicting_content_hash_labels():
     tracking, features = _cohort(rows_per_class=6)
     features.loc[features.index[-1], "FsaContentHash"] = features.loc[

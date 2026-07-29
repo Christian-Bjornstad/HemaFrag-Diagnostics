@@ -249,6 +249,42 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             self.assertEqual(runs.iloc[0][CHEMIST_LABEL_COLUMN], "monoklonal")
             self.assertEqual(patients.iloc[0][CHEMIST_LABEL_COLUMN], "monoklonal")
 
+    def test_batch_refresh_preserves_independent_dual_channel_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook = Path(tmp) / "Clonality_Tracking.xlsx"
+            entry = _entry(
+                "26OUM00001_IGK__220526_A01_H9TEST01.fsa",
+                assay="IGK",
+                dit="26OUM00001",
+            )
+            update_clonality_tracking_workbook(workbook, [entry])
+
+            session = LabelingSession(excel_path=str(workbook))
+            session.load()
+            session.label_sample(0, "polyklonal", channel="DATA1")
+            session.label_sample(0, "monoklonal", channel="DATA2")
+            self.assertEqual(session.save_to_excel(), 2)
+
+            update_clonality_tracking_workbook(workbook, [entry])
+
+            runs = pd.read_excel(
+                workbook,
+                sheet_name="Runs",
+                engine="openpyxl",
+            )
+            self.assertEqual(
+                runs.iloc[0]["ClonalityChemistLabel_DATA1"],
+                "polyklonal",
+            )
+            self.assertEqual(
+                runs.iloc[0]["ClonalityChemistLabel_DATA2"],
+                "monoklonal",
+            )
+            self.assertTrue(
+                pd.isna(runs.iloc[0][CHEMIST_LABEL_COLUMN])
+                or runs.iloc[0][CHEMIST_LABEL_COLUMN] == ""
+            )
+
     def test_tracking_workbook_derives_missing_dit_case_insensitively(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workbook = Path(tmp) / "Clonality_Tracking.xlsx"

@@ -36,6 +36,11 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 
+from core.analyses.clonality.interpretation_units import (
+    CHANNEL_CHEMIST_LABEL_COLUMNS,
+    INTERPRETATION_UNIT_SCHEMA_VERSION,
+    interpretation_units_for_assay,
+)
 from core.analyses.clonality.ml_data_contract import (
     CHEMIST_LABEL_COLUMN,
     load_tracking_run_table,
@@ -518,7 +523,13 @@ def _assemble_trace_feature_df(
         xlsx_path,
         include_controls=False,
     ).frame
-    required_tracking = {"IdentityKey", DIR_COL, ASSAY_COL, source_label_col}
+    channel_level = {
+        "InterpretationUnit",
+        "Channel",
+    }.issubset(features.columns)
+    required_tracking = {"IdentityKey", DIR_COL, ASSAY_COL}
+    if not channel_level or source_label_col != CHEMIST_LABEL_COLUMN:
+        required_tracking.add(source_label_col)
     missing_tracking = sorted(required_tracking - set(tracking.columns))
     if missing_tracking:
         raise KeyError(
@@ -531,10 +542,19 @@ def _assemble_trace_feature_df(
     tracking["_AssayKey"] = tracking[ASSAY_COL].map(_assay_key)
     join_columns = ["IdentityKey", "_AssayKey"]
 
-    feature_duplicates = features.duplicated(subset=join_columns, keep=False)
+    feature_identity_columns = (
+        [*join_columns, "InterpretationUnit"]
+        if channel_level
+        else join_columns
+    )
+    feature_duplicates = features.duplicated(
+        subset=feature_identity_columns,
+        keep=False,
+    )
     if feature_duplicates.any():
         raise ValueError(
-            f"{int(feature_duplicates.sum())} trace feature row(s) duplicate IdentityKey+Assay"
+            f"{int(feature_duplicates.sum())} trace feature row(s) duplicate "
+            + "+".join(feature_identity_columns)
         )
     tracking_duplicates = tracking.duplicated(subset=join_columns, keep=False)
     if tracking_duplicates.any():
@@ -542,8 +562,15 @@ def _assemble_trace_feature_df(
             f"{int(tracking_duplicates.sum())} workbook row(s) duplicate IdentityKey+Assay"
         )
 
+    label_columns = [source_label_col]
+    if channel_level and source_label_col == CHEMIST_LABEL_COLUMN:
+        label_columns.extend(
+            column
+            for column in CHANNEL_CHEMIST_LABEL_COLUMNS
+            if column in tracking.columns
+        )
     current_labels = tracking[
-        join_columns + [DIR_COL, source_label_col]
+        join_columns + [DIR_COL, *label_columns]
     ].rename(
         columns={
             DIR_COL: "_CurrentDIT",
@@ -558,7 +585,7 @@ def _assemble_trace_feature_df(
         current_labels,
         on=join_columns,
         how="left",
-        validate="one_to_one",
+        validate="many_to_one" if channel_level else "one_to_one",
         indicator=True,
     )
     unmatched = merged["_merge"].ne("both")
@@ -567,9 +594,43 @@ def _assemble_trace_feature_df(
             f"{int(unmatched.sum())} trace feature row(s) no longer match the tracking workbook"
         )
     merged[DIR_COL] = merged["_CurrentDIT"].fillna("").astype(str)
-    merged[LABEL_COL] = merged["_CurrentChemistLabel"]
+    if channel_level and source_label_col == CHEMIST_LABEL_COLUMN:
+        merged[LABEL_COL] = ""
+        for channel in ("DATA1", "DATA2", "DATA3"):
+            current_column = f"ClonalityChemistLabel_{channel}"
+            if current_column not in merged.columns:
+                continue
+            mask = merged["Channel"].fillna("").astype(str).str.upper().eq(
+                channel
+            )
+            merged.loc[mask, LABEL_COL] = (
+                merged.loc[mask, current_column]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+        legacy = merged["_CurrentChemistLabel"].fillna("").astype(str).str.strip()
+        missing = merged[LABEL_COL].fillna("").astype(str).str.strip().eq("")
+        single_channel = merged[ASSAY_COL].map(
+            lambda assay: len(interpretation_units_for_assay(assay)) == 1
+        )
+        merged.loc[missing & single_channel, LABEL_COL] = legacy.loc[
+            missing & single_channel
+        ]
+    else:
+        merged[LABEL_COL] = merged["_CurrentChemistLabel"]
     return merged.drop(
-        columns=["_AssayKey", "_CurrentDIT", "_CurrentChemistLabel", "_merge"]
+        columns=[
+            "_AssayKey",
+            "_CurrentDIT",
+            "_CurrentChemistLabel",
+            "_merge",
+            *[
+                column
+                for column in CHANNEL_CHEMIST_LABEL_COLUMNS
+                if column in merged.columns
+            ],
+        ]
     )
 
 
@@ -1368,6 +1429,20 @@ def main(argv=None):
                 "feature_dataset_version": _first_value(
                     ds.rows, "FeatureDatasetVersion"
                 ),
+                "interpretation_unit_schema_version": (
+                    _first_value(ds.rows, "InterpretationUnitSchemaVersion")
+                    or (
+                        INTERPRETATION_UNIT_SCHEMA_VERSION
+                        if "InterpretationUnit" in ds.rows.columns
+                        else ""
+                    )
+                ),
+                "interpretation_unit": _first_value(
+                    ds.rows, "InterpretationUnit"
+                ),
+                "source_assay": _first_value(ds.rows, "Assay"),
+                "channel": _first_value(ds.rows, "Channel"),
+                "target_name": _first_value(ds.rows, "TargetName"),
                 "trace_feature_schema_version": _first_value(
                     ds.rows, "TraceFeatureSchemaVersion"
                 ),

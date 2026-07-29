@@ -1,8 +1,31 @@
 # Plan 14 - Channel-Level Clonality Interpretation and ML
 
 Date: 2026-07-29
-Branch: `codex/plan-13-quality-speed-precision`
-Status: proposal; no runtime behavior changed
+Branch: `codex/plan-14-channel-level-clonality`
+Status: engineering implementation complete; real-label pilot and model promotion pending
+
+## Execution Summary
+
+Implemented on 2026-07-29:
+
+- Added a versioned semantic interpretation-unit contract for every configured
+  clonality assay and trace channel.
+- Added independent channel labels to tracking workbooks with safe legacy-label
+  migration for single-channel assays only.
+- Changed the labeling session and Qt labeling tab to label one selected
+  channel at a time, with channel cycling, optional overlay, and explicit
+  apply-to-all behavior.
+- Changed the feature artifact to long form, with one channel-local row per
+  interpretation unit and no morphology features from the other channel.
+- Changed training, readiness, auditing, and batch-selection paths to operate
+  per interpretation unit while retaining legacy artifact compatibility.
+- Added default-off shadow runtime predictions, per-channel tracking fields,
+  and report rows without deriving an assay-wide result.
+- Added regression coverage for independent mixed labels, workbook round trips,
+  long-form features, readiness, batch merge, runtime, reports, and the UI.
+
+No channel model has been promoted. Clinical use remains gated on a real-label
+pilot, grouped validation, and chemist sign-off.
 
 ## Goal
 
