@@ -102,3 +102,44 @@ def test_tracking_workbook_rerun_is_idempotent(tmp_path):
 
     runs = pd.read_excel(path, sheet_name="Runs", engine="openpyxl")
     assert len(runs) == 1
+
+
+def test_flt3_tracking_failure_preserves_previous_file(tmp_path, monkeypatch):
+    from core.analyses.flt3 import qc_tracker
+
+    path = tmp_path / "FLT3_Tracking.xlsx"
+    first = {
+        "fsa": None,
+        "file_name": "26OUM00001_ITD__220526_A01_H9TEST01.fsa",
+        "source_run_dir": "run_a",
+        "assay": "FLT3-ITD",
+        "dit": "26OUM00001",
+        "specimen_id": "26OUM00001",
+        "group": "sample",
+        "ladder": "GS500ROX",
+        "ladder_qc_status": "ok",
+        "peak_qc_status": "ok",
+        "primary_peak_channel": "DATA1",
+        "peaks_by_channel": {"DATA1": pd.DataFrame()},
+    }
+    qc_tracker.update_flt3_npm1_qc_tracker_workbook(path, [first])
+    original_bytes = path.read_bytes()
+    second = {
+        **first,
+        "file_name": "26OUM00002_ITD__220526_A02_H9TEST01.fsa",
+        "dit": "26OUM00002",
+        "specimen_id": "26OUM00002",
+    }
+    monkeypatch.setattr(
+        qc_tracker,
+        "refresh_flt3_tracking_dashboard",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("dashboard failed")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="dashboard failed"):
+        qc_tracker.update_flt3_npm1_qc_tracker_workbook(path, [second])
+
+    assert path.read_bytes() == original_bytes
+    assert list(tmp_path.glob(".FLT3_Tracking.*.tmp.xlsx")) == []

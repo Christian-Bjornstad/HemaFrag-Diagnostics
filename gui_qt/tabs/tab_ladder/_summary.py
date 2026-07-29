@@ -9,7 +9,6 @@ Pure functions only; no Qt widgets, no instance-state reads/writes.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -69,12 +68,12 @@ def manual_adjustment_consumption(
 ) -> dict[str, Any]:
     """Summarize whether a saved correction produced a successful entry."""
     target = resolve_cache_key(file_path)
-    adjustment_path = file_path.with_suffix(".ladder_adj.json")
-    adjustment_present = adjustment_path.is_file()
-    adjustment_hash = (
-        hashlib.sha256(adjustment_path.read_bytes()).hexdigest()
-        if adjustment_present
-        else ""
+    from core.ladder_adjustment_store import load_ladder_adjustment_record
+
+    adjustment_record = load_ladder_adjustment_record(file_path)
+    adjustment_present = adjustment_record is not None
+    adjustment_hash = str(
+        (adjustment_record or {}).get("payload_sha256") or ""
     )
     entries = list(result.get("dit_report_entries") or [])
     if not entries:
@@ -139,8 +138,8 @@ def manual_adjustment_consumption(
         reason = "Saved correction was consumed by a successful rerun."
     elif entry_claims_consumed and adjustment_present and not hash_matches:
         reason = (
-            "The rerun consumed a different correction hash than the "
-            "currently saved sidecar."
+            "The rerun consumed a different correction than the currently "
+            "saved adjustment."
         )
     elif not entry_claims_consumed and adjustment_present:
         reason = "The rerun entry did not use the saved manual correction."

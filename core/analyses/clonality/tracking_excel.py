@@ -60,11 +60,7 @@ RUN_SHEET_COLUMNS = [
     "Ladder",
     "LadderQC",
     "LadderFitStrategy",
-    "LadderEngine",
-    "LadderReasonCodes",
-    "SourceFsaSha256",
-    "ManualAdjustmentSha256",
-    "AnalysisVersion",
+    "ManualAdjustmentUsed",
     "LadderExpectedStepCount",
     "LadderFittedStepCount",
     "LadderR2",
@@ -73,8 +69,6 @@ RUN_SHEET_COLUMNS = [
     "LadderLinearMaxResidualBp",
     "LadderCurvature",
     "LadderMedianAnchorIntensity",
-    "PullUpCandidate",
-    "SaturationCandidate",
     CHEMIST_LABEL_COLUMN,
 ]
 RUN_SHEET_COLUMNS_WITH_INTERPRETATION = RUN_SHEET_COLUMNS + CLONALITY_INTERPRETATION_COLUMNS
@@ -415,11 +409,6 @@ def _build_run_row(entry: dict) -> dict:
     rust_preview_top_dominant_ratio = entry.get("rust_preview_top_dominant_ratio")
     if rust_preview_top_dominant_ratio is None or not np.isfinite(rust_preview_top_dominant_ratio):
         rust_preview_top_dominant_ratio = ""
-    provenance = (
-        entry.get("analysis_provenance")
-        if isinstance(entry.get("analysis_provenance"), dict)
-        else {}
-    )
     trend_evidence = build_entry_qc_trend_evidence(entry)
 
     return {
@@ -439,13 +428,9 @@ def _build_run_row(entry: dict) -> dict:
         "Ladder": join_fields["ladder"],
         "LadderQC": entry.get("ladder_qc_status") or "",
         "LadderFitStrategy": entry.get("ladder_fit_strategy") or "",
-        "LadderEngine": provenance.get("ladder_engine") or "",
-        "LadderReasonCodes": ";".join(
-            str(value) for value in provenance.get("ladder_reason_codes") or []
+        "ManualAdjustmentUsed": (
+            str(entry.get("ladder_fit_strategy") or "") == "manual_adjustment"
         ),
-        "SourceFsaSha256": provenance.get("source_sha256") or "",
-        "ManualAdjustmentSha256": provenance.get("manual_adjustment_sha256") or "",
-        "AnalysisVersion": provenance.get("app_version") or "",
         "LadderExpectedStepCount": int(entry.get("ladder_expected_step_count", 0) or 0),
         "LadderFittedStepCount": int(entry.get("ladder_fitted_step_count", 0) or 0),
         "LadderR2": ladder_r2,

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
@@ -40,17 +39,25 @@ def build_analysis_provenance(entry: dict[str, Any]) -> dict[str, object]:
     if not source_hash and source is not None and source.is_file():
         source_hash = _sha256_file(source)
 
-    adjustment_path = source.with_suffix(".ladder_adj.json") if source is not None else None
     adjustment_hash = ""
     adjustment_schema = ""
-    if adjustment_path is not None and adjustment_path.is_file():
-        adjustment_hash = _sha256_file(adjustment_path)
-        try:
-            payload = json.loads(adjustment_path.read_text(encoding="utf-8"))
+    if source is not None:
+        from core.ladder_adjustment_store import load_ladder_adjustment_record
+
+        record = load_ladder_adjustment_record(
+            source,
+            ladder=str(entry.get("internal_ladder") or entry.get("ladder") or ""),
+            size_standard_channel=str(
+                entry.get("size_standard_channel")
+                or getattr(fsa, "size_standard_channel", "")
+                or ""
+            ),
+        )
+        if record is not None:
+            adjustment_hash = str(record.get("payload_sha256") or "")
+            payload = record.get("payload")
             if isinstance(payload, dict):
                 adjustment_schema = str(payload.get("schema_version") or "legacy")
-        except (OSError, ValueError):
-            adjustment_schema = "unreadable"
 
     if strategy == "manual_adjustment":
         engine = "manual"

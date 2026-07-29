@@ -3638,11 +3638,14 @@ def _should_attempt_flt3_template_rescue(
     }:
         return False
 
+    strategy = str(getattr(fsa, "ladder_fit_strategy", "") or "")
+    if strategy == "manual_adjustment":
+        return False
+
     if bool(getattr(fsa, "ladder_review_required", False)):
         return True
 
-    strategy = str(getattr(fsa, "ladder_fit_strategy", "") or "")
-    if strategy in {"manual_adjustment", "short_trace", "trace_bootstrap_review", "short_trace_partial"}:
+    if strategy in {"short_trace", "trace_bootstrap_review", "short_trace_partial"}:
         return True
 
     rust_reason_codes = {
@@ -6565,11 +6568,14 @@ def _tracker_control_marker_row(entry: dict, marker_spec: dict, peak_summary: di
         "SourceRunDir": base_row["SourceRunDir"],
         "DIT": base_row["DIT"],
         "Assay": base_row["Assay"],
+        "AnalysisType": base_row["AnalysisType"],
+        "SpecimenID": base_row["SpecimenID"],
         "Control": base_row["Control"],
         "RunDate": base_row["RunDate"],
         "RunCode": base_row["RunCode"],
         "Well": base_row["Well"],
         "Batch": base_row["Batch"],
+        "InjectionTimeSeconds": base_row["InjectionTimeSeconds"],
         "MarkerName": marker_spec["name"],
         "Kind": "sample",
         "Channel": entry.get("primary_peak_channel") if marker_spec.get("channel") == "primary" else marker_spec.get("channel", ""),
@@ -6587,22 +6593,75 @@ def _tracker_control_marker_row(entry: dict, marker_spec: dict, peak_summary: di
     }
 
 
+def _finite_float_or_nan(value) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return number if np.isfinite(number) else np.nan
+
+
 def _tracker_run_row(entry: dict, base_row: dict, peak_summary: dict, interpretation: str) -> dict:
     row = dict(base_row)
     wt_bp = peak_summary.get("wt_bp", np.nan)
     wt_area = peak_summary.get("wt_area", np.nan)
     mut_bp = peak_summary.get("mut_main_bp", np.nan)
     mut_area = peak_summary.get("mut_main_area", np.nan)
-    ratio = float(entry.get("ratio", np.nan))
+    ratio = _finite_float_or_nan(entry.get("ratio"))
+    numerator = _finite_float_or_nan(
+        entry.get("ratio_numerator_area", peak_summary.get("mut_area_total"))
+    )
+    denominator = _finite_float_or_nan(
+        entry.get("ratio_denominator_area", wt_area)
+    )
+    mutant_fraction = _finite_float_or_nan(entry.get("mutant_fraction"))
+    peak_qc = str(entry.get("peak_qc_status") or "")
+    peak_qc_pass = entry.get("peak_qc_pass")
+    if peak_qc_pass is None:
+        peak_qc_pass = peak_qc.strip().lower() in {
+            "ok",
+            "negative_control",
+            "not_evaluated_ladder_only",
+        }
+    ratio_mode = str(peak_summary.get("ratio_mode") or "")
+    if ratio_mode == "manual_required":
+        result_status = "manual_ratio_required"
+    elif not bool(peak_qc_pass):
+        result_status = "qc_review"
+    else:
+        result_status = "complete"
     row.update(
         {
-            "PeakQC": str(entry.get("peak_qc_status") or ""),
-            "RatioMode": str(peak_summary.get("ratio_mode") or ""),
+            "PeakQCPass": bool(peak_qc_pass),
+            "PeakQC": peak_qc,
+            "RatioMode": ratio_mode,
+            "ManualSelectionValid": bool(
+                peak_summary.get("manual_ratio_selection_valid", False)
+            ),
+            "ManualSelectionReason": str(
+                peak_summary.get("manual_ratio_selection_reason") or ""
+            ),
             "WT_BP": round(float(wt_bp), 2) if np.isfinite(wt_bp) else "",
             "WT_Area": round(float(wt_area), 2) if np.isfinite(wt_area) and float(wt_area) > 0 else "",
+            "MutantBPs": ", ".join(
+                f"{float(value):.2f}"
+                for value in peak_summary.get("mut_bps", [])
+                if np.isfinite(value)
+            ),
+            "MutantAreas": ", ".join(
+                f"{float(value):.2f}"
+                for value in peak_summary.get("mut_areas", [])
+                if np.isfinite(value)
+            ),
+            "MutantAreaTotal": round(float(peak_summary.get("mut_area_total", 0.0)), 2),
             "MutantMain_BP": round(float(mut_bp), 2) if np.isfinite(mut_bp) else "",
             "MutantMain_Area": round(float(mut_area), 2) if np.isfinite(mut_area) and float(mut_area) > 0 else "",
+            "RatioNumeratorArea": round(numerator, 2) if np.isfinite(numerator) else "",
+            "RatioDenominatorArea": round(denominator, 2) if np.isfinite(denominator) else "",
             "Ratio": round(ratio, 4) if np.isfinite(ratio) else "",
+            "MutantFraction": round(mutant_fraction, 4) if np.isfinite(mutant_fraction) else "",
+            "PositiveCall": interpretation.startswith("Positiv "),
+            "ResultStatus": result_status,
             "Interpretation": interpretation,
         }
     )
@@ -6652,11 +6711,14 @@ def _tracker_ladder_marker_row(entry: dict, marker_spec: dict, base_row: dict) -
         "SourceRunDir": base_row["SourceRunDir"],
         "DIT": base_row["DIT"],
         "Assay": base_row["Assay"],
+        "AnalysisType": base_row["AnalysisType"],
+        "SpecimenID": base_row["SpecimenID"],
         "Control": base_row["Control"],
         "RunDate": base_row["RunDate"],
         "RunCode": base_row["RunCode"],
         "Well": base_row["Well"],
         "Batch": base_row["Batch"],
+        "InjectionTimeSeconds": base_row["InjectionTimeSeconds"],
         "MarkerName": marker_spec["name"],
         "Kind": "ladder",
         "Channel": marker_spec.get("channel", ""),
@@ -6693,14 +6755,22 @@ def _build_flt3_npm1_tracker_frames(entries: list[dict]) -> tuple[pd.DataFrame, 
             continue
 
         control_code = control_code_for_entry(entry)
-        if control_code not in {"RK", "PK"}:
+        if control_code != "PK" or str(entry.get("assay") or "") != "FLT3-D835":
             continue
 
         for marker_spec in marker_specs_for_entry(entry):
-            if marker_spec.get("kind") == "sample":
-                peak_rows.append(_tracker_control_marker_row(entry, marker_spec, peak_summary, base_row))
-            else:
-                peak_rows.append(_tracker_ladder_marker_row(entry, marker_spec, base_row))
+            if (
+                marker_spec.get("kind") == "sample"
+                and str(marker_spec.get("peak_label") or "").upper() == "MUT"
+            ):
+                peak_rows.append(
+                    _tracker_control_marker_row(
+                        entry,
+                        marker_spec,
+                        peak_summary,
+                        base_row,
+                    )
+                )
 
     return (
         pd.DataFrame(run_rows, columns=RUN_SHEET_COLUMNS),

@@ -13,7 +13,9 @@ import fnmatch
 import io
 import json
 import os
+import shutil
 import sys
+import tempfile
 import time
 import warnings
 from collections import Counter
@@ -779,16 +781,44 @@ def _update_global_rox500_workbook(
         else pd.DataFrame()
     )
 
-    writer_kwargs: dict[str, Any] = {"engine": "openpyxl"}
-    if global_path.exists():
-        writer_kwargs.update({"mode": "a", "if_sheet_exists": "replace"})
-    with pd.ExcelWriter(global_path, **writer_kwargs) as writer:
-        all_qc.to_excel(writer, sheet_name="All_Analyzed_QC", index=False)
-        all_review.to_excel(writer, sheet_name="Review_Rows", index=False)
-        all_summary.to_excel(writer, sheet_name="Summary_By_Injection", index=False)
-        all_raw.to_excel(writer, sheet_name="Raw_Metadata_All_FSA", index=False)
-        if not all_skipped.empty:
-            all_skipped.to_excel(writer, sheet_name="Skipped", index=False)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=global_path.parent,
+            prefix=f".{global_path.stem}.",
+            suffix=".tmp.xlsx",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+        if global_path.exists():
+            shutil.copy2(global_path, temporary_path)
+            writer_kwargs: dict[str, Any] = {
+                "engine": "openpyxl",
+                "mode": "a",
+                "if_sheet_exists": "replace",
+            }
+        else:
+            temporary_path.unlink(missing_ok=True)
+            writer_kwargs = {"engine": "openpyxl"}
+
+        with pd.ExcelWriter(temporary_path, **writer_kwargs) as writer:
+            all_qc.to_excel(writer, sheet_name="All_Analyzed_QC", index=False)
+            all_review.to_excel(writer, sheet_name="Review_Rows", index=False)
+            all_summary.to_excel(writer, sheet_name="Summary_By_Injection", index=False)
+            all_raw.to_excel(writer, sheet_name="Raw_Metadata_All_FSA", index=False)
+            if not all_skipped.empty:
+                all_skipped.to_excel(writer, sheet_name="Skipped", index=False)
+
+        from core.analyses.flt3.tracking_dashboard import (
+            refresh_flt3_tracking_dashboard,
+        )
+
+        refresh_flt3_tracking_dashboard(temporary_path)
+        os.replace(temporary_path, global_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool]) -> dict[str, Any]:

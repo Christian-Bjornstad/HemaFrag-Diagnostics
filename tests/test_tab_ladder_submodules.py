@@ -8,12 +8,18 @@ a QApplication or constructing a TabLadder widget.
 from __future__ import annotations
 
 import json
-import hashlib
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+from unittest.mock import patch
+
+from core.ladder_adjustment_store import (
+    load_ladder_adjustment_record,
+    save_ladder_adjustment_record,
+)
 
 from gui_qt.tabs.tab_ladder._io import (
     load_review_bundle_worker,
@@ -63,41 +69,45 @@ class TabLadderSummaryHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             fsa = Path(td) / "sample.fsa"
             fsa.write_bytes(b"trace")
-            adjustment = fsa.with_suffix(".ladder_adj.json")
-            adjustment.write_text("{}", encoding="utf-8")
-            adjustment_hash = hashlib.sha256(
-                adjustment.read_bytes()
-            ).hexdigest()
-            result = {
-                "failed_jobs": [],
-                "ladder_review_gate": {"review_case_count": 0},
-                "dit_report_entries": [
-                    {
-                        "original_file_path": str(fsa),
-                        "ladder_fit_strategy": "manual_adjustment",
-                        "analysis_provenance": {
+            database = str(Path(td) / "adjustments.sqlite3")
+            with patch.dict(
+                os.environ,
+                {"HEMAFRAG_LADDER_ADJUSTMENT_DB": database},
+            ):
+                save_ladder_adjustment_record(fsa, {})
+                adjustment_hash = str(
+                    load_ladder_adjustment_record(fsa)["payload_sha256"]
+                )
+                result = {
+                    "failed_jobs": [],
+                    "ladder_review_gate": {"review_case_count": 0},
+                    "dit_report_entries": [
+                        {
+                            "original_file_path": str(fsa),
                             "ladder_fit_strategy": "manual_adjustment",
-                            "manual_adjustment_consumed": True,
-                            "manual_adjustment_sha256": adjustment_hash,
-                            "source_sha256": "b" * 64,
-                        },
-                    }
-                ],
-            }
+                            "analysis_provenance": {
+                                "ladder_fit_strategy": "manual_adjustment",
+                                "manual_adjustment_consumed": True,
+                                "manual_adjustment_sha256": adjustment_hash,
+                                "source_sha256": "b" * 64,
+                            },
+                        }
+                    ],
+                }
 
-            status = manual_adjustment_consumption(result, fsa)
+                status = manual_adjustment_consumption(result, fsa)
 
-            self.assertTrue(status["consumed"])
-            self.assertEqual(status["status"], "consumed")
-            self.assertEqual(
-                status["manual_adjustment_sha256"],
-                adjustment_hash,
-            )
+                self.assertTrue(status["consumed"])
+                self.assertEqual(status["status"], "consumed")
+                self.assertEqual(
+                    status["manual_adjustment_sha256"],
+                    adjustment_hash,
+                )
 
-            result["ladder_review_gate"]["review_case_count"] = 1
-            status = manual_adjustment_consumption(result, fsa)
-            self.assertFalse(status["consumed"])
-            self.assertIn("review", status["reason"].lower())
+                result["ladder_review_gate"]["review_case_count"] = 1
+                status = manual_adjustment_consumption(result, fsa)
+                self.assertFalse(status["consumed"])
+                self.assertIn("review", status["reason"].lower())
 
     def test_format_ladder_confidence_shadow_is_explicitly_read_only(
         self,

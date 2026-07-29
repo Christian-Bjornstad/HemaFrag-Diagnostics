@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -10,9 +9,20 @@ from core.run_manifest import (
     jobs_from_run_manifest,
     load_run_manifest,
 )
+from core.ladder_adjustment_store import (
+    load_ladder_adjustment_record,
+    save_ladder_adjustment_record,
+)
 
 
-def test_run_manifest_preserves_jobs_sidecars_progress_and_outputs(tmp_path):
+def test_run_manifest_preserves_jobs_adjustments_progress_and_outputs(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "HEMAFRAG_LADDER_ADJUSTMENT_DB",
+        str(tmp_path / "adjustments.sqlite3"),
+    )
     patient = tmp_path / "patient.fsa"
     control = tmp_path / "control.fsa"
     patient.write_bytes(b"patient-trace")
@@ -58,8 +68,7 @@ def test_run_manifest_preserves_jobs_sidecars_progress_and_outputs(tmp_path):
         }
     )
 
-    adjustment = patient.with_suffix(".ladder_adj.json")
-    adjustment.write_text('{"selected_times":[1,2,3]}', encoding="utf-8")
+    save_ladder_adjustment_record(patient, {"selected_times": [1, 2, 3]})
     report = output_dir / "DIT_patient.html"
     report.write_text("<html>report</html>", encoding="utf-8")
     workbook = output_dir / "tracking.xlsx"
@@ -139,12 +148,20 @@ def test_load_run_manifest_rejects_unknown_schema(tmp_path):
         raise AssertionError("Unknown manifest schema should fail closed.")
 
 
-def test_run_manifest_records_exact_consumed_manual_adjustment(tmp_path):
+def test_run_manifest_records_exact_consumed_manual_adjustment(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "HEMAFRAG_LADDER_ADJUSTMENT_DB",
+        str(tmp_path / "adjustments.sqlite3"),
+    )
     patient = tmp_path / "patient.fsa"
     patient.write_bytes(b"patient-trace")
-    adjustment = patient.with_suffix(".ladder_adj.json")
-    adjustment.write_text('{"schema_version":"v2"}', encoding="utf-8")
-    adjustment_hash = hashlib.sha256(adjustment.read_bytes()).hexdigest()
+    save_ladder_adjustment_record(patient, {"schema_version": "v2"})
+    adjustment_hash = str(
+        load_ladder_adjustment_record(patient)["payload_sha256"]
+    )
     output_dir = tmp_path / "reports"
     output_dir.mkdir()
     recorder = BatchRunManifest.create(

@@ -3764,9 +3764,8 @@ def save_ladder_adjustment(
     before_qc: dict[str, Any] | None = None,
     after_qc: dict[str, Any] | None = None,
 ) -> Path:
-    """Atomically save and verify a manual ladder mapping beside the FSA file."""
-    adj_path = Path(fsa.file).resolve().with_suffix(".ladder_adj.json")
-    temp_path: Path | None = None
+    """Save and verify a manual ladder mapping in the internal adjustment store."""
+    source_path = Path(fsa.file).resolve()
     try:
         if manual_candidates is not None or mapping_times is not None:
             payload = {
@@ -3786,7 +3785,6 @@ def save_ladder_adjustment(
         ):
             raise ValueError("Ladder adjustment has no persisted peak mapping.")
 
-        source_path = Path(fsa.file).resolve()
         expected_steps_raw = getattr(fsa, "expected_ladder_steps", None)
         if expected_steps_raw is None or len(expected_steps_raw) == 0:
             expected_steps_raw = getattr(fsa, "ladder_steps", None)
@@ -3851,40 +3849,67 @@ def save_ladder_adjustment(
                 "save_verified": True,
             },
         }
-        adj_path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=adj_path.parent,
-            prefix=f".{adj_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            json.dump(normalized, handle, indent=2, ensure_ascii=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, adj_path)
-        temp_path = None
+        from core.ladder_adjustment_store import (
+            load_ladder_adjustment_record,
+            save_ladder_adjustment_record,
+        )
 
-        verified = json.loads(adj_path.read_text(encoding="utf-8"))
-        if _normalize_ladder_adjustment_payload(verified) != normalized:
-            raise OSError(f"Saved ladder adjustment could not be verified: {adj_path}")
-        print_green(f"Saved ladder adjustment to {adj_path.name}")
-        return adj_path
+        database_path = save_ladder_adjustment_record(
+            source_path,
+            normalized,
+            ladder=str(getattr(fsa, "ladder", "") or ""),
+            size_standard_channel=str(
+                getattr(fsa, "rust_size_standard_channel", "")
+                or getattr(fsa, "size_standard_channel", "")
+                or ""
+            ),
+        )
+        verified = load_ladder_adjustment_record(
+            source_path,
+            ladder=str(getattr(fsa, "ladder", "") or ""),
+            size_standard_channel=str(
+                getattr(fsa, "rust_size_standard_channel", "")
+                or getattr(fsa, "size_standard_channel", "")
+                or ""
+            ),
+        )
+        if (
+            verified is None
+            or _normalize_ladder_adjustment_payload(verified.get("payload"))
+            != normalized
+        ):
+            raise OSError("Saved ladder adjustment could not be verified.")
+        legacy_path = source_path.with_suffix(".ladder_adj.json")
+        legacy_path.unlink(missing_ok=True)
+        print_green("Saved ladder adjustment in the internal adjustment store.")
+        return database_path
     except Exception as e:
-        if temp_path is not None:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
         print_warning(f"Could not save ladder adjustment: {e}")
-        raise RuntimeError(f"Could not save ladder adjustment to {adj_path}: {e}") from e
+        raise RuntimeError(f"Could not save ladder adjustment: {e}") from e
 
 
 def load_ladder_adjustment(fsa: FsaFile) -> dict | None:
-    """Loads a manual mapping payload from a .json file if it exists."""
+    """Load a manual mapping from the internal store or migrate a legacy sidecar."""
+    from core.ladder_adjustment_store import (
+        load_ladder_adjustment_record,
+        save_ladder_adjustment_record,
+    )
+
+    source_path = Path(fsa.file).expanduser()
+    ladder = str(getattr(fsa, "ladder", "") or "")
+    channel = str(
+        getattr(fsa, "rust_size_standard_channel", "")
+        or getattr(fsa, "size_standard_channel", "")
+        or ""
+    )
+    stored = load_ladder_adjustment_record(
+        source_path,
+        ladder=ladder,
+        size_standard_channel=channel,
+    )
+    if stored is not None:
+        return _normalize_ladder_adjustment_payload(stored.get("payload"))
+
     candidate_files: list[Path] = [Path(fsa.file)]
     try:
         resolved = Path(fsa.file).resolve()
@@ -3898,8 +3923,10 @@ def load_ladder_adjustment(fsa: FsaFile) -> dict | None:
         if not adj_path.exists():
             continue
         try:
-            with open(adj_path, "r", encoding="utf-8", errors="replace") as f:
-                payload = json.load(f)
+            payload = json.loads(
+                adj_path.read_text(encoding="utf-8", errors="replace")
+            )
+            if isinstance(payload, dict):
                 normalized = _normalize_ladder_adjustment_payload(payload)
                 source = normalized.get("source", {}) if normalized else {}
                 expected_hash = str(source.get("sha256") or "")
@@ -3938,6 +3965,13 @@ def load_ladder_adjustment(fsa: FsaFile) -> dict | None:
                         f"Ignoring ladder adjustment {adj_path.name}: size-standard channel does not match."
                     )
                     continue
+                save_ladder_adjustment_record(
+                    candidate_file,
+                    payload,
+                    ladder=ladder,
+                    size_standard_channel=channel,
+                )
+                adj_path.unlink(missing_ok=True)
                 return normalized
         except Exception as e:
             print_warning(f"Could not load ladder adjustment {adj_path.name}: {e}")

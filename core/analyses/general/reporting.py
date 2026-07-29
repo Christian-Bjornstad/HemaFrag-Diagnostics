@@ -94,7 +94,7 @@ def _render_summary_table(entries: list[dict]) -> str:
     rows = [
         "<table><tr><th>Filnavn</th><th>Profil</th><th>Ladder</th>"
         "<th>Trace-kanaler</th><th>bp-område</th><th>Ladder QC</th>"
-        "<th>R²</th><th>SHA-256</th></tr>"
+        "<th>R²</th></tr>"
     ]
     for entry in entries:
         r2 = entry.get("ladder_r2")
@@ -108,7 +108,6 @@ def _render_summary_table(entries: list[dict]) -> str:
         }.get(status, "<span class='status-badge unknown'>Unknown</span>")
         channels = ", ".join(entry.get("trace_channels") or [])
         profile = entry.get("general_profile") or {}
-        provenance = entry.get("analysis_provenance") or {}
         profile_label = (
             f"{profile.get('profile_id', '')} v{profile.get('profile_version', '')} "
             f"({profile.get('validation_status', '')})"
@@ -125,7 +124,6 @@ def _render_summary_table(entries: list[dict]) -> str:
             f"<td>{float(entry.get('bp_min', 0.0)):.0f}–{float(entry.get('bp_max', 0.0)):.0f} bp</td>"
             f"<td>{status_label}</td>"
             f"<td>{r2_str}</td>"
-            f"<td><code>{escape(str(provenance.get('source_sha256') or ''))}</code></td>"
             "</tr>"
         )
     rows.append("</table>")

@@ -80,12 +80,14 @@ def _file_record(path_value: object) -> dict[str, object]:
     if resolved.is_file():
         record["size_bytes"] = int(resolved.stat().st_size)
         record["sha256"] = _sha256_file(resolved)
-    adjustment = resolved.with_suffix(".ladder_adj.json")
-    if adjustment.is_file():
+    from core.ladder_adjustment_store import load_ladder_adjustment_record
+
+    adjustment = load_ladder_adjustment_record(resolved)
+    if adjustment is not None:
         record["manual_adjustment"] = {
-            "path": str(adjustment),
-            "size_bytes": int(adjustment.stat().st_size),
-            "sha256": _sha256_file(adjustment),
+            "storage": "internal",
+            "sha256": str(adjustment.get("payload_sha256") or ""),
+            "saved_at_utc": str(adjustment.get("saved_at_utc") or ""),
         }
     return record
 
@@ -316,12 +318,20 @@ class BatchRunManifest:
 
                 for file_record in job.get("files", []):
                     source_path = Path(str(file_record.get("path") or ""))
-                    adjustment = source_path.with_suffix(".ladder_adj.json")
-                    if adjustment.is_file():
+                    from core.ladder_adjustment_store import (
+                        load_ladder_adjustment_record,
+                    )
+
+                    adjustment = load_ladder_adjustment_record(source_path)
+                    if adjustment is not None:
                         adjustment_record = {
-                            "path": str(adjustment.resolve()),
-                            "size_bytes": int(adjustment.stat().st_size),
-                            "sha256": _sha256_file(adjustment),
+                            "storage": "internal",
+                            "sha256": str(
+                                adjustment.get("payload_sha256") or ""
+                            ),
+                            "saved_at_utc": str(
+                                adjustment.get("saved_at_utc") or ""
+                            ),
                         }
                         entry = entries_by_path.get(source_path.expanduser().resolve())
                         provenance = (

@@ -14,6 +14,14 @@ from core.analysis import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_adjustment_store(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "HEMAFRAG_LADDER_ADJUSTMENT_DB",
+        str(tmp_path / "ladder_adjustments.sqlite3"),
+    )
+
+
 def _payload() -> dict:
     return {
         "mapping": {0: 0, 1: 1, 2: 2},
@@ -29,7 +37,9 @@ def test_manual_ladder_adjustment_is_atomically_saved_and_reloadable(tmp_path):
 
     saved_path = save_ladder_adjustment(fsa, _payload())
 
-    assert saved_path == fsa_path.with_suffix(".ladder_adj.json")
+    assert saved_path == tmp_path / "ladder_adjustments.sqlite3"
+    assert saved_path.is_file()
+    assert not fsa_path.with_suffix(".ladder_adj.json").exists()
     loaded = load_ladder_adjustment(fsa)
     assert loaded is not None
     assert loaded["schema_version"] == LADDER_ADJUSTMENT_SCHEMA_V2
@@ -39,10 +49,19 @@ def test_manual_ladder_adjustment_is_atomically_saved_and_reloadable(tmp_path):
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_manual_ladder_adjustment_write_failure_is_not_reported_as_success(tmp_path):
+def test_manual_ladder_adjustment_write_failure_is_not_reported_as_success(
+    tmp_path,
+    monkeypatch,
+):
     blocking_file = tmp_path / "not_a_directory"
     blocking_file.write_text("x", encoding="utf-8")
-    fsa = SimpleNamespace(file=str(blocking_file / "sample.fsa"))
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"fsa")
+    monkeypatch.setenv(
+        "HEMAFRAG_LADDER_ADJUSTMENT_DB",
+        str(blocking_file / "adjustments.sqlite3"),
+    )
+    fsa = SimpleNamespace(file=str(source))
 
     with pytest.raises(RuntimeError, match="Could not save ladder adjustment"):
         save_ladder_adjustment(fsa, _payload())
@@ -78,6 +97,31 @@ def test_legacy_ladder_adjustment_remains_loadable(tmp_path):
         "mapping_times": {},
         "manual_candidates": [],
     }
+    assert not fsa_path.with_suffix(".ladder_adj.json").exists()
+
+
+def test_adjustment_follows_staged_copy_by_source_content(tmp_path):
+    source = tmp_path / "original.fsa"
+    staged = tmp_path / "00001_abcd_original.fsa"
+    source.write_bytes(b"same-fsa-content")
+    staged.write_bytes(source.read_bytes())
+    save_ladder_adjustment(SimpleNamespace(file=str(source)), _payload())
+
+    loaded = load_ladder_adjustment(SimpleNamespace(file=str(staged)))
+
+    assert loaded is not None
+    assert loaded["mapping_times"] == _payload()["mapping_times"]
+
+
+def test_flt3_template_rescue_does_not_replace_manual_adjustment():
+    from core.analyses.flt3.pipeline import _should_attempt_flt3_template_rescue
+
+    fsa = SimpleNamespace(
+        ladder_fit_strategy="manual_adjustment",
+        ladder_review_required=True,
+    )
+
+    assert _should_attempt_flt3_template_rescue(fsa, "FLT3-D835", None) is False
 
 
 def test_v2_adjustment_rejects_different_source_bytes(tmp_path):
