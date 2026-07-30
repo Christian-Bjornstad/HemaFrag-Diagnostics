@@ -81,10 +81,30 @@ def build_analysis_provenance(entry: dict[str, Any]) -> dict[str, object]:
         ),
         "ladder_engine": engine,
         "ladder_fit_strategy": strategy,
+        "ladder_search_tier": str(
+            entry.get("ladder_search_tier")
+            or getattr(fsa, "rust_ladder_fit_tier", "")
+            or ""
+        ),
         "ladder_qc_status": str(entry.get("ladder_qc_status") or ""),
         "ladder_reason_codes": [
             str(value) for value in reason_codes if str(value)
         ],
+        "ladder_selected_baseline_like_anchor_count": int(
+            entry.get("ladder_selected_baseline_like_anchor_count")
+            or getattr(fsa, "rust_selected_baseline_like_anchor_count", 0)
+            or 0
+        ),
+        "ladder_selected_cleaner_neighbor_count": int(
+            entry.get("ladder_selected_cleaner_neighbor_count")
+            or getattr(fsa, "rust_selected_cleaner_neighbor_count", 0)
+            or 0
+        ),
+        "ladder_selected_strong_baseline_anchor_count": int(
+            entry.get("ladder_selected_strong_baseline_anchor_count")
+            or getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0)
+            or 0
+        ),
         "manual_adjustment_consumed": strategy == "manual_adjustment",
         "manual_adjustment_schema": adjustment_schema,
         "manual_adjustment_sha256": adjustment_hash,

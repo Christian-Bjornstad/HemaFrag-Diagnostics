@@ -42,7 +42,7 @@ from fraggler.fraggler import (
 
 from core.analysis._constants import *
 
-from core.engine_flags import strict_rust_ladder_enabled
+from core.engine_flags import rust_owned_ladder_enabled
 from core.assay_config import (
     DEFAULT_LIZ_LADDER,
     DEFAULT_ROX_LADDER,
@@ -4068,9 +4068,11 @@ def analyse_fsa_liz(
         )
         if applied is not None:
             return applied
-        if strict_rust_ladder_enabled():
+        if rust_owned_ladder_enabled():
             print_warning(
-                f"[LIZ] Strict Rust ladder mode is enabled; Python ladder fitting fallback is disabled for {fsa_path.name}."
+                f"[LIZ] Rust could not provide a hydratable ladder result for {fsa_path.name}. "
+                "Rust-owned ladder mode will report an explicit ladder failure for review instead of silently replacing its anchors with Python. "
+                "Set HEMAFRAG_ENABLE_PYTHON_LADDER_FALLBACK=1 only for emergency compatibility."
             )
             return None
         print_warning(f"[LIZ] Rust Engine failed or returned None for {fsa_path.name}. Falling back to Python ladder fitting.")
@@ -4428,9 +4430,11 @@ def analyse_fsa_rox(
                 f"[ROX] FLT3 GS500ROX is Rust-only; Python ladder fitting fallback is disabled for {fsa_path.name}."
             )
             return None
-        if strict_rust_ladder_enabled():
+        if rust_owned_ladder_enabled():
             print_warning(
-                f"[ROX] Strict Rust ladder mode is enabled; Python ladder fitting fallback is disabled for {fsa_path.name}."
+                f"[ROX] Rust could not provide a hydratable ladder result for {fsa_path.name}. "
+                "Rust-owned ladder mode will report an explicit ladder failure for review instead of silently replacing its anchors with Python. "
+                "Set HEMAFRAG_ENABLE_PYTHON_LADDER_FALLBACK=1 only for emergency compatibility."
             )
             return None
         print_warning(f"[ROX] Rust Engine failed or returned None for {fsa_path.name}. Falling back to Python ladder fitting.")

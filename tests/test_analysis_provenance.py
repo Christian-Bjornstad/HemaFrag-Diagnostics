@@ -38,6 +38,9 @@ def test_internal_provenance_records_manual_adjustment_and_source_hash(
         "ladder_fit_strategy": "manual_adjustment",
         "ladder_qc_status": "manual_adjustment",
         "ladder_review_reason_codes": ["reviewed"],
+        "ladder_selected_baseline_like_anchor_count": 2,
+        "ladder_selected_cleaner_neighbor_count": 1,
+        "ladder_selected_strong_baseline_anchor_count": 1,
     }
 
     result = attach_analysis_provenance(entry)["analysis_provenance"]
@@ -46,5 +49,8 @@ def test_internal_provenance_records_manual_adjustment_and_source_hash(
     assert result["source_sha256"] == hashlib.sha256(b"fsa-bytes").hexdigest()
     assert result["ladder_engine"] == "manual"
     assert result["manual_adjustment_consumed"] is True
+    assert result["ladder_selected_baseline_like_anchor_count"] == 2
+    assert result["ladder_selected_cleaner_neighbor_count"] == 1
+    assert result["ladder_selected_strong_baseline_anchor_count"] == 1
     assert result["manual_adjustment_schema"] == "hemafrag_ladder_adjustment_v2"
     assert result["manual_adjustment_sha256"]

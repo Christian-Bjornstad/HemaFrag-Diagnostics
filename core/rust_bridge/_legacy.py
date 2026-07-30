@@ -27,7 +27,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from core.engine_flags import strict_rust_ladder_enabled
+from core.engine_flags import rust_owned_ladder_enabled
 from core.log import log
 from core.rust_bridge._constants import (
     _CLI_BIN_CACHE,
@@ -1197,6 +1197,15 @@ def _apply_rust_result_to_fsa(fsa: FsaFile, res: dict[str, Any]) -> FsaFile | No
         fsa.rust_review_reason_codes = list(review_assessment.get("reason_codes") or [])
         fsa.rust_review_primary_reason = review_assessment.get("primary_reason")
         fsa.rust_review_summary = str(review_assessment.get("summary") or "")
+        fsa.rust_selected_baseline_like_anchor_count = int(
+            review_assessment.get("selected_baseline_like_anchor_count") or 0
+        )
+        fsa.rust_selected_cleaner_neighbor_count = int(
+            review_assessment.get("selected_cleaner_neighbor_count") or 0
+        )
+        fsa.rust_selected_strong_baseline_anchor_count = int(
+            review_assessment.get("selected_strong_baseline_anchor_count") or 0
+        )
     detected_ladder = res.get("ladder")
     if isinstance(detected_ladder, str) and detected_ladder:
         fsa.rust_detected_ladder = detected_ladder
@@ -1216,6 +1225,21 @@ def _apply_rust_result_to_fsa(fsa: FsaFile, res: dict[str, Any]) -> FsaFile | No
     fit_preview = res.get("ladder_fit_preview")
     if not fit_preview:
         log("[RUST ERROR] ladder_fit_preview missing")
+        return None
+    search_tier = str(fit_preview.get("search_tier") or "").strip()
+    if search_tier:
+        fsa.rust_ladder_fit_tier = search_tier
+    strong_baseline_anchor_count = int(
+        getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0) or 0
+    )
+    if strong_baseline_anchor_count >= 2:
+        fsa.rust_guardrail_review_required = True
+        fsa.ladder_review_required = True
+        log(
+            f"[RUST GUARDRAIL] Rejected automatic ladder hydration for {fsa.file_name}: "
+            f"{strong_baseline_anchor_count} selected anchors have strong baseline-noise signatures. "
+            "A saved manual ladder adjustment may still be applied; otherwise explicit review is required."
+        )
         return None
 
     refinement = fit_preview.get("refinement")
@@ -1284,10 +1308,10 @@ def _apply_rust_result_to_fsa(fsa: FsaFile, res: dict[str, Any]) -> FsaFile | No
     if hydrated is not None:
         return hydrated
 
-    if strict_rust_ladder_enabled():
+    if rust_owned_ladder_enabled():
         log(
-            f"[STRICT RUST] Rust sizing model could not hydrate {fsa.file_name}; "
-            "Python ladder fallback is disabled."
+            f"[RUST REVIEW] Rust sizing model could not hydrate {fsa.file_name}; "
+            "Rust-owned ladder mode will not replace the selected anchors with Python."
         )
         return None
 

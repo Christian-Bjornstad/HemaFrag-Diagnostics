@@ -713,12 +713,22 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
         "n_ladder_steps": n_ladder_steps,
         "n_size_standard_peaks": n_size_standard_peaks,
         "ladder_fit_strategy": ladder_fit_strategy,
+        "ladder_search_tier": str(getattr(fsa, "rust_ladder_fit_tier", "") or ""),
         "ladder_missing_expected_steps": ladder_missing_expected_steps,
         "ladder_fit_note": ladder_fit_note,
         "ladder_review_required": ladder_review_required,
         "ladder_review_reason": str(getattr(fsa, "rust_review_primary_reason", "") or ""),
         "ladder_review_reason_codes": list(getattr(fsa, "rust_review_reason_codes", []) or []),
         "ladder_review_summary": str(getattr(fsa, "rust_review_summary", "") or ""),
+        "ladder_selected_baseline_like_anchor_count": int(
+            getattr(fsa, "rust_selected_baseline_like_anchor_count", 0) or 0
+        ),
+        "ladder_selected_cleaner_neighbor_count": int(
+            getattr(fsa, "rust_selected_cleaner_neighbor_count", 0) or 0
+        ),
+        "ladder_selected_strong_baseline_anchor_count": int(
+            getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0) or 0
+        ),
         "ladder_expected_step_count": len(expected_ladder_steps),
         "ladder_fitted_step_count": len(fitted_ladder_steps),
         "rust_preview_top_assay": str(top_rust_assay.get("assay_name") or ""),

@@ -95,9 +95,19 @@ def _analyze_files(fsa_files: list[Path]) -> tuple[list[dict], int]:
                 "ladder_qc_status": ladder_status,
                 "ladder_r2": ladder_r2,
                 "ladder_fit_strategy": ladder_strategy,
+                "ladder_search_tier": str(getattr(fsa, "rust_ladder_fit_tier", "") or ""),
                 "ladder_missing_expected_steps": ladder_missing,
                 "ladder_fit_note": str(getattr(fsa, "ladder_fit_note", "")),
                 "ladder_review_required": bool(getattr(fsa, "ladder_review_required", False)),
+                "ladder_selected_baseline_like_anchor_count": int(
+                    getattr(fsa, "rust_selected_baseline_like_anchor_count", 0) or 0
+                ),
+                "ladder_selected_cleaner_neighbor_count": int(
+                    getattr(fsa, "rust_selected_cleaner_neighbor_count", 0) or 0
+                ),
+                "ladder_selected_strong_baseline_anchor_count": int(
+                    getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0) or 0
+                ),
                 "ladder_expected_step_count": int(getattr(fsa, "ladder_expected_step_count", 0)),
                 "ladder_fitted_step_count": int(getattr(fsa, "ladder_fitted_step_count", 0)),
                 "n_ladder_steps": int(len(getattr(fsa, "ladder_steps", []))),

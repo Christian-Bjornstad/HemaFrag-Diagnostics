@@ -34,7 +34,7 @@ from core.analysis import (
     estimate_running_baseline,
     get_ladder_candidates,
 )
-from core.engine_flags import strict_rust_ladder_enabled
+from core.engine_flags import rust_owned_ladder_enabled
 from core.analyses.flt3.classification import classify_fsa
 from core.analyses.flt3.config import (
     ASSAY_CONFIG,
@@ -3624,7 +3624,7 @@ def _should_attempt_flt3_template_rescue(
 ) -> bool:
     del assay, analysis_type
 
-    if strict_rust_ladder_enabled():
+    if rust_owned_ladder_enabled():
         return False
 
     if _flt3_gs500rox_rust_only_ladder_mode():
@@ -3937,7 +3937,7 @@ def _analyse_fsa_candidate(
             setattr(fsa, "_flt3_template_rescue_skipped", True)
         setattr(fsa, "_flt3_sizing_method", _infer_sizing_method(fsa))
         return fsa
-    if strict_rust_ladder_enabled():
+    if rust_owned_ladder_enabled():
         return None
     if _flt3_gs500rox_rust_only_ladder_mode():
         return None
@@ -5902,12 +5902,22 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         "n_ladder_steps": metrics.get("n_ladder_steps"),
         "n_size_standard_peaks": metrics.get("n_size_standard_peaks"),
         "ladder_fit_strategy": ladder_fit_strategy,
+        "ladder_search_tier": str(getattr(fsa, "rust_ladder_fit_tier", "") or ""),
         "ladder_missing_expected_steps": ladder_missing_expected_steps,
         "ladder_fit_note": ladder_fit_note,
         "ladder_review_required": ladder_review_required,
         "ladder_review_reason": ladder_review_reason,
         "ladder_review_reason_codes": ladder_review_reason_codes,
         "ladder_review_summary": ladder_review_summary,
+        "ladder_selected_baseline_like_anchor_count": int(
+            getattr(fsa, "rust_selected_baseline_like_anchor_count", 0) or 0
+        ),
+        "ladder_selected_cleaner_neighbor_count": int(
+            getattr(fsa, "rust_selected_cleaner_neighbor_count", 0) or 0
+        ),
+        "ladder_selected_strong_baseline_anchor_count": int(
+            getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0) or 0
+        ),
         "gs500rox_start_prior_mode": (
             str(gs500rox_start_prior_proposal.get("mode", ""))
             if isinstance(gs500rox_start_prior_proposal, dict)

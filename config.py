@@ -68,7 +68,11 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "engine": {
         "use_rust": True,
+        # Rust owns ladder-anchor selection. The legacy Python selector can be
+        # re-enabled temporarily with python_ladder_compatibility_fallback.
+        "rust_owned_ladder": True,
         "strict_rust_ladder": False,
+        "python_ladder_compatibility_fallback": False,
         "rust_timeout_seconds": 60,
         "rust_timeout_seconds_rox": 120,
         "rust_timeout_seconds_liz": 60,
