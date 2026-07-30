@@ -34,6 +34,15 @@ class TabAbout(QWidget):
         layout.addWidget(self._build_license_card())
         layout.addStretch()
 
+    @staticmethod
+    def _style_readable_text(text: QTextBrowser) -> None:
+        text.document().setDefaultStyleSheet(
+            """
+            body, p, li { color: #334e63; }
+            a { color: #2b6cb0; }
+            """
+        )
+
     def _build_summary_card(self) -> QWidget:
         card = QWidget()
         card.setObjectName("Card")
@@ -70,6 +79,7 @@ class TabAbout(QWidget):
         text.setOpenExternalLinks(True)
         text.setMinimumHeight(170)
         text.setReadOnly(True)
+        self._style_readable_text(text)
         text.setMarkdown(self._third_party_markdown())
         body.addWidget(text)
         return card
@@ -93,6 +103,7 @@ class TabAbout(QWidget):
         license_text = QTextBrowser()
         license_text.setReadOnly(True)
         license_text.setMinimumHeight(220)
+        self._style_readable_text(license_text)
         license_text.setPlainText(load_text(UPSTREAM_LICENSE_PATH))
         body.addWidget(license_text)
         return card

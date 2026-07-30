@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QStackedWidget, QPushButton, QLabel, QFrame, QComboBox, QScrollArea
@@ -189,6 +191,12 @@ class MainWindow(QMainWindow):
         self.tab_settings_clonality.settings_saved.connect(self._on_settings_saved)
         self.tab_settings_flt3.settings_saved.connect(self._on_settings_saved)
         self.tab_settings_general.settings_saved.connect(self._on_settings_saved)
+        self.tab_archive_runner.ladderReviewRequested.connect(
+            self._open_archive_ladder_review
+        )
+        self.tab_ladder.reportsRefreshed.connect(
+            self.tab_archive_runner.refresh_after_ladder_rerun
+        )
         
         # Connect global core logging to this tab
         from gui_qt.log_handler import qt_log_handler
@@ -270,18 +278,25 @@ class MainWindow(QMainWindow):
     def _setup_shortcuts(self) -> None:
         """Alt+1..N activates each analysis group's Run tab.
         Ctrl+, opens Settings for the current analysis.
-        Alt+letter jumps to sub-tabs of the current group:
-          R = Run, L = Ladder, A = Archive Runner, I = Interpretation,
-          G = loG, S = Settings."""
+        Alt+letter jumps to named sub-tabs of the current group."""
         for i in range(min(len(self.groups), 9)):
             sc = QShortcut(QKeySequence(f"Alt+{i + 1}"), self)
             sc.activated.connect(lambda idx=i: self._activate_group(idx))
         sc_settings = QShortcut(QKeySequence("Ctrl+,"), self)
         sc_settings.activated.connect(self._activate_settings)
-        # Letter shortcuts — sub-tab navigation within the current group
-        for letter, sub_idx in [("R", 0), ("L", 1), ("A", 2), ("I", 3), ("G", 4), ("S", 5)]:
+        for letter, label in (
+            ("R", "Run"),
+            ("L", "Ladder"),
+            ("A", "Archive Runner"),
+            ("M", "ML Training"),
+            ("G", "Log"),
+            ("B", "Labeling"),
+            ("S", "Settings"),
+        ):
             sc = QShortcut(QKeySequence(f"Alt+{letter}"), self)
-            sc.activated.connect(lambda idx=sub_idx: self._activate_sub(idx))
+            sc.activated.connect(
+                lambda target=label: self._activate_named_sub(target)
+            )
 
     def _activate_group(self, idx: int) -> None:
         """Keyboard-driven group activation — same path as clicking a sidebar header."""
@@ -289,8 +304,7 @@ class MainWindow(QMainWindow):
             self.on_group_clicked(self.groups[idx])
 
     def _activate_sub(self, sub_idx: int) -> None:
-        """Jump to a sub-tab within the currently active analysis group.
-        Sub_idx maps to: 0=Run, 1=Ladder, 2=Archive Runner, 3=Interpretation, 4=Log, 5=Settings."""
+        """Jump to a sub-tab by its current position."""
         active = APP_SETTINGS.get("active_analysis", "clonality")
         group_map = {
             "clonality": self.group_clonality,
@@ -306,6 +320,19 @@ class MainWindow(QMainWindow):
                 for button in other_group.sub_buttons:
                     button.setChecked(button is group.sub_buttons[sub_idx])
             self.on_sub_tab_clicked(group.internal_id, sub_idx)
+
+    def _activate_named_sub(self, label: str) -> None:
+        active = APP_SETTINGS.get("active_analysis", "clonality")
+        group = {
+            "clonality": self.group_clonality,
+            "flt3": self.group_flt3,
+            "general": self.group_general,
+        }.get(active, self.group_clonality)
+        try:
+            index = group.sub_button_labels.index(label)
+        except ValueError:
+            return
+        self._activate_sub(index)
 
     def _activate_settings(self) -> None:
         """Jump to the Settings page for the current analysis."""
@@ -336,6 +363,29 @@ class MainWindow(QMainWindow):
         self._clear_sidebar_selection()
         self.btn_about.setChecked(True)
         self.stacked_widget.setCurrentIndex(self.tab_about_idx)
+
+    def _open_archive_ladder_review(
+        self,
+        analysis_id: str,
+        bundle_path: str,
+    ) -> None:
+        self._activate_analysis(analysis_id)
+        self.tab_run.set_analysis(analysis_id)
+        self.tab_ladder.set_analysis(analysis_id)
+        self.tab_archive_runner.set_analysis(analysis_id)
+        group = (
+            self.group_flt3
+            if analysis_id == "flt3"
+            else self.group_clonality
+        )
+        for button in group.sub_buttons:
+            button.setChecked(False)
+        group.btn_ladder.setChecked(True)
+        self.stacked_widget.setCurrentIndex(self.tab_ladder_idx)
+        self.tab_ladder.load_review_bundle_from_path(
+            Path(bundle_path),
+            auto_open_first=True,
+        )
 
     def _wrap_scroll_page(self, page: QWidget) -> QScrollArea:
         scroll = QScrollArea()

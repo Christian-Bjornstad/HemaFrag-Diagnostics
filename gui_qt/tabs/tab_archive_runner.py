@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import csv
+import json
 import subprocess
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThreadPool
+from PyQt6.QtCore import Qt, QThreadPool, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -14,6 +16,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QInputDialog,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -25,22 +28,43 @@ from PyQt6.QtWidgets import (
 )
 
 from config import APP_SETTINGS, get_analysis_settings, save_settings
+from core.analyses.clonality.ladder_review_gate import RESOLVED_LABELS
 from gui_qt.worker import Worker
 
 _ARCHIVE_SUPPORT_ERROR = ""
 try:
-    from scripts.combine_clonality_yearly_overview import combine_run_root
+    from scripts.combine_clonality_yearly_overview import (
+        combine_run_root as combine_clonality_run_root,
+    )
+    from scripts.combine_flt3_yearly_overview import (
+        combine_run_root as combine_flt3_run_root,
+    )
     from scripts.run_clonality_yearly import (
         discover_month_folders,
         normalize_month_keys,
-        run_yearly_validation,
+        run_yearly_validation as run_clonality_yearly_validation,
     )
+    from scripts.run_flt3_yearly import (
+        run_yearly_validation as run_flt3_yearly_validation,
+    )
+    combine_run_root = combine_clonality_run_root
+    run_yearly_validation = run_clonality_yearly_validation
+    _RUNNERS = {
+        "clonality": run_clonality_yearly_validation,
+        "flt3": run_flt3_yearly_validation,
+    }
+    _COMBINERS = {
+        "clonality": combine_clonality_run_root,
+        "flt3": combine_flt3_run_root,
+    }
     _ARCHIVE_SUPPORT_AVAILABLE = True
 except Exception as exc:
     combine_run_root = None
     discover_month_folders = None
     normalize_month_keys = None
     run_yearly_validation = None
+    _RUNNERS = {}
+    _COMBINERS = {}
     _ARCHIVE_SUPPORT_AVAILABLE = False
     _ARCHIVE_SUPPORT_ERROR = str(exc)
 
@@ -55,6 +79,8 @@ def _open_path(path: Path) -> None:
 
 
 class TabArchiveRunner(QWidget):
+    ladderReviewRequested = pyqtSignal(str, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.threadpool = QThreadPool.globalInstance()
@@ -73,15 +99,15 @@ class TabArchiveRunner(QWidget):
         layout.setSpacing(18)
 
         header = QVBoxLayout()
-        title = QLabel("Archive Runner")
-        title.setObjectName("PageTitle")
-        subtitle = QLabel(
+        self.title = QLabel("Archive Runner")
+        self.title.setObjectName("PageTitle")
+        self.subtitle = QLabel(
             "Run year-scale clonality backfills with safe fresh output folders, explicit resume support, and an optional combined yearly workbook."
         )
-        subtitle.setObjectName("PageSubtitle")
-        subtitle.setWordWrap(True)
-        header.addWidget(title)
-        header.addWidget(subtitle)
+        self.subtitle.setObjectName("PageSubtitle")
+        self.subtitle.setWordWrap(True)
+        header.addWidget(self.title)
+        header.addWidget(self.subtitle)
         layout.addLayout(header)
 
         layout.addWidget(self._build_settings_card())
@@ -93,16 +119,29 @@ class TabArchiveRunner(QWidget):
         self.set_analysis(self._current_analysis_id)
 
     def _archive_support_available(self) -> bool:
-        return _ARCHIVE_SUPPORT_AVAILABLE
+        return (
+            _ARCHIVE_SUPPORT_AVAILABLE
+            and self._current_analysis_id in _RUNNERS
+            and self._current_analysis_id in _COMBINERS
+        )
 
     def _archive_support_message(self) -> str:
         if self._archive_support_available():
             return ""
         detail = f" Missing dependency: {_ARCHIVE_SUPPORT_ERROR}." if _ARCHIVE_SUPPORT_ERROR else ""
         return (
-            "Archive Runner is unavailable in this build because the legacy yearly runner scripts "
+            "Archive Runner is unavailable for this analysis because the yearly runner modules "
             f"are not present in this workspace.{detail}"
         )
+
+    def _runner(self):
+        return _RUNNERS.get(self._current_analysis_id)
+
+    def _combiner(self):
+        return _COMBINERS.get(self._current_analysis_id)
+
+    def _analysis_label(self) -> str:
+        return "FLT3" if self._current_analysis_id == "flt3" else "Clonality"
 
     def _build_settings_card(self) -> QWidget:
         card = QWidget()
@@ -112,11 +151,13 @@ class TabArchiveRunner(QWidget):
 
         self.year_input = QLineEdit()
         self.year_input.setPlaceholderText("2025")
+        self.year_input.editingFinished.connect(self._rebuild_month_table)
         form.addRow("Year:", self.year_input)
 
         input_row = QHBoxLayout()
         self.input_root = QLineEdit()
         self.input_root.setPlaceholderText("/path/to/Klonalitet/2025_data")
+        self.input_root.editingFinished.connect(self._rebuild_month_table)
         btn_input = QPushButton("Browse...")
         btn_input.clicked.connect(lambda: self._browse_directory(self.input_root))
         input_row.addWidget(self.input_root, stretch=1)
@@ -143,6 +184,7 @@ class TabArchiveRunner(QWidget):
         self.folder_workers = QSpinBox()
         self.folder_workers.setRange(1, 64)
         form.addRow("Folder Workers:", self.folder_workers)
+        self.folder_workers_label = form.labelForField(self.folder_workers)
 
         self.chk_resume = QCheckBox("Resume existing run folder")
         self.chk_include_sl = QCheckBox("Include SL in exported artifacts")
@@ -229,7 +271,24 @@ class TabArchiveRunner(QWidget):
         self.btn_open_run.clicked.connect(self.on_open_run_folder)
         self.btn_open_workbook = QPushButton("Open Combined Workbook")
         self.btn_open_workbook.clicked.connect(self.on_open_combined_workbook)
-        for button in (self.btn_run, self.btn_combine, self.btn_open_run, self.btn_open_workbook):
+        self.btn_review_ladders = QPushButton("Review Failed Ladders")
+        self.btn_review_ladders.clicked.connect(self.on_review_failed_ladders)
+        self.btn_review_ladders.setToolTip(
+            "Open an archive ladder-review bundle in Ladder Studio, save corrections, and rerun the reviewed files."
+        )
+        self.btn_refresh_workbook = QPushButton("Refresh Workbook")
+        self.btn_refresh_workbook.clicked.connect(self.on_build_combined_workbook)
+        self.btn_refresh_workbook.setToolTip(
+            "Rebuild the yearly workbook from month outputs after ladder corrections or reruns."
+        )
+        for button in (
+            self.btn_run,
+            self.btn_combine,
+            self.btn_review_ladders,
+            self.btn_refresh_workbook,
+            self.btn_open_run,
+            self.btn_open_workbook,
+        ):
             action_row.addWidget(button)
         action_row.addStretch()
         layout.addLayout(action_row)
@@ -281,18 +340,35 @@ class TabArchiveRunner(QWidget):
         return card
 
     def _on_settings_saved(self, analysis_id: str) -> None:
-        if analysis_id == "clonality":
+        if analysis_id == self._current_analysis_id:
             self.refresh_from_settings()
             self._rebuild_month_table()
 
     def _profile(self) -> dict:
-        return get_analysis_settings("clonality")
+        return get_analysis_settings(self._current_analysis_id)
 
     def set_analysis(self, analysis_id: str) -> None:
+        changed = analysis_id != self._current_analysis_id
         self._current_analysis_id = analysis_id
-        available = analysis_id == "clonality" and self._archive_support_available()
+        available = analysis_id in {"clonality", "flt3"} and self._archive_support_available()
         self.setEnabled(available)
-        if analysis_id == "clonality" and not self._archive_support_available():
+        self.title.setText(f"{self._analysis_label()} Archive Runner")
+        self.subtitle.setText(
+            f"Run year-scale {self._analysis_label()} archives with resumable month state, "
+            "stable tracking workbooks, and post-run ladder review."
+        )
+        self.chk_include_sl.setVisible(analysis_id == "clonality")
+        self.folder_workers.setEnabled(analysis_id == "clonality")
+        if self.folder_workers_label is not None:
+            self.folder_workers_label.setEnabled(
+                analysis_id == "clonality"
+            )
+        self.chk_refresh_each_folder.setEnabled(
+            analysis_id == "clonality"
+        )
+        if available and changed:
+            self.refresh_from_settings()
+        elif not available:
             self._set_workflow_status(self._archive_support_message(), "unavailable")
 
     def refresh_from_settings(self) -> None:
@@ -308,6 +384,7 @@ class TabArchiveRunner(QWidget):
         self.chk_include_sl.setChecked(bool(archive.get("include_sl", False)))
         self.chk_refresh_each_folder.setChecked(bool(archive.get("refresh_each_folder", False)))
         self.chk_cleanup_staging.setChecked(bool(archive.get("cleanup_staging_root", False)))
+        self.chk_generate_html.setChecked(bool(archive.get("generate_html", False)))
         last_selected_run_root = str(
             archive.get("last_selected_run_root", "") or archive.get("last_run_root", "") or ""
         ).strip()
@@ -319,7 +396,10 @@ class TabArchiveRunner(QWidget):
         self._refresh_action_buttons()
 
     def _persist_settings(self) -> None:
-        archive = APP_SETTINGS.setdefault("analyses", {}).setdefault("clonality", {}).setdefault("archive_runner", {})
+        archive = APP_SETTINGS.setdefault("analyses", {}).setdefault(
+            self._current_analysis_id,
+            {},
+        ).setdefault("archive_runner", {})
         archive.update(self._collect_settings())
         archive["last_selected_run_root"] = str(self._current_run_root or "")
         archive["last_run_root"] = str(self._current_run_root or "")
@@ -344,13 +424,38 @@ class TabArchiveRunner(QWidget):
             "include_sl": self.chk_include_sl.isChecked(),
             "refresh_each_folder": self.chk_refresh_each_folder.isChecked(),
             "cleanup_staging_root": self.chk_cleanup_staging.isChecked(),
+            "generate_html": self.chk_generate_html.isChecked(),
             "use_rust": bool(APP_SETTINGS.get("engine", {}).get("use_rust", True)),
         }
 
     def _browse_directory(self, target: QLineEdit) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select Directory", target.text() or str(Path.home()))
+        archive = self._profile().get("archive_runner", {})
+        setting_key = (
+            "last_input_directory"
+            if target is self.input_root
+            else "last_output_directory"
+        )
+        start = (
+            target.text().strip()
+            or str(archive.get(setting_key) or "")
+            or str(Path.home())
+        )
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Directory",
+            start,
+            QFileDialog.Option.ShowDirsOnly,
+        )
         if folder:
             target.setText(folder)
+            profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(
+                self._current_analysis_id,
+                {},
+            )
+            profile.setdefault("archive_runner", {})[setting_key] = folder
+            save_settings(APP_SETTINGS)
+            if target is self.input_root:
+                self._rebuild_month_table()
 
     def _selected_months(self) -> list[str]:
         year_label = self.year_input.text().strip()
@@ -390,15 +495,63 @@ class TabArchiveRunner(QWidget):
     def _refresh_action_buttons(self) -> None:
         has_run_root = self._current_run_root is not None and self._current_run_root.exists()
         has_workbook = self._current_workbook_path is not None and self._current_workbook_path.exists()
+        has_review_bundles = bool(self._review_bundle_dirs())
         self.btn_open_run.setEnabled(has_run_root)
         self.btn_combine.setEnabled(has_run_root)
+        self.btn_refresh_workbook.setEnabled(has_run_root)
+        self.btn_review_ladders.setEnabled(has_review_bundles)
         self.btn_open_workbook.setEnabled(has_workbook)
 
     def _set_busy(self, busy: bool) -> None:
         self.btn_run.setEnabled(not busy)
         self.btn_combine.setEnabled(not busy and self._current_run_root is not None and self._current_run_root.exists())
+        self.btn_refresh_workbook.setEnabled(
+            not busy
+            and self._current_run_root is not None
+            and self._current_run_root.exists()
+        )
+        self.btn_review_ladders.setEnabled(
+            not busy and bool(self._review_bundle_dirs())
+        )
         self.btn_open_run.setEnabled(not busy and self._current_run_root is not None and self._current_run_root.exists())
         self.btn_open_workbook.setEnabled(not busy and self._current_workbook_path is not None and self._current_workbook_path.exists())
+
+    def _review_bundle_dirs(self) -> list[Path]:
+        if self._current_run_root is None or not self._current_run_root.exists():
+            return []
+        bundles = {
+            path.parent
+            for path in self._current_run_root.rglob("ladder_review_cases.csv")
+            if self._unresolved_review_count(path.parent) > 0
+        }
+        return sorted(
+            bundles,
+            key=lambda path: (
+                (path / "ladder_review_cases.csv").stat().st_mtime_ns,
+                str(path).lower(),
+            ),
+            reverse=True,
+        )
+
+    @staticmethod
+    def _unresolved_review_count(bundle_dir: Path) -> int:
+        cases_path = bundle_dir / "ladder_review_cases.csv"
+        try:
+            with cases_path.open(
+                "r",
+                encoding="utf-8",
+                errors="replace",
+                newline="",
+            ) as handle:
+                rows = list(csv.DictReader(handle))
+        except Exception:
+            return 0
+        return sum(
+            1
+            for row in rows
+            if str(row.get("label") or "").strip().lower()
+            not in RESOLVED_LABELS
+        )
 
     def _guess_manifest_path(self) -> Path | None:
         if self._current_run_root is None:
@@ -410,7 +563,8 @@ class TabArchiveRunner(QWidget):
     def _guess_workbook_path(self) -> Path | None:
         if self._current_run_root is None:
             return None
-        overview = self._current_run_root / f"track-clonality-{self.year_input.text().strip()}-overview.xlsx"
+        prefix = "track-flt3" if self._current_analysis_id == "flt3" else "track-clonality"
+        overview = self._current_run_root / f"{prefix}-{self.year_input.text().strip()}-overview.xlsx"
         if overview.exists():
             return overview
         # Fallback to month-specific workbook if only one month was run
@@ -418,9 +572,15 @@ class TabArchiveRunner(QWidget):
         if months_dir.exists():
             for mdir in months_dir.iterdir():
                 if mdir.is_dir():
-                    wb = mdir / "track-clonality.xlsx"
-                    if wb.exists():
-                        return wb
+                    names = (
+                        ("FLT3_Tracking.xlsx",)
+                        if self._current_analysis_id == "flt3"
+                        else ("track-clonality.xlsx", "Clonality_Tracking.xlsx")
+                    )
+                    for name in names:
+                        wb = mdir / name
+                        if wb.exists():
+                            return wb
         return None
 
     def _month_counts(self) -> dict[str, int]:
@@ -528,7 +688,8 @@ class TabArchiveRunner(QWidget):
         return year_label, input_root, output_root, months
 
     def on_run_yearly(self) -> None:
-        if run_yearly_validation is None:
+        runner = self._runner()
+        if runner is None:
             QMessageBox.warning(self, "Archive Runner", self._archive_support_message())
             return
         try:
@@ -549,7 +710,7 @@ class TabArchiveRunner(QWidget):
         self._set_workflow_status(f"Starting yearly run for {year_label}", "running")
 
         worker = Worker(
-            run_yearly_validation,
+            runner,
             year_label=year_label,
             input_root=input_root,
             output_root=output_root,
@@ -590,9 +751,10 @@ class TabArchiveRunner(QWidget):
         cleanup_staging_root: bool,
         bridge,
     ) -> dict[str, object]:
-        if run_yearly_validation is None:
+        runner = self._runner()
+        if runner is None:
             raise RuntimeError(self._archive_support_message())
-        return run_yearly_validation(
+        return runner(
             year_label=year_label,
             input_root=input_root,
             output_root=output_root,
@@ -609,7 +771,8 @@ class TabArchiveRunner(QWidget):
         )
 
     def on_build_combined_workbook(self) -> None:
-        if combine_run_root is None:
+        combiner = self._combiner()
+        if combiner is None:
             QMessageBox.warning(self, "Archive Runner", self._archive_support_message())
             return
         run_root = self._current_run_root
@@ -620,7 +783,18 @@ class TabArchiveRunner(QWidget):
         self._set_busy(True)
         self._set_workflow_status(f"Building combined workbook for {year_label}", "running")
 
-        worker = Worker(combine_run_root, run_root, run_root / f"track-clonality-{year_label}-overview.xlsx", year_label=year_label)
+        worker = Worker(
+            combiner,
+            run_root,
+            run_root
+            / (
+                f"track-flt3-{year_label}-overview.xlsx"
+                if self._current_analysis_id == "flt3"
+                else f"track-clonality-{year_label}-overview.xlsx"
+            ),
+            year_label=year_label,
+            include_sl=self.chk_include_sl.isChecked(),
+        )
         worker.signals.result.connect(self._on_combine_finished)
         worker.signals.error.connect(self._on_worker_error)
         worker.signals.finished.connect(self._on_worker_finished)
@@ -634,6 +808,50 @@ class TabArchiveRunner(QWidget):
     def on_open_combined_workbook(self) -> None:
         if self._current_workbook_path and self._current_workbook_path.exists():
             _open_path(self._current_workbook_path)
+
+    def on_review_failed_ladders(self) -> None:
+        bundles = self._review_bundle_dirs()
+        if not bundles:
+            QMessageBox.information(
+                self,
+                "Archive Runner",
+                "No ladder-review bundles were found in the selected archive run.",
+            )
+            return
+        selected = bundles[0]
+        if len(bundles) > 1:
+            labels = [
+                f"{bundle.parent.name} - {self._unresolved_review_count(bundle)} unresolved"
+                for bundle in bundles
+            ]
+            label, accepted = QInputDialog.getItem(
+                self,
+                "Select Ladder Review",
+                "Archive review bundle:",
+                labels,
+                0,
+                False,
+            )
+            if not accepted:
+                return
+            selected = bundles[labels.index(label)]
+        self.ladderReviewRequested.emit(
+            self._current_analysis_id,
+            str(selected),
+        )
+
+    def refresh_after_ladder_rerun(self, output_root: str) -> None:
+        if self._current_run_root is None:
+            return
+        try:
+            Path(output_root).resolve().relative_to(self._current_run_root.resolve())
+        except (OSError, ValueError):
+            return
+        self._set_workflow_status(
+            "Ladder corrections reran successfully; refreshing the yearly workbook.",
+            "running",
+        )
+        self.on_build_combined_workbook()
 
     def on_choose_run_root(self) -> None:
         start_dir = str(self._current_run_root) if self._current_run_root else (self.output_root.text().strip() or str(Path.home()))
@@ -666,7 +884,11 @@ class TabArchiveRunner(QWidget):
         elif event == "month_skipped_empty" and month:
             self._update_month_row(month, status="skipped_empty", folder_count=0, run_dir=run_dir)
         elif event == "month_finished" and month:
-            self._update_month_row(month, status="done", run_dir=run_dir)
+            self._update_month_row(
+                month,
+                status=str(payload.get("status") or "done"),
+                run_dir=run_dir,
+            )
         elif event == "manifest_written":
             manifest_path = payload.get("manifest_path")
             if manifest_path:
@@ -694,7 +916,18 @@ class TabArchiveRunner(QWidget):
             self._current_workbook_path = self._guess_workbook_path()
             self._persist_settings()
         self.progress.setValue(self.progress.maximum())
-        self._set_workflow_status("Yearly backfill finished.", "success")
+        failed_items = (
+            list(manifest.get("failed_items") or [])
+            if isinstance(manifest, dict)
+            else []
+        )
+        if failed_items:
+            self._set_workflow_status(
+                f"Yearly backfill finished with {len(failed_items)} failed item(s).",
+                "warning",
+            )
+        else:
+            self._set_workflow_status("Yearly backfill finished.", "success")
         self._refresh_output_labels()
         self._refresh_action_buttons()
 

@@ -264,6 +264,7 @@ def single_file_rerun_worker(
     aggregate_by_patient: bool,
     patient_regex: str,
     aggregate_outdir_name: str | None,
+    run_manifest_path: Path | None = None,
 ) -> dict:
     """Run a single-file batch_jobs() invocation and return its result."""
     # Lazy imports keep the rest of `tab_ladder` importable without
@@ -277,6 +278,26 @@ def single_file_rerun_worker(
         aggregate_patients=aggregate_by_patient,
         patient_regex=patient_regex,
     )
+    recovered_from_manifest = False
+    if run_manifest_path is not None:
+        from core.run_manifest import jobs_from_run_manifest
+
+        recovered_jobs = jobs_from_run_manifest(run_manifest_path)
+        if recovered_jobs:
+            missing = [
+                Path(path)
+                for job in recovered_jobs
+                for path in (job.get("files") or [])
+                if not Path(path).is_file()
+            ]
+            if missing:
+                names = ", ".join(path.name for path in missing[:8])
+                raise FileNotFoundError(
+                    "The linked archive manifest references missing FSA files: "
+                    + names
+                )
+            jobs = recovered_jobs
+            recovered_from_manifest = True
     if not jobs:
         raise RuntimeError(f"No runnable job could be generated for {file_path.name}.")
 
@@ -292,6 +313,9 @@ def single_file_rerun_worker(
         continue_on_error=True,
         update_callback=None,
         aggregate_outdir_name=aggregate_outdir_name,
+        parent_run_manifest_path=(
+            run_manifest_path if recovered_from_manifest else None
+        ),
     )
     try:
         report_result = find_report_matches_worker(file_path, str(output_root))
@@ -308,4 +332,5 @@ def single_file_rerun_worker(
             file_path,
         ),
         "matches": matches,
+        "recovered_from_run_manifest": recovered_from_manifest,
     }

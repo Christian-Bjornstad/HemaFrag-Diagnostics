@@ -511,3 +511,66 @@ def test_review_bundle_restart_recovers_original_patient_and_qc_jobs(
     assert captured["parent_run_manifest_path"] == manifest.path
     assert [job["name"] for job in captured["jobs"]] == ["patient", "QC"]
     assert captured["jobs"][1]["files"] == [qc_path.resolve()]
+
+
+def test_single_file_rerun_recovers_qc_context_from_manifest(
+    tmp_path,
+    monkeypatch,
+):
+    import core.batch as batch
+    from core.run_manifest import BatchRunManifest
+    from gui_qt.tabs.tab_ladder._workers import single_file_rerun_worker
+
+    patient_path = tmp_path / "patient.fsa"
+    qc_path = tmp_path / "PK_control.fsa"
+    patient_path.write_bytes(b"patient")
+    qc_path.write_bytes(b"control")
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    manifest = BatchRunManifest.create(
+        output_dir=output_root,
+        jobs=[
+            {
+                "name": "patient",
+                "type": "pipeline",
+                "path": tmp_path,
+                "files": [patient_path],
+            },
+            {
+                "name": "QC",
+                "type": "qc",
+                "path": tmp_path,
+                "files": [qc_path],
+            },
+        ],
+        analysis="clonality",
+        settings={},
+        execution={"aggregate_dit_reports": True},
+    )
+    captured = {}
+
+    def fake_run_batch_jobs(**kwargs):
+        captured.update(kwargs)
+        return {
+            "failed_jobs": [],
+            "ladder_review_gate": {},
+        }
+
+    monkeypatch.setattr(batch, "run_batch_jobs", fake_run_batch_jobs)
+
+    payload = single_file_rerun_worker(
+        file_path=patient_path,
+        output_root=output_root,
+        analysis_id="clonality",
+        pipeline_scope="all",
+        assay_filter="",
+        aggregate_dit_reports=True,
+        aggregate_by_patient=True,
+        patient_regex=r"\d{2}OUM\d{5}",
+        aggregate_outdir_name="reports_test",
+        run_manifest_path=manifest.path,
+    )
+
+    assert payload["recovered_from_run_manifest"] is True
+    assert captured["parent_run_manifest_path"] == manifest.path
+    assert [job["name"] for job in captured["jobs"]] == ["patient", "QC"]

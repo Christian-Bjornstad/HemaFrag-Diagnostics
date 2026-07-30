@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shutil
 import tempfile
 import threading
@@ -19,6 +18,10 @@ from core.qc.qc_markers import (
     parse_pcr_date_from_filename,
     parse_run_code_from_filename,
     parse_well_from_filename,
+)
+from core.tracking_workbook_io import (
+    publish_workbook_contents,
+    write_tracking_frames,
 )
 
 
@@ -459,23 +462,20 @@ def update_flt3_npm1_qc_tracker(
                 temporary_path = Path(handle.name)
             if excel_path.exists():
                 shutil.copy2(excel_path, temporary_path)
-                writer_kwargs: dict[str, object] = {
-                    "engine": "openpyxl",
-                    "mode": "a",
-                    "if_sheet_exists": "replace",
-                }
             else:
                 temporary_path.unlink(missing_ok=True)
-                writer_kwargs = {"engine": "openpyxl"}
-
-            with pd.ExcelWriter(temporary_path, **writer_kwargs) as writer:
-                all_runs.to_excel(writer, sheet_name="Runs", index=False)
-                patient_runs.to_excel(writer, sheet_name="Patient_Runs", index=False)
-                control_runs.to_excel(writer, sheet_name="Control_Runs", index=False)
-                all_peaks.to_excel(writer, sheet_name="PK_Peaks", index=False)
+            write_tracking_frames(
+                temporary_path,
+                (
+                    ("Runs", all_runs, ("IdentityKey",)),
+                    ("Patient_Runs", patient_runs, ("IdentityKey",), True),
+                    ("Control_Runs", control_runs, ("IdentityKey",), True),
+                    ("PK_Peaks", all_peaks, ("IdentityKey", "MarkerName")),
+                ),
+            )
 
             refresh_flt3_tracking_dashboard(temporary_path)
-            os.replace(temporary_path, excel_path)
+            publish_workbook_contents(temporary_path, excel_path)
             temporary_path = None
         finally:
             if temporary_path is not None:

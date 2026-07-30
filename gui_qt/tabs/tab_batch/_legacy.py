@@ -246,7 +246,10 @@ class TabBatch(QWidget):
         self.folder_list.dropEvent = _dropEvent
         
         btn_layout = QVBoxLayout()
-        self.btn_add_folders = QPushButton("Add Folders...")
+        self.btn_add_folders = QPushButton("Add Folder...")
+        self.btn_add_folders.setToolTip(
+            "Uses the native folder picker so Windows Quick Access and pinned locations are available. Click again to add another folder."
+        )
         self.btn_add_files = QPushButton("Add Files...")
         self.btn_remove_sources = QPushButton("Remove Selected")
         self.btn_add_folders.clicked.connect(self._add_folders)
@@ -901,9 +904,26 @@ class TabBatch(QWidget):
         self._refresh_dashboard()
 
     def _ask_dir(self, widget: QLineEdit):
-        folder = QFileDialog.getExistingDirectory(self, "Select Directory", widget.text() or str(Path.home()))
+        batch_settings = self._profile_for().get("batch", {})
+        start = (
+            widget.text().strip()
+            or str(batch_settings.get("last_output_directory") or "")
+            or str(Path.home())
+        )
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Output Folder",
+            start,
+            QFileDialog.Option.ShowDirsOnly,
+        )
         if folder:
             widget.setText(folder)
+            profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(
+                self._current_analysis_id,
+                {},
+            )
+            profile.setdefault("batch", {})["last_output_directory"] = folder
+            save_settings(APP_SETTINGS)
 
     def _is_general_analysis(self) -> bool:
         return self._current_analysis_id == "general"
@@ -1007,30 +1027,54 @@ class TabBatch(QWidget):
         self._reset_queue_state("Ready", "ready")
 
     def _add_folders(self):
-        dialog = QFileDialog(self, "Add Folders", str(Path.home()))
-        dialog.setFileMode(QFileDialog.FileMode.Directory)
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        
-        # Enable multiple selection in the dialog's views
-        for view in dialog.findChildren(QAbstractItemView):
-            view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-            
-        if dialog.exec():
-            folders = dialog.selectedFiles()
-            existing = {self.folder_list.item(i).text() for i in range(self.folder_list.count())}
-            for folder in folders:
-                if folder not in existing:
-                    self._add_source_item(folder)
+        batch_settings = self._profile_for().get("batch", {})
+        start = str(batch_settings.get("last_input_directory") or "").strip()
+        if not start and self.folder_list.count():
+            candidate = Path(self.folder_list.item(self.folder_list.count() - 1).text()).expanduser()
+            start = str(candidate if candidate.is_dir() else candidate.parent)
+        if not start:
+            start = str(batch_settings.get("base_input_dir") or Path.home())
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Add Input Folder",
+            start,
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not folder:
+            return
+        existing = {
+            self.folder_list.item(i).text()
+            for i in range(self.folder_list.count())
+        }
+        if folder not in existing:
+            self._add_source_item(folder)
+        profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(
+            self._current_analysis_id,
+            {},
+        )
+        profile.setdefault("batch", {})["last_input_directory"] = folder
+        save_settings(APP_SETTINGS)
 
     def _add_files(self):
+        batch_settings = self._profile_for().get("batch", {})
+        start = str(batch_settings.get("last_input_directory") or Path.home())
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Add .fsa Files",
-            str(Path.home()),
+            start,
             "FSA files (*.fsa)",
         )
         for file_name in files:
             self._add_source_item(file_name)
+        if files:
+            profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(
+                self._current_analysis_id,
+                {},
+            )
+            profile.setdefault("batch", {})["last_input_directory"] = str(
+                Path(files[0]).parent
+            )
+            save_settings(APP_SETTINGS)
 
     def _remove_sources(self):
         removed = False

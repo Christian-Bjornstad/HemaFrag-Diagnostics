@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QAbstractItemView,
 )
-from PyQt6.QtCore import Qt, QThreadPool, QTimer
+from PyQt6.QtCore import Qt, QThreadPool, QTimer, pyqtSignal
 
 from config import APP_SETTINGS, get_analysis_settings
 from core.analysis import load_ladder_adjustment, save_ladder_adjustment
@@ -44,6 +44,8 @@ def _open_path(path: Path) -> None:
 
 
 class TabLadder(QWidget):
+    reportsRefreshed = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.threadpool = QThreadPool.globalInstance()
@@ -898,6 +900,7 @@ class TabLadder(QWidget):
         aggregate_by_patient: bool,
         patient_regex: str,
         aggregate_outdir_name: str | None,
+        run_manifest_path: Path | None = None,
     ) -> dict:
         # Phase 12.1 — delegate to the worker module.
         from gui_qt.tabs.tab_ladder._workers import single_file_rerun_worker
@@ -912,6 +915,7 @@ class TabLadder(QWidget):
             aggregate_by_patient,
             patient_regex,
             aggregate_outdir_name,
+            run_manifest_path,
         )
 
     def _review_bundle_counts(self) -> tuple[int, int]:
@@ -1068,6 +1072,7 @@ class TabLadder(QWidget):
             settings["aggregate_by_patient"],
             settings["patient_regex"],
             settings["aggregate_outdir_name"],
+            self._review_bundle_run_manifest_path,
         )
         worker.signals.result.connect(lambda result, rid=request_id: self._on_review_bundle_rerun_finished(rid, result))
         worker.signals.error.connect(lambda err, rid=request_id: self._on_review_bundle_rerun_error(rid, err))
@@ -1166,6 +1171,7 @@ class TabLadder(QWidget):
             )
             return
 
+        self.reportsRefreshed.emit(str(output_root))
         message = QMessageBox(self)
         message.setIcon(QMessageBox.Icon.Information)
         message.setWindowTitle("Single File Rerun Complete")
@@ -1325,6 +1331,7 @@ class TabLadder(QWidget):
         self._review_session_entries_by_path.clear()
         self._recent_reviewed_files.clear()
         self._refresh_review_bundle_run_button()
+        self.reportsRefreshed.emit(str(output_root))
         message = QMessageBox(self)
         message.setIcon(QMessageBox.Icon.Information)
         message.setWindowTitle("Reviewed File Rerun Complete")
