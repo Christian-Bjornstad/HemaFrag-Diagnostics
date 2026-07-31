@@ -631,7 +631,9 @@ fn solve_pentadiagonal(
 
 #[cfg(test)]
 mod tests {
-    use super::{baseline_correct_nonnegative, find_peaks, peak_score};
+    use super::{
+        baseline_correct_nonnegative, baseline_correct_quantile_nonnegative, find_peaks, peak_score,
+    };
 
     #[test]
     fn peak_finder_respects_height_and_distance() {
@@ -656,6 +658,41 @@ mod tests {
         let min_value = corrected.iter().copied().fold(f64::INFINITY, f64::min);
         assert!(max_value > 10.0);
         assert!(min_value >= 0.0);
+    }
+
+    #[test]
+    fn quantile_correction_recovers_negative_drift_without_erasing_ladder_peaks() {
+        let mut values = (0..1200)
+            .map(|idx| -1260.0 + idx as f64 * 0.08 + 3.0 * (idx as f64 / 19.0).sin())
+            .collect::<Vec<_>>();
+        let peak_indices = [180usize, 420, 710, 1010];
+        for index in peak_indices {
+            values[index - 2] += 80.0;
+            values[index - 1] += 280.0;
+            values[index] += 620.0;
+            values[index + 1] += 280.0;
+            values[index + 2] += 80.0;
+        }
+        assert!(values.iter().copied().fold(f64::NEG_INFINITY, f64::max) < 0.0);
+
+        let corrected = baseline_correct_quantile_nonnegative(&values, 200, 0.10);
+        assert!(corrected
+            .iter()
+            .all(|value| value.is_finite() && *value >= 0.0));
+        for index in peak_indices {
+            assert!(
+                corrected[index] >= 590.0,
+                "ladder peak at {index} was flattened to {}",
+                corrected[index]
+            );
+        }
+        let detected = find_peaks(&corrected, 500.0, 20)
+            .into_iter()
+            .map(|peak| peak.index)
+            .collect::<Vec<_>>();
+        for index in peak_indices {
+            assert!(detected.contains(&index));
+        }
     }
 
     #[test]

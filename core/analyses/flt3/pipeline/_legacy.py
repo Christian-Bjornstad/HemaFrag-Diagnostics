@@ -34,9 +34,11 @@ from core.analysis import (
     compute_ladder_qc_metrics,
     estimate_running_baseline,
     get_ladder_candidates,
+    prepare_size_standard_trace,
 )
 from core.engine_flags import rust_owned_ladder_enabled
 from core.analyses.flt3.classification import classify_fsa
+from core.analyses.flt3.distance import calculate_entry_bp_distance_metrics
 from core.analyses.flt3.config import (
     ASSAY_CONFIG,
     BP_CORRECTION_OFFSETS,
@@ -3754,6 +3756,7 @@ def _attempt_lenient_rox_fit(
                 min_size_standard_height=cfg["min_h"],
                 size_standard_channel="DATA4",
             )
+            fsa = prepare_size_standard_trace(fsa)
             fsa = find_size_standard_peaks(fsa)
             ss_peaks = getattr(fsa, "size_standard_peaks", None)
             ss_peak_count = 0 if ss_peaks is None else int(getattr(ss_peaks, "shape", [0])[0])
@@ -6315,6 +6318,7 @@ def _calculate_ratios(entries: list[dict]) -> None:
             entry["ratio_denominator_area"] = 0.0
             entry["ratio"] = 0.0
             entry["mutant_fraction"] = 0.0
+            entry["wt_mutant_bp_metrics"] = []
             continue
         resolved = _resolve_flt3_ratio_selection(entry)
         entry["manual_ratio_selection"] = resolved.get("manual_ratio_selection", _default_manual_ratio_selection())
@@ -6338,6 +6342,7 @@ def _calculate_ratios(entries: list[dict]) -> None:
         entry["ratio_denominator_area"] = float(resolved.get("ratio_denominator_area", 0.0))
         entry["ratio"] = float(resolved.get("ratio", 0.0))
         entry["mutant_fraction"] = float(resolved.get("mutant_fraction", 0.0))
+        entry["wt_mutant_bp_metrics"] = calculate_entry_bp_distance_metrics(entry)
 
 
 def _summarize_peak_areas(entry: dict) -> tuple[float, float]:
@@ -6398,6 +6403,17 @@ def _summarize_detected_peaks(entry: dict) -> dict:
         mut_main_bp = mut_bps[mut_main_idx]
         mut_main_area = float(mut_areas[mut_main_idx])
 
+    bp_metrics = calculate_entry_bp_distance_metrics(
+        {
+            **entry,
+            "selected_wt_bp": wt_bp,
+            "selected_wt_bps": resolved.get("selected_wt_bps", []),
+            "selected_mutant_bps": mut_bps,
+            "selected_wt_channels": resolved.get("selected_wt_channels", []),
+            "selected_mutant_channels": mut_channels,
+        }
+    )
+
     return {
         "ratio_mode": resolved.get("ratio_mode", "auto"),
         "manual_ratio_selection_valid": bool(resolved.get("manual_ratio_selection_valid", False)),
@@ -6417,6 +6433,7 @@ def _summarize_detected_peaks(entry: dict) -> dict:
         "mut_area_total": float(sum(mut_areas)),
         "mut_main_bp": mut_main_bp,
         "mut_main_area": mut_main_area,
+        "bp_distance_metrics": bp_metrics,
     }
 
 
@@ -6484,6 +6501,18 @@ def generate_flt3_peak_report(entries: list[dict], outdir: Path) -> None:
                 "WT_bp": round(float(peak_summary["wt_bp"]), 2) if not np.isnan(peak_summary["wt_bp"]) else "",
                 "WT_Area": round(peak_summary["wt_area"], 2),
                 "Mutant_bp": ", ".join(f"{bp:.2f}" for bp in peak_summary["mut_bps"]),
+                "WT_Mutant_Delta_bp": ", ".join(
+                    f"{float(metric['delta_bp']):.2f}" for metric in peak_summary["bp_distance_metrics"]
+                ),
+                "Rounded_Delta_bp": ", ".join(
+                    str(int(metric["rounded_delta_bp"])) for metric in peak_summary["bp_distance_metrics"]
+                ),
+                "Codon_Distance": ", ".join(
+                    f"{float(metric['codon_distance']):.2f}" for metric in peak_summary["bp_distance_metrics"]
+                ),
+                "Divisible_By_3": ", ".join(
+                    "yes" if metric["divisible_by_3"] else "no" for metric in peak_summary["bp_distance_metrics"]
+                ),
                 "Mutant_Area": ", ".join(f"{area:.2f}" for area in peak_summary["mut_areas"]),
                 "Mutant_Area_Total": round(peak_summary["mut_area_total"], 2),
                 "RatioNumeratorArea": round(float(entry.get("ratio_numerator_area", 0.0)), 2),

@@ -11,6 +11,21 @@ from core.fsa_artifact import load_fsa_artifact
 PARALLEL_RE = re.compile(r"(^|[_-])(p[12])([_-]|$)", re.IGNORECASE)
 DIT_RE = re.compile(r"(\d{2}OUM\d{5})", re.IGNORECASE)
 
+_DILUTION_PATTERNS = {
+    10: (
+        re.compile(r"(?:^|[^a-z0-9])(?:1\s*[:/_-]\s*10\s*x?|10\s*x)(?:[^a-z0-9]|$)", re.IGNORECASE),
+        re.compile(r"(?:^|[^a-z0-9])x\s*10(?:[^a-z0-9]|$)", re.IGNORECASE),
+        re.compile(r"(?:itd|fortynn|fortyn|dilut)\D{0,10}10(?:[^0-9]|$)", re.IGNORECASE),
+        re.compile(r"(?:^|[^0-9])10\D{0,10}(?:itd|fortynn|fortyn|dilut)", re.IGNORECASE),
+    ),
+    25: (
+        re.compile(r"(?:^|[^a-z0-9])(?:1\s*[:/_-]\s*25\s*x?|25\s*x)(?:[^a-z0-9]|$)", re.IGNORECASE),
+        re.compile(r"(?:^|[^a-z0-9])x\s*25(?:[^a-z0-9]|$)", re.IGNORECASE),
+        re.compile(r"(?:itd|fortynn|fortyn|dilut)\D{0,10}25(?:[^0-9]|$)", re.IGNORECASE),
+        re.compile(r"(?:^|[^0-9])25\D{0,10}(?:itd|fortynn|fortyn|dilut)", re.IGNORECASE),
+    ),
+}
+
 
 def _decode_abi_value(value) -> str:
     if isinstance(value, bytes):
@@ -125,6 +140,24 @@ def detect_assay(name: str, *, default_to_d835: bool = False) -> str:
         return "FLT3-D835"
     return "UNKNOWN"
 
+
+def detect_analysis_type(name: str) -> str:
+    """Classify treatment/dilution from common laboratory filename variants."""
+    lower = name.lower()
+    # A named ratio set remains a ratio even when its filename also contains a
+    # dilution token; this keeps it in the first report section.
+    if "ratio" in lower:
+        return "ratio_quant"
+    if any(pattern.search(lower) for pattern in _DILUTION_PATTERNS[10]):
+        return "10x_diluted"
+    if any(pattern.search(lower) for pattern in _DILUTION_PATTERNS[25]):
+        return "25x_diluted"
+    if "ufort" in lower:
+        return "undiluted"
+    if "tkd" in lower or "kutting" in lower:
+        return "TKD_digested"
+    return "standard"
+
 def classify_fsa(fsa_path: Path) -> dict | None:
     """
     Classifies an FSA file for FLT3 analysis.
@@ -149,17 +182,7 @@ def classify_fsa(fsa_path: Path) -> dict | None:
     elif "ivs-p001" in lower or "ivs-p0001" in lower:
         group = "positive_control"
         
-    analysis_type = "standard"
-    if "10x" in lower or "1-10" in lower or "x10" in lower:
-        analysis_type = "10x_diluted"
-    elif "25x" in lower or "1-25" in lower or "x25" in lower:
-        analysis_type = "25x_diluted"
-    elif "ratio" in lower:
-        analysis_type = "ratio_quant"
-    elif "ufort" in lower:
-        analysis_type = "undiluted"
-    elif "tkd" in lower or "kutting" in lower:
-        analysis_type = "TKD_digested"
+    analysis_type = detect_analysis_type(name)
 
     protocol_injection_time = PREFERRED_INJECTION_TIME.get(analysis_type)
     if protocol_injection_time is None:

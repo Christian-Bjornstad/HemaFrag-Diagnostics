@@ -619,6 +619,10 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
             <div class="small">Ratio</div>
             <div id="{div_id}_flt3_ratio_value" style="font-weight:700;">&mdash;</div>
         </div>
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:0.6rem 0.75rem;">
+            <div class="small">WT til mutant (bp / kodoner)</div>
+            <div id="{div_id}_flt3_bp_distance" style="font-weight:700;">&mdash;</div>
+        </div>
     </div>
     <table id="{div_id}_flt3_table">
         <thead>{table_head_html}</thead>
@@ -1038,6 +1042,31 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
       return manualSelection.wt_peak_ids.indexOf(peakId) >= 0;
     }}
 
+    function bpDistanceText(selectedMutants, wtMap) {{
+      var wtPeaks = [];
+      Object.keys(wtMap).forEach(function(channel) {{
+        if (wtMap[channel] && wtPeaks.indexOf(wtMap[channel]) < 0) wtPeaks.push(wtMap[channel]);
+      }});
+      if (!selectedMutants.length || !wtPeaks.length) return "—";
+      var parts = [];
+      for (var i = 0; i < selectedMutants.length; i++) {{
+        var mutant = selectedMutants[i];
+        var wtPeak = wtMap[mutant.source_channel] || wtPeaks[0];
+        if (!wtPeak || !Number.isFinite(Number(mutant.x)) || !Number.isFinite(Number(wtPeak.x))) continue;
+        var delta = Number(mutant.x) - Number(wtPeak.x);
+        var roundedDelta = Math.round(delta);
+        var remainder = Math.abs(roundedDelta) % 3;
+        var channelPrefix = mutant.source_channel ? channelLabel(mutant.source_channel) + ": " : "";
+        var sign = delta >= 0 ? "+" : "";
+        var roundedSign = roundedDelta >= 0 ? "+" : "";
+        var frameText = remainder === 0
+          ? (Math.abs(roundedDelta) / 3).toFixed(0) + " kodon" + (Math.abs(roundedDelta) === 3 ? "" : "er") + "; delbar med 3"
+          : "ikke delbar med 3; rest " + remainder;
+        parts.push(channelPrefix + sign + delta.toFixed(1) + " bp (≈" + roundedSign + roundedDelta + " bp; " + frameText + ")");
+      }}
+      return parts.length ? parts.join("; ") : "—";
+    }}
+
     function selectionSummary() {{
       var wtMap;
       if (manualSelection.wt_peak_ids.length > 0) {{
@@ -1095,6 +1124,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
         numerator: numerator,
         denominator: denominator,
         ratio: denominator > 0 ? numerator / denominator : 0.0,
+        distanceText: bpDistanceText(selectedMutants, wtMap),
         valid: selectedMutants.length > 0 && missingWtChannels.length === 0 && denominator > 0
       }};
     }}
@@ -1103,9 +1133,11 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
       var numeratorEl = document.getElementById(divId + "_flt3_numerator");
       var denominatorEl = document.getElementById(divId + "_flt3_denominator");
       var ratioEl = document.getElementById(divId + "_flt3_ratio_value");
+      var distanceEl = document.getElementById(divId + "_flt3_bp_distance");
       if (numeratorEl) numeratorEl.textContent = summary.selectedMutants.length ? summary.numerator.toFixed(0) : "—";
       if (denominatorEl) denominatorEl.textContent = summary.denominator > 0 ? summary.denominator.toFixed(0) : "—";
       if (ratioEl) ratioEl.textContent = summary.valid ? summary.ratio.toFixed(4) : "—";
+      if (distanceEl) distanceEl.textContent = summary.distanceText;
     }}
 
     function applyChannelChoiceStyles() {{
@@ -1158,6 +1190,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
         var wtEl = document.getElementById("overview_wt_" + overviewIdPrefix.replace("overview_", ""));
         var mutEl = document.getElementById("overview_mut_" + overviewIdPrefix.replace("overview_", ""));
         var ratEl = document.getElementById("overview_ratio_" + overviewIdPrefix.replace("overview_", ""));
+        var deltaEl = document.getElementById("overview_delta_" + overviewIdPrefix.replace("overview_", ""));
         if (wtEl) {{
           if (summaryStatus.wtText !== "Ingen WT valgt ennå") {{
             wtEl.innerHTML = summaryStatus.wtText;
@@ -1179,7 +1212,11 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
             ratEl.innerHTML = "\u2014";
           }}
         }}
+        if (deltaEl) deltaEl.textContent = summaryStatus.distanceText;
       }}
+
+      var distanceSummaryEl = document.getElementById(divId + "_flt3_bp_distance_summary");
+      if (distanceSummaryEl) distanceSummaryEl.textContent = summaryStatus.distanceText;
 
       var table = document.getElementById(divId + "_flt3_table");
       if (!table) return;

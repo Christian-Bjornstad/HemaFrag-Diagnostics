@@ -1386,14 +1386,22 @@ fn select_ladder_peaks(
         matches!(ladder, LadderKind::Liz500250 | LadderKind::Gs500Rox);
     let is_rox_family = matches!(ladder, LadderKind::Rox400Hd | LadderKind::Gs500Rox);
     let min_candidate_span = if is_rox_family { 1100 } else { 850 };
-    let mut raw_candidates = adaptive_top_peak_candidates(
-        raw_trace,
-        raw_min_height,
-        min_distance,
-        max_peaks,
-        target_candidate_count,
-        min_candidate_span,
-    );
+    // A negative-offset ladder lane must not compete as a raw candidate lane:
+    // peak heights then depend on the arbitrary detector offset, and broad
+    // baseline structure can displace real corrected peaks from the capped
+    // pool. The independent guarded/quantile/morphological lanes remain.
+    let mut raw_candidates = if trace_has_negative_baseline(raw_trace) {
+        Vec::new()
+    } else {
+        adaptive_top_peak_candidates(
+            raw_trace,
+            raw_min_height,
+            min_distance,
+            max_peaks,
+            target_candidate_count,
+            min_candidate_span,
+        )
+    };
     let mut corrected_candidates = adaptive_top_peak_candidates(
         corrected_trace,
         corrected_min_height,
@@ -1604,6 +1612,23 @@ fn select_ladder_peaks(
         return quantile_candidates;
     }
     raw_candidates
+}
+
+fn trace_has_negative_baseline(values: &[f64]) -> bool {
+    let mut finite_count = 0usize;
+    let mut negative_count = 0usize;
+    let mut minimum = f64::INFINITY;
+    for value in values.iter().copied().filter(|value| value.is_finite()) {
+        finite_count += 1;
+        if value < 0.0 {
+            negative_count += 1;
+        }
+        minimum = minimum.min(value);
+    }
+    if finite_count == 0 {
+        return false;
+    }
+    negative_count.saturating_mul(20) >= finite_count || minimum < -50.0
 }
 
 fn rox_post_blob_pool_override(
@@ -19624,6 +19649,7 @@ mod tests {
         rox_early_window_peak_candidates, rox_post_blob_pool_override,
         rox_start_pair_candidate_improves_current, rox_tail_family_candidate_improves_current,
         score_combination, select_best_combination, select_ladder_peaks,
+        trace_has_negative_baseline,
     };
 
     fn make_test_peak(index: usize, prominence: f64) -> Peak {
@@ -19745,6 +19771,17 @@ mod tests {
         );
         let indices = peaks.iter().map(|peak| peak.index).collect::<Vec<_>>();
         assert_eq!(indices, vec![2, 6]);
+    }
+
+    #[test]
+    fn negative_ladder_baseline_disables_the_raw_candidate_lane() {
+        assert!(trace_has_negative_baseline(&[-120.0; 200]));
+        let mut mostly_positive = vec![12.0; 200];
+        mostly_positive[50] = -75.0;
+        assert!(trace_has_negative_baseline(&mostly_positive));
+        let mut harmless_noise = vec![12.0; 200];
+        harmless_noise[50] = -2.0;
+        assert!(!trace_has_negative_baseline(&harmless_noise));
     }
 
     #[test]

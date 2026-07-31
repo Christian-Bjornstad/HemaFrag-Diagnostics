@@ -2890,6 +2890,66 @@ def _compute_robust_arpls_baseline(
     return constrained
 
 
+def baseline_correct_ladder_trace(
+    trace: np.ndarray,
+    *,
+    bin_size: int = BASELINE_BIN_SIZE,
+    quantile: float = BASELINE_QUANTILE,
+) -> np.ndarray:
+    """Return a nonnegative, peak-preserving size-standard trace.
+
+    Ladder peaks are narrow compared with a 200-scan baseline window. A low
+    quantile envelope follows offset/drift (including negative baselines)
+    without following the ladder peaks themselves. This deliberately
+    conservative correction may leave a little residual background, but it
+    does not flatten the peaks that the fitter needs.
+    """
+    values = np.asarray(trace, dtype=float).reshape(-1)
+    if values.size == 0:
+        return values.copy()
+
+    finite = np.isfinite(values)
+    if not np.any(finite):
+        return np.zeros_like(values, dtype=float)
+    if not np.all(finite):
+        indices = np.arange(values.size, dtype=float)
+        values = np.interp(indices, indices[finite], values[finite])
+
+    baseline = _rolling_quantile_baseline(
+        values,
+        bin_size=max(20, int(bin_size)),
+        quantile=float(np.clip(quantile, 0.01, 0.35)),
+    )
+    corrected = np.maximum(values - baseline, 0.0)
+    return np.where(np.isfinite(corrected), corrected, 0.0)
+
+
+def prepare_size_standard_trace(fsa: FsaFile) -> FsaFile:
+    """Baseline-correct DATA4/DATA105 before ladder peak detection.
+
+    The original channel remains available as ``size_standard_raw`` for
+    diagnostics; fitting and ladder-editor consumers use the corrected trace.
+    """
+    channel = str(getattr(fsa, "size_standard_channel", "") or "")
+    raw_map = getattr(fsa, "fsa", {})
+    raw_values = raw_map.get(channel) if isinstance(raw_map, dict) and channel else None
+    if raw_values is None:
+        raw_values = getattr(fsa, "size_standard_raw", getattr(fsa, "size_standard", []))
+    raw = np.asarray(raw_values, dtype=float).reshape(-1)
+    corrected = baseline_correct_ladder_trace(raw)
+
+    fsa.size_standard_raw = raw.copy()
+    fsa.size_standard = corrected
+    fsa.size_standard_baseline_corrected = True
+    fsa.size_standard_baseline_method = "rolling_quantile_peak_preserving"
+    finite_raw = raw[np.isfinite(raw)]
+    fsa.size_standard_raw_min = float(np.min(finite_raw)) if finite_raw.size else float("nan")
+    fsa.size_standard_raw_negative_fraction = (
+        float(np.mean(finite_raw < 0.0)) if finite_raw.size else 0.0
+    )
+    return fsa
+
+
 def _recover_rox_size_standard_peaks_from_baseline(fsa: FsaFile, raw_trace: np.ndarray) -> bool:
     """Retry ROX peak detection on a baseline-corrected trace when the raw pass fails."""
     guarded_baseline = estimate_running_baseline(
@@ -4107,6 +4167,7 @@ def analyse_fsa_liz(
     )
     base_fsa.analysis_id = "clonality"
     _set_ladder_fit_profile(base_fsa, ladder_fit_profile, analysis_id="clonality")
+    base_fsa = prepare_size_standard_trace(base_fsa)
 
     from config import APP_SETTINGS
     if APP_SETTINGS.get("engine", {}).get("use_rust", False):
@@ -4157,7 +4218,8 @@ def analyse_fsa_liz(
         )
         fsa.analysis_id = "clonality"
         _set_ladder_fit_profile(fsa, ladder_fit_profile, analysis_id="clonality")
-        liz_data = np.asarray(fsa.fsa[ss_channel]).astype(float)
+        fsa = prepare_size_standard_trace(fsa)
+        liz_data = np.asarray(fsa.size_standard, dtype=float)
         fsa = find_size_standard_peaks(fsa)
 
         all_found = getattr(fsa, "size_standard_peaks", None)
@@ -4464,6 +4526,7 @@ def analyse_fsa_rox(
     )
     base_fsa.analysis_id = "flt3" if ladder_fit_profile == LADDER_FIT_PROFILE_FLT3_GS500ROX else "clonality"
     _set_ladder_fit_profile(base_fsa, ladder_fit_profile, analysis_id=str(getattr(base_fsa, "analysis_id", "") or ""))
+    base_fsa = prepare_size_standard_trace(base_fsa)
 
     from config import APP_SETTINGS
     if APP_SETTINGS.get("engine", {}).get("use_rust", False):
@@ -4500,22 +4563,23 @@ def analyse_fsa_rox(
         print_warning(f"[ROX] Rust Engine failed or returned None for {fsa_path.name}. Falling back to Python ladder fitting.")
 
     base_fsa = find_size_standard_peaks(base_fsa)
-    base_raw_rox = np.asarray(base_fsa.fsa[ss_channel], dtype=float)
+    base_raw_rox = np.asarray(base_fsa.size_standard_raw, dtype=float)
+    base_working_rox = np.asarray(base_fsa.size_standard, dtype=float)
     base_found = np.asarray(getattr(base_fsa, "size_standard_peaks", []), dtype=float)
     base_supplemented = _supplement_rox_preferred_region_peaks(
         base_found,
-        base_raw_rox,
+        base_working_rox,
         expected_count=int(len(np.asarray(getattr(base_fsa, "ladder_steps", []), dtype=float))),
         min_distance=float(getattr(base_fsa, "min_distance_between_peaks", 1.0) or 1.0),
     )
     base_cleaned = _clean_rox_size_standard_peaks(
         np.asarray(base_supplemented, dtype=int),
-        base_raw_rox,
+        base_working_rox,
     )
     if len(base_cleaned) >= ROX_BASELINE_FALLBACK_MIN_PEAKS:
         base_fsa.size_standard_peaks = _prepare_rox_size_standard_peaks(
             np.asarray(base_cleaned, dtype=float),
-            base_raw_rox,
+            base_working_rox,
             expected_count=int(len(np.asarray(getattr(base_fsa, "ladder_steps", []), dtype=float))),
         )
     else:
@@ -4539,7 +4603,8 @@ def analyse_fsa_rox(
         )
         fsa.analysis_id = "flt3" if ladder_fit_profile == LADDER_FIT_PROFILE_FLT3_GS500ROX else "clonality"
         _set_ladder_fit_profile(fsa, ladder_fit_profile, analysis_id=str(getattr(fsa, "analysis_id", "") or ""))
-        rox_data = np.asarray(fsa.fsa[ss_channel]).astype(float)
+        fsa = prepare_size_standard_trace(fsa)
+        rox_data = np.asarray(fsa.size_standard, dtype=float)
         fsa = find_size_standard_peaks(fsa)
 
         all_found = getattr(fsa, "size_standard_peaks", None)
@@ -4926,7 +4991,34 @@ def get_ladder_candidates(fsa: FsaFile) -> pd.DataFrame:
     Returns all detected peaks in the size standard channel as a DataFrame.
     Useful for manual selection.
     """
+    trace_before = np.asarray(getattr(fsa, "size_standard", []), dtype=float)
+    finite_before = trace_before[np.isfinite(trace_before)]
+    needs_correction = (
+        not bool(getattr(fsa, "size_standard_baseline_corrected", False))
+        or (finite_before.size > 0 and float(np.min(finite_before)) < 0.0)
+    )
+    if needs_correction:
+        fsa = prepare_size_standard_trace(fsa)
+
     ss_peaks = getattr(fsa, "size_standard_peaks", None)
+    if ss_peaks is None or np.asarray(ss_peaks).size == 0:
+        found_peaks, peak_properties = signal.find_peaks(
+            np.asarray(fsa.size_standard, dtype=float),
+            height=max(5.0, min(float(getattr(fsa, "min_size_standard_height", 20.0)), 50.0)),
+            distance=max(1, int(getattr(fsa, "min_distance_between_peaks", 8) or 8)),
+        )
+        if found_peaks.size:
+            heights = np.asarray(peak_properties.get("peak_heights", []), dtype=float)
+            limit = max(
+                int(getattr(fsa, "n_ladder_peaks", 0) or 0) + 15,
+                int(getattr(fsa, "max_peaks_allow_in_size_standard", 0) or 0),
+                20,
+            )
+            if heights.size == found_peaks.size and found_peaks.size > limit:
+                strongest = np.argsort(heights)[-limit:]
+                found_peaks = np.sort(found_peaks[strongest])
+            fsa.size_standard_peaks = np.asarray(found_peaks, dtype=float)
+            ss_peaks = fsa.size_standard_peaks
     if ss_peaks is None:
         return pd.DataFrame(columns=["index", "time", "intensity"])
 

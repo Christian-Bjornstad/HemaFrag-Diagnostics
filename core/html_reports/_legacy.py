@@ -19,6 +19,10 @@ from datetime import datetime
 import pandas as pd
 
 from core.analyses.registry import get_active_analysis_name
+from core.analyses.flt3.distance import (
+    calculate_bp_distance_metrics,
+    calculate_entry_bp_distance_metrics,
+)
 
 import numpy as np
 
@@ -809,7 +813,7 @@ def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
     is_flt3 = {e.get("assay") for e in dit_entries}.issubset({"FLT3-ITD", "FLT3-D835", "NPM1"})
     if is_flt3:
         html_lines.append(
-            "<table><tr><th>Filnavn</th><th>Assay</th><th>Behandling</th><th>WT</th><th>Mutert</th><th>Ratio</th><th>Ladder QC</th><th>R²</th></tr>"
+            "<table><tr><th>Filnavn</th><th>Assay</th><th>Behandling</th><th>WT</th><th>Mutert</th><th>Ratio</th><th>Δbp / kodoner</th><th>Ladder QC</th><th>R²</th></tr>"
         )
         for e in sorted(dit_entries, key=lambda x: (x["assay"], x.get("well_id") or "", x["fsa"].file_name)):
             status_badge = _render_ladder_status_badge(e)
@@ -830,6 +834,7 @@ def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
                 ratio_str += " <span class='status-badge manual'>Manual</span>"
             fname = escape(e['fsa'].file_name)
             fname_safe = e['fsa'].file_name.replace('.', '_').replace(' ', '_')
+            distance_text = _format_flt3_bp_distance_html(_flt3_bp_distance_metrics(e, peaks))
             html_lines.append(
                 f"<tr data-filename='{fname}'>"
                 f"<td>{fname}</td><td>{escape(e['assay'])}</td>"
@@ -837,6 +842,7 @@ def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
                 f"<td><span id='overview_wt_{fname_safe}'>{wt_text}</span></td>"
                 f"<td><span id='overview_mut_{fname_safe}'>{mut_text}</span></td>"
                 f"<td><span id='overview_ratio_{fname_safe}'>{ratio_str}</span></td>"
+                f"<td><span id='overview_delta_{fname_safe}'>{distance_text}</span></td>"
                 f"<td>{status_badge}</td><td>{r2_str}</td></tr>"
             )
     else:
@@ -951,14 +957,23 @@ def _flt3_report_blocks(assays: dict[str, list[dict]]) -> list[tuple[str, str, l
     blocks: list[tuple[str, str, list[dict]]] = []
     itd_entries = assays.get("FLT3-ITD", [])
     itd_ratio_entries = [e for e in itd_entries if e.get("analysis_type") == "ratio_quant"]
-    itd_other_entries = [e for e in itd_entries if e.get("analysis_type") != "ratio_quant"]
+    itd_10x_entries = [e for e in itd_entries if e.get("analysis_type") == "10x_diluted"]
+    itd_25x_entries = [e for e in itd_entries if e.get("analysis_type") == "25x_diluted"]
+    itd_standard_entries = [
+        e for e in itd_entries
+        if e.get("analysis_type") not in {"ratio_quant", "10x_diluted", "25x_diluted"}
+    ]
 
     if itd_ratio_entries:
         blocks.append(("FLT3-ITD", "FLT3-ITD-ratio", itd_ratio_entries))
     if "FLT3-D835" in assays:
         blocks.append(("FLT3-D835", "FLT3-D835", assays["FLT3-D835"]))
-    if itd_other_entries:
-        blocks.append(("FLT3-ITD", "FLT3-ITD", itd_other_entries))
+    if itd_standard_entries:
+        blocks.append(("FLT3-ITD", "FLT3-ITD", itd_standard_entries))
+    if itd_10x_entries:
+        blocks.append(("FLT3-ITD", "FLT3-ITD - fortynnet 1:10", itd_10x_entries))
+    if itd_25x_entries:
+        blocks.append(("FLT3-ITD", "FLT3-ITD - fortynnet 1:25", itd_25x_entries))
     if "NPM1" in assays:
         blocks.append(("NPM1", "NPM1", assays["NPM1"]))
     return blocks
@@ -1031,6 +1046,46 @@ def _flt3_manual_mutant_text(entry: dict, peaks: pd.DataFrame) -> str | None:
         area = _flt3_selected_area(row, channel)
         parts.append(f"{float(row.basepairs):.1f} bp <span class='small'>({_flt3_channel_label(channel)}; {area:,.0f})</span>")
     return "<br>".join(parts) if parts else None
+
+
+def _flt3_bp_distance_metrics(entry: dict, peaks: pd.DataFrame | None = None) -> list[dict[str, object]]:
+    metrics = calculate_entry_bp_distance_metrics(entry)
+    if metrics or peaks is None or peaks.empty:
+        return metrics
+
+    wt_rows = peaks[peaks.label == "WT"].sort_values("peaks", ascending=False)
+    mut_rows = peaks[peaks.label.isin(["MUT", "ITD"])].sort_values("area", ascending=False)
+    wt_main = _dominant_peak(wt_rows)
+    if wt_main is None or mut_rows.empty:
+        return []
+    return calculate_bp_distance_metrics(
+        [float(wt_main.basepairs)],
+        [float(value) for value in mut_rows.basepairs.tolist()],
+    )
+
+
+def _format_flt3_bp_distance_html(metrics: list[dict[str, object]]) -> str:
+    if not metrics:
+        return "&mdash;"
+    parts: list[str] = []
+    for metric in metrics:
+        delta = float(metric["delta_bp"])
+        rounded_delta = int(metric["rounded_delta_bp"])
+        channel = _flt3_channel_label(str(metric.get("channel") or ""))
+        channel_prefix = f"{escape(channel)}: " if channel != "auto" else ""
+        if metric["divisible_by_3"]:
+            codons = abs(rounded_delta) // 3
+            frame = f"{codons} kodon{'er' if codons != 1 else ''}; delbar med 3"
+        else:
+            frame = f"ikke delbar med 3; rest {int(metric['frame_remainder'])}"
+        parts.append(f"{channel_prefix}{delta:+.1f} bp <span class='small'>(≈{rounded_delta:+d} bp; {frame})</span>")
+    return "<br>".join(parts)
+
+
+def _flt3_distance_summary_span(entry: dict, peaks: pd.DataFrame) -> str:
+    plot_id = str(entry.get("_report_plot_id") or "")
+    span_id = f" id='{escape(plot_id)}_flt3_bp_distance_summary'" if plot_id else ""
+    return f"<span{span_id}>{_format_flt3_bp_distance_html(_flt3_bp_distance_metrics(entry, peaks))}</span>"
 
 
 def _flt3_manual_channel_totals(entry: dict, peaks: pd.DataFrame) -> tuple[float, float, float, float]:
@@ -1162,12 +1217,14 @@ def _build_flt3_summary_table(e: dict) -> str:
         validation_text += "<br><span class='status-badge manual'>Manual ratio</span>"
         if concordance:
             validation_text += f"<br><span class='small'>{concordance}</span>"
+        distance_text = _flt3_distance_summary_span(e, peaks)
         return (
             "<div style='margin-top:10px; margin-bottom:24px;'>"
             "<table style='width:100%; border:1px solid #e2e8f0; table-layout:fixed;'>"
-            "<tr><th>WT-topp</th><th>Muterte topper</th><th>Bla kanal</th><th>Gronn kanal</th><th>Ratioer</th><th>Validering</th></tr>"
+            "<tr><th>WT-topp</th><th>Muterte topper</th><th>Δbp / kodoner</th><th>Bla kanal</th><th>Gronn kanal</th><th>Ratioer</th><th>Validering</th></tr>"
             f"<tr><td>{wt_text}</td>"
             f"<td>{mut_text}</td>"
+            f"<td>{distance_text}</td>"
             f"<td>WT: {wt_blue:,.0f}<br>Mut: {mut_blue:,.0f}</td>"
             f"<td>WT: {wt_green:,.0f}<br>Mut: {mut_green:,.0f}</td>"
             f"<td>ITD-ratio: <strong>{ratio_str}</strong><br>"
@@ -1199,13 +1256,15 @@ def _build_flt3_summary_table(e: dict) -> str:
                 digest_text += f"<br><span class='small'>{digest_status}</span>"
         wt_text = _flt3_manual_wt_text(e, peaks) or "<span class='small'>WT valgt manuelt</span>"
         mut_text = _flt3_manual_mutant_text(e, peaks) or "Ingen mutant valgt"
+        distance_text = _flt3_distance_summary_span(e, peaks)
         validation_text = f"<strong>{label}</strong><br><span class='status-badge manual'>Manual ratio</span>"
         return (
             "<div style='margin-top:10px; margin-bottom:24px;'>"
             "<table style='width:100%; border:1px solid #e2e8f0; table-layout:fixed;'>"
-            "<tr><th>WT-topp</th><th>Mutert topp</th><th>150 bp kontroll</th><th>TKD-ratio</th><th>Validering</th></tr>"
+            "<tr><th>WT-topp</th><th>Mutert topp</th><th>Δbp / kodoner</th><th>150 bp kontroll</th><th>TKD-ratio</th><th>Validering</th></tr>"
             f"<tr><td>{wt_text}</td>"
             f"<td>{mut_text}</td>"
+            f"<td>{distance_text}</td>"
             f"<td>{digest_text}</td>"
             f"<td><strong>{ratio_str}</strong><br><span class='small'>Mut/WT: {float(e.get('ratio_numerator_area', 0.0)):,.0f} / {float(e.get('ratio_denominator_area', 0.0)):,.0f}<br>Positiv grense > {positive_ratio:.2f}</span></td>"
             f"<td>{validation_text}</td></tr></table></div>"
@@ -1213,12 +1272,13 @@ def _build_flt3_summary_table(e: dict) -> str:
 
     if assay == "NPM1":
         label = "Positiv" if ratio >= positive_ratio else "Negativ" if mut_main is None else "Manuell vurdering"
+        distance_text = _flt3_distance_summary_span(e, peaks)
         return (
             "<div style='margin-top:10px; margin-bottom:24px;'>"
             "<table style='width:100%; border:1px solid #e2e8f0; table-layout:fixed;'>"
-            "<tr><th>Villtype</th><th>Mutert</th><th>Ratio</th><th>Validering</th></tr>"
+            "<tr><th>Villtype</th><th>Mutert</th><th>Δbp / kodoner</th><th>Ratio</th><th>Validering</th></tr>"
             f"<tr><td>{_peak_text(wt_main)}</td><td>{_format_peak_list(mut_rows, max_peaks=4)}</td>"
-            f"<td><strong>{ratio_str}</strong></td><td><strong>{label}</strong></td></tr></table></div>"
+            f"<td>{distance_text}</td><td><strong>{ratio_str}</strong></td><td><strong>{label}</strong></td></tr></table></div>"
         )
 
     return ""
@@ -1380,8 +1440,7 @@ def _render_assay_block(
     """Renders a single assay block with plots for each file."""
     display_name = assay_name
     reference_assay = assay_name
-    if assay_name == "FLT3-ITD-ratio":
-        display_name = "FLT3-ITD-ratio"
+    if assay_name.startswith("FLT3-ITD"):
         reference_assay = "FLT3-ITD"
 
     html_lines.append("<div class='assay-block'>")
