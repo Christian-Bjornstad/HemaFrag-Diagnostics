@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from config import APP_SETTINGS
-from fraggler.fraggler import print_green
+from fraggler.fraggler import print_green, print_warning
 from core.analyses.flt3.tracking_dashboard import refresh_flt3_tracking_dashboard
 from core.html_reports import extract_dit_from_name
 from core.qc.qc_markers import (
@@ -27,7 +27,6 @@ from core.tracking_workbook_io import (
 
 FLT3_TRACKING_FILENAME = "FLT3_Tracking.xlsx"
 FLT3_NPM1_QC_TRACKER_FILENAME = FLT3_TRACKING_FILENAME
-GLOBAL_FLT3_TRACKING_PATH = Path("/Volumes/T7 Shield/HemaFrag_FLT3_All_Runs.xlsx")
 
 RUN_SHEET_COLUMNS = [
     "Month",
@@ -492,19 +491,31 @@ def update_flt3_npm1_qc_tracker_workbook(
     update_flt3_npm1_qc_tracker(excel_path, runs_df, peaks_df)
 
 
-def resolve_global_flt3_tracking_path() -> Path:
+def resolve_global_flt3_tracking_path() -> Path | None:
     batch_settings = APP_SETTINGS.get("analyses", {}).get("flt3", {}).get("batch", {})
     configured = str(batch_settings.get("global_tracking_excel_path") or "").strip()
     if configured:
         return Path(configured).expanduser()
-    return GLOBAL_FLT3_TRACKING_PATH
+    return None
 
 
 def update_global_flt3_tracking_workbook(entries: list[dict]) -> Path | None:
     if not entries:
         return None
     path = resolve_global_flt3_tracking_path()
-    update_flt3_npm1_qc_tracker_workbook(path, entries)
+    if path is None:
+        print_warning(
+            "[TRACKING] FLT3 master workbook is disabled. Set 'Master Tracking Excel File' in FLT3 Settings to enable it."
+        )
+        return None
+    try:
+        update_flt3_npm1_qc_tracker_workbook(path, entries)
+    except Exception as exc:
+        print_warning(
+            f"[TRACKING] Could not update optional FLT3 master workbook {path}: {exc}. "
+            "The local run workbook and reports were kept."
+        )
+        return None
     return path
 
 

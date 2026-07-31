@@ -49,6 +49,15 @@ def test_strict_rust_ladder_disables_flt3_template_rescue(monkeypatch):
     assert not pipeline._should_attempt_flt3_template_rescue(fsa, "FLT3-D835", None)
 
 
+def test_rust_flt3_avoids_nested_process_pool(monkeypatch):
+    from config import APP_SETTINGS
+    from core.analyses.flt3 import pipeline
+
+    monkeypatch.setitem(APP_SETTINGS.setdefault("engine", {}), "use_rust", True)
+
+    assert not pipeline._should_use_multiprocessing()
+
+
 def test_strict_rust_ladder_skips_python_fit_in_rust_bridge(monkeypatch):
     """Under HEMAFRAG_STRICT_RUST_LADDER=1, _apply_rust_result_to_fsa
     must NOT fall back to fit_size_standard_to_ladder, even if the Rust

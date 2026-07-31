@@ -21,7 +21,7 @@ from core.analyses.clonality.interpretation_units import (
     CHANNEL_ML_COLUMNS,
 )
 from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
-from fraggler.fraggler import print_green
+from fraggler.fraggler import print_green, print_warning
 from core.analyses.clonality.tracking_dashboard import refresh_clonality_tracking_dashboard
 from core.html_reports import extract_dit_from_name
 from core.qc.qc_markers import (
@@ -45,7 +45,6 @@ from core.utils import strip_stage_prefix
 import threading
 
 CLONALITY_TRACKING_FILENAME = "Clonality_Tracking.xlsx"
-GLOBAL_CLONALITY_TRACKING_PATH = Path("/Volumes/T7 Shield/HemaFrag_Clonality_All_Runs.xlsx")
 _clonality_excel_lock = threading.Lock()
 CONTROL_IDS = {"PK", "PK1", "PK2", "NK", "RK"}
 TRACKING_IDENTITY_SALT_ENV = "FRAGGLER_TRACKING_IDENTITY_SALT"
@@ -716,19 +715,31 @@ def _split_run_frames(runs: pd.DataFrame, *, run_columns: list[str] | None = Non
     return patient_runs, control_runs
 
 
-def resolve_global_clonality_tracking_path() -> Path:
+def resolve_global_clonality_tracking_path() -> Path | None:
     batch_settings = APP_SETTINGS.get("analyses", {}).get("clonality", {}).get("batch", {})
     configured = str(batch_settings.get("global_tracking_excel_path") or "").strip()
     if configured:
         return Path(configured).expanduser()
-    return GLOBAL_CLONALITY_TRACKING_PATH
+    return None
 
 
 def update_global_clonality_tracking_workbook(entries: list[dict]) -> Path | None:
     if not entries:
         return None
     path = resolve_global_clonality_tracking_path()
-    update_clonality_tracking_workbook(path, entries)
+    if path is None:
+        print_warning(
+            "[TRACKING] Clonality master workbook is disabled. Set 'Master Tracking Excel File' in Clonality Settings to enable it."
+        )
+        return None
+    try:
+        update_clonality_tracking_workbook(path, entries)
+    except Exception as exc:
+        print_warning(
+            f"[TRACKING] Could not update optional clonality master workbook {path}: {exc}. "
+            "The local run workbook and reports were kept."
+        )
+        return None
     return path
 
 

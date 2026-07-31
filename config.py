@@ -99,7 +99,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
-                "global_tracking_excel_path": "/Volumes/T7 Shield/HemaFrag_Clonality_All_Runs.xlsx",
+                # Optional shared/master workbook. Blank disables global updates
+                # until the operator selects a reachable file in Settings.
+                "global_tracking_excel_path": "",
                 "run_date_filter": "latest",
                 "aggregate_by_patient": True,
                 "patient_id_regex": r"\d{2}OUM\d{5}",
@@ -155,7 +157,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
-                "global_tracking_excel_path": "/Volumes/T7 Shield/HemaFrag_FLT3_All_Runs.xlsx",
+                "global_tracking_excel_path": "",
                 "run_date_filter": "latest",
                 "aggregate_by_patient": True,
                 "patient_id_regex": r"\d{2}OUM\d{5}",
@@ -593,6 +595,11 @@ def _validate_settings(settings: Dict[str, Any]) -> None:
             profile_batch["tracking_excel_path"] = defaults["batch"].get("tracking_excel_path", "")
         if not isinstance(profile_batch.get("global_tracking_excel_path"), str):
             profile_batch["global_tracking_excel_path"] = defaults["batch"].get("global_tracking_excel_path", "")
+        # Older settings shipped with a Mac-only T7 path. On Windows that path
+        # can trigger slow access failures at the end of every patient run.
+        global_tracking_path = str(profile_batch.get("global_tracking_excel_path") or "").strip()
+        if os.name == "nt" and global_tracking_path.replace("\\", "/").startswith("/Volumes/"):
+            profile_batch["global_tracking_excel_path"] = ""
         if profile_batch.get("run_date_filter") not in {"all", "latest"}:
             profile_batch["run_date_filter"] = defaults["batch"].get("run_date_filter", "all")
         if not isinstance(profile_batch.get("patient_id_regex"), str):

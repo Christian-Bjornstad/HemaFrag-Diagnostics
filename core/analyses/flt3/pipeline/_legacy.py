@@ -6,6 +6,7 @@ import os
 import __main__
 from pathlib import Path
 import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -332,6 +333,19 @@ def _scan_files(fsa_dir: Path, mode: str = "all") -> list[Path]:
 
 
 def _should_use_multiprocessing() -> bool:
+    # FLT3 is already parallelised across patient jobs by the batch runner.
+    # Spawning two additional process pools per patient is especially costly on
+    # Windows (fresh Python/Pandas/SciPy imports per child) and dwarfs the
+    # millisecond in-process Rust ladder fit.
+    if os.name == "nt":
+        return False
+    try:
+        from config import APP_SETTINGS
+
+        if APP_SETTINGS.get("engine", {}).get("use_rust", False):
+            return False
+    except Exception:
+        pass
     disabled = os.environ.get("FRAGGLER_DISABLE_MULTIPROCESSING", "").strip().lower()
     if disabled in {"1", "true", "yes", "on"}:
         return False
@@ -7054,10 +7068,14 @@ def run_pipeline(
     """
     Kjor FLT3-pipeline pa alle .fsa-filer i fsa_dir.
     """
+    pipeline_started = time.perf_counter()
     fsa_dir, assay_dir = normalize_pipeline_paths(fsa_dir, base_outdir, assay_folder_name)
 
+    scan_started = time.perf_counter()
     raw_files = _scan_files(fsa_dir, mode=mode)
+    scan_seconds = time.perf_counter() - scan_started
 
+    classification_started = time.perf_counter()
     if _should_use_multiprocessing() and len(raw_files) >= 2:
         from multiprocessing import Pool, cpu_count
         from core.concurrency import (
@@ -7084,6 +7102,7 @@ def run_pipeline(
     else:
         meta_results = [classify_fsa(p) for p in raw_files]
     classified = [(p, m) for p, m in zip(raw_files, meta_results) if m is not None]
+    classification_seconds = time.perf_counter() - classification_started
 
     if not classified:
         return [] if return_entries else None
@@ -7095,6 +7114,7 @@ def run_pipeline(
     sorted_groups = sorted(groups.items())
     candidates_list = [c for _, c in sorted_groups]
 
+    selection_started = time.perf_counter()
     if _should_use_multiprocessing() and len(candidates_list) >= 2:
         from multiprocessing import Pool, cpu_count
         from core.concurrency import (
@@ -7121,6 +7141,7 @@ def run_pipeline(
             results = [_select_best_entry(c) for c in candidates_list]
     else:
         results = [_select_best_entry(c) for c in candidates_list]
+    selection_seconds = time.perf_counter() - selection_started
 
     entries = []
     for i, entry in enumerate(results):
@@ -7148,25 +7169,41 @@ def run_pipeline(
             f"{review_bundle['cases_path']} for Ladder Editor."
         )
 
+    output_started = time.perf_counter()
     _calculate_ratios(entries)
     generate_flt3_peak_report(entries, assay_dir)
     generate_flt3_bp_validation_report(entries, assay_dir)
+    output_seconds = time.perf_counter() - output_started
     resolved_tracking_excel_path = tracking_excel_path or resolve_analysis_excel_output_path(
         "flt3",
         assay_dir,
         FLT3_QC_TRENDS_FILENAME,
     )
+    tracking_started = time.perf_counter()
     if update_tracking_workbook:
         update_flt3_npm1_qc_tracker_workbook(
             resolved_tracking_excel_path,
             entries,
         )
         update_global_flt3_tracking_workbook(entries)
+    tracking_seconds = time.perf_counter() - tracking_started
 
-    return finalize_pipeline_run(
+    report_started = time.perf_counter()
+    result = finalize_pipeline_run(
         entries,
         assay_dir,
         return_entries=return_entries,
         make_dit_reports=make_dit_reports,
         mode=mode,
     )
+    report_seconds = time.perf_counter() - report_started
+    total_seconds = time.perf_counter() - pipeline_started
+    print_green(
+        "[FLT3 PERF] "
+        f"files={len(raw_files)} groups={len(candidates_list)} entries={len(entries)} "
+        f"scan={scan_seconds:.2f}s classify={classification_seconds:.2f}s "
+        f"selection={selection_seconds:.2f}s outputs={output_seconds:.2f}s "
+        f"tracking={tracking_seconds:.2f}s html={report_seconds:.2f}s "
+        f"total={total_seconds:.2f}s"
+    )
+    return result
