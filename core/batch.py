@@ -309,8 +309,29 @@ def generate_jobs(
         log(f"[WARN] No folders with .fsa data found.")
         return []
 
-        
     jobs = []
+
+    # General analysis is intentionally identifier-free.  Treat every selected
+    # FSA as one report job instead of applying patient/control filename rules;
+    # otherwise alias-only files become separate concurrent jobs that overwrite
+    # the same General HTML output (and PK/RK/NK-like aliases can be misrouted
+    # through the clonality QC path).
+    if active_analysis == "general":
+        all_fsa = sorted(set(find_all_fsa_files(folders_to_scan, folder_files)))
+        if not all_fsa:
+            log("[WARN] No usable .fsa files found for General analysis.")
+            return []
+        jobs.append(
+            {
+                "name": "GENERAL",
+                "type": "pipeline",
+                "path": None,
+                "files": all_fsa,
+                "_scan_summary": scan_summary,
+            }
+        )
+        log(f"[INFO] General analysis grouped {len(all_fsa)} files into one report job.")
+        return jobs
     
     if aggregate_patients:
         all_fsa = find_all_fsa_files(folders_to_scan, folder_files)
@@ -450,7 +471,7 @@ def run_batch_jobs(
     stream_aggregated_dit = (
         aggregate_dit_reports
         and not has_qc_report_jobs
-        and not (active_analysis == "clonality" and ladder_review_gate_enabled)
+        and not (active_analysis in {"clonality", "flt3"} and ladder_review_gate_enabled)
         and _can_stream_aggregated_dit_reports(jobs, patient_regex)
     )
     defer_dit_html_reports = defer_tracking_workbook_refresh if defer_dit_html_reports is None else bool(defer_dit_html_reports)
@@ -1010,7 +1031,7 @@ def run_batch_jobs(
     block_dit_for_ladder_review = False
 
     if (
-        active_analysis == "clonality"
+        active_analysis in {"clonality", "flt3"}
         and ladder_review_gate_enabled
         and dit_report_entries
         and agg_outdir is not None

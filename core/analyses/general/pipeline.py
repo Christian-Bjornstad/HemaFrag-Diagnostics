@@ -33,6 +33,69 @@ def _load_fsa(fsa_path: Path, meta: dict):
     )
 
 
+def _build_ladder_review_only_entry(fsa_path: Path, fsa, classified: dict) -> dict:
+    trace_channels = list(classified.get("trace_channels") or ["DATA1"])
+    primary_peak_channel = str(classified.get("primary_peak_channel") or trace_channels[0])
+    expected_steps = list(
+        map(float, np.asarray(getattr(fsa, "expected_ladder_steps", []), dtype=float))
+    )
+    entry = {
+        "analysis": "general",
+        "analysis_status": "ladder_review_only",
+        "result_status": "ladder_review_required",
+        "assay": classified.get("assay", "GENERAL"),
+        "group": classified.get("group", "sample"),
+        "fsa": fsa,
+        "original_file_path": str(Path(getattr(fsa, "file", fsa_path) or fsa_path).resolve()),
+        "trace_channels": trace_channels,
+        "peak_channels": list(classified.get("peak_channels") or trace_channels),
+        "primary_peak_channel": primary_peak_channel,
+        "sample_channel": classified.get("sample_channel") or primary_peak_channel,
+        "bp_min": float(classified.get("bp_min", DEFAULT_BP_MIN)),
+        "bp_max": float(classified.get("bp_max", DEFAULT_BP_MAX)),
+        "ladder": classified.get("ladder") or ROX_LADDER,
+        "internal_ladder": classified.get("ladder") or ROX_LADDER,
+        "size_standard_channel": str(
+            getattr(fsa, "size_standard_channel", "")
+            or classified.get("size_standard_channel")
+            or ""
+        ),
+        "general_profile": dict(classified.get("general_profile") or {}),
+        "ladder_qc_status": "review_required",
+        "ladder_r2": np.nan,
+        "ladder_fit_strategy": "rust_rejected_review",
+        "ladder_search_tier": str(getattr(fsa, "rust_ladder_fit_tier", "") or ""),
+        "ladder_missing_expected_steps": expected_steps,
+        "ladder_fit_note": str(getattr(fsa, "ladder_fit_note", "") or ""),
+        "ladder_review_required": True,
+        "ladder_review_reason": str(getattr(fsa, "rust_review_primary_reason", "") or ""),
+        "ladder_review_reason_codes": list(getattr(fsa, "rust_review_reason_codes", []) or []),
+        "ladder_review_summary": str(getattr(fsa, "rust_review_summary", "") or ""),
+        "ladder_selected_baseline_like_anchor_count": int(
+            getattr(fsa, "rust_selected_baseline_like_anchor_count", 0) or 0
+        ),
+        "ladder_selected_cleaner_neighbor_count": int(
+            getattr(fsa, "rust_selected_cleaner_neighbor_count", 0) or 0
+        ),
+        "ladder_selected_strong_baseline_anchor_count": int(
+            getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0) or 0
+        ),
+        "ladder_expected_step_count": len(expected_steps),
+        "ladder_fitted_step_count": 0,
+        "n_ladder_steps": 0,
+        "n_size_standard_peaks": 0,
+        "peaks_by_channel": {
+            channel: pd.DataFrame(columns=["basepairs", "peaks", "area", "keep"])
+            for channel in trace_channels
+        },
+        "source_run_dir": classified.get("source_run_dir") or fsa_path.parent.name,
+        "file_name": fsa.file_name,
+    }
+    from core.analysis_provenance import attach_analysis_provenance
+
+    return attach_analysis_provenance(entry)
+
+
 def _analyze_files(fsa_files: list[Path]) -> tuple[list[dict], int]:
     entries: list[dict] = []
     skipped = 0
@@ -46,6 +109,14 @@ def _analyze_files(fsa_files: list[Path]) -> tuple[list[dict], int]:
         fsa = _load_fsa(fsa_path, classified)
         if fsa is None:
             skipped += 1
+            continue
+
+        if str(getattr(fsa, "analysis_status", "") or "") == "ladder_review_only":
+            print_warning(
+                f"[GENERAL] Keeping {fsa_path.name} for Ladder Editor; "
+                "the HTML report will show it as review required."
+            )
+            entries.append(_build_ladder_review_only_entry(fsa_path, fsa, classified))
             continue
 
         trace_channels = list(classified.get("trace_channels") or ["DATA1"])

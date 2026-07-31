@@ -189,8 +189,29 @@ def build_general_html_report(entries: list[dict], assay_outdir: Path, run_label
             f"Primærkanal: {escape(str(entry.get('primary_peak_channel', '')))}"
             "</p>"
         )
-        fragment = build_interactive_peak_plot_for_entry(entry)
-        html_lines.append(fragment if fragment else "<p class='small'><em>Ingen data å vise.</em></p>")
+        if entry.get("analysis_status") == "ladder_review_only":
+            reason = str(
+                entry.get("ladder_review_summary")
+                or entry.get("ladder_review_reason")
+                or entry.get("ladder_fit_note")
+                or "Automatic ladder fitting was rejected."
+            )
+            html_lines.append(
+                "<div class='status-badge warning' style='display:block;padding:12px;'>"
+                "<strong>Ladder review required.</strong> "
+                f"{escape(reason)} No sample peaks or result were reported. "
+                "Open the original FSA file in Ladder Editor, save the mapping, and rerun."
+                "</div>"
+            )
+        else:
+            try:
+                fragment = build_interactive_peak_plot_for_entry(entry)
+                html_lines.append(fragment if fragment else "<p class='small'><em>Ingen data å vise.</em></p>")
+            except Exception as exc:
+                html_lines.append(
+                    "<p class='small'><em>Kunne ikke lage plott: "
+                    f"{escape(str(exc))}</em></p>"
+                )
         html_lines.append(_comment_block(fsa.file_name))
         html_lines.append("</div>")
 

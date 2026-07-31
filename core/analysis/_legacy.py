@@ -3996,6 +3996,66 @@ def _try_apply_saved_ladder_adjustment(fsa: FsaFile, adjustment: dict | None, la
         return None
 
 
+def _mark_rust_ladder_rejection_for_review(fsa: FsaFile, label: str) -> FsaFile:
+    """Keep a Rust-rejected file available for manual ladder review.
+
+    A rejected Rust result deliberately has no usable base-pair mapping.  The
+    raw ``FsaFile`` is nevertheless valuable to the ladder editor, and the
+    diagnostics already attached by ``run_ladder_fit_hybrid`` explain why the
+    automatic anchors were rejected.  Returning this explicit scaffold avoids
+    silently dropping the source file or accidentally analysing sample peaks
+    against an unsafe ladder fit.
+    """
+    expected = np.asarray(
+        getattr(fsa, "expected_ladder_steps", getattr(fsa, "ladder_steps", [])),
+        dtype=float,
+    ).copy()
+    reason_codes = [
+        str(code)
+        for code in (getattr(fsa, "rust_review_reason_codes", []) or [])
+        if str(code)
+    ]
+    rejection_code = "rust_ladder_fit_rejected"
+    if rejection_code not in reason_codes:
+        reason_codes.append(rejection_code)
+
+    primary_reason = str(getattr(fsa, "rust_review_primary_reason", "") or "").strip()
+    if not primary_reason or primary_reason == "Rust ladder fit looks internally consistent.":
+        primary_reason = (
+            "Rust ladder fit was rejected by the safety checks; automatic sizing "
+            "was not used."
+        )
+    review_summary = str(getattr(fsa, "rust_review_summary", "") or "").strip()
+    if not review_summary or review_summary == "Rust ladder fit looks internally consistent.":
+        review_summary = primary_reason
+
+    # Preserve the expected ladder separately, but expose zero fitted steps.
+    # Downstream pipelines use this state to create a review-only entry and must
+    # not perform patient/control peak interpretation before manual correction.
+    fsa.expected_ladder_steps = expected
+    fsa.ladder_steps = np.asarray([], dtype=float)
+    fsa.best_size_standard = np.asarray([], dtype=float)
+    fsa.fitted_to_model = False
+    fsa.sample_data_with_basepairs = None
+    fsa.ladder_model = None
+    fsa.ladder_fit_strategy = "rust_rejected_review"
+    fsa.ladder_qc_status = "review_required"
+    fsa.ladder_review_required = True
+    fsa.ladder_missing_expected_steps = [float(value) for value in expected.tolist()]
+    fsa.ladder_expected_step_count = int(expected.size)
+    fsa.ladder_fitted_step_count = 0
+    fsa.ladder_fit_note = (
+        f"{label} automatic ladder fit was rejected by safety checks. "
+        "No sample peaks or clinical result were reported; open this file in "
+        "Ladder Editor and save a reviewed mapping."
+    )
+    fsa.rust_review_reason_codes = reason_codes
+    fsa.rust_review_primary_reason = primary_reason
+    fsa.rust_review_summary = review_summary
+    fsa.analysis_status = "ladder_review_only"
+    return fsa
+
+
 def analyse_fsa_liz(
     fsa_path: Path,
     sample_channel: str,
@@ -4074,7 +4134,7 @@ def analyse_fsa_liz(
                 "Rust-owned ladder mode will report an explicit ladder failure for review instead of silently replacing its anchors with Python. "
                 "Set HEMAFRAG_ENABLE_PYTHON_LADDER_FALLBACK=1 only for emergency compatibility."
             )
-            return None
+            return _mark_rust_ladder_rejection_for_review(base_fsa, "LIZ")
         print_warning(f"[LIZ] Rust Engine failed or returned None for {fsa_path.name}. Falling back to Python ladder fitting.")
 
     base_fsa = find_size_standard_peaks(base_fsa)
@@ -4429,14 +4489,14 @@ def analyse_fsa_rox(
             print_warning(
                 f"[ROX] FLT3 GS500ROX is Rust-only; Python ladder fitting fallback is disabled for {fsa_path.name}."
             )
-            return None
+            return _mark_rust_ladder_rejection_for_review(base_fsa, "GS500ROX")
         if rust_owned_ladder_enabled():
             print_warning(
                 f"[ROX] Rust could not provide a hydratable ladder result for {fsa_path.name}. "
                 "Rust-owned ladder mode will report an explicit ladder failure for review instead of silently replacing its anchors with Python. "
                 "Set HEMAFRAG_ENABLE_PYTHON_LADDER_FALLBACK=1 only for emergency compatibility."
             )
-            return None
+            return _mark_rust_ladder_rejection_for_review(base_fsa, "ROX")
         print_warning(f"[ROX] Rust Engine failed or returned None for {fsa_path.name}. Falling back to Python ladder fitting.")
 
     base_fsa = find_size_standard_peaks(base_fsa)

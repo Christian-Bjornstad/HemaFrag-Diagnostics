@@ -3894,6 +3894,9 @@ def _analyse_fsa_candidate(
         )
         if fsa is not None:
             fsa.analysis_id = "flt3"
+            if str(getattr(fsa, "analysis_status", "") or "") == "ladder_review_only":
+                setattr(fsa, "_flt3_sizing_method", "rust_rejected_review")
+                return fsa
             setattr(fsa, "_flt3_sizing_method", "rust_liz500_250")
             setattr(
                 fsa,
@@ -3909,6 +3912,10 @@ def _analyse_fsa_candidate(
         ladder_fit_profile=LADDER_FIT_PROFILE_FLT3_GS500ROX,
     )
     if fsa is not None:
+        if str(getattr(fsa, "analysis_status", "") or "") == "ladder_review_only":
+            fsa.analysis_id = "flt3"
+            setattr(fsa, "_flt3_sizing_method", "rust_rejected_review")
+            return fsa
         short_trace_missing_steps, trace_last_index = _flt3_short_trace_missing_steps(
             fsa,
             assay,
@@ -5581,6 +5588,123 @@ def _apply_gs500rox_start_family_prior_if_review_band(fsa: FsaFile) -> FsaFile:
     return remapped
 
 
+def _build_ladder_review_only_entry(fsa_path: Path, meta: dict, fsa: FsaFile) -> dict:
+    """Retain a rejected FLT3 ladder without producing a mutation result."""
+    size_standard_mode = flt3_size_standard_mode()
+    expected_steps = list(
+        map(float, np.asarray(getattr(fsa, "expected_ladder_steps", []), dtype=float))
+    )
+    peak_columns = [
+        "peak_id",
+        "basepairs",
+        "peaks",
+        "area",
+        "label",
+        "keep",
+        "source_channel",
+    ]
+    peaks = pd.DataFrame(columns=peak_columns)
+    trace_channels = list(meta.get("trace_channels") or [meta["primary_peak_channel"]])
+    raw_ymax = 1000.0
+    for channel in trace_channels:
+        try:
+            trace = np.asarray(fsa.fsa[channel], dtype=float)
+            if trace.size and np.any(np.isfinite(trace)):
+                raw_ymax = max(raw_ymax, float(np.nanmax(trace)) * 1.1)
+        except Exception:
+            continue
+
+    entry = {
+        "analysis": "flt3",
+        "analysis_status": "ladder_review_only",
+        "result_status": "ladder_review_required",
+        "fsa": fsa,
+        "file_name": fsa.file_name,
+        "original_file_path": str(Path(getattr(fsa, "file", fsa_path) or fsa_path).resolve()),
+        "peaks_by_channel": {meta["primary_peak_channel"]: peaks},
+        "trace_channels": trace_channels,
+        "primary_peak_channel": meta["primary_peak_channel"],
+        "ymax": raw_ymax,
+        "assay": meta["assay"],
+        "analysis_type": meta.get("analysis_type"),
+        "parallel": meta.get("parallel"),
+        "well_id": meta.get("well_id"),
+        "specimen_id": meta.get("specimen_id"),
+        "selection_key": meta.get("selection_key"),
+        "group": meta.get("group", "sample"),
+        "ladder": str(getattr(fsa, "ladder", "") or size_standard_mode["internal_ladder"]),
+        "size_standard": str(size_standard_mode["size_standard"]),
+        "internal_ladder": str(size_standard_mode["internal_ladder"]),
+        "size_standard_channel": str(
+            getattr(fsa, "rust_size_standard_channel", None)
+            or getattr(fsa, "size_standard_channel", None)
+            or size_standard_mode["size_standard_channel"]
+        ),
+        "bp_min": meta["bp_min"],
+        "bp_max": meta["bp_max"],
+        "dit": extract_dit_from_name(fsa.file_name),
+        "ladder_qc_status": "review_required",
+        "ladder_r2": np.nan,
+        "n_ladder_steps": 0,
+        "n_size_standard_peaks": 0,
+        "ladder_fit_strategy": "rust_rejected_review",
+        "ladder_search_tier": str(getattr(fsa, "rust_ladder_fit_tier", "") or ""),
+        "ladder_missing_expected_steps": expected_steps,
+        "ladder_fit_note": str(getattr(fsa, "ladder_fit_note", "") or ""),
+        "ladder_review_required": True,
+        "ladder_review_reason": str(getattr(fsa, "rust_review_primary_reason", "") or ""),
+        "ladder_review_reason_codes": list(getattr(fsa, "rust_review_reason_codes", []) or []),
+        "ladder_review_summary": str(getattr(fsa, "rust_review_summary", "") or ""),
+        "ladder_selected_baseline_like_anchor_count": int(
+            getattr(fsa, "rust_selected_baseline_like_anchor_count", 0) or 0
+        ),
+        "ladder_selected_cleaner_neighbor_count": int(
+            getattr(fsa, "rust_selected_cleaner_neighbor_count", 0) or 0
+        ),
+        "ladder_selected_strong_baseline_anchor_count": int(
+            getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0) or 0
+        ),
+        "ladder_expected_step_count": len(expected_steps),
+        "ladder_fitted_step_count": 0,
+        "injection_time": int(meta.get("injection_time", 0) or 0),
+        "selected_injection": f"{int(meta.get('injection_time', 0) or 0)}s",
+        "selected_injection_time": int(meta.get("injection_time", 0) or 0),
+        "preferred_injection_time": _preferred_injection_time(meta),
+        "protocol_injection_time": meta.get("protocol_injection_time", meta.get("injection_time", 0)),
+        "source_run_dir": meta.get("source_run_dir", ""),
+        "run_name": meta.get("run_name", ""),
+        "run_date": meta.get("run_date", ""),
+        "run_time": meta.get("run_time", ""),
+        "injection_protocol": meta.get("injection_protocol", ""),
+        "selection_reason": "Automatic ladder rejected; manual ladder review required",
+        "alternate_injections": [],
+        "alternate_injections_summary": "",
+        "sizing_method": "rust_rejected_review",
+        "manual_ratio_selection": _default_manual_ratio_selection(),
+        "ratio_mode": "not_available_ladder_review",
+        "manual_ratio_selection_valid": False,
+        "manual_ratio_selection_reason": "Ladder review required before peak selection",
+        "selected_wt_peak_id": None,
+        "selected_wt_peak_ids": [],
+        "selected_mutant_peak_ids": [],
+        "selected_wt_bp": np.nan,
+        "selected_wt_bps": [],
+        "selected_mutant_bps": [],
+        "selected_wt_area": 0.0,
+        "selected_wt_areas": [],
+        "selected_mutant_area": 0.0,
+        "selected_mutant_areas": [],
+        "selected_wt_channel": None,
+        "selected_wt_channels": [],
+        "selected_mutant_channels": [],
+        "peak_qc_pass": False,
+        "peak_qc_status": "ladder_review_required",
+    }
+    from core.analysis_provenance import attach_analysis_provenance
+
+    return attach_analysis_provenance(entry)
+
+
 def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
     size_standard_mode = flt3_size_standard_mode()
     ladder_only_qc = _flt3_ladder_only_qc_mode()
@@ -5592,6 +5716,13 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
     )
     if fsa is None:
         return None
+
+    if str(getattr(fsa, "analysis_status", "") or "") == "ladder_review_only":
+        print_warning(
+            f"[LADDER_REVIEW] Keeping {fsa_path.name} for Ladder Editor; "
+            "FLT3/NPM1 peaks were not interpreted."
+        )
+        return _build_ladder_review_only_entry(fsa_path, meta, fsa)
 
     _apply_bp_offset(fsa, meta["assay"])
     peak_channels = meta.get("peak_channels", [meta["primary_peak_channel"]])
@@ -6162,6 +6293,15 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
 def _calculate_ratios(entries: list[dict]) -> None:
     """Calculate FLT3 mutant ratios and store explicit numerator/denominator fields."""
     for entry in entries:
+        if entry.get("analysis_status") == "ladder_review_only":
+            entry["ratio_mode"] = "not_available_ladder_review"
+            entry["manual_ratio_selection_valid"] = False
+            entry["manual_ratio_selection_reason"] = "Ladder review required before peak selection"
+            entry["ratio_numerator_area"] = 0.0
+            entry["ratio_denominator_area"] = 0.0
+            entry["ratio"] = 0.0
+            entry["mutant_fraction"] = 0.0
+            continue
         resolved = _resolve_flt3_ratio_selection(entry)
         entry["manual_ratio_selection"] = resolved.get("manual_ratio_selection", _default_manual_ratio_selection())
         entry["ratio_mode"] = resolved.get("ratio_mode", "auto")
@@ -6267,6 +6407,8 @@ def _summarize_detected_peaks(entry: dict) -> dict:
 
 
 def _interpret_entry(entry: dict) -> str:
+    if entry.get("analysis_status") == "ladder_review_only":
+        return "Ingen resultat - ladder review kreves"
     assay = entry["assay"]
     ratio = float(entry.get("ratio", 0.0))
     peak_summary = _summarize_detected_peaks(entry)
@@ -6992,6 +7134,19 @@ def run_pipeline(
 
     if not entries:
         return [] if return_entries else None
+
+    if any(entry.get("ladder_review_required") for entry in entries):
+        from core.analyses.clonality.ladder_review_gate import write_ladder_review_gate
+
+        review_bundle = write_ladder_review_gate(
+            entries,
+            assay_dir / "ladder_review_gate",
+            source="flt3_pipeline",
+        )
+        print_warning(
+            f"[LADDER_REVIEW] {review_bundle['review_case_count']} file(s) written to "
+            f"{review_bundle['cases_path']} for Ladder Editor."
+        )
 
     _calculate_ratios(entries)
     generate_flt3_peak_report(entries, assay_dir)

@@ -83,6 +83,10 @@ def collect_ladder_review_cases(entries: list[dict[str, Any]]) -> list[dict[str,
         else:
             reason_codes_text = str(reason_codes or "")
 
+        fitted_count = entry.get("ladder_fitted_step_count")
+        if fitted_count is None:
+            fitted_count = entry.get("n_ladder_steps")
+
         rows.append(
             {
                 "full_path": _entry_file_path(entry),
@@ -99,7 +103,7 @@ def collect_ladder_review_cases(entries: list[dict[str, Any]]) -> list[dict[str,
                 "linear_mean": _as_float_text(entry.get("ladder_linear_mean_residual_bp")),
                 "linear_r2": _as_float_text(entry.get("ladder_linear_r2")),
                 "expected_count": str(entry.get("ladder_expected_step_count") or ""),
-                "fitted_count": str(entry.get("ladder_fitted_step_count") or entry.get("n_ladder_steps") or ""),
+                "fitted_count": "" if fitted_count is None else str(fitted_count),
                 "fit_strategy": str(entry.get("ladder_fit_strategy") or ""),
                 "suggested_action": "open_ladder_review",
                 "label": "",

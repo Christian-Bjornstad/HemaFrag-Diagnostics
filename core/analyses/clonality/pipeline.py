@@ -524,6 +524,101 @@ def _build_tracking_marker_results(
     return results, rust_candidates, stats
 
 
+def _build_ladder_review_only_entry(
+    fsa_path: Path,
+    fsa,
+    *,
+    assay: str,
+    group: str,
+    ladder: str,
+    trace_channels: list[str],
+    peak_channels: list[str],
+    primary_peak_channel: str,
+    bp_min: float,
+    bp_max: float,
+) -> dict:
+    """Create a persistent entry without interpreting an unsafe ladder fit."""
+    expected_steps = list(
+        map(float, np.asarray(getattr(fsa, "expected_ladder_steps", []), dtype=float))
+    )
+    peaks_by_channel = {
+        channel: pd.DataFrame(columns=["basepairs", "peaks", "area", "keep"])
+        for channel in peak_channels
+    }
+    raw_ymax = 1000.0
+    for channel in trace_channels:
+        try:
+            trace = np.asarray(fsa.fsa[channel], dtype=float)
+            if trace.size and np.any(np.isfinite(trace)):
+                raw_ymax = max(raw_ymax, float(np.nanmax(trace)) * 1.1)
+        except Exception:
+            continue
+
+    entry = {
+        "analysis": "clonality",
+        "analysis_status": "ladder_review_only",
+        "fsa": fsa,
+        "file_name": fsa.file_name,
+        "original_file_path": str(
+            resolve_original_input_path(getattr(fsa, "file", None))
+            or getattr(fsa, "file", "")
+            or fsa_path
+        ),
+        "source_run_dir": resolve_source_run_dir({"fsa": fsa}),
+        "peaks_by_channel": peaks_by_channel,
+        "tracking_marker_results": {},
+        "rust_tracking_marker_candidates": {},
+        "rust_tracking_marker_stats": {},
+        "rust_tracking_marker_comparison": {},
+        "trace_channels": trace_channels,
+        "primary_peak_channel": primary_peak_channel,
+        "ymax": raw_ymax,
+        "assay": assay,
+        "group": group,
+        "ladder": ladder,
+        "bp_min": bp_min,
+        "bp_max": bp_max,
+        "dit": extract_dit_from_name(fsa.file_name),
+        "ladder_qc_status": "review_required",
+        "ladder_r2": np.nan,
+        "ladder_mean_residual_bp": np.nan,
+        "ladder_max_residual_bp": np.nan,
+        "ladder_linear_r2": np.nan,
+        "ladder_quadratic_r2": np.nan,
+        "ladder_linear_mean_residual_bp": np.nan,
+        "ladder_linear_max_residual_bp": np.nan,
+        "ladder_quadratic_mean_residual_bp": np.nan,
+        "ladder_quadratic_max_residual_bp": np.nan,
+        "ladder_max_curvature": np.nan,
+        "n_ladder_steps": 0,
+        "n_size_standard_peaks": 0,
+        "ladder_fit_strategy": "rust_rejected_review",
+        "ladder_search_tier": str(getattr(fsa, "rust_ladder_fit_tier", "") or ""),
+        "ladder_missing_expected_steps": expected_steps,
+        "ladder_fit_note": str(getattr(fsa, "ladder_fit_note", "") or ""),
+        "ladder_review_required": True,
+        "ladder_review_reason": str(getattr(fsa, "rust_review_primary_reason", "") or ""),
+        "ladder_review_reason_codes": list(getattr(fsa, "rust_review_reason_codes", []) or []),
+        "ladder_review_summary": str(getattr(fsa, "rust_review_summary", "") or ""),
+        "ladder_selected_baseline_like_anchor_count": int(
+            getattr(fsa, "rust_selected_baseline_like_anchor_count", 0) or 0
+        ),
+        "ladder_selected_cleaner_neighbor_count": int(
+            getattr(fsa, "rust_selected_cleaner_neighbor_count", 0) or 0
+        ),
+        "ladder_selected_strong_baseline_anchor_count": int(
+            getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0) or 0
+        ),
+        "ladder_expected_step_count": len(expected_steps),
+        "ladder_fitted_step_count": 0,
+        "sl_metrics": None,
+        "result_status": "ladder_review_required",
+    }
+    from core.analysis_provenance import attach_analysis_provenance
+
+    return attach_analysis_provenance(entry)
+
+
 def _analyze_single_file(fsa_path: Path) -> dict | None:
     """Analyze a single FSA file. Returns an entry dict or None if skipped.
 
@@ -568,6 +663,24 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
 
     if fsa is None:
         return None
+
+    if str(getattr(fsa, "analysis_status", "") or "") == "ladder_review_only":
+        print_warning(
+            f"[LADDER_REVIEW] Keeping {fsa_path.name} for Ladder Editor; "
+            "sample peaks were not interpreted."
+        )
+        return _build_ladder_review_only_entry(
+            fsa_path,
+            fsa,
+            assay=assay,
+            group=group,
+            ladder=ladder,
+            trace_channels=trace_channels,
+            peak_channels=peak_channels,
+            primary_peak_channel=primary_peak_channel,
+            bp_min=bp_min,
+            bp_max=bp_max,
+        )
 
     peaks_by_channel: dict[str, pd.DataFrame | None] = {}
     if assay == "SL":
@@ -1021,8 +1134,18 @@ def _analyze_files(
 
 def _attach_batch_context_and_ml(entries: list[dict]) -> list[dict]:
     """Attach same-run patient context before invoking eligible ML models."""
-    enriched = enrich_entries_with_cohort_context(entries)
-    return [attach_ml_prediction_if_enabled(entry) for entry in enriched]
+    regular = [
+        entry for entry in entries
+        if entry.get("analysis_status") != "ladder_review_only"
+    ]
+    enriched_regular = iter(enrich_entries_with_cohort_context(regular))
+    result: list[dict] = []
+    for entry in entries:
+        if entry.get("analysis_status") == "ladder_review_only":
+            result.append(entry)
+        else:
+            result.append(attach_ml_prediction_if_enabled(next(enriched_regular)))
+    return result
 
 
 def run_pipeline(
@@ -1052,6 +1175,19 @@ def run_pipeline(
     if not entries:
         print_warning("Ingen gyldige entries etter analyse – avslutter.")
         return [] if return_entries else None
+
+    if any(entry.get("ladder_review_required") for entry in entries):
+        from core.analyses.clonality.ladder_review_gate import write_ladder_review_gate
+
+        review_bundle = write_ladder_review_gate(
+            entries,
+            assay_dir / "ladder_review_gate",
+            source="clonality_pipeline",
+        )
+        print_warning(
+            f"[LADDER_REVIEW] {review_bundle['review_case_count']} file(s) written to "
+            f"{review_bundle['cases_path']} for Ladder Editor."
+        )
 
     if update_tracking_workbook:
         resolved_tracking_excel_path = tracking_excel_path or resolve_analysis_excel_output_path(
