@@ -1,3 +1,12 @@
+## 2026-08-09 - Plan 15 Optimization, Stability, And App Icon
+
+- Kept the Python/PyQt orchestration and Rust numerical-engine design after reviewing measured hotspots; no additional language or clinical ladder-policy change was justified.
+- Improved fresh source startup median from `4.986 s` to `3.231 s` by lazy-loading scientific/report libraries and removing an unreachable FLT3 validation page from startup.
+- Hardened the legacy Python arPLS path with cached CSC matrices and finite/flat/short-trace handling while preserving the old numerical result. Diagnostic Rust ladder selection, rejection, review, and fallback policy remain unchanged.
+- Centralized source/frozen/platform icon resolution, added the Windows AppUserModelID, fixed portable PyInstaller specs/resources, added Linux desktop metadata, and added a no-new-EXE Windows shortcut creator for the approved Python environment.
+- Verified live Windows source and packaged icons, built/launched the Windows package, checked ZIP integrity and bundled Rust CLI, and installed/imported the unchanged ABI3 wheel under Python `3.14.0`.
+- Verification: Python `561 passed, 3 skipped`; focused safety `86 passed, 1 skipped`; Rust `93 passed, 1 ignored`; native package check passed. Private real-FSA reruns and work-computer visual pinning remain operator checks.
+
 ## 2026-07-27 - Cleanup Triage
 
 - Removed stale cleanup/planning/install docs and Windows batch helpers from git, including old `plans/00-10`, `.hermes/plans`, Py3.14 migration docs, setup docs, `AGENTS.md`, and `memory.md`.

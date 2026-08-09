@@ -7,7 +7,8 @@ import os
 import locale
 from pathlib import Path
 
-from app_meta import APP_VERSION
+from app_meta import APP_NAME, APP_VERSION
+from app_resources import load_application_icon, set_windows_app_user_model_id
 
 
 class _NullTextStream:
@@ -39,8 +40,6 @@ if sys.platform == "linux":
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QIcon
-
 from core.log import log
 
 LEGACY_PANEL_HOST = "localhost"
@@ -140,14 +139,17 @@ def main():
             except locale.Error:
                 pass
 
+    # Windows otherwise groups a source-launched Qt window under the generic
+    # Python interpreter icon.  This identity must be set before QApplication.
+    set_windows_app_user_model_id(log_message=log)
+
     app = QApplication(sys.argv)
-    app.setApplicationName("HemaFrag Diagnostics")
+    app.setApplicationName(APP_NAME)
     app.setOrganizationName("OUS")
     app.setApplicationVersion(APP_VERSION)
     
-    icon_path = _BUNDLE_DIR / "assets" / "app_icon.png"
-    if icon_path.exists():
-        app_icon = QIcon(str(icon_path))
+    app_icon = load_application_icon(bundle_dir=_BUNDLE_DIR, log_message=log)
+    if app_icon is not None:
         app.setWindowIcon(app_icon)
     
     if LEGACY_PANEL_ENABLED:
@@ -157,7 +159,7 @@ def main():
 
     window = MainWindow()
     window.resize(1200, 800)
-    if icon_path.exists():
+    if app_icon is not None:
         window.setWindowIcon(app_icon)
     window.show()
     

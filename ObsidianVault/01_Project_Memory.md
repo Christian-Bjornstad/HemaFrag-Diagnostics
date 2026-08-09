@@ -118,6 +118,10 @@ HemaFrag is now focused on FLT3 work. Clonality is considered parked for a while
 
 ## Current Verification Baseline
 
+- 2026-08-09: Plan 15 retained the Python/PyQt plus Rust/PyO3 architecture. Lazy scientific imports and removal of an unreachable startup page reduced source startup median from `4.986 s` to `3.231 s` without changing diagnostic ladder-selection defaults. The legacy Python arPLS compatibility path now uses cached CSC matrices, preserves its numerical reference result, and handles flat/non-finite/short traces safely.
+- 2026-08-09: Desktop identity/resources are centralized in `app_resources.py`. Windows sets AppUserModelID `no.ous.hemafrag` before Qt; source and packaged launches both showed nonzero window icon handles. Generated PyInstaller specs live below ignored `build/specs/<platform>/`; Windows source installs may use `packaging/create_windows_shortcut.ps1` without distributing a new executable.
+- 2026-08-09: Plan 15 did not modify Rust source. The checked-in `fraggler_kernels-0.1.2-cp310-abi3-win_amd64.whl` installed and imported successfully under Python `3.14.0`, so no wheel rebuild/version bump is required for this release. Full gates: Python `561 passed, 3 skipped`; Rust `93 passed, 1 ignored`; Windows packaged build and launch passed.
+
 - 2026-07-28: Every batch writes an atomic `hemafrag_batch_run_manifest_v1` ledger with absolute recovery path, input/sidecar hashes, patient/QC job membership, stage state, engine/settings provenance, output hashes, and workbook row counts. Ladder review after restart must recover the original manifest cohort and fail finalization when expected total or QC counts differ.
 - 2026-07-28: New manual ladder saves use `hemafrag_ladder_adjustment_v2` with source hash, ladder/channel/assay identity, exact bp/time selections, QC evidence, operator/comment/time/app provenance, and verified-save state. Legacy sidecars remain readable; v2 source, ladder, or channel mismatches are rejected.
 

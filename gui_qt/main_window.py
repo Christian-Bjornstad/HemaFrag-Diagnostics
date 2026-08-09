@@ -5,16 +5,14 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QPushButton, QLabel, QFrame, QComboBox, QScrollArea
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
+from PyQt6.QtGui import QShortcut, QKeySequence
 
 from app_meta import APP_VERSION
 from gui_qt.styles import VIBRANT_PRO_QSS
 from gui_qt.tabs.tab_batch import TabBatch
 from gui_qt.tabs.tab_archive_runner import TabArchiveRunner
-from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
 from gui_qt.tabs.tab_ml_training import TabMlTraining
 from gui_qt.tabs.tab_labeling import TabLabeling
-from gui_qt.tabs.tab_flt3_validation import TabFlt3Validation
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_log import TabLog
 from gui_qt.tabs.tab_about import TabAbout
@@ -176,7 +174,6 @@ class MainWindow(QMainWindow):
         self.tab_run = TabBatch()
         self.tab_ladder = TabLadder()
         self.tab_archive_runner = TabArchiveRunner()
-        self.tab_flt3_validation = TabFlt3Validation()
         # ML Training replaces the standalone Interpretation tab —
         # the chemist trains straight from the sidebar now.
         self.tab_ml_training = TabMlTraining()
@@ -208,7 +205,6 @@ class MainWindow(QMainWindow):
         self.tab_run_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_run))
         self.tab_ladder_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ladder))
         self.tab_archive_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))
-        self.tab_flt3_validation_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_flt3_validation))
         self.tab_ml_training_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ml_training))
         self.tab_labeling_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_labeling))
         self.tab_log_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
@@ -419,7 +415,6 @@ class MainWindow(QMainWindow):
             self.tab_run.set_analysis(new_ana)
             self.tab_ladder.set_analysis(new_ana)
             self.tab_archive_runner.set_analysis(new_ana)
-            self.tab_flt3_validation.set_analysis(new_ana)
 
         # Update Sidebar expansion
         for g in self.groups:
@@ -439,8 +434,6 @@ class MainWindow(QMainWindow):
             self.tab_ladder.set_analysis(analysis_id)
         if changed or getattr(self.tab_archive_runner, "_current_analysis_id", None) != analysis_id:
             self.tab_archive_runner.set_analysis(analysis_id)
-        if changed or getattr(self.tab_flt3_validation, "_current_analysis_id", None) != analysis_id:
-            self.tab_flt3_validation.set_analysis(analysis_id)
 
         analysis_sub_map = self._sub_button_map.get(analysis_id, {})
         group_lookup = {
@@ -463,4 +456,3 @@ class MainWindow(QMainWindow):
             self.tab_run.set_analysis(analysis_id)
             self.tab_ladder.set_analysis(analysis_id)
             self.tab_archive_runner.set_analysis(analysis_id)
-            self.tab_flt3_validation.set_analysis(analysis_id)

@@ -7,6 +7,11 @@
 - Do not broaden GS500ROX thresholds beyond the current residual-only cleanup without annotation support.
 - Compare any remaining true GS500ROX `35/50` start-family failures against visually good rows before implementing a family-aware repair.
 
+## Plan 15 Operator Verification
+
+- Pull the final Plan 15 branch on the Python 3.14 work computer and rerun the private LIZ, ROX, FLT3, and combined reference scenarios; compare counts, selected ladder anchors, review cases, report completeness, and timings with the Plan 13 manifest.
+- Recreate the Windows shortcut with `packaging/create_windows_shortcut.ps1`, then visually verify title-bar, Alt-Tab, taskbar, and newly pinned shortcut icons. Unpin stale shortcuts if Windows retains an old cached icon.
+
 ## Keep Parked
 
 - Clonality ladder/motor work is parked unless explicitly requested.
