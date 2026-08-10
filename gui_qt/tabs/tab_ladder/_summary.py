@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from config import APP_SETTINGS
+from core.analyses.clonality.ladder_review_labels import is_review_resolved
 
 
 def resolve_cache_key(file_path: Path) -> Path:
@@ -297,9 +298,8 @@ def chip_state(row: dict, *, check_filesystem: bool = False) -> str:
     elif str(row.get("_path_unreachable", "")).lower() == "true":
         return "file_unreachable"
 
-    # 2. Label resolved → reviewed (manual_adjusted or reviewed_no_change).
-    label = str(row.get("label", "") or "").strip().lower()
-    if label in {"manual_adjusted", "reviewed_no_change"}:
+    # 2. Label resolved → reviewed.
+    if is_review_resolved(row.get("label")):
         return "reviewed"
 
     # 3. Open tooltip reasons flag a needs_review row.

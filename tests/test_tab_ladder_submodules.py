@@ -424,6 +424,12 @@ class ChipStateHelperTests(unittest.TestCase):
             }
             self.assertEqual(chip_state(row), "reviewed")
 
+    def test_chip_state_treats_missing_ladder_exclusion_as_reviewed(self) -> None:
+        self.assertEqual(
+            chip_state({"label": "excluded_missing_ladder_signal"}),
+            "reviewed",
+        )
+
     def test_needs_review_when_label_empty_and_flag_set(self) -> None:
         row = {
             "full_path": str(Path("real.fsa")),

@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import APP_SETTINGS, get_analysis_settings, save_settings
-from core.analyses.clonality.ladder_review_gate import RESOLVED_LABELS
+from core.analyses.clonality.ladder_review_labels import is_review_resolved
 from gui_qt.worker import Worker
 
 _ARCHIVE_SUPPORT_ERROR = ""
@@ -549,8 +549,7 @@ class TabArchiveRunner(QWidget):
         return sum(
             1
             for row in rows
-            if str(row.get("label") or "").strip().lower()
-            not in RESOLVED_LABELS
+            if not is_review_resolved(row.get("label"))
         )
 
     def _guess_manifest_path(self) -> Path | None:

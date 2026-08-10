@@ -42,6 +42,16 @@ def _posix_text(fake_path):
 
 
 class LadderReviewGateTests(unittest.TestCase):
+    def test_review_gate_counts_missing_ladder_exclusion_as_resolved(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cases = Path(td) / "ladder_review_cases.csv"
+            cases.write_text(
+                "full_path,label\na.fsa,excluded_missing_ladder_signal\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(count_unresolved_review_cases(cases), 0)
+
     def test_collects_only_review_cases(self) -> None:
         rows = collect_ladder_review_cases(
             [

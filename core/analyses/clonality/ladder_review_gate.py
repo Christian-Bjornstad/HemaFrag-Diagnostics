@@ -7,9 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from core.analyses.clonality.ladder_review_labels import (
+    RESOLVED_LABELS,
+    is_review_resolved,
+)
 
 REVIEW_STATUSES = {"review_required", "missing_ladder", "ladder_qc_failed"}
-RESOLVED_LABELS = {"manual_adjusted", "reviewed_no_change"}
 
 
 def _entry_file_path(entry: dict[str, Any]) -> str:
@@ -176,8 +179,7 @@ def count_unresolved_review_cases(cases_path: Path) -> int:
     with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
-            label = str(row.get("label", "") or "").strip()
-            if label not in RESOLVED_LABELS:
+            if not is_review_resolved(row.get("label")):
                 unresolved += 1
     return unresolved
 

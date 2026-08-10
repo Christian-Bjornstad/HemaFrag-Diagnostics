@@ -21,7 +21,7 @@ from config import (
     GENERAL_DEFAULT_TRACE_CHANNELS,
     GENERAL_DEFAULT_PRIMARY_CHANNEL,
 )
-from core.analyses.clonality.ladder_review_gate import RESOLVED_LABELS
+from core.analyses.clonality.ladder_review_labels import is_review_resolved
 from . import GENERAL_LADDER_OPTIONS, GENERAL_TRACE_OPTIONS, ANALYSIS_LABELS
 
 class FlowLayout(QLayout):
@@ -639,9 +639,9 @@ class TabBatch(QWidget):
             with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
                 reader = csv.DictReader(handle)
                 for row in reader:
-                    label = str(row.get("label", "") or "").strip()
+                    label = row.get("label")
                     raw_path = str(row.get("full_path", "") or "").strip()
-                    if label not in RESOLVED_LABELS or not raw_path:
+                    if not is_review_resolved(label) or not raw_path:
                         continue
                     key = str(cls._resolve_cache_key(Path(raw_path)))
                     resolved[key] = dict(row)
@@ -663,8 +663,7 @@ class TabBatch(QWidget):
             with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
                 reader = csv.DictReader(handle)
                 for row in reader:
-                    label = str(row.get("label", "") or "").strip()
-                    if label in RESOLVED_LABELS:
+                    if is_review_resolved(row.get("label")):
                         resolved += 1
                     else:
                         unresolved += 1
@@ -706,7 +705,7 @@ class TabBatch(QWidget):
                 row["reviewed_at_utc"] = str(resolved_row.get("reviewed_at_utc", "") or now)
                 row["adjustment_path"] = str(resolved_row.get("adjustment_path", "") or "")
                 changed = True
-            elif str(row.get("label", "") or "").strip() not in RESOLVED_LABELS:
+            elif not is_review_resolved(row.get("label")):
                 unresolved += 1
 
         if changed:
