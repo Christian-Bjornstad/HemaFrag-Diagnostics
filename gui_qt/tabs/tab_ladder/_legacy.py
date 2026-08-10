@@ -1020,20 +1020,33 @@ class TabLadder(QWidget):
                 unresolved += 1
         return resolved, unresolved
 
+    def _review_bundle_rerun_counts(self) -> tuple[int, int]:
+        """Return rerunnable cases and the rerunnable cases reviewed this session."""
+        rerunnable = 0
+        recent_rerunnable = 0
+        for row in self._review_bundle_cases:
+            if not is_review_rerunnable(row.get("label")):
+                continue
+            rerunnable += 1
+            raw_path = str(row.get("full_path", "") or "").strip()
+            cache_key = self._resolve_cache_key(Path(raw_path)) if raw_path else None
+            if cache_key is not None and cache_key in self._recent_reviewed_files:
+                recent_rerunnable += 1
+        return rerunnable, recent_rerunnable
+
     def _refresh_review_bundle_run_button(self) -> None:
         if self._is_run_tab_owned_review():
             self.btn_rerun_review_bundle.setText("Back To Run: Build DIT")
             self.btn_rerun_review_bundle.setEnabled(True)
             return
 
-        resolved, _ = self._review_bundle_counts()
-        recent_ready = len(self._recent_reviewed_files)
-        ready_count = recent_ready or resolved
+        rerunnable, recent_ready = self._review_bundle_rerun_counts()
+        ready_count = recent_ready or rerunnable
         self.btn_rerun_review_bundle.setEnabled(ready_count > 0)
         if recent_ready > 0:
             self.btn_rerun_review_bundle.setText(f"Run Recent Reviewed Files + Reports ({recent_ready})")
-        elif resolved > 0:
-            self.btn_rerun_review_bundle.setText(f"Run Reviewed Files + Reports ({resolved})")
+        elif rerunnable > 0:
+            self.btn_rerun_review_bundle.setText(f"Run Reviewed Files + Reports ({rerunnable})")
         else:
             self.btn_rerun_review_bundle.setText("Run Reviewed Files + Reports")
 

@@ -396,6 +396,56 @@ class TabLadderIOHelperTests(unittest.TestCase):
 
 
 class TabLadderRerunSelectionTests(unittest.TestCase):
+    def test_excluded_bundle_case_is_not_rerun_ready_even_if_recent(self) -> None:
+        from gui_qt.tabs.tab_ladder import TabLadder
+
+        excluded_fsa = Path("excluded-no-ladder.fsa")
+        fake_tab = SimpleNamespace(
+            _review_bundle_cases=[
+                {
+                    "full_path": str(excluded_fsa),
+                    "label": "excluded_missing_ladder_signal",
+                }
+            ],
+            _recent_reviewed_files={resolve_cache_key(excluded_fsa)},
+            _resolve_cache_key=resolve_cache_key,
+        )
+
+        rerunnable, recent_rerunnable = TabLadder._review_bundle_rerun_counts(
+            fake_tab
+        )
+
+        self.assertEqual(rerunnable, 0)
+        self.assertEqual(recent_rerunnable, 0)
+
+    def test_excluded_bundle_case_disables_rerun_button(self) -> None:
+        from PyQt6.QtWidgets import QApplication
+        from gui_qt.tabs.tab_ladder import TabLadder
+
+        app = QApplication.instance() or QApplication([])
+        excluded_fsa = Path("excluded-no-ladder.fsa")
+        tab = TabLadder()
+        try:
+            tab._review_bundle_dir = Path("review-bundle")
+            tab._review_bundle_cases = [
+                {
+                    "full_path": str(excluded_fsa),
+                    "label": "excluded_missing_ladder_signal",
+                }
+            ]
+            tab._recent_reviewed_files = {resolve_cache_key(excluded_fsa)}
+
+            tab._refresh_review_bundle_run_button()
+
+            self.assertFalse(tab.btn_rerun_review_bundle.isEnabled())
+            self.assertEqual(
+                tab.btn_rerun_review_bundle.text(),
+                "Run Reviewed Files + Reports",
+            )
+        finally:
+            tab.close()
+            app.processEvents()
+
     def test_resolved_bundle_files_skip_missing_ladder_exclusion(self) -> None:
         from gui_qt.tabs.tab_ladder import TabLadder
 
