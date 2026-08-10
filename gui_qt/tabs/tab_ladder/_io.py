@@ -18,6 +18,10 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+from core.analyses.clonality.ladder_review_labels import (
+    is_review_rerunnable,
+    is_review_resolved,
+)
 from gui_qt.tabs.tab_ladder._summary import resolve_cache_key
 
 
@@ -138,6 +142,41 @@ def review_case_paths_from_bundle(bundle_dir: Path) -> set[Path]:
     except Exception:
         return set()
     return paths
+
+
+def build_review_annotation(
+    label: str,
+    note: str,
+    *,
+    reviewed_at_utc: str,
+    adjustment_path: str = "",
+) -> dict:
+    """Build the persisted review fields for one bundle case."""
+    return {
+        "label": label,
+        "label_note": note,
+        "reviewed_at_utc": reviewed_at_utc,
+        "adjustment_path": adjustment_path,
+    }
+
+
+def save_missing_ladder_exclusion_worker(
+    bundle_dir: Path,
+    full_path: Path,
+    *,
+    note: str,
+    reviewed_at_utc: str,
+) -> dict:
+    """Persist a resolved no-ladder exclusion without an adjustment record."""
+    label = "excluded_missing_ladder_signal"
+    if not is_review_resolved(label) or is_review_rerunnable(label):
+        raise RuntimeError("Missing-ladder exclusion label policy is invalid")
+    annotation = build_review_annotation(
+        label,
+        note,
+        reviewed_at_utc=reviewed_at_utc,
+    )
+    return save_review_bundle_annotation_worker(bundle_dir, full_path, annotation)
 
 
 def save_review_bundle_annotation_worker(

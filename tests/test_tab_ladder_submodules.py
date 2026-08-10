@@ -22,8 +22,10 @@ from core.ladder_adjustment_store import (
 )
 
 from gui_qt.tabs.tab_ladder._io import (
+    build_review_annotation,
     load_review_bundle_worker,
     review_case_paths_from_bundle,
+    save_missing_ladder_exclusion_worker,
     save_review_bundle_annotation_worker,
     save_review_bundle_rerun_status_worker,
 )
@@ -304,6 +306,43 @@ class TabLadderIOHelperTests(unittest.TestCase):
             annotations_path = Path(td) / "ladder_review_annotations.json"
             self.assertTrue(annotations_path.exists())
 
+    def test_missing_ladder_annotation_has_no_adjustment_path(self) -> None:
+        annotation = build_review_annotation(
+            "excluded_missing_ladder_signal",
+            "No usable ladder signal; preparation error.",
+            reviewed_at_utc="2026-08-10T00:00:00+00:00",
+        )
+
+        self.assertEqual(annotation["label"], "excluded_missing_ladder_signal")
+        self.assertEqual(annotation["adjustment_path"], "")
+
+    def test_missing_ladder_action_writes_no_adjustment_record(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "no-ladder.fsa"
+            fsa.write_bytes(b"fsa")
+            self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            isolated_db = bundle / "adjustments.sqlite3"
+            with patch.dict(
+                os.environ,
+                {"HEMAFRAG_LADDER_ADJUSTMENT_DB": str(isolated_db)},
+            ):
+                saved = save_missing_ladder_exclusion_worker(
+                    bundle,
+                    fsa,
+                    note="No usable ladder signal; preparation error.",
+                    reviewed_at_utc="2026-08-10T00:00:00+00:00",
+                )
+
+                self.assertEqual(saved["label"], "excluded_missing_ladder_signal")
+                self.assertEqual(saved["adjustment_path"], "")
+                self.assertIsNone(load_ladder_adjustment_record(fsa))
+                self.assertFalse(isolated_db.exists())
+                self.assertFalse(fsa.with_suffix(".ladder_adj.json").exists())
+
     def test_save_review_bundle_annotation_worker_raises_on_unknown_path(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             fsa = Path(td) / "x.fsa"
@@ -354,6 +393,36 @@ class TabLadderIOHelperTests(unittest.TestCase):
                 loaded["rerun_manifest_path"],
                 str(manifest.resolve()),
             )
+
+
+class TabLadderRerunSelectionTests(unittest.TestCase):
+    def test_resolved_bundle_files_skip_missing_ladder_exclusion(self) -> None:
+        from gui_qt.tabs.tab_ladder import TabLadder
+
+        with tempfile.TemporaryDirectory() as td:
+            adjusted_fsa = Path(td) / "adjusted.fsa"
+            excluded_fsa = Path(td) / "excluded.fsa"
+            adjusted_fsa.write_bytes(b"fsa")
+            excluded_fsa.write_bytes(b"fsa")
+            fake_tab = SimpleNamespace(
+                _review_bundle_cases=[
+                    {"full_path": str(adjusted_fsa), "label": "manual_adjusted"},
+                    {
+                        "full_path": str(excluded_fsa),
+                        "label": "excluded_missing_ladder_signal",
+                    },
+                ],
+                _recent_reviewed_files=set(),
+                _resolve_cache_key=resolve_cache_key,
+            )
+
+            files, missing, unresolved = TabLadder._resolved_review_bundle_files(
+                fake_tab
+            )
+
+            self.assertEqual(files, [adjusted_fsa.resolve()])
+            self.assertEqual(missing, [])
+            self.assertEqual(unresolved, 0)
 
 
 class TabLadderWorkersHelperTests(unittest.TestCase):

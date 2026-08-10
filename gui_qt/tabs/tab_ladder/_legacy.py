@@ -26,7 +26,10 @@ from PyQt6.QtCore import Qt, QThreadPool, QTimer, pyqtSignal
 
 from config import APP_SETTINGS, get_analysis_settings
 from core.analysis import load_ladder_adjustment, save_ladder_adjustment
-from core.analyses.clonality.ladder_review_gate import RESOLVED_LABELS
+from core.analyses.clonality.ladder_review_labels import (
+    is_review_rerunnable,
+    is_review_resolved,
+)
 from core.html_reports import extract_dit_from_name
 from gui_qt.dialogs.ladder_dialog import LadderAdjustmentDialog
 from gui_qt.ladder_utils import detect_fsa_for_ladder, load_adjustable_fsa
@@ -224,6 +227,10 @@ class TabLadder(QWidget):
         self.btn_open_editor = QPushButton("Open Ladder Editor")
         self.btn_open_editor.setObjectName("PrimaryButton")
         self.btn_open_editor.clicked.connect(self._open_ladder_editor)
+        self.btn_exclude_missing_ladder = QPushButton("No ladder / human error")
+        self.btn_exclude_missing_ladder.clicked.connect(
+            self._exclude_current_missing_ladder_signal
+        )
         self.btn_rerun_file = QPushButton("Run This File + Reports")
         self.btn_rerun_file.clicked.connect(self._rerun_current_file_reports)
         self.btn_remove_adjustment = QPushButton("Remove Saved Adjustment")
@@ -234,6 +241,7 @@ class TabLadder(QWidget):
         for btn in [
             self.btn_refresh_meta,
             self.btn_open_editor,
+            self.btn_exclude_missing_ladder,
             self.btn_rerun_file,
             self.btn_remove_adjustment,
             self.btn_open_file_folder,
@@ -481,6 +489,11 @@ class TabLadder(QWidget):
         self._clear_details()
 
         enabled = file_path is not None
+        exclusion_enabled = (
+            enabled
+            and self._review_bundle_dir is not None
+            and self._resolve_cache_key(file_path) in self._review_case_by_path
+        )
         for btn in [
             self.btn_refresh_meta,
             self.btn_open_editor,
@@ -489,6 +502,7 @@ class TabLadder(QWidget):
             self.btn_open_file_folder,
         ]:
             btn.setEnabled(enabled)
+        self.btn_exclude_missing_ladder.setEnabled(exclusion_enabled)
 
         self._empty_state.setVisible(not enabled)
         self._details_card.setVisible(enabled)
@@ -769,6 +783,83 @@ class TabLadder(QWidget):
         else:
             self._set_status(f"Closed ladder editor for {self._current_file.name}.")
 
+    def _exclude_current_missing_ladder_signal(self) -> None:
+        if self._current_file is None or self._review_bundle_dir is None:
+            return
+
+        cache_key = self._resolve_cache_key(self._current_file)
+        if cache_key not in self._review_case_by_path:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "No Ladder / Human Error",
+            (
+                f"Mark {self._current_file.name} as excluded because it has no usable "
+                "ladder signal? This resolves the review case without saving a ladder "
+                "adjustment and will not rerun the file."
+            ),
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        note = "No usable ladder signal; preparation error."
+        reviewed_at_utc = datetime.now(timezone.utc).isoformat()
+        self.btn_exclude_missing_ladder.setEnabled(False)
+        self._set_status(f"Saving no-ladder exclusion for {self._current_file.name}...")
+        worker = Worker(
+            self._save_missing_ladder_exclusion_worker,
+            self._review_bundle_dir,
+            cache_key,
+            note=note,
+            reviewed_at_utc=reviewed_at_utc,
+        )
+        worker.signals.result.connect(
+            lambda annotation, key=cache_key: self._on_missing_ladder_exclusion_saved(
+                key, annotation
+            )
+        )
+        worker.signals.error.connect(
+            lambda err, key=cache_key: self._on_missing_ladder_exclusion_error(
+                key, err
+            )
+        )
+        self.threadpool.start(worker)
+
+    def _on_missing_ladder_exclusion_saved(
+        self, cache_key: Path, annotation: dict
+    ) -> None:
+        review_case = self._review_case_by_path.get(cache_key)
+        if review_case is not None:
+            review_case.update(annotation)
+        for row in self._review_bundle_cases:
+            try:
+                if self._resolve_cache_key(Path(str(row.get("full_path", "") or ""))) != cache_key:
+                    continue
+            except Exception:
+                continue
+            row.update(annotation)
+            break
+        self._sync_chip_strip()
+        self._rebuild_file_list()
+        if self._current_file is not None:
+            self._select_file(self._current_file)
+        self._refresh_review_bundle_run_button()
+        self._set_status(f"Excluded {cache_key.name}: no usable ladder signal.")
+
+    def _on_missing_ladder_exclusion_error(self, cache_key: Path, err_tuple) -> None:
+        if self._current_file is not None and self._resolve_cache_key(self._current_file) == cache_key:
+            self.btn_exclude_missing_ladder.setEnabled(True)
+        self._set_status(
+            f"Could not save no-ladder exclusion for {cache_key.name}: {err_tuple[1]}",
+            error=True,
+        )
+        QMessageBox.critical(
+            self,
+            "No-Ladder Exclusion Not Saved",
+            f"The review case remains unresolved.\n\n{err_tuple[1]}",
+        )
+
     def _remove_saved_adjustment(self) -> None:
         if not self._current_file:
             return
@@ -923,7 +1014,7 @@ class TabLadder(QWidget):
         unresolved = 0
         for row in self._review_bundle_cases:
             label = str(row.get("label", "") or "").strip()
-            if label in RESOLVED_LABELS:
+            if is_review_resolved(label):
                 resolved += 1
             else:
                 unresolved += 1
@@ -981,8 +1072,10 @@ class TabLadder(QWidget):
 
         for row in self._review_bundle_cases:
             label = str(row.get("label", "") or "").strip()
-            if label not in RESOLVED_LABELS:
+            if not is_review_resolved(label):
                 unresolved += 1
+                continue
+            if not is_review_rerunnable(label):
                 continue
 
             raw_path = str(row.get("full_path", "") or "").strip()
@@ -1055,6 +1148,7 @@ class TabLadder(QWidget):
             self.btn_load_bundle,
             self.btn_rerun_file,
             self.btn_open_editor,
+            self.btn_exclude_missing_ladder,
             self.btn_refresh_meta,
         ):
             btn.setEnabled(False)
@@ -1516,6 +1610,23 @@ class TabLadder(QWidget):
         from gui_qt.tabs.tab_ladder._io import save_review_bundle_annotation_worker
 
         return save_review_bundle_annotation_worker(bundle_dir, full_path, annotation)
+
+    @staticmethod
+    def _save_missing_ladder_exclusion_worker(
+        bundle_dir: Path,
+        full_path: Path,
+        *,
+        note: str,
+        reviewed_at_utc: str,
+    ) -> dict:
+        from gui_qt.tabs.tab_ladder._io import save_missing_ladder_exclusion_worker
+
+        return save_missing_ladder_exclusion_worker(
+            bundle_dir,
+            full_path,
+            note=note,
+            reviewed_at_utc=reviewed_at_utc,
+        )
 
     def _on_chip_activated(self, file_path) -> None:
         """Phase 12.3 — chip click selects the file in the list."""
