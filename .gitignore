@@ -91,3 +91,6 @@ clonality_ml_features/
 Thumbs.db
 *.lnk
 
+# Local isolated development worktrees
+.worktrees/
+
