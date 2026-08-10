@@ -14,6 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.research.ladder.contracts import LadderOutcome
+from core.research.ladder.diagnostics import classify_ladder_outcome
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CLI = REPO_ROOT / "fraggler-v2" / "target" / "release" / "fraggler-cli.exe"
@@ -85,6 +88,28 @@ def _load_gold_expectations(path: Path) -> dict[Path, list[int]]:
             int(round(float(value))) for value in entry["expected_scan_indices"]
         ]
     return expectations
+
+
+def _load_manifest_metadata(path: Path) -> dict[Path, dict[str, str]]:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    raw_files = manifest.get("files") if isinstance(manifest, dict) else manifest
+    if not isinstance(raw_files, list):
+        return {}
+    partition = str(manifest.get("partition") or "") if isinstance(manifest, dict) else ""
+    metadata: dict[Path, dict[str, str]] = {}
+    for entry in raw_files:
+        if not isinstance(entry, dict):
+            continue
+        candidate = Path(str(entry.get("path") or "")).expanduser().resolve()
+        metadata[candidate] = {
+            "partition": str(entry.get("partition") or partition),
+            "failure_family": str(entry.get("failure_family") or ""),
+            "truth_source": str(entry.get("truth_source") or ""),
+            "ladder": str(entry.get("ladder") or ""),
+            "content_sha256": str(entry.get("content_sha256") or ""),
+            "physical_run_key": str(entry.get("physical_run_key") or ""),
+        }
+    return metadata
 
 
 def _result_identity(result: dict[str, Any]) -> dict[str, object]:
@@ -179,6 +204,8 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, object]:
         "review_count": sum(bool(row["identity"]["review_required"]) for row in rows),
         "gold_case_count": sum(row.get("gold_exact_match") is not None for row in rows),
         "gold_exact_match_count": sum(row.get("gold_exact_match") is True for row in rows),
+        "taxonomy_case_count": sum(row.get("taxonomy_agreement") is not None for row in rows),
+        "taxonomy_agreement_count": sum(row.get("taxonomy_agreement") is True for row in rows),
     }
 
 
@@ -189,6 +216,7 @@ def benchmark(
     repeats: int,
     warmups: int,
     gold_expectations: dict[Path, list[int]] | None = None,
+    case_metadata: dict[Path, dict[str, str]] | None = None,
 ) -> dict[str, object]:
     cli = cli.expanduser().resolve()
     if not cli.is_file():
@@ -196,6 +224,7 @@ def benchmark(
     repeats = max(1, int(repeats))
     warmups = max(0, int(warmups))
     gold_expectations = gold_expectations or {}
+    case_metadata = case_metadata or {}
     rows: list[dict[str, Any]] = []
 
     with tempfile.TemporaryDirectory(prefix="hemafrag_ladder_benchmark_") as temp_root:
@@ -249,6 +278,7 @@ def benchmark(
             ]
             first = run_rows[0]
             expected_scans = gold_expectations.get(input_file)
+            metadata = case_metadata.get(input_file, {})
             selected_scans = [int(value) for value in first["identity"]["scan_indices"]]
             gold_exact_match = (
                 selected_scans == expected_scans if expected_scans is not None else None
@@ -262,6 +292,25 @@ def benchmark(
                     default=0,
                 )
                 if expected_scans is not None and len(selected_scans) == len(expected_scans)
+                else None
+            )
+            engine_outcome = classify_ladder_outcome(
+                {
+                    "configured_ladder": metadata.get("ladder", ""),
+                    "detected_ladder": first["identity"]["ladder"],
+                    "ladder_peak_count": first["candidate_peak_count"],
+                    "candidate_peak_count": first["candidate_peak_count"],
+                    "fitted_count": len(selected_scans),
+                    "review_required": first["identity"]["review_required"],
+                    "accepted": bool(selected_scans)
+                    and not first["identity"]["review_required"],
+                    "reason_codes": first["identity"]["review_reason_codes"],
+                }
+            ).value
+            historical_family = str(metadata.get("failure_family") or "")
+            taxonomy_agreement = (
+                engine_outcome == historical_family
+                if historical_family in {outcome.value for outcome in LadderOutcome}
                 else None
             )
             rows.append(
@@ -285,6 +334,12 @@ def benchmark(
                     "candidate_peak_count": first["candidate_peak_count"],
                     "estimated_combinations": first["estimated_combinations"],
                     "evaluated_combinations": first["evaluated_combinations"],
+                    "partition": str(metadata.get("partition") or ""),
+                    "historical_failure_family": historical_family,
+                    "truth_source": str(metadata.get("truth_source") or ""),
+                    "physical_run_key": str(metadata.get("physical_run_key") or ""),
+                    "engine_outcome": engine_outcome,
+                    "taxonomy_agreement": taxonomy_agreement,
                     "runs": run_rows,
                 }
             )
@@ -292,6 +347,18 @@ def benchmark(
     by_ladder = {
         ladder: _summarize([row for row in rows if row["ladder"] == ladder])
         for ladder in sorted({str(row["ladder"]) for row in rows})
+    }
+    by_failure_family = {
+        family: _summarize(
+            [row for row in rows if row["historical_failure_family"] == family]
+        )
+        for family in sorted(
+            {str(row["historical_failure_family"]) for row in rows if row["historical_failure_family"]}
+        )
+    }
+    by_engine_outcome = {
+        outcome: _summarize([row for row in rows if row["engine_outcome"] == outcome])
+        for outcome in sorted({str(row["engine_outcome"]) for row in rows})
     }
     return {
         "schema_version": BENCHMARK_SCHEMA,
@@ -312,6 +379,8 @@ def benchmark(
         "gold_case_count": sum(row.get("gold_exact_match") is not None for row in rows),
         "gold_exact_match_count": sum(row.get("gold_exact_match") is True for row in rows),
         "by_ladder": by_ladder,
+        "by_failure_family": by_failure_family,
+        "by_engine_outcome": by_engine_outcome,
         "files": rows,
     }
 
@@ -331,6 +400,7 @@ def main() -> None:
         repeats=args.repeats,
         warmups=args.warmups,
         gold_expectations=_load_gold_expectations(args.manifest.expanduser().resolve()),
+        case_metadata=_load_manifest_metadata(args.manifest.expanduser().resolve()),
     )
     output = args.output.expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)

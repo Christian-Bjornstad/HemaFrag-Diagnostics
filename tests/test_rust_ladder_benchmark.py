@@ -8,6 +8,7 @@ from scripts.benchmark_rust_ladder import (
     BENCHMARK_SCHEMA,
     _load_gold_expectations,
     _load_manifest,
+    _load_manifest_metadata,
     _percentile,
     _result_identity,
     _stable_fingerprint,
@@ -113,4 +114,40 @@ def test_ladder_benchmark_loads_optional_manual_gold(tmp_path):
     )
     assert _load_gold_expectations(manifest) == {
         input_file.resolve(): [10, 20, 31]
+    }
+
+
+def test_ladder_benchmark_loads_research_case_metadata(tmp_path):
+    input_file = tmp_path / "manual.fsa"
+    input_file.write_bytes(b"fixture")
+    manifest = tmp_path / "research.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "partition": "locked_validation",
+                "files": [
+                    {
+                        "path": str(input_file),
+                        "expected_scan_indices": [10, 20],
+                        "failure_family": "fit_rejected_with_usable_signal",
+                        "truth_source": "manual_v2",
+                        "ladder": "LIZ",
+                        "content_sha256": "abc",
+                        "physical_run_key": "2026_data/run-a",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _load_manifest_metadata(manifest) == {
+        input_file.resolve(): {
+            "partition": "locked_validation",
+            "failure_family": "fit_rejected_with_usable_signal",
+            "truth_source": "manual_v2",
+            "ladder": "LIZ",
+            "content_sha256": "abc",
+            "physical_run_key": "2026_data/run-a",
+        }
     }

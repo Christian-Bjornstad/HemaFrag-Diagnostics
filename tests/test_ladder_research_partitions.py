@@ -135,5 +135,6 @@ def test_partition_manifest_matches_benchmark_contract():
             "physical_run_key": "run-a",
             "ladder": "LIZ",
             "truth_source": "manual_v2",
+            "failure_family": "rejected",
         }
     ]

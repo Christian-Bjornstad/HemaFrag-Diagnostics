@@ -207,6 +207,7 @@ def partition_manifest(records: pd.DataFrame, partition: str) -> dict[str, Any]:
             "physical_run_key": str(row["physical_run_key"]),
             "ladder": str(row["ladder"]),
             "truth_source": str(row["truth_source"]),
+            "failure_family": str(row.get("failure_family") or ""),
         }
         for row in subset.to_dict(orient="records")
     ]
