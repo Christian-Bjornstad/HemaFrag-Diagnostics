@@ -42,6 +42,7 @@ from core.research.ladder.partitions import (
     build_gold_records,
     partition_manifest,
 )
+from core.research.ladder.review_bundle import prepare_development_review_bundle
 
 
 RESEARCH_RUN_SCHEMA = "hemafrag_ladder_research_run_v1"
@@ -452,6 +453,26 @@ def _inventory_command(args: argparse.Namespace) -> None:
     print(json.dumps({"workspace": str(current), "stage": "inventory"}, indent=2))
 
 
+def _prepare_review_command(args: argparse.Namespace) -> None:
+    workspace = args.workspace.resolve()
+    roots = _roots_from_manifest(workspace)
+    result = prepare_development_review_bundle(
+        workspace / "development_manifest.json",
+        workspace / "development_review_bundle",
+        roots,
+    )
+    print(
+        json.dumps(
+            {
+                "bundle_dir": str(result.bundle_dir),
+                "case_count": result.case_count,
+                "adjustment_database": str(result.adjustment_database),
+            },
+            indent=2,
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -505,6 +526,10 @@ def main() -> None:
             json.dumps(finalize_stage(args.workspace, seed=args.seed), indent=2)
         )
     )
+
+    prepare_review = commands.add_parser("prepare-review")
+    prepare_review.add_argument("--workspace", required=True, type=Path)
+    prepare_review.set_defaults(handler=_prepare_review_command)
 
     args = parser.parse_args()
     args.handler(args)
