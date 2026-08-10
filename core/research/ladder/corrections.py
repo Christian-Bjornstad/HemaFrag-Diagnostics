@@ -214,11 +214,16 @@ def _configuration_lookup(inventory: Any) -> dict[str, tuple[str, int | None]]:
     lookup: dict[str, tuple[str, int | None]] = {}
     for row in tracking.to_dict(orient="records"):
         identity = str(row.get("IdentityKey") or "")
-        if not identity:
+        source_key = f"{row.get('SourceRunDir') or ''}::{row.get('File') or ''}"
+        if not identity and source_key == "::":
             continue
         raw_count = row.get("LadderExpectedStepCount")
         count = None if pd.isna(raw_count) else int(raw_count)
-        lookup[identity] = (str(row.get("Ladder") or ""), count)
+        configuration = (str(row.get("Ladder") or ""), count)
+        if identity:
+            lookup[identity] = configuration
+        if source_key != "::":
+            lookup[source_key] = configuration
     return lookup
 
 

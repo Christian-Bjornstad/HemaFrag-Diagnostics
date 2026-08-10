@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -120,6 +121,57 @@ def test_only_reports_backfill_bundle_is_canonical(tmp_path):
     assert "reports_backfill" in rows.iloc[0]["review_bundle_path"]
 
 
+def test_canonical_annotations_overlay_manual_review_fields(tmp_path):
+    roots = fake_roots(tmp_path)
+    target = roots.raw_roots[0] / "run-a" / "sample.fsa"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"fsa")
+    archived = r"F:\DATA\2024_DATA\run-a\sample.fsa"
+    cases = write_review_bundle(
+        roots.archive_root / "run" / "reports_backfill", [review_row(archived)]
+    )
+    (cases.parent / "ladder_review_annotations.json").write_text(
+        json.dumps(
+            {
+                archived: {
+                    "label": "manual_adjusted",
+                    "adjustment_path": r"F:\DATA\2024_DATA\run-a\sample.ladder_adj.json",
+                    "reviewed_at_utc": "2026-08-10T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = load_canonical_review_cases(roots.archive_root, roots)
+
+    assert rows.iloc[0]["label"] == "manual_adjusted"
+    assert rows.iloc[0]["reviewed_at_utc"] == "2026-08-10T00:00:00Z"
+
+
+def test_annotation_only_record_is_not_dropped_when_cases_csv_is_empty(tmp_path):
+    roots = fake_roots(tmp_path)
+    target = roots.raw_roots[0] / "run-a" / "sample.fsa"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"fsa")
+    archived = r"F:\DATA\2024_DATA\run-a\sample.fsa"
+    cases = write_review_bundle(
+        roots.archive_root / "run" / "reports_backfill", []
+    )
+    (cases.parent / "ladder_review_annotations.json").write_text(
+        json.dumps({archived: {"label": "manual_adjusted"}}),
+        encoding="utf-8",
+    )
+
+    rows = load_canonical_review_cases(roots.archive_root, roots)
+
+    assert len(rows) == 1
+    assert rows.iloc[0]["full_path"] == archived
+    assert rows.iloc[0]["file"] == "sample.fsa"
+    assert rows.iloc[0]["source_run_dir"] == "run-a"
+    assert rows.iloc[0]["label"] == "manual_adjusted"
+
+
 def test_discover_raw_runs_uses_top_level_physical_run_and_hashes_content(tmp_path):
     roots = fake_roots(tmp_path)
     target = roots.raw_roots[1] / "physical-run" / "nested-logical-run" / "sample.FSA"
@@ -150,7 +202,7 @@ def test_build_inventory_keeps_unmatched_and_nested_records_explicit(tmp_path):
         roots.archive_root / "2025" / "track-clonality-2025-overview.xlsx",
         [
             {
-                "IdentityKey": "nested-logical-run::matched.fsa",
+                "IdentityKey": "PT-opaque-patient-identity",
                 "File": "matched.fsa",
                 "SourceRunDir": "nested-logical-run",
                 "Assay": "TCRgA",
@@ -183,3 +235,5 @@ def test_build_inventory_keeps_unmatched_and_nested_records_explicit(tmp_path):
     assert result.summary["raw_file_count"] == 3
     assert result.summary["tracking_entry_count"] == 2
     assert result.summary["canonical_review_case_count"] == 1
+    matched_row = result.files[result.files["file"].eq("matched.fsa")].iloc[0]
+    assert matched_row["tracking_identity_key"] == "PT-opaque-patient-identity"

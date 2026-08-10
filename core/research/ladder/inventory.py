@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
@@ -138,20 +139,49 @@ def load_canonical_review_cases(
 
     records: list[dict[str, Any]] = []
     for path in _canonical_review_paths(Path(archive_root)):
+        annotations_path = path.parent / "ladder_review_annotations.json"
+        annotations: dict[str, Any] = {}
+        if annotations_path.is_file():
+            loaded = json.loads(annotations_path.read_text(encoding="utf-8-sig"))
+            if isinstance(loaded, dict):
+                annotations = loaded
+        seen_paths: set[str] = set()
+
+        def append_record(row: dict[str, Any]) -> None:
+            row["review_bundle_path"] = str(path.parent)
+            row["review_cases_path"] = str(path)
+            try:
+                resolved = resolve_archived_path(row.get("full_path", ""), roots)
+            except ValueError as exc:
+                row["resolved_full_path"] = ""
+                row["path_resolution_issue"] = str(exc)
+            else:
+                row["resolved_full_path"] = str(resolved)
+                row["path_resolution_issue"] = ""
+            records.append(row)
+
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             for source in csv.DictReader(handle):
                 row = dict(source)
-                row["review_bundle_path"] = str(path.parent)
-                row["review_cases_path"] = str(path)
-                try:
-                    resolved = resolve_archived_path(row.get("full_path", ""), roots)
-                except ValueError as exc:
-                    row["resolved_full_path"] = ""
-                    row["path_resolution_issue"] = str(exc)
-                else:
-                    row["resolved_full_path"] = str(resolved)
-                    row["path_resolution_issue"] = ""
-                records.append(row)
+                full_path = str(row.get("full_path") or "")
+                seen_paths.add(full_path)
+                annotation = annotations.get(full_path)
+                if isinstance(annotation, dict):
+                    row.update(annotation)
+                row["record_kind"] = "review_case"
+                append_record(row)
+        for full_path, annotation in annotations.items():
+            if full_path in seen_paths or not isinstance(annotation, dict):
+                continue
+            archived = PureWindowsPath(full_path)
+            row = {
+                "full_path": full_path,
+                "file": archived.name,
+                "source_run_dir": archived.parent.name,
+                "record_kind": "annotation_only",
+                **annotation,
+            }
+            append_record(row)
     return pd.DataFrame.from_records(records)
 
 
@@ -189,12 +219,13 @@ def _issue(
     }
 
 
-def build_inventory(roots: ResearchRoots) -> InventoryResult:
-    """Build a lossless raw/tracking/review reconciliation in memory."""
+def reconcile_inventory(
+    raw: pd.DataFrame,
+    tracking: pd.DataFrame,
+    reviews: pd.DataFrame,
+) -> InventoryResult:
+    """Reconcile previously discovered raw rows with tracking and review records."""
 
-    raw = discover_raw_runs(roots)
-    tracking = load_tracking_index(roots)
-    reviews = load_canonical_review_cases(roots.archive_root, roots)
     files = raw.copy()
     issues: list[dict[str, str]] = []
 
@@ -205,20 +236,29 @@ def build_inventory(roots: ResearchRoots) -> InventoryResult:
     else:
         files["identity_candidate"] = pd.Series(dtype="object")
 
-    tracking_by_identity: dict[str, dict[str, Any]] = {}
-    if not tracking.empty and "IdentityKey" in tracking.columns:
+    tracking_by_source: dict[str, list[dict[str, Any]]] = {}
+    tracking_identities: set[str] = set()
+    if not tracking.empty and {"IdentityKey", "SourceRunDir", "File"} <= set(tracking.columns):
         for row in tracking.to_dict(orient="records"):
             identity = str(row.get("IdentityKey") or "")
-            if identity:
-                tracking_by_identity[identity] = row
+            source_key = f"{row.get('SourceRunDir') or ''}::{row.get('File') or ''}"
+            if identity and source_key != "::":
+                tracking_identities.add(identity)
+                tracking_by_source.setdefault(source_key, []).append(row)
 
     matched_tracking: set[str] = set()
     tracking_matches: list[str] = []
     for row in files.to_dict(orient="records"):
         identity = str(row["identity_candidate"])
-        if identity in tracking_by_identity:
-            matched_tracking.add(identity)
-            tracking_matches.append(identity)
+        if identity in tracking_by_source:
+            matches = sorted(
+                tracking_by_source[identity],
+                key=lambda value: str(value.get("IdentityKey") or ""),
+            )
+            matched_tracking.update(
+                str(match.get("IdentityKey") or "") for match in matches
+            )
+            tracking_matches.append(str(matches[0].get("IdentityKey") or ""))
         else:
             tracking_matches.append("")
             issues.append(
@@ -241,7 +281,7 @@ def build_inventory(roots: ResearchRoots) -> InventoryResult:
             )
     files["tracking_identity_key"] = tracking_matches
 
-    for identity in sorted(set(tracking_by_identity) - matched_tracking):
+    for identity in sorted(tracking_identities - matched_tracking):
         issues.append(
             _issue(
                 "tracking_only",
@@ -291,7 +331,20 @@ def build_inventory(roots: ResearchRoots) -> InventoryResult:
         if not files.empty
         else 0,
         "tracking_entry_count": int(len(tracking)),
-        "canonical_review_case_count": int(len(reviews)),
+        "canonical_review_case_count": int(
+            reviews.get("record_kind", pd.Series(dtype="object"))
+            .eq("review_case")
+            .sum()
+        )
+        if not reviews.empty
+        else 0,
+        "annotation_only_count": int(
+            reviews.get("record_kind", pd.Series(dtype="object"))
+            .eq("annotation_only")
+            .sum()
+        )
+        if not reviews.empty
+        else 0,
         "reconciliation_issue_count": int(len(reconciliation)),
     }
     return InventoryResult(
@@ -300,4 +353,14 @@ def build_inventory(roots: ResearchRoots) -> InventoryResult:
         review_cases=reviews,
         tracking=tracking,
         summary=summary,
+    )
+
+
+def build_inventory(roots: ResearchRoots) -> InventoryResult:
+    """Build a lossless raw/tracking/review reconciliation in memory."""
+
+    return reconcile_inventory(
+        discover_raw_runs(roots),
+        load_tracking_index(roots),
+        load_canonical_review_cases(roots.archive_root, roots),
     )

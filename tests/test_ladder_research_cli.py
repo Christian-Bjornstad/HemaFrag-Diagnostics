@@ -15,6 +15,7 @@ from scripts.build_ladder_research_corpus import (
     finalize_stage,
     inventory_stage,
     diagnose_stage,
+    refresh_inventory_stage,
 )
 
 
@@ -65,12 +66,14 @@ def fixture_roots(tmp_path: Path) -> ResearchRoots:
     )
 
 
-def test_end_to_end_builder_excludes_backup_and_writes_all_artifacts(tmp_path):
+def test_end_to_end_builder_excludes_backup_and_writes_all_artifacts(tmp_path, monkeypatch):
     roots = fixture_roots(tmp_path)
     run = roots.raw_roots[0] / "run-a"
     run.mkdir()
     source = run / "sample.fsa"
     source.write_bytes(b"allowed-fsa")
+    annotation_source = run / "annotation-only.fsa"
+    annotation_source.write_bytes(b"annotation-fsa")
     source.with_suffix(".ladder_adj.json").write_text(
         json.dumps(
             {
@@ -145,11 +148,30 @@ def test_end_to_end_builder_excludes_backup_and_writes_all_artifacts(tmp_path):
                 "adjustment_path": r"F:\DATA\2024_DATA\run-a\sample.ladder_adj.json",
             }
         )
+    (gate / "ladder_review_annotations.json").write_text(
+        json.dumps(
+            {
+                r"F:\DATA\2024_DATA\run-a\annotation-only.fsa": {
+                    "label": "manual_adjusted",
+                    "adjustment_path": r"F:\DATA\2024_DATA\run-a\annotation-only.ladder_adj.json",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     workspace = roots.output_root / "fixture-run"
     inventory_stage(roots, workspace)
+    monkeypatch.setattr(
+        "core.research.ladder.inventory.discover_raw_runs",
+        lambda _roots: (_ for _ in ()).throw(AssertionError("raw files were rescanned")),
+    )
+    refresh_inventory_stage(roots, workspace)
+
+    diagnosed_paths = []
 
     def fake_diagnostic(_cli, input_file, **kwargs):
+        diagnosed_paths.append(input_file)
         return normalize_rust_result(
             {
                 "ladder": "LIZ500_250",
@@ -179,7 +201,8 @@ def test_end_to_end_builder_excludes_backup_and_writes_all_artifacts(tmp_path):
     finalize_stage(workspace, seed=20260810)
 
     assert EXPECTED_ARTIFACTS <= {path.name for path in workspace.iterdir()}
-    assert len(pd.read_csv(workspace / "inventory.csv")) == 1
+    assert len(pd.read_csv(workspace / "inventory.csv")) == 2
+    assert diagnosed_paths == [source.resolve()]
     gold = json.loads((workspace / "gold_records.json").read_text(encoding="utf-8"))
     assert gold["record_count"] == 1
     assert gold["records"][0]["truth_source"] == "manual_legacy"

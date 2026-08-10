@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -143,6 +144,33 @@ def test_discovery_ignores_appledouble_sidecars(tmp_path):
 
     assert len(records) == 1
     assert records[0].source_path == source.resolve()
+
+
+def test_discovery_uses_source_run_and_file_when_identity_is_opaque(tmp_path):
+    roots = fake_roots(tmp_path)
+    run = roots.raw_roots[1] / "run-a"
+    run.mkdir()
+    source = write_source(run)
+    write_sidecar(source, legacy_payload(tuple(range(16))))
+    inventory = SimpleNamespace(
+        tracking=pd.DataFrame(
+            [
+                {
+                    "IdentityKey": "PT-opaque-patient-identity",
+                    "SourceRunDir": "run-a",
+                    "File": "sample.fsa",
+                    "Ladder": "LIZ",
+                    "LadderExpectedStepCount": 16,
+                }
+            ]
+        )
+    )
+
+    records = discover_adjustments(roots, inventory)
+
+    assert len(records) == 1
+    assert records[0].ladder == "LIZ"
+    assert records[0].gold_eligible is True
 
 
 def test_reconciliation_keeps_annotation_and_workbook_evidence_without_sidecar(tmp_path):

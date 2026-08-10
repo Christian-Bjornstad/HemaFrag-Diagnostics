@@ -31,7 +31,12 @@ from core.research.ladder.corrections import (
     reconcile_manual_evidence,
 )
 from core.research.ladder.diagnostics import DiagnosticRecord, run_rust_diagnostic
-from core.research.ladder.inventory import build_inventory
+from core.research.ladder.inventory import (
+    build_inventory,
+    load_canonical_review_cases,
+    load_tracking_index,
+    reconcile_inventory,
+)
 from core.research.ladder.partitions import (
     assign_partitions,
     build_gold_records,
@@ -98,15 +103,7 @@ def _serialize_correction(record) -> dict[str, Any]:
     return row
 
 
-def inventory_stage(roots: ResearchRoots, workspace: Path) -> dict[str, Any]:
-    """Inventory raw/archive/workbook inputs and surviving manual corrections."""
-
-    target = _assert_workspace(Path(workspace), roots)
-    target.mkdir(parents=True, exist_ok=True)
-    result = build_inventory(roots)
-    corrections = discover_adjustments(roots, result)
-    manual = reconcile_manual_evidence(corrections, result.review_cases, result.tracking)
-
+def _write_inventory_artifacts(target: Path, result, corrections, manual) -> None:
     _write_csv(target / "inventory.csv", result.files)
     _write_json(
         target / "reconciliation.json",
@@ -128,6 +125,17 @@ def inventory_stage(roots: ResearchRoots, workspace: Path) -> dict[str, Any]:
         },
     )
     _write_csv(target / "review_cases.csv", result.review_cases)
+
+
+def inventory_stage(roots: ResearchRoots, workspace: Path) -> dict[str, Any]:
+    """Inventory raw/archive/workbook inputs and surviving manual corrections."""
+
+    target = _assert_workspace(Path(workspace), roots)
+    target.mkdir(parents=True, exist_ok=True)
+    result = build_inventory(roots)
+    corrections = discover_adjustments(roots, result)
+    manual = reconcile_manual_evidence(corrections, result.review_cases, result.tracking)
+    _write_inventory_artifacts(target, result, corrections, manual)
 
     generated = datetime.now(timezone.utc).isoformat()
     manifest = {
@@ -151,6 +159,29 @@ def inventory_stage(roots: ResearchRoots, workspace: Path) -> dict[str, Any]:
         ),
     }
     _write_json(target / "run_manifest.json", manifest)
+    return manifest
+
+
+def refresh_inventory_stage(roots: ResearchRoots, workspace: Path) -> dict[str, Any]:
+    """Refresh joins and correction evidence while reusing existing FSA hashes."""
+
+    target = _assert_workspace(Path(workspace), roots)
+    raw = pd.read_csv(target / "inventory.csv", keep_default_na=False)
+    result = reconcile_inventory(
+        raw,
+        load_tracking_index(roots),
+        load_canonical_review_cases(roots.archive_root, roots),
+    )
+    corrections = discover_adjustments(roots, result)
+    manual = reconcile_manual_evidence(corrections, result.review_cases, result.tracking)
+    _write_inventory_artifacts(target, result, corrections, manual)
+
+    manifest_path = target / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["stage"] = "inventory_refreshed"
+    manifest["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
+    manifest["counts"] = {**result.summary, **manual.summary}
+    _write_json(manifest_path, manifest)
     return manifest
 
 
@@ -213,6 +244,8 @@ def diagnose_stage(
 
     pending: dict[str, dict[str, Any]] = {}
     for row in review_cases.to_dict(orient="records"):
+        if str(row.get("record_kind") or "review_case") != "review_case":
+            continue
         raw_path = str(row.get("resolved_full_path") or "")
         if not raw_path:
             continue
@@ -428,6 +461,20 @@ def main() -> None:
     inventory.add_argument("--raw-root", required=True, action="append", type=Path)
     inventory.add_argument("--output-root", required=True, type=Path)
     inventory.set_defaults(handler=_inventory_command)
+
+    refresh = commands.add_parser("refresh-inventory")
+    refresh.add_argument("--workspace", required=True, type=Path)
+    refresh.set_defaults(
+        handler=lambda args: print(
+            json.dumps(
+                refresh_inventory_stage(
+                    _roots_from_manifest(args.workspace.resolve()),
+                    args.workspace,
+                )["counts"],
+                indent=2,
+            )
+        )
+    )
 
     diagnose = commands.add_parser("diagnose")
     diagnose.add_argument("--workspace", required=True, type=Path)
