@@ -66,6 +66,57 @@ def test_tab_loads_session_from_excel(qapp, tmp_path):
     assert tab._session.labeled_count == 0
 
 
+def test_labeling_header_keeps_save_visible_without_horizontal_overflow(qapp):
+    """Primary actions remain reachable on a constrained content viewport."""
+    from gui_qt.tabs.tab_labeling import TabLabeling
+
+    tab = TabLabeling()
+    tab.resize(520, 700)
+    tab.show()
+    qapp.processEvents()
+
+    assert tab.width() == 520
+    assert tab.minimumSizeHint().width() <= 520
+    assert tab.btn_save.isVisible()
+    assert tab.btn_save.objectName() == "PrimaryButton"
+    assert tab.btn_save.height() >= 44
+    save_right = tab.btn_save.mapTo(tab, tab.btn_save.rect().topRight()).x()
+    wide_right = tab.btn_wide.mapTo(tab, tab.btn_wide.rect().topRight()).x()
+    assert save_right <= tab.rect().right()
+    assert wide_right <= tab.rect().right()
+    assert tab.lbl_hint.wordWrap()
+    assert tab._main_splitter.orientation() == Qt.Orientation.Vertical
+
+    tab.resize(900, 700)
+    qapp.processEvents()
+    assert tab._main_splitter.orientation() == Qt.Orientation.Horizontal
+    save_right = tab.btn_save.mapTo(tab, tab.btn_save.rect().topRight()).x()
+    assert save_right <= tab.rect().right()
+
+    tab.close()
+
+
+def test_labeling_save_status_reports_unsaved_and_saved_states(qapp, tmp_path):
+    from core.labeling.labeling_session import LabelingSession
+    from gui_qt.tabs.tab_labeling import TabLabeling
+
+    path = _make_test_excel(tmp_path)
+    tab = TabLabeling()
+    tab._session = LabelingSession(excel_path=path)
+    tab._session.load()
+    tab.btn_save.setEnabled(True)
+    tab._refresh_sample_list()
+    tab.sample_list.setCurrentRow(0)
+
+    tab._on_label_key("monoklonal")
+    assert tab.lbl_save_status.property("state") == "warning"
+    assert "Unsaved" in tab.lbl_save_status.text()
+
+    tab._on_save()
+    assert tab.lbl_save_status.property("state") == "success"
+    assert "Saved" in tab.lbl_save_status.text()
+
+
 def test_tab_label_key_assigns_label(qapp, tmp_path):
     """Shortcut handler routes through _on_label_key to label_sample."""
     from gui_qt.tabs.tab_labeling import TabLabeling

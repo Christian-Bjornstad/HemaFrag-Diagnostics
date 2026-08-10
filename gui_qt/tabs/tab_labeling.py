@@ -26,16 +26,18 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QSize, QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -111,6 +113,48 @@ def _import_pyqtgraph():
     return pg
 
 
+class _ElidedPathLabel(QLabel):
+    """Show a useful path summary without forcing the page wider."""
+
+    def __init__(self, text: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setObjectName("MutedText")
+        self.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.setMinimumWidth(0)
+        self.set_full_text(text)
+
+    def set_full_text(self, text: str, *, tooltip: str | None = None) -> None:
+        self._full_text = str(text)
+        self.setToolTip(str(tooltip if tooltip is not None else text))
+        self._refresh_text()
+
+    def full_text(self) -> str:
+        return self._full_text
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
+
+    def sizeHint(self) -> QSize:
+        return QSize(0, super().sizeHint().height())
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._refresh_text()
+
+    def _refresh_text(self) -> None:
+        available = max(24, self.contentsRect().width() - 4)
+        visible = self.fontMetrics().elidedText(
+            self._full_text,
+            Qt.TextElideMode.ElideMiddle,
+            available,
+        )
+        QLabel.setText(self, visible)
+
+
 class TabLabeling(QWidget):
     """In-app labeling tab — view plots, assign labels with keyboard."""
 
@@ -140,37 +184,79 @@ class TabLabeling(QWidget):
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(4)
+        layout.setSpacing(8)
 
-        # --- Top bar: file pickers + progress ---
-        top = QHBoxLayout()
+        # --- Responsive action and source card ---
+        # The old single horizontal row made this page more than 2,000 px
+        # wide.  Keep the primary action in the first visible row and put
+        # each potentially long path on its own flexible row.
+        header_card = QWidget()
+        header_card.setObjectName("Card")
+        header = QGridLayout(header_card)
+        header.setContentsMargins(16, 12, 16, 12)
+        header.setHorizontalSpacing(8)
+        header.setVerticalSpacing(8)
+        header.setColumnStretch(2, 1)
 
-        self.btn_browse_xlsx = QPushButton("Browse Excel …")
-        self.btn_browse_xlsx.clicked.connect(self._on_browse_xlsx)
-        top.addWidget(self.btn_browse_xlsx)
+        page_title = QLabel("ML Labeling")
+        page_title.setObjectName("PageTitle")
+        header.addWidget(page_title, 0, 0, 1, 4)
 
-        self.lbl_xlsx = QLabel("No Excel loaded")
-        self.lbl_xlsx.setStyleSheet("color: #888;")
-        top.addWidget(self.lbl_xlsx, stretch=1)
-
-        self.btn_browse_fsa = QPushButton("Browse FSA root …")
-        self.btn_browse_fsa.clicked.connect(self._on_browse_fsa)
-        top.addWidget(self.btn_browse_fsa)
-
-        self.lbl_fsa = QLabel("No FSA root")
-        self.lbl_fsa.setStyleSheet("color: #888;")
-        top.addWidget(self.lbl_fsa, stretch=1)
-
-        self.btn_save = QPushButton("Save to Excel (Ctrl+S)")
+        self.btn_save = QPushButton("Save changes")
+        self.btn_save.setObjectName("PrimaryButton")
+        self.btn_save.setMinimumHeight(44)
+        self.btn_save.setEnabled(False)
+        self.btn_save.setToolTip(
+            "Save changed labels to the loaded Excel workbook (Ctrl+S)"
+        )
+        self.btn_save.setAccessibleName("Save labeling changes to Excel")
         self.btn_save.clicked.connect(self._on_save)
-        top.addWidget(self.btn_save)
+        header.addWidget(self.btn_save, 1, 0)
 
         self.btn_wide = QPushButton("Wide view")
+        self.btn_wide.setMinimumHeight(44)
         self.btn_wide.setCheckable(True)
+        self.btn_wide.setToolTip(
+            "Hide the navigation sidebar to give plots more room (Ctrl+B)"
+        )
         self.btn_wide.clicked.connect(self._on_toggle_wide_view)
-        top.addWidget(self.btn_wide)
+        header.addWidget(self.btn_wide, 1, 1)
 
-        layout.addLayout(top)
+        self.btn_browse_xlsx = QPushButton("Browse Excel …")
+        self.btn_browse_xlsx.setToolTip(
+            "Select the clonality tracking workbook to label"
+        )
+        self.btn_browse_xlsx.clicked.connect(self._on_browse_xlsx)
+        header.addWidget(self.btn_browse_xlsx, 3, 0)
+
+        self.lbl_xlsx = _ElidedPathLabel("No Excel workbook loaded")
+        self.lbl_xlsx.setAccessibleName("Selected Excel workbook")
+        header.addWidget(self.lbl_xlsx, 3, 1, 1, 3)
+
+        self.btn_browse_fsa = QPushButton("Browse FSA root …")
+        self.btn_browse_fsa.setToolTip(
+            "Select the folder containing the source FSA files"
+        )
+        self.btn_browse_fsa.clicked.connect(self._on_browse_fsa)
+        header.addWidget(self.btn_browse_fsa, 4, 0)
+
+        self.lbl_fsa = _ElidedPathLabel("No FSA root selected")
+        self.lbl_fsa.setAccessibleName("Selected FSA root")
+        header.addWidget(self.lbl_fsa, 4, 1, 1, 3)
+
+        self.lbl_save_status = QLabel("Load an Excel workbook to begin labeling.")
+        self.lbl_save_status.setObjectName("WorkflowStatusText")
+        self.lbl_save_status.setWordWrap(True)
+        self.lbl_save_status.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.lbl_save_status.setMinimumWidth(0)
+        self.lbl_save_status.setAccessibleName("Labeling save status")
+        header.addWidget(self.lbl_save_status, 2, 0, 1, 4)
+        self._set_save_status(self.lbl_save_status.text(), "ready")
+
+        layout.addWidget(header_card)
 
         # --- Progress ---
         self.progress = QProgressBar()
@@ -178,7 +264,10 @@ class TabLabeling(QWidget):
         layout.addWidget(self.progress)
 
         # --- Main splitter: sample list | plot + metadata ---
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Start stacked so the page can negotiate a genuinely narrow minimum
+        # size. ``resizeEvent`` switches to the wider desktop arrangement as
+        # soon as enough content width is available.
+        self._main_splitter = QSplitter(Qt.Orientation.Vertical)
 
         # Left: sample list
         list_panel = QWidget()
@@ -191,6 +280,10 @@ class TabLabeling(QWidget):
 
         filter_row = QHBoxLayout()
         self.queue_filter = QComboBox()
+        self.queue_filter.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Fixed,
+        )
         self.queue_filter.addItem("All", "all")
         self.queue_filter.addItem("Unlabeled", "unlabeled")
         self.queue_filter.addItem("Rule review", "review")
@@ -198,6 +291,10 @@ class TabLabeling(QWidget):
         filter_row.addWidget(self.queue_filter)
 
         self.assay_filter = QComboBox()
+        self.assay_filter.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Fixed,
+        )
         self.assay_filter.addItem("All assays", "")
         self.assay_filter.currentIndexChanged.connect(self._on_assay_filter_changed)
         filter_row.addWidget(self.assay_filter)
@@ -207,7 +304,7 @@ class TabLabeling(QWidget):
         self.sample_list.currentRowChanged.connect(self._on_sample_selected)
         list_layout.addWidget(self.sample_list)
 
-        splitter.addWidget(list_panel)
+        self._main_splitter.addWidget(list_panel)
 
         # Right: metadata + plot
         detail_panel = QWidget()
@@ -225,6 +322,10 @@ class TabLabeling(QWidget):
 
         channel_row = QHBoxLayout()
         self.channel_selector = QComboBox()
+        self.channel_selector.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Fixed,
+        )
         self.channel_selector.setToolTip("Trace channel and biological target")
         self.channel_selector.currentIndexChanged.connect(
             self._on_channel_changed
@@ -238,7 +339,7 @@ class TabLabeling(QWidget):
         )
         self.btn_overlay_channels.clicked.connect(self._render_current_plot)
         channel_row.addWidget(self.btn_overlay_channels)
-        self.btn_apply_all_channels = QPushButton("Apply to all")
+        self.btn_apply_all_channels = QPushButton("Apply all")
         self.btn_apply_all_channels.setToolTip(
             "Apply the selected channel's current label to every assay channel"
         )
@@ -258,6 +359,12 @@ class TabLabeling(QWidget):
             "<b>↑/↓</b>=navigate &nbsp; <b>Backspace</b>=clear &nbsp; <b>Ctrl+S</b>=save"
         )
         self.lbl_hint.setStyleSheet("font-size: 11px; color: #666; padding: 1px 4px;")
+        self.lbl_hint.setWordWrap(True)
+        self.lbl_hint.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.lbl_hint.setMinimumWidth(0)
         detail_layout.addWidget(self.lbl_hint)
 
         self.lbl_plot_status = QLabel("Select an FSA root to load calibrated traces")
@@ -302,10 +409,32 @@ class TabLabeling(QWidget):
             self.plot_widget = QLabel("pyqtgraph not available — plots disabled")
             detail_layout.addWidget(self.plot_widget, stretch=1)
 
-        splitter.addWidget(detail_panel)
-        splitter.setSizes([220, 900])
+        self._main_splitter.addWidget(detail_panel)
+        self._main_splitter.setSizes([180, 620])
 
-        layout.addWidget(splitter, stretch=1)
+        layout.addWidget(self._main_splitter, stretch=1)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if not hasattr(self, "_main_splitter"):
+            return
+        compact = event.size().width() < 760
+        orientation = (
+            Qt.Orientation.Vertical
+            if compact
+            else Qt.Orientation.Horizontal
+        )
+        if self._main_splitter.orientation() == orientation:
+            return
+        self._main_splitter.setOrientation(orientation)
+        if compact:
+            self._main_splitter.setSizes(
+                [180, max(360, event.size().height() - 300)]
+            )
+        else:
+            self._main_splitter.setSizes(
+                [220, max(540, event.size().width() - 220)]
+            )
 
     def _setup_shortcuts(self):
         # Label shortcuts
@@ -333,20 +462,22 @@ class TabLabeling(QWidget):
         try:
             self._session = LabelingSession(excel_path=path)
             self._session.load()
-            self.lbl_xlsx.setText(path)
-            self.lbl_xlsx.setStyleSheet("color: #333;")
+            self.lbl_xlsx.set_full_text(path)
+            self.btn_save.setEnabled(True)
+            self._set_save_status("Workbook loaded — no unsaved changes.", "ready")
             self._populate_assay_filter()
             self._refresh_sample_list()
         except Exception as exc:
-            self.lbl_xlsx.setText(f"Error: {exc}")
-            self.lbl_xlsx.setStyleSheet("color: red;")
+            self._session = None
+            self.btn_save.setEnabled(False)
+            self.lbl_xlsx.set_full_text(path)
+            self._set_save_status(f"Could not load the workbook: {exc}", "error")
 
     def _on_browse_fsa(self):
         path = QFileDialog.getExistingDirectory(self, "Select FSA root directory")
         if path:
             self._fsa_root = path
-            self.lbl_fsa.setText(path)
-            self.lbl_fsa.setStyleSheet("color: #333;")
+            self.lbl_fsa.set_full_text(path)
             self._render_current_plot()
 
     def _refresh_sample_list(self):
@@ -802,6 +933,7 @@ class TabLabeling(QWidget):
             label,
             channel=self._selected_channel or None,
         )
+        self._mark_unsaved()
         sample = self._session.samples[idx]
         next_channel = next(
             (
@@ -838,6 +970,7 @@ class TabLabeling(QWidget):
             idx,
             channel=self._selected_channel or None,
         )
+        self._mark_unsaved()
         self._refresh_sample_list()
 
     def _on_apply_label_to_all_channels(self):
@@ -849,6 +982,7 @@ class TabLabeling(QWidget):
         if not label:
             return
         self._session.label_all_channels(idx, label)
+        self._mark_unsaved()
         current_row = self.sample_list.currentRow()
         self._refresh_sample_list()
         if self.sample_list.count():
@@ -879,13 +1013,32 @@ class TabLabeling(QWidget):
 
     def _on_save(self):
         if not self._session:
+            self._set_save_status("Load an Excel workbook before saving.", "warning")
             return
         try:
             written = self._session.save_to_excel()
-            self.lbl_xlsx.setText(f"{self._session.excel_path} — saved {written} labels")
+            if written:
+                self._set_save_status(
+                    f"Saved {written} label change(s) to {Path(self._session.excel_path).name}.",
+                    "success",
+                )
+            else:
+                self._set_save_status("Everything is already saved.", "ready")
         except Exception as exc:
-            self.lbl_xlsx.setText(f"Save error: {exc}")
-            self.lbl_xlsx.setStyleSheet("color: red;")
+            self._set_save_status(f"Save failed: {exc}", "error")
+
+    def _mark_unsaved(self) -> None:
+        self._set_save_status(
+            "Unsaved label changes — choose Save changes or press Ctrl+S.",
+            "warning",
+        )
+
+    def _set_save_status(self, text: str, state: str) -> None:
+        self.lbl_save_status.setText(text)
+        self.lbl_save_status.setProperty("state", state)
+        style = self.lbl_save_status.style()
+        style.unpolish(self.lbl_save_status)
+        style.polish(self.lbl_save_status)
 
     def _on_toggle_wide_view(self):
         self._wide_mode = not self._wide_mode
