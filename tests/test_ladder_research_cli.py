@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from core.research.ladder.contracts import ResearchRoots
 from core.research.ladder.diagnostics import normalize_rust_result
@@ -30,6 +33,23 @@ EXPECTED_ARTIFACTS = {
     "release_manifest.json",
     "run_manifest.json",
 }
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    ("build_ladder_research_corpus.py", "benchmark_rust_ladder.py"),
+)
+def test_direct_script_startup_can_import_project_modules(tmp_path, script_name):
+    script = Path(__file__).resolve().parents[1] / "scripts" / script_name
+
+    completed = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def fixture_roots(tmp_path: Path) -> ResearchRoots:

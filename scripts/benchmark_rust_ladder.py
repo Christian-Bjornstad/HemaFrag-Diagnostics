@@ -8,17 +8,21 @@ import json
 import math
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from core.research.ladder.contracts import LadderOutcome
 from core.research.ladder.diagnostics import classify_ladder_outcome
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CLI = REPO_ROOT / "fraggler-v2" / "target" / "release" / "fraggler-cli.exe"
 BENCHMARK_SCHEMA = "hemafrag_rust_ladder_benchmark_v1"
 
