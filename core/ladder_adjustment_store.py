@@ -136,8 +136,13 @@ def load_ladder_adjustment_record(
     *,
     ladder: str = "",
     size_standard_channel: str = "",
+    database_path: Path | None = None,
 ) -> dict[str, Any] | None:
-    database_path = resolve_ladder_adjustment_db_path()
+    database_path = (
+        Path(database_path).expanduser()
+        if database_path is not None
+        else resolve_ladder_adjustment_db_path()
+    )
     if not database_path.is_file():
         return None
 

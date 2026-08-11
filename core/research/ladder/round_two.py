@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -14,6 +15,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from core.analyses.clonality.ladder_review_labels import (
+    is_review_fitting_eligible,
+    is_review_ml_eligible,
+    is_review_resolved,
+)
+from core.ladder_adjustment_store import load_ladder_adjustment_record
 from core.research.ladder.contracts import ResearchRoots
 from core.research.ladder.review_bundle import prepare_blind_review_bundle
 
@@ -49,6 +56,16 @@ class RoundTwoReviewResult:
     case_count: int
     adjustment_database: Path
     withheld_manifest: Path
+
+
+@dataclass(frozen=True)
+class RoundTwoOutcomeResult:
+    outcomes_path: Path
+    comparison_path: Path
+    total_count: int
+    excluded_count: int
+    fitting_evaluation_count: int
+    ml_eligible_count: int
 
 
 def _path_key(value: Any) -> str:
@@ -561,4 +578,389 @@ def prepare_round_two_review(
         case_count=bundle_result.case_count,
         adjustment_database=bundle_result.adjustment_database,
         withheld_manifest=withheld_path,
+    )
+
+
+def _load_json_object(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected a JSON object: {path}")
+    return value
+
+
+def _scan_indices(value: Any, *, context: str) -> list[float]:
+    if not isinstance(value, list):
+        raise ValueError(f"{context} must be a list")
+    result: list[float] = []
+    for item in value:
+        try:
+            number = float(item)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{context} contains a non-numeric scan index") from exc
+        if not math.isfinite(number):
+            raise ValueError(f"{context} contains a non-finite scan index")
+        result.append(number)
+    return result
+
+
+def _verified_manual_scan_indices(
+    source_path: Path,
+    *,
+    ladder: str,
+    database_path: Path,
+    case_id: str,
+) -> list[float]:
+    record = load_ladder_adjustment_record(
+        source_path,
+        ladder=ladder,
+        database_path=database_path,
+    )
+    if record is None:
+        record = load_ladder_adjustment_record(
+            source_path,
+            database_path=database_path,
+        )
+    payload = record.get("payload") if isinstance(record, dict) else None
+    validation = payload.get("validation") if isinstance(payload, dict) else None
+    selected_peaks = payload.get("selected_peaks") if isinstance(payload, dict) else None
+    if (
+        not isinstance(validation, dict)
+        or validation.get("save_verified") is not True
+        or not isinstance(selected_peaks, list)
+        or not selected_peaks
+    ):
+        raise ValueError(
+            f"Manual case {case_id} has no verified selected_peaks in the bundle database"
+        )
+
+    indexed: list[tuple[int, float]] = []
+    for peak in selected_peaks:
+        if not isinstance(peak, dict):
+            raise ValueError(
+                f"Manual case {case_id} has invalid verified selected_peaks"
+            )
+        try:
+            step_index = int(peak["step_index"])
+            observed_time = float(peak["observed_time"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Manual case {case_id} has invalid verified selected_peaks"
+            ) from exc
+        if step_index < 0 or not math.isfinite(observed_time):
+            raise ValueError(
+                f"Manual case {case_id} has invalid verified selected_peaks"
+            )
+        indexed.append((step_index, observed_time))
+
+    indexed.sort()
+    step_indices = [step_index for step_index, _value in indexed]
+    if len(set(step_indices)) != len(step_indices):
+        raise ValueError(
+            f"Manual case {case_id} has invalid verified selected_peaks"
+        )
+    return [value for _step_index, value in indexed]
+
+
+def _anchor_deltas(
+    rust_scan_indices: list[float], review_scan_indices: list[float]
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for anchor_index in range(max(len(rust_scan_indices), len(review_scan_indices))):
+        rust_value = (
+            rust_scan_indices[anchor_index]
+            if anchor_index < len(rust_scan_indices)
+            else None
+        )
+        review_value = (
+            review_scan_indices[anchor_index]
+            if anchor_index < len(review_scan_indices)
+            else None
+        )
+        result.append(
+            {
+                "anchor_index": anchor_index,
+                "rust_scan_index": rust_value,
+                "review_scan_index": review_value,
+                "delta_scan": (
+                    review_value - rust_value
+                    if rust_value is not None and review_value is not None
+                    else None
+                ),
+            }
+        )
+    return result
+
+
+def _counter(values: Iterable[Any]) -> dict[str, int]:
+    counts = Counter(str(value or "") for value in values)
+    return dict(sorted(counts.items()))
+
+
+def _repeated_error_patterns(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for case in cases:
+        if (
+            case["cohort_group"] == "suspicious"
+            and case["label"] == "manual_adjusted"
+        ):
+            grouped.setdefault(case["failure_signature"], []).append(case)
+
+    result: list[dict[str, Any]] = []
+    for signature, pattern_cases in sorted(grouped.items()):
+        if len(pattern_cases) < 2:
+            continue
+        deltas = [
+            abs(float(anchor["delta_scan"]))
+            for case in pattern_cases
+            for anchor in case["anchor_deltas"]
+            if anchor["delta_scan"] is not None
+        ]
+        result.append(
+            {
+                "failure_signature": signature,
+                "case_count": len(pattern_cases),
+                "case_ids": [case["case_id"] for case in pattern_cases],
+                "maximum_absolute_delta_scan": max(deltas, default=0.0),
+            }
+        )
+    return result
+
+
+def _markdown_count_table(title: str, counts: Mapping[str, int]) -> list[str]:
+    lines = [f"## {title}", "", "| Value | Count |", "|---|---:|"]
+    lines.extend(f"| {value or '(blank)'} | {count} |" for value, count in counts.items())
+    lines.append("")
+    return lines
+
+
+def _render_round_two_comparison(payload: Mapping[str, Any]) -> str:
+    counts = payload["counts"]
+    lines = [
+        "# Round-Two Ladder Review Comparison",
+        "",
+        f"Generated: {payload['generated_at_utc']}",
+        "",
+        "## Denominators",
+        "",
+        f"- Audit total: {payload['total_count']}",
+        f"- Missing-ladder exclusions: {payload['excluded_count']}",
+        f"- Fitting evaluation: {payload['fitting_evaluation_count']}",
+        f"- ML eligible: {payload['ml_eligible_count']}",
+        "",
+    ]
+    for title, key in (
+        ("Review outcome", "by_label"),
+        ("Ladder", "by_ladder"),
+        ("Year", "by_year"),
+        ("Assay", "by_assay"),
+        ("Failure signature", "by_failure_signature"),
+        ("Blind cohort group", "by_cohort_group"),
+    ):
+        lines.extend(_markdown_count_table(title, counts[key]))
+
+    lines.extend(
+        [
+            "## Case comparison",
+            "",
+            "| Case | Label | Ladder | Year | Assay | Blind cohort group | Failure signature | Rust scans | Review scans | Review - Rust |",
+            "|---|---|---|---|---|---|---|---|---|---|",
+        ]
+    )
+    for case in payload["cases"]:
+        delta_values = [item["delta_scan"] for item in case["anchor_deltas"]]
+        lines.append(
+            "| {case_id} | {label} | {ladder} | {year} | {assay} | "
+            "{cohort_group} | {failure_signature} | {rust} | {review} | {delta} |".format(
+                **case,
+                rust=json.dumps(case["rust_preview_scan_indices"]),
+                review=json.dumps(case["review_scan_indices"]),
+                delta=json.dumps(delta_values),
+            )
+        )
+    lines.extend(["", "## Repeated error patterns", ""])
+    patterns = payload["repeated_error_patterns"]
+    if patterns:
+        for pattern in patterns:
+            lines.append(
+                "- `{failure_signature}`: {case_count} manually corrected suspicious "
+                "cases; maximum absolute scan delta {maximum_absolute_delta_scan}.".format(
+                    **pattern
+                )
+            )
+    else:
+        lines.append("- No repeated manually corrected suspicious pattern met the shortlist threshold.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _write_temporary_text(path: Path, text: str) -> Path:
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            mode="w",
+            encoding="utf-8",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(text)
+        return temporary
+    except Exception:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
+
+
+def finalize_round_two_review(workspace: Path) -> RoundTwoOutcomeResult:
+    """Finalize a fully resolved blind review using only bundle-local evidence."""
+
+    target = Path(workspace).resolve()
+    bundle_dir = target / "round_2_review_bundle"
+    cases_path = bundle_dir / "ladder_review_cases.csv"
+    withheld_path = target / "round_2_selection_withheld.json"
+    adjustment_database = bundle_dir / "ladder_adjustments.sqlite3"
+    review_rows = _read_csv(cases_path)
+    withheld = _load_json_object(withheld_path)
+    withheld_cases_raw = withheld.get("cases")
+    if not isinstance(withheld_cases_raw, list) or not all(
+        isinstance(case, dict) for case in withheld_cases_raw
+    ):
+        raise ValueError("Round-two withheld manifest must contain a cases list")
+    withheld_cases = [dict(case) for case in withheld_cases_raw]
+    expected_count = int(withheld.get("case_count") or 0)
+    if expected_count <= 0 or len(review_rows) != expected_count or len(withheld_cases) != expected_count:
+        raise ValueError("Round-two CSV and withheld manifest case counts do not match")
+
+    rows_by_id = {str(row.get("source_run_dir") or "").strip(): row for row in review_rows}
+    cases_by_id = {str(case.get("case_id") or "").strip(): case for case in withheld_cases}
+    if (
+        "" in rows_by_id
+        or "" in cases_by_id
+        or len(rows_by_id) != len(review_rows)
+        or len(cases_by_id) != len(withheld_cases)
+        or rows_by_id.keys() != cases_by_id.keys()
+    ):
+        raise ValueError("Round-two CSV rows do not match the withheld manifest cases")
+
+    unresolved = [
+        case_id
+        for case_id, row in sorted(rows_by_id.items())
+        if not is_review_resolved(row.get("label"))
+    ]
+    if unresolved:
+        raise ValueError(
+            f"Round-two review has {len(unresolved)} unresolved rows: {', '.join(unresolved)}"
+        )
+
+    outcome_cases: list[dict[str, Any]] = []
+    for case_id in sorted(rows_by_id):
+        row = rows_by_id[case_id]
+        withheld_case = cases_by_id[case_id]
+        source_path = Path(str(row.get("full_path") or ""))
+        if _path_key(source_path) != _path_key(withheld_case.get("copied_path")):
+            raise ValueError(f"Round-two case {case_id} copied path does not match")
+        label = str(row.get("label") or "").strip().casefold()
+        rust_scans = _scan_indices(
+            withheld_case.get("preview_scan_indices"),
+            context=f"Round-two case {case_id} Rust preview",
+        )
+        if label == "manual_adjusted":
+            review_scans = _verified_manual_scan_indices(
+                source_path,
+                ladder=str(row.get("ladder") or ""),
+                database_path=adjustment_database,
+                case_id=case_id,
+            )
+        elif label == "reviewed_no_change":
+            review_scans = list(rust_scans)
+        elif label == "excluded_missing_ladder_signal":
+            review_scans = []
+        else:  # The centralized policy currently makes this unreachable.
+            raise ValueError(f"Unsupported resolved label for round-two case {case_id}")
+
+        outcome_cases.append(
+            {
+                "case_id": case_id,
+                "content_sha256": str(withheld_case.get("content_sha256") or ""),
+                "physical_run_key": str(withheld_case.get("physical_run_key") or ""),
+                "year": str(withheld_case.get("year") or ""),
+                "assay": str(withheld_case.get("assay") or row.get("assay") or ""),
+                "ladder": str(withheld_case.get("ladder") or row.get("ladder") or ""),
+                "cohort_group": str(withheld_case.get("cohort_group") or ""),
+                "failure_signature": str(withheld_case.get("reason_signature") or "none"),
+                "selection_reason": str(withheld_case.get("selection_reason") or ""),
+                "label": label,
+                "label_note": str(row.get("label_note") or ""),
+                "reviewed_at_utc": str(row.get("reviewed_at_utc") or ""),
+                "rust_preview_scan_indices": rust_scans,
+                "review_scan_indices": review_scans,
+                "anchor_deltas": (
+                    []
+                    if label == "excluded_missing_ladder_signal"
+                    else _anchor_deltas(rust_scans, review_scans)
+                ),
+                "fitting_evaluation_eligible": is_review_fitting_eligible(label),
+                "ml_eligible": is_review_ml_eligible(label),
+            }
+        )
+
+    total_count = len(outcome_cases)
+    excluded_count = sum(
+        case["label"] == "excluded_missing_ladder_signal" for case in outcome_cases
+    )
+    fitting_evaluation_count = sum(
+        bool(case["fitting_evaluation_eligible"]) for case in outcome_cases
+    )
+    ml_eligible_count = sum(bool(case["ml_eligible"]) for case in outcome_cases)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "schema_version": "1.0",
+        "generated_at_utc": generated_at,
+        "total_count": total_count,
+        "excluded_count": excluded_count,
+        "fitting_evaluation_count": fitting_evaluation_count,
+        "ml_eligible_count": ml_eligible_count,
+        "counts": {
+            "by_label": _counter(case["label"] for case in outcome_cases),
+            "by_ladder": _counter(case["ladder"] for case in outcome_cases),
+            "by_year": _counter(case["year"] for case in outcome_cases),
+            "by_assay": _counter(case["assay"] for case in outcome_cases),
+            "by_failure_signature": _counter(
+                case["failure_signature"] for case in outcome_cases
+            ),
+            "by_cohort_group": _counter(
+                case["cohort_group"] for case in outcome_cases
+            ),
+        },
+        "repeated_error_patterns": _repeated_error_patterns(outcome_cases),
+        "cases": outcome_cases,
+    }
+    outcomes_path = target / "round_2_review_outcomes.json"
+    comparison_path = target / "round_2_review_comparison.md"
+    outcomes_temporary = _write_temporary_text(
+        outcomes_path,
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+    )
+    comparison_temporary: Path | None = None
+    try:
+        comparison_temporary = _write_temporary_text(
+            comparison_path, _render_round_two_comparison(payload)
+        )
+        os.replace(outcomes_temporary, outcomes_path)
+        os.replace(comparison_temporary, comparison_path)
+    except Exception:
+        outcomes_temporary.unlink(missing_ok=True)
+        if comparison_temporary is not None:
+            comparison_temporary.unlink(missing_ok=True)
+        raise
+
+    return RoundTwoOutcomeResult(
+        outcomes_path=outcomes_path,
+        comparison_path=comparison_path,
+        total_count=total_count,
+        excluded_count=excluded_count,
+        fitting_evaluation_count=fitting_evaluation_count,
+        ml_eligible_count=ml_eligible_count,
     )

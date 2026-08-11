@@ -12,6 +12,10 @@ from core.analysis import (
     load_ladder_adjustment,
     save_ladder_adjustment,
 )
+from core.ladder_adjustment_store import (
+    load_ladder_adjustment_record,
+    save_ladder_adjustment_record,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +32,19 @@ def _payload() -> dict:
         "mapping_times": {0: 100.0, 1: 200.0, 2: 300.0},
         "manual_candidates": [100.0, 200.0, 300.0],
     }
+
+
+def test_adjustment_loader_can_target_bundle_database(tmp_path):
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"fsa")
+    save_ladder_adjustment_record(source, _payload())
+
+    isolated_database = tmp_path / "review_bundle" / "ladder_adjustments.sqlite3"
+
+    assert (
+        load_ladder_adjustment_record(source, database_path=isolated_database) is None
+    )
+    assert load_ladder_adjustment_record(source) is not None
 
 
 def test_manual_ladder_adjustment_is_atomically_saved_and_reloadable(tmp_path):
