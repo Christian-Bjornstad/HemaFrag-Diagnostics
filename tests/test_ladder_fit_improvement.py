@@ -80,6 +80,23 @@ def test_fit_gold_contains_only_usable_explicitly_approved_complete_ladders(tmp_
     assert all(record["content_sha256"] in {approved_hash} for record in manifest["records"])
 
 
+def test_fit_gold_can_bind_locked_validation_provenance(tmp_path):
+    approved_file = tmp_path / "validation.fsa"
+    approved_file.write_bytes(b"validation")
+    content_hash = hashlib.sha256(approved_file.read_bytes()).hexdigest()
+
+    manifest = build_approved_fit_gold(
+        {"cases": []},
+        {"cases": [_reviewed_outcome(content_hash)]},
+        {content_hash: _gold_approval(approved_file, content_hash)},
+        development_truth_source="validation_review",
+        partition="locked_validation_fit_gold",
+    )
+
+    assert manifest["records"][0]["truth_source"] == "validation_review"
+    assert manifest["records"][0]["partition"] == "locked_validation_fit_gold"
+
+
 def test_fit_gold_rejects_changed_bytes(tmp_path):
     approved_file = tmp_path / "changed.fsa"
     approved_file.write_bytes(b"changed")

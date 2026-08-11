@@ -1004,13 +1004,16 @@ def build_approved_fit_gold(
     round_two_outcomes: Mapping[str, Any],
     development_outcomes: Mapping[str, Any],
     approvals: Mapping[str, Mapping[str, Any]],
+    *,
+    development_truth_source: str = "development_review",
+    partition: str = "development_fit_gold",
 ) -> dict[str, Any]:
     """Build hash- and identity-bound fitting gold from explicit approvals."""
 
     reviewed_by_hash: dict[str, tuple[str, dict[str, Any]]] = {}
     for source, payload in (
         ("round_two_review", round_two_outcomes),
-        ("development_review", development_outcomes),
+        (development_truth_source, development_outcomes),
     ):
         cases = payload.get("cases") if isinstance(payload, Mapping) else None
         if not isinstance(cases, list) or not all(
@@ -1095,7 +1098,7 @@ def build_approved_fit_gold(
                 "expected_scan_indices": scans,
                 "failure_family": str(case.get("failure_signature") or ""),
                 "truth_source": truth_source,
-                "partition": "development_fit_gold",
+                "partition": partition,
                 "review_label": label,
                 "reviewed_at_utc": reviewed_at,
                 "reviewed_by": reviewed_by,

@@ -37,6 +37,7 @@ from core.research.ladder.corrections import (
 )
 from core.research.ladder.diagnostics import DiagnosticRecord, run_rust_diagnostic
 from core.research.ladder.fit_improvement import (
+    assert_validation_unlocked,
     build_approved_fit_gold,
     finalize_fit_improvement_wave,
     freeze_fit_candidate,
@@ -878,6 +879,53 @@ def _export_fit_gold_command(args: argparse.Namespace) -> None:
     )
 
 
+def _export_fit_validation_gold_command(args: argparse.Namespace) -> None:
+    workspace = args.workspace.resolve()
+    assert_canonical_production_workspace(workspace)
+    experiment = workspace / "rust_fit_improvement"
+    assert_validation_unlocked(workspace)
+    validation = json.loads(
+        (experiment / "validation_outcomes.json").read_text(encoding="utf-8")
+    )
+    selection = json.loads(
+        (experiment / "validation_selection_withheld.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    selected_cases = {
+        str(case.get("content_sha256") or "").casefold(): dict(case)
+        for case in selection.get("cases") or []
+    }
+    approvals: dict[str, dict[str, Any]] = {}
+    for outcome in validation.get("cases") or []:
+        if not bool(outcome.get("fitting_evaluation_eligible")):
+            continue
+        content_hash = str(outcome.get("content_sha256") or "").casefold()
+        selected = selected_cases.get(content_hash)
+        if selected is None:
+            raise ValueError("Validation fit-gold case is missing its hash-bound selection")
+        physical_run = str(outcome.get("physical_run_key") or "")
+        approvals[content_hash] = {
+            "path": str(selected.get("copied_path") or ""),
+            "content_sha256": content_hash,
+            "physical_run_key": physical_run,
+            "identity_key": f"patient:{physical_run}",
+            "sample_kind": str(selected.get("sample_kind") or "patient"),
+            "reviewed_by": args.reviewed_by,
+            "approved_for_fit_gold": True,
+        }
+    manifest = build_approved_fit_gold(
+        {"cases": []},
+        validation,
+        approvals,
+        development_truth_source="validation_review",
+        partition="locked_validation_fit_gold",
+    )
+    output = experiment / "validation_gold_manifest.json"
+    _write_json(output, manifest)
+    print(json.dumps({"output": str(output), "record_count": manifest["record_count"]}, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -956,6 +1004,11 @@ def main() -> None:
     export_fit_gold.add_argument("--workspace", required=True, type=Path)
     export_fit_gold.add_argument("--reviewed-by", default="chemist")
     export_fit_gold.set_defaults(handler=_export_fit_gold_command)
+
+    export_validation_gold = commands.add_parser("export-fit-validation-gold")
+    export_validation_gold.add_argument("--workspace", required=True, type=Path)
+    export_validation_gold.add_argument("--reviewed-by", default="chemist")
+    export_validation_gold.set_defaults(handler=_export_fit_validation_gold_command)
 
     finalize_fit_validation = commands.add_parser("finalize-fit-validation")
     finalize_fit_validation.add_argument("--workspace", required=True, type=Path)
