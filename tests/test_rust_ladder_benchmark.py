@@ -19,6 +19,7 @@ from scripts.benchmark_rust_ladder import (
     _stable_fingerprint,
     _taxonomy_comparison,
     benchmark,
+    evaluate_fit_candidate,
 )
 
 
@@ -29,6 +30,10 @@ def test_ladder_benchmark_identity_ignores_non_fit_metadata():
         "size_standard_channel_guess": "DATA105",
         "ladder_fit_preview": {
             "best_scan_indices": [10, 20, 30],
+            "search_diagnostics": {
+                "fit_tier": "deep_rescue_10s",
+                "elapsed_us": 12345,
+            },
             "sizing_model": {
                 "predicted_ladder_basepairs": [35.0, 50.0, 75.0],
                 "qc_metrics": {
@@ -59,6 +64,7 @@ def test_ladder_benchmark_identity_ignores_non_fit_metadata():
     assert identity["selected_baseline_like_anchor_count"] == 2
     assert identity["selected_cleaner_neighbor_count"] == 1
     assert identity["selected_strong_baseline_anchor_count"] == 1
+    assert "elapsed_us" not in identity["search_diagnostics"]
 
 
 def test_ladder_benchmark_identity_prefers_refined_scans():
@@ -457,6 +463,137 @@ def test_ladder_benchmark_reports_exact_anchor_error_metrics(
     assert row["gold_mean_abs_scan_delta"] == pytest.approx(2.0)
     assert row["gold_max_abs_scan_delta"] == 5
     assert row["gold_major_wrong_sequence"] is True
+
+
+def test_ladder_benchmark_reports_search_tier_and_watchdog_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cli = tmp_path / "fraggler-cli.exe"
+    cli.write_bytes(b"cli")
+    input_file = tmp_path / "case.fsa"
+    input_file.write_bytes(b"fixture")
+    monkeypatch.setattr(
+        benchmark_module,
+        "_run_once",
+        lambda *_args, **_kwargs: (
+            0.1,
+            {
+                "ladder": "ROX400HD",
+                "ladder_fit_preview": {
+                    "best_scan_indices": [10, 20, 30],
+                    "search_tier": "deep_rescue_10s",
+                    "search_diagnostics": {
+                        "fit_tier": "deep_rescue_10s",
+                        "watchdog_reached": True,
+                        "expansions_used": 50,
+                        "expansion_limit": 50,
+                        "elapsed_us": 10_000_001,
+                    },
+                    "sizing_model": {},
+                },
+                "ladder_review_assessment": {"reason_codes": []},
+                "timings_us": {"ladder_fit": 100_000},
+            },
+        ),
+    )
+
+    result = benchmark(
+        [input_file], cli=cli, repeats=1, warmups=0, timeout_seconds=10
+    )
+
+    assert result["by_tier"]["deep_rescue_10s"]["file_count"] == 1
+    assert result["overall"]["rescue_invocation_count"] == 1
+    assert result["overall"]["watchdog_reached_count"] == 1
+
+
+def _comparison_fixture(*, candidate_exact=True, candidate_major=False):
+    baseline = {
+        "deterministic": True,
+        "configuration": {"timeout_seconds": 10},
+        "files": [
+            {
+                "content_sha256": "a" * 64,
+                "ladder": "ROX400HD",
+                "gold_exact_match": True,
+                "gold_major_wrong_sequence": False,
+                "gold_anchors_changed": 0,
+                "gold_max_abs_scan_delta": 0,
+                "identity": {"scan_indices": [10, 20], "search_tier": "primary_beam"},
+                "runs": [],
+            }
+        ],
+    }
+    candidate = json.loads(json.dumps(baseline))
+    candidate["files"][0].update(
+        {
+            "gold_exact_match": candidate_exact,
+            "gold_major_wrong_sequence": candidate_major,
+            "gold_anchors_changed": 2 if not candidate_exact else 0,
+            "gold_max_abs_scan_delta": 5 if not candidate_exact else 0,
+        }
+    )
+    if not candidate_exact:
+        candidate["files"][0]["identity"]["scan_indices"] = [11, 25]
+    return baseline, candidate
+
+
+def test_promotion_gate_requires_exact_controls_and_no_major_regression():
+    baseline, candidate = _comparison_fixture()
+    gate = evaluate_fit_candidate(baseline, candidate)
+    assert gate["existing_exact_preserved"] is True
+    assert gate["major_wrong_sequence_regressions"] == 0
+    assert gate["promotable"] is True
+
+
+def test_promotion_gate_rejects_changed_exact_control():
+    baseline, candidate = _comparison_fixture(candidate_exact=False)
+    gate = evaluate_fit_candidate(baseline, candidate)
+    assert gate["existing_exact_preserved"] is False
+    assert gate["promotable"] is False
+
+
+def test_promotion_gate_rejects_new_major_wrong_sequence():
+    baseline, candidate = _comparison_fixture(
+        candidate_exact=False, candidate_major=True
+    )
+    baseline["files"][0]["gold_exact_match"] = False
+    baseline["files"][0]["gold_anchors_changed"] = 1
+    gate = evaluate_fit_candidate(baseline, candidate)
+    assert gate["major_wrong_sequence_regressions"] == 1
+    assert gate["promotable"] is False
+
+
+def test_promotion_gate_rejects_nondeterminism_and_watchdog_overflow():
+    baseline, candidate = _comparison_fixture()
+    candidate["deterministic"] = False
+    candidate["files"][0]["runs"] = [
+        {
+            "identity": {
+                "search_tier": "deep_rescue_10s",
+                "search_diagnostics": {
+                    "watchdog_reached": True,
+                    "elapsed_us": 10_000_001,
+                },
+            }
+        }
+    ]
+    gate = evaluate_fit_candidate(baseline, candidate)
+    assert gate["deterministic"] is False
+    assert gate["watchdog_overflow_count"] == 1
+    assert gate["promotable"] is False
+
+
+def test_promotion_gate_rejects_slower_fast_path_p95():
+    baseline, candidate = _comparison_fixture()
+    baseline["by_tier"] = {
+        "primary_beam": {"p95_engine_ladder_seconds": 0.10}
+    }
+    candidate["by_tier"] = {
+        "primary_beam": {"p95_engine_ladder_seconds": 0.20}
+    }
+    gate = evaluate_fit_candidate(baseline, candidate)
+    assert gate["fast_path_p95_regression"] is True
+    assert gate["promotable"] is False
 
 
 def test_ladder_benchmark_rejects_programmatic_hash_mismatch_before_runner(

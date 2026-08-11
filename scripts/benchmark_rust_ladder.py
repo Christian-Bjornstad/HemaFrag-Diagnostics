@@ -191,6 +191,7 @@ def _load_manifest_metadata(path: Path) -> dict[Path, dict[str, str]]:
 
 def _result_identity(result: dict[str, Any]) -> dict[str, object]:
     fit = result.get("ladder_fit_preview") or {}
+    diagnostics = fit.get("search_diagnostics") or {}
     refinement = fit.get("refinement") or {}
     model = fit.get("sizing_model") or {}
     qc = model.get("qc_metrics") or {}
@@ -200,6 +201,18 @@ def _result_identity(result: dict[str, Any]) -> dict[str, object]:
         "ladder": str(result.get("ladder") or ""),
         "size_standard_channel": str(result.get("size_standard_channel_guess") or ""),
         "search_tier": str(fit.get("search_tier") or ""),
+        "search_diagnostics": {
+            key: diagnostics.get(key)
+            for key in (
+                "fit_tier",
+                "watchdog_reached",
+                "expansions_used",
+                "expansion_limit",
+                "complete_candidate_count",
+                "rescue_triggers",
+            )
+            if key in diagnostics
+        },
         "scan_indices": [int(value) for value in scans],
         "expected_basepairs": [
             float(value) for value in model.get("predicted_ladder_basepairs") or []
@@ -337,6 +350,10 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, object]:
     taxonomy_statuses = [
         str(row.get("taxonomy_comparison_status") or "") for row in rows
     ]
+    diagnostics = [
+        (row.get("identity") or {}).get("search_diagnostics") or {}
+        for row in rows
+    ]
     return {
         "file_count": len(rows),
         "repeat_count": len(durations),
@@ -365,6 +382,165 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, object]:
             status == "not_applicable_human_label_required"
             for status in taxonomy_statuses
         ),
+        "rescue_invocation_count": sum(
+            str(value.get("fit_tier") or "")
+            in {"rescue_2s", "deep_rescue_10s"}
+            for value in diagnostics
+        ),
+        "watchdog_reached_count": sum(
+            bool(value.get("watchdog_reached")) for value in diagnostics
+        ),
+    }
+
+
+def _benchmark_rows_by_hash(value: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    rows = value.get("files") or []
+    if not isinstance(rows, list):
+        return {}
+    return {
+        str(row.get("content_sha256") or ""): row
+        for row in rows
+        if isinstance(row, dict) and str(row.get("content_sha256") or "")
+    }
+
+
+def _watchdog_overflow_count(value: dict[str, Any]) -> int:
+    count = 0
+    for row in value.get("files") or []:
+        for run in row.get("runs") or []:
+            identity = run.get("identity") or {}
+            diagnostics = (
+                run.get("search_diagnostics")
+                or identity.get("search_diagnostics")
+                or {}
+            )
+            tier = str(
+                diagnostics.get("fit_tier") or identity.get("search_tier") or ""
+            )
+            elapsed_us = int(diagnostics.get("elapsed_us") or 0)
+            ceiling_us = {
+                "rescue_2s": 2_000_000,
+                "deep_rescue_10s": 10_000_000,
+            }.get(tier)
+            if bool(diagnostics.get("watchdog_reached")) or (
+                ceiling_us is not None and elapsed_us > ceiling_us
+            ):
+                count += 1
+    return count
+
+
+def _strictly_closer_to_gold(
+    baseline: dict[str, Any], candidate: dict[str, Any]
+) -> bool:
+    if candidate.get("gold_exact_match") is True:
+        return True
+    before_changed = baseline.get("gold_anchors_changed")
+    after_changed = candidate.get("gold_anchors_changed")
+    before_delta = baseline.get("gold_max_abs_scan_delta")
+    after_delta = candidate.get("gold_max_abs_scan_delta")
+    if before_changed is None or after_changed is None:
+        return False
+    return bool(
+        after_changed < before_changed
+        or (
+            after_changed == before_changed
+            and before_delta is not None
+            and after_delta is not None
+            and after_delta < before_delta
+        )
+    )
+
+
+def _fast_path_p95(value: dict[str, Any]) -> float | None:
+    by_tier = value.get("by_tier") or {}
+    for tier in ("primary_beam", "fast"):
+        summary = by_tier.get(tier) or {}
+        measured = summary.get("p95_engine_ladder_seconds")
+        if measured is not None:
+            return float(measured)
+    return None
+
+
+def evaluate_fit_candidate(
+    baseline: dict[str, Any], candidate: dict[str, Any]
+) -> dict[str, object]:
+    """Evaluate a candidate without allowing aggregate gains to hide regressions."""
+
+    baseline_rows = _benchmark_rows_by_hash(baseline)
+    candidate_rows = _benchmark_rows_by_hash(candidate)
+    same_cases = set(baseline_rows) == set(candidate_rows) and bool(baseline_rows)
+    exact_regressions = 0
+    major_regressions = 0
+    farther_changed_cases = 0
+    ladder_major_deltas: dict[str, int] = {}
+    if same_cases:
+        ladders = sorted(
+            {str(row.get("ladder") or "") for row in baseline_rows.values()}
+        )
+        for ladder in ladders:
+            before = sum(
+                row.get("gold_major_wrong_sequence") is True
+                for row in baseline_rows.values()
+                if str(row.get("ladder") or "") == ladder
+            )
+            after = sum(
+                row.get("gold_major_wrong_sequence") is True
+                for row in candidate_rows.values()
+                if str(row.get("ladder") or "") == ladder
+            )
+            ladder_major_deltas[ladder] = after - before
+        for content_hash, before in baseline_rows.items():
+            after = candidate_rows[content_hash]
+            if before.get("gold_exact_match") is True and after.get(
+                "gold_exact_match"
+            ) is not True:
+                exact_regressions += 1
+            if before.get("gold_major_wrong_sequence") is not True and after.get(
+                "gold_major_wrong_sequence"
+            ) is True:
+                major_regressions += 1
+            before_scans = (before.get("identity") or {}).get("scan_indices") or []
+            after_scans = (after.get("identity") or {}).get("scan_indices") or []
+            if (
+                before_scans != after_scans
+                and before.get("gold_exact_match") is not True
+                and not _strictly_closer_to_gold(before, after)
+            ):
+                farther_changed_cases += 1
+    watchdog_overflow_count = _watchdog_overflow_count(candidate)
+    deterministic = bool(candidate.get("deterministic"))
+    family_major_regressions = sum(delta > 0 for delta in ladder_major_deltas.values())
+    baseline_fast_p95 = _fast_path_p95(baseline)
+    candidate_fast_p95 = _fast_path_p95(candidate)
+    fast_path_p95_regression = bool(
+        baseline_fast_p95 is not None
+        and candidate_fast_p95 is not None
+        and candidate_fast_p95 > baseline_fast_p95 * 1.25 + 0.01
+    )
+    promotable = bool(
+        same_cases
+        and deterministic
+        and exact_regressions == 0
+        and major_regressions == 0
+        and family_major_regressions == 0
+        and farther_changed_cases == 0
+        and watchdog_overflow_count == 0
+        and not fast_path_p95_regression
+    )
+    return {
+        "same_case_set": same_cases,
+        "deterministic": deterministic,
+        "existing_exact_preserved": exact_regressions == 0,
+        "exact_control_regressions": exact_regressions,
+        "major_wrong_sequence_regressions": major_regressions,
+        "major_wrong_sequence_delta_by_ladder": ladder_major_deltas,
+        "ladder_families_with_major_regression": family_major_regressions,
+        "changed_cases_not_strictly_closer": farther_changed_cases,
+        "watchdog_overflow_count": watchdog_overflow_count,
+        "baseline_fast_path_p95_seconds": baseline_fast_p95,
+        "candidate_fast_path_p95_seconds": candidate_fast_p95,
+        "fast_path_p95_regression": fast_path_p95_regression,
+        "promotable": promotable,
     }
 
 
@@ -467,6 +643,12 @@ def benchmark(
                         ),
                         "timings_us": timings_us,
                         "identity": identity,
+                        "search_diagnostics": (
+                            (result.get("ladder_fit_preview") or {}).get(
+                                "search_diagnostics"
+                            )
+                            or {}
+                        ),
                         "identity_fingerprint": _stable_fingerprint(identity),
                         "candidate_peak_count": int(result.get("ladder_peak_count") or 0),
                         "estimated_combinations": int(
@@ -569,6 +751,12 @@ def benchmark(
         outcome: _summarize([row for row in rows if row["engine_outcome"] == outcome])
         for outcome in sorted({str(row["engine_outcome"]) for row in rows})
     }
+    by_tier = {
+        tier: _summarize(
+            [row for row in rows if row["identity"]["search_tier"] == tier]
+        )
+        for tier in sorted({str(row["identity"]["search_tier"]) for row in rows})
+    }
     return {
         "schema_version": BENCHMARK_SCHEMA,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -597,6 +785,7 @@ def benchmark(
         "by_ladder": by_ladder,
         "by_failure_family": by_failure_family,
         "by_engine_outcome": by_engine_outcome,
+        "by_tier": by_tier,
         "files": rows,
     }
 
@@ -609,6 +798,11 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--warmups", type=int, default=0)
     parser.add_argument("--timeout-seconds", type=int, default=60)
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        help="Optional prior benchmark used to add a promotion_gate comparison.",
+    )
     args = parser.parse_args()
 
     result = benchmark(
@@ -620,6 +814,13 @@ def main() -> None:
         gold_expectations=_load_gold_expectations(args.manifest.expanduser().resolve()),
         case_metadata=_load_manifest_metadata(args.manifest.expanduser().resolve()),
     )
+    if args.baseline is not None:
+        baseline = json.loads(
+            args.baseline.expanduser().resolve().read_text(encoding="utf-8")
+        )
+        if not isinstance(baseline, dict):
+            raise ValueError("Baseline benchmark must be a JSON object")
+        result["promotion_gate"] = evaluate_fit_candidate(baseline, result)
     output = args.output.expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
@@ -629,6 +830,7 @@ def main() -> None:
                 "output": str(output),
                 "deterministic": result["deterministic"],
                 "by_ladder": result["by_ladder"],
+                "promotion_gate": result.get("promotion_gate"),
             },
             indent=2,
         )
