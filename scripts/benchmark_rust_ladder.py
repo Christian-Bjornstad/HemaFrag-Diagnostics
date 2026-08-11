@@ -13,7 +13,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -25,6 +25,10 @@ from core.research.ladder.diagnostics import classify_ladder_outcome
 
 DEFAULT_CLI = REPO_ROOT / "fraggler-v2" / "target" / "release" / "fraggler-cli.exe"
 BENCHMARK_SCHEMA = "hemafrag_rust_ladder_benchmark_v1"
+HUMAN_DEPENDENT_OUTCOMES = {
+    LadderOutcome.FIT_ACCEPTED_BUT_WRONG.value,
+    LadderOutcome.FIT_CORRECT_REVIEW_ONLY.value,
+}
 
 
 def _sha256(path: Path) -> str:
@@ -65,11 +69,32 @@ def _load_manifest(path: Path) -> list[Path]:
     if not isinstance(raw_files, list):
         raise ValueError("Manifest must be a JSON list or an object containing a 'files' list.")
     files: list[Path] = []
+    seen_paths: set[str] = set()
+    seen_hashes: set[str] = set()
     for entry in raw_files:
         raw_path = entry.get("path") if isinstance(entry, dict) else entry
         candidate = Path(str(raw_path or "")).expanduser().resolve()
         if not candidate.is_file():
             raise FileNotFoundError(candidate)
+        path_key = str(candidate).casefold()
+        if path_key in seen_paths:
+            raise ValueError(f"Manifest contains a duplicate input path: {candidate}")
+        seen_paths.add(path_key)
+        actual_hash = _sha256(candidate)
+        declared_hash = (
+            str(entry.get("content_sha256") or "").strip().lower()
+            if isinstance(entry, dict)
+            else ""
+        )
+        if declared_hash and declared_hash != actual_hash:
+            raise ValueError(
+                f"Manifest SHA-256 does not match input bytes: {candidate}"
+            )
+        if actual_hash in seen_hashes:
+            raise ValueError(
+                f"Manifest contains duplicate content SHA-256: {actual_hash}"
+            )
+        seen_hashes.add(actual_hash)
         files.append(candidate)
     if not files:
         raise ValueError("Manifest contains no input files.")
@@ -157,9 +182,16 @@ def _result_identity(result: dict[str, Any]) -> dict[str, object]:
     }
 
 
-def _run_once(cli: Path, input_file: Path, output_dir: Path) -> tuple[float, dict[str, Any]]:
+def _run_once(
+    cli: Path,
+    input_file: Path,
+    output_dir: Path,
+    *,
+    timeout_seconds: int,
+    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[float, dict[str, Any]]:
     started = time.perf_counter()
-    completed = subprocess.run(
+    completed = run_command(
         [
             str(cli),
             "analyze",
@@ -169,11 +201,13 @@ def _run_once(cli: Path, input_file: Path, output_dir: Path) -> tuple[float, dic
             str(input_file),
             "--output-dir",
             str(output_dir),
+            "--deterministic",
             "--compact-json",
         ],
         check=True,
         capture_output=True,
         text=True,
+        timeout=timeout_seconds,
     )
     elapsed_seconds = time.perf_counter() - started
     summary_path = output_dir / "analyze_summary.json"
@@ -187,15 +221,78 @@ def _run_once(cli: Path, input_file: Path, output_dir: Path) -> tuple[float, dic
     return elapsed_seconds, payload[0]
 
 
+def _taxonomy_comparison(
+    historical_family: str, engine_outcome: str
+) -> tuple[bool | None, str]:
+    historical = str(historical_family or "").strip().casefold()
+    engine = str(engine_outcome or "").strip().casefold()
+    if not historical:
+        return None, "not_available"
+    if historical in HUMAN_DEPENDENT_OUTCOMES:
+        return None, "not_applicable_human_label_required"
+    known_outcomes = {outcome.value for outcome in LadderOutcome}
+    if historical not in known_outcomes:
+        return None, "not_comparable_unknown_historical_family"
+    if historical == engine:
+        return True, "agreement"
+    return False, "model_transition"
+
+
+def _validate_benchmark_inputs(
+    files: list[Path],
+    case_metadata: dict[Path, dict[str, str]],
+) -> tuple[list[Path], dict[Path, str]]:
+    resolved_files: list[Path] = []
+    verified_hashes: dict[Path, str] = {}
+    seen_paths: set[str] = set()
+    seen_hashes: set[str] = set()
+    for raw_path in files:
+        input_file = Path(raw_path).expanduser().resolve()
+        if not input_file.is_file():
+            raise FileNotFoundError(input_file)
+        path_key = str(input_file).casefold()
+        if path_key in seen_paths:
+            raise ValueError(f"Benchmark contains a duplicate input path: {input_file}")
+        seen_paths.add(path_key)
+        actual_hash = _sha256(input_file)
+        if actual_hash in seen_hashes:
+            raise ValueError(
+                f"Benchmark contains duplicate content SHA-256: {actual_hash}"
+            )
+        seen_hashes.add(actual_hash)
+        declared_hash = str(
+            (case_metadata.get(input_file) or {}).get("content_sha256") or ""
+        ).strip().lower()
+        if declared_hash and declared_hash != actual_hash:
+            raise ValueError(
+                f"Benchmark SHA-256 does not match input bytes: {input_file}"
+            )
+        resolved_files.append(input_file)
+        verified_hashes[input_file] = actual_hash
+    if not resolved_files:
+        raise ValueError("Benchmark contains no input files")
+    return resolved_files, verified_hashes
+
+
 def _summarize(rows: list[dict[str, Any]]) -> dict[str, object]:
-    durations = [float(row["median_seconds"]) for row in rows]
-    engine_times = [
-        float(row["median_engine_ladder_seconds"])
+    durations = [
+        float(run["elapsed_seconds"])
         for row in rows
-        if row.get("median_engine_ladder_seconds") is not None
+        for run in row.get("runs") or []
+    ]
+    engine_times = [
+        float(run["engine_ladder_seconds"])
+        for row in rows
+        for run in row.get("runs") or []
+        if run.get("engine_ladder_seconds") is not None
+    ]
+    taxonomy_statuses = [
+        str(row.get("taxonomy_comparison_status") or "") for row in rows
     ]
     return {
         "file_count": len(rows),
+        "repeat_count": len(durations),
+        "latency_distribution": "all_measured_repeats",
         "median_seconds": statistics.median(durations) if durations else 0.0,
         "p95_seconds": _percentile(durations, 0.95),
         "max_seconds": max(durations, default=0.0),
@@ -210,6 +307,13 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, object]:
         "gold_exact_match_count": sum(row.get("gold_exact_match") is True for row in rows),
         "taxonomy_case_count": sum(row.get("taxonomy_agreement") is not None for row in rows),
         "taxonomy_agreement_count": sum(row.get("taxonomy_agreement") is True for row in rows),
+        "taxonomy_model_transition_count": sum(
+            status == "model_transition" for status in taxonomy_statuses
+        ),
+        "taxonomy_inapplicable_count": sum(
+            status == "not_applicable_human_label_required"
+            for status in taxonomy_statuses
+        ),
     }
 
 
@@ -219,6 +323,7 @@ def benchmark(
     cli: Path,
     repeats: int,
     warmups: int,
+    timeout_seconds: int = 60,
     gold_expectations: dict[Path, list[int]] | None = None,
     case_metadata: dict[Path, dict[str, str]] | None = None,
 ) -> dict[str, object]:
@@ -227,8 +332,17 @@ def benchmark(
         raise FileNotFoundError(cli)
     repeats = max(1, int(repeats))
     warmups = max(0, int(warmups))
+    timeout_seconds = max(1, int(timeout_seconds))
     gold_expectations = gold_expectations or {}
-    case_metadata = case_metadata or {}
+    case_metadata = {
+        Path(path).expanduser().resolve(): dict(metadata)
+        for path, metadata in (case_metadata or {}).items()
+    }
+    gold_expectations = {
+        Path(path).expanduser().resolve(): list(scans)
+        for path, scans in gold_expectations.items()
+    }
+    files, verified_hashes = _validate_benchmark_inputs(files, case_metadata)
     rows: list[dict[str, Any]] = []
 
     with tempfile.TemporaryDirectory(prefix="hemafrag_ladder_benchmark_") as temp_root:
@@ -237,7 +351,12 @@ def benchmark(
             run_rows: list[dict[str, Any]] = []
             for iteration in range(warmups + repeats):
                 output_dir = temp_root_path / f"{file_index:05d}_{iteration:03d}"
-                elapsed_seconds, result = _run_once(cli, input_file, output_dir)
+                elapsed_seconds, result = _run_once(
+                    cli,
+                    input_file,
+                    output_dir,
+                    timeout_seconds=timeout_seconds,
+                )
                 if iteration < warmups:
                     continue
                 identity = _result_identity(result)
@@ -312,21 +431,28 @@ def benchmark(
                 }
             ).value
             historical_family = str(metadata.get("failure_family") or "")
-            taxonomy_agreement = (
-                engine_outcome == historical_family
-                if historical_family in {outcome.value for outcome in LadderOutcome}
-                else None
+            taxonomy_agreement, taxonomy_comparison_status = _taxonomy_comparison(
+                historical_family,
+                engine_outcome,
             )
+            elapsed_times = [float(row["elapsed_seconds"]) for row in run_rows]
             rows.append(
                 {
-                    "fixture_id": f"sha256:{_sha256(input_file)}",
+                    "fixture_id": f"sha256:{verified_hashes[input_file]}",
+                    "content_sha256": verified_hashes[input_file],
                     "size_bytes": input_file.stat().st_size,
                     "ladder": first["identity"]["ladder"],
-                    "median_seconds": statistics.median(
-                        float(row["elapsed_seconds"]) for row in run_rows
-                    ),
+                    "repeat_count": len(run_rows),
+                    "median_seconds": statistics.median(elapsed_times),
+                    "p95_seconds": _percentile(elapsed_times, 0.95),
+                    "max_seconds": max(elapsed_times),
                     "median_engine_ladder_seconds": (
                         statistics.median(engine_ladder_times)
+                        if engine_ladder_times
+                        else None
+                    ),
+                    "p95_engine_ladder_seconds": (
+                        _percentile(engine_ladder_times, 0.95)
                         if engine_ladder_times
                         else None
                     ),
@@ -344,6 +470,7 @@ def benchmark(
                     "physical_run_key": str(metadata.get("physical_run_key") or ""),
                     "engine_outcome": engine_outcome,
                     "taxonomy_agreement": taxonomy_agreement,
+                    "taxonomy_comparison_status": taxonomy_comparison_status,
                     "runs": run_rows,
                 }
             )
@@ -373,15 +500,19 @@ def benchmark(
             "modified_at_utc": datetime.fromtimestamp(
                 cli.stat().st_mtime, timezone.utc
             ).isoformat(),
+            "sha256": _sha256(cli),
         },
         "configuration": {
             "repeats": repeats,
             "warmups": warmups,
+            "timeout_seconds": timeout_seconds,
             "analysis": "clonality",
+            "deterministic": True,
         },
         "deterministic": all(bool(row["deterministic"]) for row in rows),
         "gold_case_count": sum(row.get("gold_exact_match") is not None for row in rows),
         "gold_exact_match_count": sum(row.get("gold_exact_match") is True for row in rows),
+        "overall": _summarize(rows),
         "by_ladder": by_ladder,
         "by_failure_family": by_failure_family,
         "by_engine_outcome": by_engine_outcome,
@@ -396,6 +527,7 @@ def main() -> None:
     parser.add_argument("--cli", type=Path, default=DEFAULT_CLI)
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--warmups", type=int, default=0)
+    parser.add_argument("--timeout-seconds", type=int, default=60)
     args = parser.parse_args()
 
     result = benchmark(
@@ -403,6 +535,7 @@ def main() -> None:
         cli=args.cli,
         repeats=args.repeats,
         warmups=args.warmups,
+        timeout_seconds=args.timeout_seconds,
         gold_expectations=_load_gold_expectations(args.manifest.expanduser().resolve()),
         case_metadata=_load_manifest_metadata(args.manifest.expanduser().resolve()),
     )
