@@ -6,10 +6,16 @@ import csv
 import hashlib
 import json
 import os
+import shutil
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+from core.research.ladder.contracts import ResearchRoots
+from core.research.ladder.review_bundle import prepare_blind_review_bundle
 
 
 DEFAULT_ROUND_TWO_SEED = 20260810
@@ -21,12 +27,28 @@ GROUP_REQUIREMENTS = (
     ("control", "ROX", 3),
 )
 MIN_DIVERSITY = 2
+ROUND_TWO_BUNDLE_NAME = "Blind Ladder Round-Two Review"
+ROUND_TWO_PUBLIC_CASE_FIELDS = (
+    "content_sha256",
+    "physical_run_key",
+    "year",
+    "assay",
+    "ladder",
+)
 
 
 @dataclass(frozen=True)
 class RoundTwoSelection:
     cases: tuple[dict[str, Any], ...]
     seed: int
+
+
+@dataclass(frozen=True)
+class RoundTwoReviewResult:
+    bundle_dir: Path
+    case_count: int
+    adjustment_database: Path
+    withheld_manifest: Path
 
 
 def _path_key(value: Any) -> str:
@@ -409,3 +431,134 @@ def load_round_two_inputs(
             "development_manifest.json must contain exactly three round-one hashes"
         )
     return diagnostics, inventory_rows, manual_hashes, excluded_hashes
+
+
+def _research_roots_from_workspace(workspace: Path) -> ResearchRoots:
+    manifest = json.loads(
+        (workspace / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    values = manifest.get("roots") if isinstance(manifest, dict) else None
+    if not isinstance(values, dict):
+        raise ValueError("run_manifest.json must contain research roots")
+    roots = ResearchRoots(
+        raw_roots=tuple(Path(value) for value in values.get("raw_roots", ())),
+        archive_root=Path(str(values.get("archive_root") or "")),
+        output_root=Path(str(values.get("output_root") or "")),
+        excluded_backup_root=Path(str(values.get("excluded_backup_root") or "")),
+    )
+    if not roots.raw_roots:
+        raise ValueError("run_manifest.json must contain at least one raw root")
+    try:
+        workspace.relative_to(roots.output_root.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"Workspace must be below the research output root: {roots.output_root.resolve()}"
+        ) from exc
+    return roots
+
+
+def _write_withheld_manifest_temporary(path: Path, payload: Mapping[str, Any]) -> Path:
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            mode="w",
+            encoding="utf-8",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(
+                payload,
+                handle,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+        return temporary
+    except Exception:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
+
+
+def prepare_round_two_review(
+    workspace: Path, *, seed: int = DEFAULT_ROUND_TWO_SEED
+) -> RoundTwoReviewResult:
+    """Select and publish a blind round-two bundle plus a withheld allocation."""
+
+    target = Path(workspace).resolve()
+    roots = _research_roots_from_workspace(target)
+    bundle_dir = target / "round_2_review_bundle"
+    withheld_path = target / "round_2_selection_withheld.json"
+    if withheld_path.exists():
+        raise FileExistsError(
+            f"Refusing to overwrite existing withheld manifest: {withheld_path}"
+        )
+    if bundle_dir.exists() and (
+        not bundle_dir.is_dir() or any(bundle_dir.iterdir())
+    ):
+        raise FileExistsError(
+            f"Refusing to overwrite non-empty review bundle: {bundle_dir}"
+        )
+
+    diagnostics, inventory, manual_hashes, excluded_hashes = load_round_two_inputs(
+        target
+    )
+    selection = select_round_two_cohort(
+        diagnostics,
+        inventory,
+        manual_hashes,
+        excluded_hashes,
+        seed=seed,
+    )
+    withheld_cases = []
+    for ordinal, case in enumerate(selection.cases, 1):
+        case_id = f"{ordinal:03d}"
+        source_name = Path(str(case.get("path") or "")).name
+        withheld_cases.append(
+            {
+                **case,
+                "case_id": case_id,
+                "copied_path": str(bundle_dir / "files" / case_id / source_name),
+            }
+        )
+    withheld_payload = {
+        "schema_version": "1.0",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "seed": selection.seed,
+        "case_count": len(withheld_cases),
+        "bundle_dir": str(bundle_dir),
+        "cases": withheld_cases,
+    }
+    temporary_manifest = _write_withheld_manifest_temporary(
+        withheld_path, withheld_payload
+    )
+    published_bundle = False
+    try:
+        bundle_result = prepare_blind_review_bundle(
+            selection.cases,
+            bundle_dir,
+            roots,
+            bundle_name=ROUND_TWO_BUNDLE_NAME,
+            public_case_fields=ROUND_TWO_PUBLIC_CASE_FIELDS,
+        )
+        published_bundle = True
+        if withheld_path.exists():
+            raise FileExistsError(
+                f"Refusing to overwrite existing withheld manifest: {withheld_path}"
+            )
+        os.replace(temporary_manifest, withheld_path)
+    except Exception:
+        temporary_manifest.unlink(missing_ok=True)
+        if published_bundle:
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+        raise
+
+    return RoundTwoReviewResult(
+        bundle_dir=bundle_result.bundle_dir,
+        case_count=bundle_result.case_count,
+        adjustment_database=bundle_result.adjustment_database,
+        withheld_manifest=withheld_path,
+    )

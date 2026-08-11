@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import random
+import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from core.research.ladder import round_two as round_two_module
 from core.research.ladder.round_two import (
     load_round_two_inputs,
     select_round_two_cohort,
 )
+from scripts import build_ladder_research_corpus as research_cli
 
 
 def _candidate_rows() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
@@ -55,6 +61,73 @@ def _candidate_rows() -> tuple[list[dict[str, object]], list[dict[str, object]]]
                 }
             )
     return diagnostics, inventory
+
+
+def _round_two_workspace(tmp_path: Path, *, bad_hash: bool = False) -> Path:
+    diagnostics, inventory = _candidate_rows()
+    data_root = tmp_path / "DATA"
+    raw_roots = tuple(data_root / f"{year}_DATA" for year in (2024, 2025, 2026))
+    for ordinal, (diagnostic, inventory_row) in enumerate(
+        zip(diagnostics, inventory), 1
+    ):
+        raw_root = raw_roots[(ordinal - 1) % len(raw_roots)]
+        source = raw_root / f"run-{ordinal:03d}" / f"case-{ordinal:03d}.fsa"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        payload = f"round-two-fixture-{ordinal}".encode()
+        source.write_bytes(payload)
+        source.with_suffix(".ladder_adj.json").write_text(
+            "historical adjustment must not be copied", encoding="utf-8"
+        )
+        diagnostic["source_path"] = str(source)
+        inventory_row["raw_path"] = str(source)
+        inventory_row["file"] = source.name
+        inventory_row["physical_run_key"] = f"run-{ordinal:03d}"
+        inventory_row["content_sha256"] = (
+            f"{ordinal:064x}"
+            if bad_hash
+            else hashlib.sha256(payload).hexdigest()
+        )
+
+    workspace = tmp_path / "research" / "current"
+    workspace.mkdir(parents=True)
+    (workspace / "diagnostics.ndjson").write_text(
+        "".join(json.dumps(row) + "\n" for row in diagnostics), encoding="utf-8"
+    )
+    with (workspace / "inventory.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=inventory[0])
+        writer.writeheader()
+        writer.writerows(inventory)
+    (workspace / "manual_corrections.csv").write_text(
+        "source_sha256\n", encoding="utf-8"
+    )
+    (workspace / "development_manifest.json").write_text(
+        json.dumps(
+            {
+                "files": [
+                    {"content_sha256": "round-one-a"},
+                    {"content_sha256": "round-one-b"},
+                    {"content_sha256": "round-one-c"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "roots": {
+                    "raw_roots": [str(path) for path in raw_roots],
+                    "archive_root": str(tmp_path / "archive"),
+                    "output_root": str(tmp_path / "research"),
+                    "excluded_backup_root": str(data_root / "backup"),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return workspace
 
 
 def _classification(row: dict[str, object]) -> str:
@@ -346,3 +419,173 @@ def test_load_round_two_inputs_reads_existing_research_artifacts(tmp_path: Path)
         {"manual-hash"},
         {"round-one-a", "round-one-b", "round-one-c"},
     )
+
+
+def test_round_two_publication_keeps_allocation_outside_bundle(tmp_path: Path):
+    workspace = _round_two_workspace(tmp_path)
+
+    result = round_two_module.prepare_round_two_review(workspace, seed=7)
+
+    assert result.case_count == 18
+    assert result.bundle_dir == workspace / "round_2_review_bundle"
+    assert result.withheld_manifest == workspace / "round_2_selection_withheld.json"
+    assert result.adjustment_database == (
+        result.bundle_dir / "ladder_adjustments.sqlite3"
+    )
+    assert len(list(result.bundle_dir.rglob("*.fsa"))) == 18
+    assert not list(result.bundle_dir.rglob("*.ladder_adj.json"))
+
+    with (result.bundle_dir / "ladder_review_cases.csv").open(
+        encoding="utf-8", newline=""
+    ) as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        assert reader.fieldnames == [
+            "full_path",
+            "file",
+            "source_run_dir",
+            "assay",
+            "ladder",
+            "primary_reason",
+            "label",
+            "label_note",
+            "reviewed_at_utc",
+            "adjustment_path",
+        ]
+    assert {row["primary_reason"] for row in rows} == {"blind_review"}
+    assert all(
+        not row[field]
+        for row in rows
+        for field in ("label", "label_note", "reviewed_at_utc", "adjustment_path")
+    )
+
+    public_paths = list(result.bundle_dir.glob("*.json")) + [
+        result.bundle_dir / "ladder_review_cases.csv"
+    ]
+    public_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in public_paths
+    )
+    for withheld_field in (
+        "cohort_group",
+        "risk",
+        "outcome",
+        "failure_family",
+        "preview_scan_indices",
+        "selection_reason",
+        "reason_signature",
+    ):
+        assert withheld_field not in public_text
+
+    withheld = json.loads(result.withheld_manifest.read_text(encoding="utf-8"))
+    assert withheld["seed"] == 7
+    assert withheld["case_count"] == 18
+    assert len(withheld["cases"]) == 18
+    assert all(
+        case["preview_scan_indices"] == [100, 200, 300]
+        for case in withheld["cases"]
+    )
+    assert Counter(case["cohort_group"] for case in withheld["cases"]) == {
+        "suspicious": 12,
+        "control": 6,
+    }
+
+
+def test_round_two_publication_refuses_nonempty_bundle(tmp_path: Path):
+    workspace = _round_two_workspace(tmp_path)
+    bundle = workspace / "round_2_review_bundle"
+    bundle.mkdir()
+    marker = bundle / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="non-empty"):
+        round_two_module.prepare_round_two_review(workspace, seed=7)
+
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert not (workspace / "round_2_selection_withheld.json").exists()
+
+
+def test_round_two_publication_refuses_existing_withheld_manifest(tmp_path: Path):
+    workspace = _round_two_workspace(tmp_path)
+    withheld = workspace / "round_2_selection_withheld.json"
+    withheld.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="withheld"):
+        round_two_module.prepare_round_two_review(workspace, seed=7)
+
+    assert withheld.read_text(encoding="utf-8") == "keep"
+    assert not (workspace / "round_2_review_bundle").exists()
+
+
+def test_round_two_hash_failure_leaves_no_published_artifacts(tmp_path: Path):
+    workspace = _round_two_workspace(tmp_path, bad_hash=True)
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        round_two_module.prepare_round_two_review(workspace, seed=7)
+
+    assert not (workspace / "round_2_review_bundle").exists()
+    assert not (workspace / "round_2_selection_withheld.json").exists()
+    assert not list(workspace.glob(".round_2_review_bundle-*"))
+    assert not list(workspace.glob(".round_2_selection_withheld.json.*"))
+
+
+def test_prepare_round_two_cli_exposes_workspace_and_seed_options():
+    script = Path(__file__).parents[1] / "scripts" / "build_ladder_research_corpus.py"
+
+    completed = subprocess.run(
+        [sys.executable, str(script), "prepare-round-two", "--help"],
+        cwd=script.parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--workspace" in completed.stdout
+    assert "--seed" in completed.stdout
+
+
+def test_prepare_review_cli_handler_retains_single_json_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    bundle = SimpleNamespace(
+        bundle_dir=tmp_path / "development_review_bundle",
+        case_count=3,
+        adjustment_database=tmp_path / "ladder_adjustments.sqlite3",
+    )
+    monkeypatch.setattr(research_cli, "_roots_from_manifest", lambda _path: object())
+    monkeypatch.setattr(
+        research_cli, "prepare_development_review_bundle", lambda *_args: bundle
+    )
+
+    research_cli._prepare_review_command(SimpleNamespace(workspace=tmp_path))
+
+    assert json.loads(capsys.readouterr().out) == {
+        "bundle_dir": str(bundle.bundle_dir),
+        "case_count": 3,
+        "adjustment_database": str(bundle.adjustment_database),
+    }
+
+
+def test_prepare_round_two_cli_handler_emits_one_json_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    bundle = SimpleNamespace(
+        bundle_dir=tmp_path / "round_2_review_bundle",
+        case_count=18,
+        adjustment_database=tmp_path / "ladder_adjustments.sqlite3",
+        withheld_manifest=tmp_path / "round_2_selection_withheld.json",
+    )
+    monkeypatch.setattr(
+        research_cli, "prepare_round_two_review", lambda *_args, **_kwargs: bundle
+    )
+
+    research_cli._prepare_round_two_command(
+        SimpleNamespace(workspace=tmp_path, seed=7)
+    )
+
+    assert json.loads(capsys.readouterr().out) == {
+        "bundle_dir": str(bundle.bundle_dir),
+        "case_count": 18,
+        "adjustment_database": str(bundle.adjustment_database),
+        "withheld_manifest": str(bundle.withheld_manifest),
+    }

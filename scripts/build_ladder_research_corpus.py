@@ -43,6 +43,7 @@ from core.research.ladder.partitions import (
     partition_manifest,
 )
 from core.research.ladder.review_bundle import prepare_development_review_bundle
+from core.research.ladder.round_two import prepare_round_two_review
 
 
 RESEARCH_RUN_SCHEMA = "hemafrag_ladder_research_run_v1"
@@ -473,6 +474,21 @@ def _prepare_review_command(args: argparse.Namespace) -> None:
     )
 
 
+def _prepare_round_two_command(args: argparse.Namespace) -> None:
+    result = prepare_round_two_review(args.workspace.resolve(), seed=args.seed)
+    print(
+        json.dumps(
+            {
+                "bundle_dir": str(result.bundle_dir),
+                "case_count": result.case_count,
+                "adjustment_database": str(result.adjustment_database),
+                "withheld_manifest": str(result.withheld_manifest),
+            },
+            indent=2,
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -530,6 +546,11 @@ def main() -> None:
     prepare_review = commands.add_parser("prepare-review")
     prepare_review.add_argument("--workspace", required=True, type=Path)
     prepare_review.set_defaults(handler=_prepare_review_command)
+
+    prepare_round_two = commands.add_parser("prepare-round-two")
+    prepare_round_two.add_argument("--workspace", required=True, type=Path)
+    prepare_round_two.add_argument("--seed", type=int, default=20260810)
+    prepare_round_two.set_defaults(handler=_prepare_round_two_command)
 
     args = parser.parse_args()
     args.handler(args)
