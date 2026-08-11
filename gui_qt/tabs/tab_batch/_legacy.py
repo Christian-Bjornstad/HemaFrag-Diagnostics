@@ -762,6 +762,20 @@ class TabBatch(QWidget):
             "warning",
         )
 
+    def unregister_ladder_review_update(self, file_path: Path | str) -> None:
+        """Remove an excluded case from all pending review-session inputs."""
+
+        if not self._review_session_active:
+            return
+        cache_key = self._resolve_cache_key(Path(file_path))
+        self._review_corrected_paths.discard(cache_key)
+        self._review_session_entries_by_path.pop(cache_key, None)
+        self._refresh_review_finalize_button()
+        self._set_workflow_status(
+            "Excluded no-ladder case removed from rerun and final-report inputs.",
+            "warning",
+        )
+
     def has_active_review_session_for(self, file_path: Path | str) -> bool:
         if not self._review_session_active:
             return False

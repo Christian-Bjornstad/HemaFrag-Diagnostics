@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from core.ladder_adjustment_store import (
     load_ladder_adjustment_record,
@@ -343,6 +343,158 @@ class TabLadderIOHelperTests(unittest.TestCase):
                 self.assertFalse(isolated_db.exists())
                 self.assertFalse(fsa.with_suffix(".ladder_adj.json").exists())
 
+    def test_missing_ladder_exclusion_rejects_already_adjusted_row(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "adjusted.fsa"
+            fsa.write_bytes(b"fsa")
+            (bundle / "ladder_review_cases.csv").write_text(
+                (
+                    "full_path,file,label,adjustment_path\n"
+                    f"{fsa},{fsa.name},manual_adjusted,{bundle / 'ladder_adjustments.sqlite3'}\n"
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "unresolved"):
+                save_missing_ladder_exclusion_worker(
+                    bundle,
+                    fsa,
+                    note="No usable ladder signal; preparation error.",
+                    reviewed_at_utc="2026-08-10T00:00:00+00:00",
+                )
+
+    def test_missing_ladder_exclusion_rejects_bundle_local_adjustment_record(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "adjusted.fsa"
+            fsa.write_bytes(b"fsa")
+            self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            bundle_database = bundle / "ladder_adjustments.sqlite3"
+            with patch.dict(
+                os.environ,
+                {"HEMAFRAG_LADDER_ADJUSTMENT_DB": str(bundle_database)},
+            ):
+                save_ladder_adjustment_record(fsa, {"selected_peaks": []})
+            with patch.dict(
+                os.environ,
+                {
+                    "HEMAFRAG_LADDER_ADJUSTMENT_DB": str(
+                        bundle / "decoy-default.sqlite3"
+                    )
+                },
+            ):
+                with self.assertRaisesRegex(ValueError, "adjustment"):
+                    save_missing_ladder_exclusion_worker(
+                        bundle,
+                        fsa,
+                        note="No usable ladder signal; preparation error.",
+                        reviewed_at_utc="2026-08-10T00:00:00+00:00",
+                    )
+
+    def test_annotation_pair_rolls_back_when_second_publication_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "sample.fsa"
+            fsa.write_bytes(b"trace")
+            cases_path = self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            annotations_path = bundle / "ladder_review_annotations.json"
+            annotations_path.write_bytes(b'{"sentinel": true}\r\n')
+            original_cases = cases_path.read_bytes()
+            original_annotations = annotations_path.read_bytes()
+            real_replace = os.replace
+            failed_once = False
+
+            def fail_second_publication(source, destination):
+                nonlocal failed_once
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if (
+                    not failed_once
+                    and destination_path == annotations_path
+                    and source_path.suffix == ".tmp"
+                ):
+                    failed_once = True
+                    raise OSError("injected annotation publication failure")
+                real_replace(source, destination)
+
+            with patch(
+                "gui_qt.tabs.tab_ladder._io.os.replace",
+                side_effect=fail_second_publication,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "injected annotation publication failure"
+                ):
+                    save_review_bundle_annotation_worker(
+                        bundle,
+                        fsa,
+                        {
+                            "label": "reviewed_no_change",
+                            "label_note": "reviewed",
+                            "reviewed_at_utc": "2026-08-10T00:00:00+00:00",
+                            "adjustment_path": "",
+                        },
+                    )
+
+            self.assertEqual(cases_path.read_bytes(), original_cases)
+            self.assertEqual(annotations_path.read_bytes(), original_annotations)
+            self.assertFalse(list(bundle.glob(".*.tmp")))
+            self.assertFalse(list(bundle.glob(".*.backup")))
+
+    def test_annotation_pair_preserves_inputs_when_second_backup_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "sample.fsa"
+            fsa.write_bytes(b"trace")
+            cases_path = self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            annotations_path = bundle / "ladder_review_annotations.json"
+            annotations_path.write_bytes(b'{"sentinel": true}\r\n')
+            original_cases = cases_path.read_bytes()
+            original_annotations = annotations_path.read_bytes()
+            real_replace = os.replace
+
+            def fail_second_backup(source, destination):
+                if (
+                    Path(source) == annotations_path
+                    and Path(destination).suffix == ".backup"
+                ):
+                    raise OSError("injected annotation backup failure")
+                real_replace(source, destination)
+
+            with patch(
+                "gui_qt.tabs.tab_ladder._io.os.replace",
+                side_effect=fail_second_backup,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "injected annotation backup failure"
+                ):
+                    save_review_bundle_annotation_worker(
+                        bundle,
+                        fsa,
+                        {
+                            "label": "reviewed_no_change",
+                            "label_note": "reviewed",
+                            "reviewed_at_utc": "2026-08-10T00:00:00+00:00",
+                            "adjustment_path": "",
+                        },
+                    )
+
+            self.assertEqual(cases_path.read_bytes(), original_cases)
+            self.assertEqual(annotations_path.read_bytes(), original_annotations)
+            self.assertFalse(list(bundle.glob(".*.tmp")))
+            self.assertFalse(list(bundle.glob(".*.backup")))
+
     def test_save_review_bundle_annotation_worker_raises_on_unknown_path(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             fsa = Path(td) / "x.fsa"
@@ -396,6 +548,65 @@ class TabLadderIOHelperTests(unittest.TestCase):
 
 
 class TabLadderRerunSelectionTests(unittest.TestCase):
+    def test_run_tab_unregisters_excluded_case_from_review_session(self) -> None:
+        from gui_qt.tabs.tab_batch import TabBatch
+
+        cache_key = resolve_cache_key(Path("excluded-no-ladder.fsa"))
+        fake_tab = SimpleNamespace(
+            _review_session_active=True,
+            _review_corrected_paths={cache_key},
+            _review_session_entries_by_path={cache_key: {"entry": True}},
+            _resolve_cache_key=resolve_cache_key,
+            _refresh_review_finalize_button=MagicMock(),
+            _set_workflow_status=MagicMock(),
+        )
+
+        TabBatch.unregister_ladder_review_update(fake_tab, cache_key)
+
+        self.assertNotIn(cache_key, fake_tab._review_corrected_paths)
+        self.assertNotIn(cache_key, fake_tab._review_session_entries_by_path)
+        fake_tab._refresh_review_finalize_button.assert_called_once_with()
+
+    def test_exclusion_clears_local_and_run_tab_rerun_state(self) -> None:
+        from gui_qt.tabs.tab_ladder import TabLadder
+
+        excluded_fsa = Path("excluded-no-ladder.fsa").resolve()
+        cache_key = resolve_cache_key(excluded_fsa)
+        review_case = {"full_path": str(excluded_fsa), "label": ""}
+        run_tab = SimpleNamespace(
+            unregister_ladder_review_update=MagicMock()
+        )
+        fake_tab = SimpleNamespace(
+            _review_case_by_path={cache_key: review_case},
+            _review_bundle_cases=[review_case],
+            _recent_reviewed_files={cache_key},
+            _review_session_entries_by_path={cache_key: {"entry": True}},
+            _manual_rerun_consumption_by_path={cache_key: {"consumed": True}},
+            _current_file=None,
+            _resolve_cache_key=resolve_cache_key,
+            _sync_chip_strip=MagicMock(),
+            _rebuild_file_list=MagicMock(),
+            _select_file=MagicMock(),
+            _refresh_review_bundle_run_button=MagicMock(),
+            _set_status=MagicMock(),
+            _run_tab_for_review=lambda: run_tab,
+        )
+        annotation = {
+            "label": "excluded_missing_ladder_signal",
+            "label_note": "No usable ladder signal; preparation error.",
+            "reviewed_at_utc": "2026-08-10T00:00:00+00:00",
+            "adjustment_path": "",
+        }
+
+        TabLadder._on_missing_ladder_exclusion_saved(
+            fake_tab, cache_key, annotation
+        )
+
+        self.assertNotIn(cache_key, fake_tab._recent_reviewed_files)
+        self.assertNotIn(cache_key, fake_tab._review_session_entries_by_path)
+        self.assertNotIn(cache_key, fake_tab._manual_rerun_consumption_by_path)
+        run_tab.unregister_ladder_review_update.assert_called_once_with(cache_key)
+
     def test_excluded_bundle_case_is_not_rerun_ready_even_if_recent(self) -> None:
         from gui_qt.tabs.tab_ladder import TabLadder
 

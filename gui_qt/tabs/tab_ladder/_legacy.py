@@ -489,10 +489,15 @@ class TabLadder(QWidget):
         self._clear_details()
 
         enabled = file_path is not None
-        exclusion_enabled = (
-            enabled
-            and self._review_bundle_dir is not None
-            and self._resolve_cache_key(file_path) in self._review_case_by_path
+        review_case = (
+            self._review_case_by_path.get(self._resolve_cache_key(file_path))
+            if enabled and self._review_bundle_dir is not None
+            else None
+        )
+        exclusion_enabled = bool(
+            review_case is not None
+            and not str(review_case.get("label") or "").strip()
+            and not str(review_case.get("adjustment_path") or "").strip()
         )
         for btn in [
             self.btn_refresh_meta,
@@ -840,6 +845,14 @@ class TabLadder(QWidget):
                 continue
             row.update(annotation)
             break
+        self._recent_reviewed_files.discard(cache_key)
+        self._review_session_entries_by_path.pop(cache_key, None)
+        self._manual_rerun_consumption_by_path.pop(cache_key, None)
+        tab_run = self._run_tab_for_review()
+        if tab_run is not None and hasattr(
+            tab_run, "unregister_ladder_review_update"
+        ):
+            tab_run.unregister_ladder_review_update(cache_key)
         self._sync_chip_strip()
         self._rebuild_file_list()
         if self._current_file is not None:
@@ -849,7 +862,11 @@ class TabLadder(QWidget):
 
     def _on_missing_ladder_exclusion_error(self, cache_key: Path, err_tuple) -> None:
         if self._current_file is not None and self._resolve_cache_key(self._current_file) == cache_key:
-            self.btn_exclude_missing_ladder.setEnabled(True)
+            review_case = self._review_case_by_path.get(cache_key) or {}
+            self.btn_exclude_missing_ladder.setEnabled(
+                not str(review_case.get("label") or "").strip()
+                and not str(review_case.get("adjustment_path") or "").strip()
+            )
         self._set_status(
             f"Could not save no-ladder exclusion for {cache_key.name}: {err_tuple[1]}",
             error=True,

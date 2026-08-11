@@ -82,6 +82,20 @@ def parse_startup_options(argv: list[str]) -> StartupOptions:
     return StartupOptions(qt_argv=tuple(qt_argv), review_bundle=review_bundle)
 
 
+def configure_review_bundle_adjustment_store(
+    options: StartupOptions,
+) -> Path | None:
+    """Bind an explicit review launch to its bundle-local adjustment store."""
+
+    if options.review_bundle is None:
+        return None
+    database_path = (
+        options.review_bundle / "ladder_adjustments.sqlite3"
+    ).resolve()
+    os.environ["HEMAFRAG_LADDER_ADJUSTMENT_DB"] = str(database_path)
+    return database_path
+
+
 def _remove_macos_metadata_files(bundle_dir: Path) -> None:
     """Delete AppleDouble/Finder metadata files that can break Linux runtime imports."""
     patterns = ("._*", ".DS_Store")
@@ -163,6 +177,7 @@ sys.excepthook = exception_hook
 
 def main():
     startup = parse_startup_options(list(sys.argv))
+    configure_review_bundle_adjustment_store(startup)
     if sys.platform == "linux":
         try:
             locale.setlocale(locale.LC_ALL, "")
