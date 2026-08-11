@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -306,6 +307,128 @@ pub fn rox_local_rescue_candidates(
     })
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct BeamState {
+    next_peak_position: usize,
+    scan_indices: Vec<usize>,
+    accumulated_score: f64,
+}
+
+pub fn deep_rescue_candidates(
+    input: &LadderRescueInput,
+    budget: SearchBudget,
+    beam_width: usize,
+) -> Option<SearchOutcome> {
+    let current_score = score_candidate_sequence(input, &input.current_scan_indices)?;
+    let current = SearchCandidate {
+        fit_tier: FitTier::Fast,
+        scan_indices: input.current_scan_indices.clone(),
+        score: current_score,
+    };
+    let mut peaks = input.peaks.clone();
+    peaks.sort_by_key(|peak| peak.scan);
+    peaks.dedup_by_key(|peak| peak.scan);
+    let target_len = input.expected_basepairs.len();
+    if target_len < 3 || peaks.len() < target_len {
+        return completed_tier_or_previous(Some(current), None, false);
+    }
+    let width = beam_width.max(1);
+    let started = Instant::now();
+    let mut expansions = 0usize;
+    let mut watchdog_reached = false;
+    let mut states = vec![BeamState {
+        next_peak_position: 0,
+        scan_indices: Vec::new(),
+        accumulated_score: 0.0,
+    }];
+    for step in 0..target_len {
+        let remaining_after = target_len - step - 1;
+        let mut next = Vec::new();
+        for state in &states {
+            let last_start = peaks.len().saturating_sub(remaining_after);
+            for position in state.next_peak_position..last_start {
+                if !budget.allows_expansion(expansions) {
+                    break;
+                }
+                if started.elapsed().as_millis() >= u128::from(budget.watchdog_ms) {
+                    watchdog_reached = true;
+                    break;
+                }
+                expansions += 1;
+                let mut scans = state.scan_indices.clone();
+                scans.push(peaks[position].scan);
+                let prefix_input = LadderRescueInput {
+                    expected_basepairs: input.expected_basepairs[..scans.len()].to_vec(),
+                    current_scan_indices: scans.clone(),
+                    peaks: peaks.clone(),
+                };
+                let score = if scans.len() >= 3 {
+                    score_candidate_sequence(&prefix_input, &scans).unwrap_or(f64::INFINITY)
+                } else {
+                    0.0
+                };
+                next.push(BeamState {
+                    next_peak_position: position + 1,
+                    scan_indices: scans,
+                    accumulated_score: score,
+                });
+            }
+            if watchdog_reached || !budget.allows_expansion(expansions) {
+                break;
+            }
+        }
+        if watchdog_reached || !budget.allows_expansion(expansions) || next.is_empty() {
+            let mut outcome = completed_tier_or_previous(Some(current), None, watchdog_reached)?;
+            outcome.diagnostics.fit_tier = budget.fit_tier;
+            outcome.diagnostics.expansions_used = expansions;
+            outcome.diagnostics.expansion_limit = budget.expansion_limit;
+            outcome
+                .diagnostics
+                .rescue_triggers
+                .push(if watchdog_reached {
+                    "watchdog_reached".to_owned()
+                } else {
+                    "expansion_limit_reached".to_owned()
+                });
+            return Some(outcome);
+        }
+        next.sort_by(|left, right| {
+            left.accumulated_score
+                .total_cmp(&right.accumulated_score)
+                .then_with(|| left.scan_indices.cmp(&right.scan_indices))
+        });
+        next.truncate(width);
+        states = next;
+    }
+    let mut candidates = states
+        .into_iter()
+        .filter_map(|state| {
+            score_candidate_sequence(input, &state.scan_indices).map(|score| SearchCandidate {
+                fit_tier: budget.fit_tier,
+                scan_indices: state.scan_indices,
+                score,
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(SearchCandidate::stable_cmp);
+    let selected = arbiter_select_candidate(&current, &candidates, 0.10);
+    let runner_up = candidates
+        .iter()
+        .find(|candidate| candidate.scan_indices != selected.scan_indices)
+        .map(|candidate| candidate.score);
+    let mut diagnostics = SearchDiagnostics::empty(budget.fit_tier, budget.expansion_limit);
+    diagnostics.expansions_used = expansions;
+    diagnostics.elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    diagnostics.complete_candidate_count = candidates.len();
+    diagnostics.best_score = Some(selected.score);
+    diagnostics.runner_up_score = runner_up;
+    diagnostics.score_margin = runner_up.map(|score| score - selected.score);
+    Some(SearchOutcome {
+        candidate: selected,
+        diagnostics,
+    })
+}
+
 pub fn completed_tier_or_previous(
     previous: Option<SearchCandidate>,
     completed: Option<SearchOutcome>,
@@ -430,5 +553,39 @@ mod tests {
         let input = LadderRescueInput::new(expected_bp, current, peaks);
         let outcome = rox_local_rescue_candidates(&input, SearchBudget::tier_one()).unwrap();
         assert_eq!(outcome.candidate.scan_indices, expected);
+    }
+
+    #[test]
+    fn deep_rescue_recovers_complete_monotonic_sequence() {
+        let expected_bp = vec![50.0, 60.0, 90.0, 100.0, 120.0];
+        let expected = vec![2000, 2050, 2200, 2250, 2350];
+        let current = vec![1800, 1900, 2000, 2050, 2200];
+        let peaks = vec![1800, 1900, 2000, 2050, 2200, 2250, 2350]
+            .into_iter()
+            .map(|scan| evidence(scan, 1000.0, 950.0))
+            .collect();
+        let input = LadderRescueInput::new(expected_bp, current, peaks);
+        let outcome = deep_rescue_candidates(&input, SearchBudget::tier_two(), 64).unwrap();
+        assert_eq!(outcome.candidate.scan_indices, expected);
+    }
+
+    #[test]
+    fn deep_rescue_discards_incomplete_budget_limited_tier() {
+        let input = LadderRescueInput::new(
+            vec![50.0, 60.0, 90.0],
+            vec![100, 150, 300],
+            (100..=400)
+                .step_by(25)
+                .map(|scan| evidence(scan, 1000.0, 950.0))
+                .collect(),
+        );
+        let outcome = deep_rescue_candidates(
+            &input,
+            SearchBudget::new(FitTier::DeepRescue10s, 1, 10_000),
+            64,
+        )
+        .unwrap();
+        assert_eq!(outcome.candidate.scan_indices, input.current_scan_indices);
+        assert_eq!(outcome.diagnostics.expansions_used, 1);
     }
 }

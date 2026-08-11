@@ -8,7 +8,8 @@ use crate::abif::AbifRecord;
 use crate::contract::AnalysisKind;
 use crate::engine::EngineError;
 use crate::ladder_search::{
-    LadderRescueInput, PeakEvidence, SearchBudget, liz_local_rescue_candidates,
+    LadderRescueInput, PeakEvidence, SearchBudget, deep_rescue_candidates,
+    liz_local_rescue_candidates, score_candidate_sequence,
 };
 use crate::ladders::LadderKind;
 use crate::signal::{
@@ -3283,6 +3284,10 @@ fn build_ladder_fit_preview_with_arbiter(
     ladder: LadderKind,
 ) -> (Vec<Peak>, Option<LadderFitPreview>) {
     let mut best_peaks = default_ladder_peaks;
+    let mut rescue_peak_sets = vec![best_peaks.clone()];
+    rescue_peak_sets.extend(alternative_lanes.iter().cloned());
+    let deep_rescue_peaks =
+        merge_candidate_sets(&rescue_peak_sets, 5, ladder.expected_peak_count() * 2 + 25);
     let mut best_preview =
         build_ladder_fit_preview(&best_peaks, sample_trace, ladder_trace, ladder, false);
     let default_peaks_for_guard = best_peaks.clone();
@@ -3371,9 +3376,93 @@ fn build_ladder_fit_preview_with_arbiter(
                         .or(default_preview_for_guard);
             }
         }
+        best_preview = best_preview.map(|preview| {
+            apply_rox_deep_rescue(preview, &deep_rescue_peaks, sample_trace, ladder)
+        });
     }
 
     (best_peaks, best_preview)
+}
+
+fn apply_rox_deep_rescue(
+    mut preview: LadderFitPreview,
+    peak_features: &[Peak],
+    sample_trace: &[f64],
+    ladder: LadderKind,
+) -> LadderFitPreview {
+    let current = selected_preview_scans(&preview);
+    let input = LadderRescueInput::new(
+        ladder.sizes().to_vec(),
+        current.clone(),
+        peak_features
+            .iter()
+            .map(|peak| PeakEvidence {
+                scan: peak.index,
+                height: peak.height,
+                prominence: peak.prominence,
+                local_baseline: peak.local_baseline,
+                width: peak.width,
+            })
+            .collect(),
+    );
+    if score_candidate_sequence(&input, &current).is_some_and(|score| score <= 1.0) {
+        return preview;
+    }
+    let Some(outcome) = deep_rescue_candidates(&input, SearchBudget::tier_two(), 256) else {
+        return preview;
+    };
+    preview.search_diagnostics = Some(outcome.diagnostics);
+    let rescued = outcome.candidate.scan_indices;
+    if rescued == current {
+        return preview;
+    }
+    let rescued_model = fit_best_sizing_model(&rescued, ladder.sizes(), sample_trace);
+    if let (Some((current_max, current_mean, current_r2, _)), Some(model)) =
+        (preview_linear_metrics(&preview), rescued_model.as_ref())
+    {
+        let qc = &model.qc_metrics;
+        if !rox_deep_rescue_qc_allows(
+            current_max,
+            current_mean,
+            current_r2,
+            qc.linear_trend_max_abs_error_bp,
+            qc.linear_trend_mean_abs_error_bp,
+            qc.linear_trend_r2,
+        ) {
+            return preview;
+        }
+    }
+    preview.search_tier = "deep_rescue_10s".to_owned();
+    preview.best_scan_indices = rescued.clone();
+    preview.best_curvature_score = Some(curvature_score(ladder.sizes(), &rescued));
+    preview.best_quadratic_r2 = Some(quadratic_fit_r2(
+        ladder.sizes(),
+        &rescued
+            .iter()
+            .map(|value| *value as f64)
+            .collect::<Vec<_>>(),
+    ));
+    preview.sizing_model = rescued_model;
+    preview.refinement = apex_recenter_refinement_preview(&current, &rescued, ladder.sizes());
+    preview
+}
+
+fn rox_deep_rescue_qc_allows(
+    current_max: f64,
+    current_mean: f64,
+    current_r2: f64,
+    candidate_max: f64,
+    candidate_mean: f64,
+    candidate_r2: f64,
+) -> bool {
+    let high_error_improvement = current_max > 8.0
+        && candidate_max + 0.5 < current_max
+        && candidate_mean <= current_mean + 0.20;
+    let stable_fit_recenter = current_max <= 4.5
+        && candidate_max <= current_max + 0.50
+        && candidate_mean <= current_mean + 0.15
+        && candidate_r2 + 0.00001 >= current_r2;
+    high_error_improvement || stable_fit_recenter
 }
 
 fn apply_liz_tier_one_rescue(
@@ -19724,11 +19813,25 @@ mod tests {
         repair_rox_large_100_120_gap_sequence, repair_rox_nonlinear_start_pair_sequence,
         repair_rox_start_pair_sequence, repair_rox_start_prefix_pair_sequence,
         repair_rox_strong_family_window_sequence, repair_rox_tail_family_sequence,
-        rox_early_window_peak_candidates, rox_post_blob_pool_override,
+        rox_deep_rescue_qc_allows, rox_early_window_peak_candidates, rox_post_blob_pool_override,
         rox_start_pair_candidate_improves_current, rox_tail_family_candidate_improves_current,
         score_combination, select_best_combination, select_ladder_peaks,
         should_try_liz_tier_one_rescue, trace_has_negative_baseline,
     };
+
+    #[test]
+    fn rox_deep_rescue_rejects_ambiguous_middle_quality_fit() {
+        assert!(!rox_deep_rescue_qc_allows(
+            5.48, 2.71, 0.99900, 4.83, 2.78, 0.99913,
+        ));
+    }
+
+    #[test]
+    fn rox_deep_rescue_allows_stable_low_error_recenter() {
+        assert!(rox_deep_rescue_qc_allows(
+            3.91, 1.37, 0.999748, 3.88, 1.43, 0.999745,
+        ));
+    }
 
     fn make_test_peak(index: usize, prominence: f64) -> Peak {
         Peak {
