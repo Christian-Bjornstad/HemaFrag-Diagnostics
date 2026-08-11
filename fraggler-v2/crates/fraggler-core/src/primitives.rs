@@ -155,6 +155,8 @@ pub struct LadderFitPreview {
     pub best_quadratic_r2: Option<f64>,
     pub sizing_model: Option<SizingModelPreview>,
     pub refinement: Option<RefinementPreview>,
+    #[serde(default)]
+    pub search_diagnostics: Option<crate::ladder_search::SearchDiagnostics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -5432,6 +5434,7 @@ fn build_ladder_fit_preview_with_candidate_pool(
                     best_quadratic_r2: best.as_ref().map(|entry| entry.quadratic_r2),
                     sizing_model,
                     refinement,
+                    search_diagnostics: None,
                 });
             }
         }
@@ -5447,6 +5450,7 @@ fn build_ladder_fit_preview_with_candidate_pool(
             best_quadratic_r2: None,
             sizing_model: None,
             refinement: None,
+            search_diagnostics: None,
         });
     }
     let ladder_sizes = ladder.sizes();
@@ -5685,6 +5689,7 @@ fn build_ladder_fit_preview_with_candidate_pool(
         best_quadratic_r2: best.as_ref().map(|entry| entry.quadratic_r2),
         sizing_model,
         refinement,
+        search_diagnostics: None,
     })
 }
 
@@ -19711,6 +19716,7 @@ mod tests {
                 sample_mapping: None,
             }),
             refinement: None,
+            search_diagnostics: None,
         }
     }
 
