@@ -248,6 +248,64 @@ pub fn liz_local_rescue_candidates(
     })
 }
 
+pub fn rox_local_rescue_candidates(
+    input: &LadderRescueInput,
+    budget: SearchBudget,
+) -> Option<SearchOutcome> {
+    let current_score = score_candidate_sequence(input, &input.current_scan_indices)?;
+    let current = SearchCandidate {
+        fit_tier: FitTier::Fast,
+        scan_indices: input.current_scan_indices.clone(),
+        score: current_score,
+    };
+    let mut candidates = Vec::new();
+    let mut expansions = 0usize;
+    for peak in &input.peaks {
+        if input.current_scan_indices.contains(&peak.scan) {
+            continue;
+        }
+        let mut expanded = input.current_scan_indices.clone();
+        expanded.push(peak.scan);
+        expanded.sort_unstable();
+        expanded.dedup();
+        if expanded.len() != input.current_scan_indices.len() + 1 {
+            continue;
+        }
+        for drop_index in 0..expanded.len() {
+            if !budget.allows_expansion(expansions) {
+                break;
+            }
+            expansions += 1;
+            let mut scans = expanded.clone();
+            scans.remove(drop_index);
+            if let Some(score) = score_candidate_sequence(input, &scans) {
+                candidates.push(SearchCandidate {
+                    fit_tier: FitTier::Rescue2s,
+                    scan_indices: scans,
+                    score,
+                });
+            }
+        }
+    }
+    candidates.sort_by(SearchCandidate::stable_cmp);
+    candidates.dedup_by(|left, right| left.scan_indices == right.scan_indices);
+    let selected = arbiter_select_candidate(&current, &candidates, 0.01);
+    let runner_up = candidates
+        .iter()
+        .find(|candidate| candidate.scan_indices != selected.scan_indices)
+        .map(|candidate| candidate.score);
+    let mut diagnostics = SearchDiagnostics::empty(budget.fit_tier, budget.expansion_limit);
+    diagnostics.expansions_used = expansions;
+    diagnostics.complete_candidate_count = candidates.len();
+    diagnostics.best_score = Some(selected.score);
+    diagnostics.runner_up_score = runner_up;
+    diagnostics.score_margin = runner_up.map(|score| score - selected.score);
+    Some(SearchOutcome {
+        candidate: selected,
+        diagnostics,
+    })
+}
+
 pub fn completed_tier_or_previous(
     previous: Option<SearchCandidate>,
     completed: Option<SearchOutcome>,
@@ -351,5 +409,26 @@ mod tests {
         let current = candidate(FitTier::Fast, &[10, 20], 2.0);
         let rescue = candidate(FitTier::Rescue2s, &[10, 21], 2.0);
         assert_eq!(arbiter_select_candidate(&current, &[rescue], 0.1), current);
+    }
+
+    #[test]
+    fn rox_rescue_considers_one_step_insertion_after_stable_prefix() {
+        let expected_bp = vec![50.0, 60.0, 90.0, 100.0, 120.0, 150.0];
+        let expected = vec![1605, 1659, 1821, 1878, 1988, 2139];
+        let current = vec![1605, 1659, 1821, 1878, 1988, 2161];
+        let peaks = expected
+            .iter()
+            .map(|scan| evidence(*scan, 1000.0, 950.0))
+            .chain(std::iter::once(PeakEvidence {
+                scan: 2161,
+                height: 300.0,
+                prominence: 20.0,
+                local_baseline: 300.0,
+                width: 8.0,
+            }))
+            .collect();
+        let input = LadderRescueInput::new(expected_bp, current, peaks);
+        let outcome = rox_local_rescue_candidates(&input, SearchBudget::tier_one()).unwrap();
+        assert_eq!(outcome.candidate.scan_indices, expected);
     }
 }
