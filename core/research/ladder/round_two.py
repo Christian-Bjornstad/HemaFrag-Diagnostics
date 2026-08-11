@@ -27,6 +27,7 @@ from core.research.ladder.review_bundle import prepare_blind_review_bundle
 
 DEFAULT_ROUND_TWO_SEED = 20260810
 FIT_REJECTED_WITH_USABLE_SIGNAL = "fit_rejected_with_usable_signal"
+BLIND_ORDER_DOMAIN = "round-two-public-order-v1"
 GROUP_REQUIREMENTS = (
     ("suspicious", "LIZ", 6),
     ("suspicious", "ROX", 6),
@@ -161,6 +162,13 @@ def _candidate_cases(
         inventory_row = inventory.get(_path_key(source_path))
         if inventory_row is None:
             continue
+        sample_kind = str(
+            inventory_row.get("sample_kind")
+            or inventory_row.get("SampleKind")
+            or ""
+        ).strip().casefold()
+        if sample_kind != "patient":
+            continue
         content_hash = _normalized_hash(inventory_row.get("content_sha256"))
         physical_run = str(inventory_row.get("physical_run_key") or "").strip()
         ladder = _normalized_ladder(
@@ -198,6 +206,7 @@ def _candidate_cases(
                 "file": str(inventory_row.get("file") or Path(path).name),
                 "content_sha256": content_hash,
                 "physical_run_key": physical_run,
+                "sample_kind": sample_kind,
                 "year": str(inventory_row.get("year") or "").strip(),
                 "assay": str(
                     diagnostic.get("assay") or inventory_row.get("assay") or ""
@@ -220,9 +229,14 @@ def _candidate_cases(
 
 def _diversity_values(
     cases: Iterable[Mapping[str, Any]],
-) -> tuple[set[str], set[str], set[str]]:
+) -> tuple[set[str], set[str], set[str], set[str]]:
     case_list = list(cases)
     years = {str(case["year"]) for case in case_list if str(case["year"]).strip()}
+    control_years = {
+        str(case["year"])
+        for case in case_list
+        if case["cohort_group"] == "control" and str(case["year"]).strip()
+    }
     reasons = {
         str(case["reason_signature"])
         for case in case_list
@@ -231,12 +245,12 @@ def _diversity_values(
         and case["reason_signature"] != "none"
     }
     assays = {str(case["assay"]) for case in case_list if str(case["assay"]).strip()}
-    return years, reasons, assays
+    return years, control_years, reasons, assays
 
 
 def _diversity_failures(cases: Iterable[Mapping[str, Any]]) -> list[str]:
     values = _diversity_values(cases)
-    names = ("year", "reason", "assay")
+    names = ("year", "control year", "reason", "assay")
     return [
         name for name, dimension in zip(names, values) if len(dimension) < MIN_DIVERSITY
     ]
@@ -359,6 +373,19 @@ def _joint_selection(
     return search(0)
 
 
+def _blind_order_cases(
+    cases: Iterable[dict[str, Any]], *, seed: int
+) -> tuple[dict[str, Any], ...]:
+    """Apply a domain-separated order that is independent of cohort quotas."""
+
+    def order_key(case: Mapping[str, Any]) -> tuple[str, str]:
+        content_hash = _normalized_hash(case.get("content_sha256"))
+        payload = f"{BLIND_ORDER_DOMAIN}|{int(seed)}|{content_hash}".encode("utf-8")
+        return hashlib.sha256(payload).hexdigest(), content_hash
+
+    return tuple(sorted(cases, key=order_key))
+
+
 def select_round_two_cohort(
     diagnostics: Iterable[Mapping[str, Any]],
     inventory_rows: Iterable[Mapping[str, Any]],
@@ -403,7 +430,10 @@ def select_round_two_cohort(
             raise ValueError(
                 f"Diversity requirements cannot be satisfied: {detail}"
             )
-    return RoundTwoSelection(cases=selected, seed=numeric_seed)
+    return RoundTwoSelection(
+        cases=_blind_order_cases(selected, seed=numeric_seed),
+        seed=numeric_seed,
+    )
 
 
 def _read_csv(path: Path) -> list[dict[str, Any]]:

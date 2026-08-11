@@ -59,6 +59,7 @@ def _candidate_rows() -> tuple[list[dict[str, object]], list[dict[str, object]]]
                     "year": str(2024 + group_ordinal % 3),
                     "physical_run_key": f"run-{ordinal:03d}",
                     "content_sha256": content_hash,
+                    "sample_kind": "patient",
                 }
             )
     return diagnostics, inventory
@@ -241,6 +242,7 @@ def _append_candidate(
             "year": year,
             "physical_run_key": run,
             "content_sha256": f"{key}-hash",
+            "sample_kind": "patient",
         }
     )
 
@@ -297,6 +299,82 @@ def test_round_two_selection_is_independent_of_input_order():
     assert [case["content_sha256"] for case in shuffled.cases] == [
         case["content_sha256"] for case in expected.cases
     ]
+
+
+def test_round_two_public_order_does_not_encode_quota_groups():
+    diagnostics, inventory = _candidate_rows()
+
+    result = select_round_two_cohort(
+        diagnostics,
+        inventory,
+        set(),
+        {"round-one-a", "round-one-b", "round-one-c"},
+        seed=7,
+    )
+
+    public_allocation = [
+        (case["cohort_group"], case["ladder"]) for case in result.cases
+    ]
+    quota_allocation = [("suspicious", "LIZ")] * 6
+    quota_allocation.extend(("suspicious", "ROX") for _ in range(6))
+    quota_allocation.extend(("control", "LIZ") for _ in range(3))
+    quota_allocation.extend(("control", "ROX") for _ in range(3))
+
+    assert public_allocation != quota_allocation
+    assert sum(
+        left != right for left, right in zip(public_allocation, public_allocation[1:])
+    ) > 3
+
+
+def test_round_two_selector_rejects_non_patient_candidates():
+    diagnostics, inventory = _candidate_rows()
+    suspicious_liz_paths = {
+        row["source_path"]
+        for row in diagnostics
+        if row["outcome"] == "fit_rejected_with_usable_signal"
+        and str(row["configured_ladder"]).startswith("LIZ")
+    }
+    suspicious_liz_inventory = [
+        row for row in inventory if str(row["raw_path"]) in suspicious_liz_paths
+    ]
+    suspicious_liz_inventory[0]["sample_kind"] = "pk"
+    removed_paths = {
+        str(suspicious_liz_inventory[-1]["raw_path"]),
+        str(suspicious_liz_inventory[-2]["raw_path"]),
+    }
+    diagnostics = [
+        row for row in diagnostics if str(row["source_path"]) not in removed_paths
+    ]
+
+    with pytest.raises(ValueError, match="suspicious LIZ"):
+        select_round_two_cohort(
+            diagnostics,
+            inventory,
+            set(),
+            {"round-one-a", "round-one-b", "round-one-c"},
+            seed=7,
+        )
+
+
+def test_round_two_controls_must_span_multiple_years():
+    diagnostics, inventory = _candidate_rows()
+    control_paths = {
+        str(row["source_path"])
+        for row in diagnostics
+        if row["accepted"] is True
+    }
+    for row in inventory:
+        if str(row["raw_path"]) in control_paths:
+            row["year"] = "2024"
+
+    with pytest.raises(ValueError, match="control.*year"):
+        select_round_two_cohort(
+            diagnostics,
+            inventory,
+            set(),
+            {"round-one-a", "round-one-b", "round-one-c"},
+            seed=7,
+        )
 
 
 def test_round_two_backtracks_when_an_early_choice_blocks_a_feasible_group():

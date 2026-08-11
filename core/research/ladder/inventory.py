@@ -248,6 +248,7 @@ def reconcile_inventory(
 
     matched_tracking: set[str] = set()
     tracking_matches: list[str] = []
+    sample_kinds: list[str] = []
     for row in files.to_dict(orient="records"):
         identity = str(row["identity_candidate"])
         if identity in tracking_by_source:
@@ -259,8 +260,12 @@ def reconcile_inventory(
                 str(match.get("IdentityKey") or "") for match in matches
             )
             tracking_matches.append(str(matches[0].get("IdentityKey") or ""))
+            sample_kinds.append(
+                str(matches[0].get("SampleKind") or "").strip().casefold()
+            )
         else:
             tracking_matches.append("")
+            sample_kinds.append("")
             issues.append(
                 _issue(
                     "raw_only",
@@ -280,6 +285,7 @@ def reconcile_inventory(
                 )
             )
     files["tracking_identity_key"] = tracking_matches
+    files["sample_kind"] = sample_kinds
 
     for identity in sorted(tracking_identities - matched_tracking):
         issues.append(

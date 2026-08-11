@@ -207,6 +207,7 @@ def test_build_inventory_keeps_unmatched_and_nested_records_explicit(tmp_path):
                 "SourceRunDir": "nested-logical-run",
                 "Assay": "TCRgA",
                 "Ladder": "LIZ",
+                "SampleKind": "patient",
             },
             {
                 "IdentityKey": "missing-run::tracking-only.fsa",
@@ -237,3 +238,4 @@ def test_build_inventory_keeps_unmatched_and_nested_records_explicit(tmp_path):
     assert result.summary["canonical_review_case_count"] == 1
     matched_row = result.files[result.files["file"].eq("matched.fsa")].iloc[0]
     assert matched_row["tracking_identity_key"] == "PT-opaque-patient-identity"
+    assert matched_row["sample_kind"] == "patient"
