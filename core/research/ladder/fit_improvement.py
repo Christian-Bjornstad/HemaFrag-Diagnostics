@@ -58,10 +58,10 @@ DEVELOPMENT_QUOTAS = (
     WaveQuota("development", "suspicious", "ROX", 4),
 )
 VALIDATION_QUOTAS = (
-    WaveQuota("validation", "control", "LIZ", 40),
+    WaveQuota("validation", "control", "LIZ", 41),
     WaveQuota("validation", "control", "ROX", 9),
     WaveQuota("validation", "suspicious", "LIZ", 5),
-    WaveQuota("validation", "suspicious", "ROX", 6),
+    WaveQuota("validation", "suspicious", "ROX", 5),
 )
 ALL_QUOTAS = (*DEVELOPMENT_QUOTAS, *VALIDATION_QUOTAS)
 

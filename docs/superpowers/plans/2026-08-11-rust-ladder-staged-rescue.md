@@ -25,12 +25,12 @@
 
 ## Locked real-pool quotas
 
-The 2026-08-11 availability snapshot, after patient filtering and exclusion of round-one and round-two hashes, contains 145 unique control-LIZ runs, 18 control-ROX runs, 8 suspicious-LIZ runs, and 10 suspicious-ROX runs. Use these feasible exact quotas:
+The refreshed 2026-08-11 canonical inventory, after patient filtering and exclusion of round-one and round-two hashes, contains 145 unique control-LIZ runs, 18 control-ROX runs, 8 suspicious-LIZ runs, and 9 suspicious-ROX runs. One ROX run is shared between the control and suspicious strata, so the globally disjoint quota leaves one ROX slot unused and assigns it to control LIZ:
 
 | Wave | Control LIZ | Control ROX | Suspicious LIZ | Suspicious ROX | Total |
 |---|---:|---:|---:|---:|---:|
 | Development | 25 | 8 | 3 | 4 | 40 |
-| Validation | 40 | 9 | 5 | 6 | 60 |
+| Validation | 41 | 9 | 5 | 5 | 60 |
 
 Selection occurs jointly across both waves so all 100 content hashes and normalized physical-run keys are globally unique. Prefer exclusive scarce-group runs before shared runs, then maximize year, assay, reason-signature, and search-tier diversity.
 
@@ -61,10 +61,10 @@ def test_select_fit_improvement_waves_is_patient_only_balanced_and_globally_disj
         ("development", "control", "ROX"): 8,
         ("development", "suspicious", "LIZ"): 3,
         ("development", "suspicious", "ROX"): 4,
-        ("validation", "control", "LIZ"): 40,
+        ("validation", "control", "LIZ"): 41,
         ("validation", "control", "ROX"): 9,
         ("validation", "suspicious", "LIZ"): 5,
-        ("validation", "suspicious", "ROX"): 6,
+        ("validation", "suspicious", "ROX"): 5,
     }
     assert {c.sample_kind for c in selected.cases} == {"patient"}
     assert len({c.content_sha256 for c in selected.cases}) == 100
@@ -105,10 +105,10 @@ DEVELOPMENT_QUOTAS = (
     WaveQuota("development", "suspicious", "ROX", 4),
 )
 VALIDATION_QUOTAS = (
-    WaveQuota("validation", "control", "LIZ", 40),
+    WaveQuota("validation", "control", "LIZ", 41),
     WaveQuota("validation", "control", "ROX", 9),
     WaveQuota("validation", "suspicious", "LIZ", 5),
-    WaveQuota("validation", "suspicious", "ROX", 6),
+    WaveQuota("validation", "suspicious", "ROX", 5),
 )
 ```
 

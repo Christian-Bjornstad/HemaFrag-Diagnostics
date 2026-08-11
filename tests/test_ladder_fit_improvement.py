@@ -113,10 +113,10 @@ def test_select_fit_improvement_waves_is_patient_only_balanced_and_disjoint():
             ("development", "control", "ROX"): 8,
             ("development", "suspicious", "LIZ"): 3,
             ("development", "suspicious", "ROX"): 4,
-            ("validation", "control", "LIZ"): 40,
+            ("validation", "control", "LIZ"): 41,
             ("validation", "control", "ROX"): 9,
             ("validation", "suspicious", "LIZ"): 5,
-            ("validation", "suspicious", "ROX"): 6,
+            ("validation", "suspicious", "ROX"): 5,
         }
     )
     assert {case.sample_kind for case in selected.cases} == {"patient"}
