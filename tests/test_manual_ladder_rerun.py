@@ -47,6 +47,22 @@ def test_adjustment_loader_can_target_bundle_database(tmp_path):
     assert load_ladder_adjustment_record(source) is not None
 
 
+def test_adjustment_loader_can_disable_unscoped_ladder_fallback(tmp_path):
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"fsa")
+    save_ladder_adjustment_record(source, _payload())
+
+    assert (
+        load_ladder_adjustment_record(
+            source,
+            ladder="LIZ",
+            allow_unscoped_ladder=False,
+        )
+        is None
+    )
+    assert load_ladder_adjustment_record(source, ladder="LIZ") is not None
+
+
 def test_manual_ladder_adjustment_is_atomically_saved_and_reloadable(tmp_path):
     fsa_path = tmp_path / "sample.fsa"
     fsa_path.write_bytes(b"fsa")

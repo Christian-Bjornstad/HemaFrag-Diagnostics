@@ -137,6 +137,7 @@ def load_ladder_adjustment_record(
     ladder: str = "",
     size_standard_channel: str = "",
     database_path: Path | None = None,
+    allow_unscoped_ladder: bool = True,
 ) -> dict[str, Any] | None:
     database_path = (
         Path(database_path).expanduser()
@@ -156,7 +157,11 @@ def load_ladder_adjustment_record(
                 SELECT payload_json, payload_sha256, saved_at_utc
                 FROM ladder_adjustments
                 WHERE source_key = ?
-                  AND (? = '' OR ladder IN (?, ''))
+                  AND (
+                      ? = ''
+                      OR ladder = ?
+                      OR (? = 1 AND ladder = '')
+                  )
                   AND (? = '' OR size_standard_channel IN (?, ''))
                 ORDER BY
                     CASE WHEN ladder = ? THEN 0 ELSE 1 END,
@@ -168,6 +173,7 @@ def load_ladder_adjustment_record(
                     source_key,
                     ladder_key,
                     ladder_key,
+                    int(bool(allow_unscoped_ladder)),
                     channel_key,
                     channel_key,
                     ladder_key,

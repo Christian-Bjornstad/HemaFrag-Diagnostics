@@ -177,7 +177,7 @@ def _resolved_round_two_workspace(
         "HEMAFRAG_LADDER_ADJUSTMENT_DB", str(published.adjustment_database)
     )
     stored_ladder = (
-        "LIZ500_250" if manual_row["ladder"] == "LIZ" else "GS500ROX"
+        "LIZ500_250" if manual_row["ladder"] == "LIZ" else "ROX400HD"
     )
     save_ladder_adjustment_record(
         Path(manual_row["full_path"]), payload, ladder=stored_ladder
@@ -650,6 +650,36 @@ def test_finalize_round_two_uses_label_specific_review_anchors(
     assert excluded_case["ml_eligible"] is False
 
 
+def test_finalize_round_two_ignores_newer_wrong_ladder_record_in_bundle_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    workspace, manual_row, _excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    bundle_database = (
+        workspace / "round_2_review_bundle" / "ladder_adjustments.sqlite3"
+    )
+    monkeypatch.setenv("HEMAFRAG_LADDER_ADJUSTMENT_DB", str(bundle_database))
+    wrong_ladder = "ROX400HD" if manual_row["ladder"] == "LIZ" else "LIZ500_250"
+    save_ladder_adjustment_record(
+        Path(manual_row["full_path"]),
+        {
+            "selected_peaks": [{"step_index": 0, "observed_time": 999.0}],
+            "review": {"saved_at_utc": "2027-01-01T00:00:00+00:00"},
+            "validation": {"save_verified": True},
+        },
+        ladder=wrong_ladder,
+    )
+
+    result = round_two_module.finalize_round_two_review(workspace)
+
+    payload = json.loads(result.outcomes_path.read_text(encoding="utf-8"))
+    manual_case = next(
+        case for case in payload["cases"] if case["label"] == "manual_adjusted"
+    )
+    assert manual_case["review_scan_indices"] == [101.0, 198.0, 305.0]
+
+
 def test_finalize_round_two_excludes_missing_ladder_from_metrics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -693,11 +723,58 @@ def test_finalize_round_two_rejects_unverified_manual_selected_peaks(
             ],
             "validation": {"save_verified": False},
         },
-        ladder=("LIZ500_250" if manual_row["ladder"] == "LIZ" else "GS500ROX"),
+        ladder=("LIZ500_250" if manual_row["ladder"] == "LIZ" else "ROX400HD"),
     )
 
     with pytest.raises(ValueError, match="verified selected_peaks"):
         round_two_module.finalize_round_two_review(workspace)
+
+
+@pytest.mark.parametrize("preexisting", (False, True))
+def test_finalize_round_two_rolls_back_both_outputs_when_second_publish_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    preexisting: bool,
+):
+    workspace, _manual_row, _excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    outcomes_path = workspace / "round_2_review_outcomes.json"
+    comparison_path = workspace / "round_2_review_comparison.md"
+    prior_outcomes = b"prior outcomes\r\n\x00"
+    prior_comparison = b"prior comparison\r\n\x00"
+    if preexisting:
+        outcomes_path.write_bytes(prior_outcomes)
+        comparison_path.write_bytes(prior_comparison)
+    real_replace = round_two_module.os.replace
+    failed_once = False
+
+    def fail_second_publication(source: Path, destination: Path) -> None:
+        nonlocal failed_once
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if (
+            not failed_once
+            and destination_path == comparison_path
+            and source_path.suffix == ".tmp"
+        ):
+            failed_once = True
+            raise OSError("injected second publication failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(round_two_module.os, "replace", fail_second_publication)
+
+    with pytest.raises(OSError, match="injected second publication failure"):
+        round_two_module.finalize_round_two_review(workspace)
+
+    if preexisting:
+        assert outcomes_path.read_bytes() == prior_outcomes
+        assert comparison_path.read_bytes() == prior_comparison
+    else:
+        assert not outcomes_path.exists()
+        assert not comparison_path.exists()
+    assert not list(workspace.glob(".round_2_review_outcomes.json.*"))
+    assert not list(workspace.glob(".round_2_review_comparison.md.*"))
 
 
 def test_finalize_round_two_cli_exposes_workspace_option():

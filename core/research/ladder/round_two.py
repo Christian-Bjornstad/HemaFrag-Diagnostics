@@ -42,6 +42,10 @@ ROUND_TWO_PUBLIC_CASE_FIELDS = (
     "assay",
     "ladder",
 )
+ROUND_TWO_LADDER_ALIASES = {
+    "LIZ": ("LIZ", "LIZ500_250"),
+    "ROX": ("ROX", "ROX400HD"),
+}
 
 
 @dataclass(frozen=True)
@@ -610,55 +614,69 @@ def _verified_manual_scan_indices(
     database_path: Path,
     case_id: str,
 ) -> list[float]:
-    record = load_ladder_adjustment_record(
-        source_path,
-        ladder=ladder,
-        database_path=database_path,
+    ladder_family = _normalized_ladder(ladder)
+    aliases = ROUND_TWO_LADDER_ALIASES.get(ladder_family)
+    if aliases is None:
+        raise ValueError(
+            f"Manual case {case_id} has unsupported ladder identity: {ladder}"
+        )
+    requested_identity = str(ladder or "").strip().upper()
+    ordered_aliases = tuple(
+        dict.fromkeys(
+            (requested_identity, *aliases)
+            if requested_identity in aliases
+            else aliases
+        )
     )
-    if record is None:
+    for alias in ordered_aliases:
         record = load_ladder_adjustment_record(
             source_path,
+            ladder=alias,
             database_path=database_path,
+            allow_unscoped_ladder=False,
         )
-    payload = record.get("payload") if isinstance(record, dict) else None
-    validation = payload.get("validation") if isinstance(payload, dict) else None
-    selected_peaks = payload.get("selected_peaks") if isinstance(payload, dict) else None
-    if (
-        not isinstance(validation, dict)
-        or validation.get("save_verified") is not True
-        or not isinstance(selected_peaks, list)
-        or not selected_peaks
-    ):
-        raise ValueError(
-            f"Manual case {case_id} has no verified selected_peaks in the bundle database"
+        payload = record.get("payload") if isinstance(record, dict) else None
+        validation = payload.get("validation") if isinstance(payload, dict) else None
+        selected_peaks = (
+            payload.get("selected_peaks") if isinstance(payload, dict) else None
         )
+        if (
+            not isinstance(validation, dict)
+            or validation.get("save_verified") is not True
+            or not isinstance(selected_peaks, list)
+            or not selected_peaks
+        ):
+            continue
 
-    indexed: list[tuple[int, float]] = []
-    for peak in selected_peaks:
-        if not isinstance(peak, dict):
-            raise ValueError(
-                f"Manual case {case_id} has invalid verified selected_peaks"
-            )
-        try:
-            step_index = int(peak["step_index"])
-            observed_time = float(peak["observed_time"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(
-                f"Manual case {case_id} has invalid verified selected_peaks"
-            ) from exc
-        if step_index < 0 or not math.isfinite(observed_time):
-            raise ValueError(
-                f"Manual case {case_id} has invalid verified selected_peaks"
-            )
-        indexed.append((step_index, observed_time))
+        indexed: list[tuple[int, float]] = []
+        valid = True
+        for peak in selected_peaks:
+            if not isinstance(peak, dict):
+                valid = False
+                break
+            try:
+                step_index = int(peak["step_index"])
+                observed_time = float(peak["observed_time"])
+            except (KeyError, TypeError, ValueError):
+                valid = False
+                break
+            if step_index < 0 or not math.isfinite(observed_time):
+                valid = False
+                break
+            indexed.append((step_index, observed_time))
+        if not valid:
+            continue
 
-    indexed.sort()
-    step_indices = [step_index for step_index, _value in indexed]
-    if len(set(step_indices)) != len(step_indices):
-        raise ValueError(
-            f"Manual case {case_id} has invalid verified selected_peaks"
-        )
-    return [value for _step_index, value in indexed]
+        indexed.sort()
+        step_indices = [step_index for step_index, _value in indexed]
+        if len(set(step_indices)) != len(step_indices):
+            continue
+        return [value for _step_index, value in indexed]
+
+    raise ValueError(
+        f"Manual case {case_id} has no verified selected_peaks in the bundle database "
+        f"for ladder aliases {', '.join(ordered_aliases)}"
+    )
 
 
 def _anchor_deltas(
@@ -813,6 +831,57 @@ def _write_temporary_text(path: Path, text: str) -> Path:
         raise
 
 
+def _reserve_sibling_path(path: Path, *, suffix: str) -> Path:
+    with tempfile.NamedTemporaryFile(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=suffix,
+        delete=False,
+    ) as handle:
+        reserved = Path(handle.name)
+    reserved.unlink()
+    return reserved
+
+
+def _publish_output_pair(replacements: tuple[tuple[Path, Path], ...]) -> None:
+    backups: dict[Path, Path | None] = {}
+    published: list[Path] = []
+    try:
+        for _temporary, target in replacements:
+            backup = (
+                _reserve_sibling_path(target, suffix=".rollback")
+                if target.exists()
+                else None
+            )
+            if backup is not None:
+                os.replace(target, backup)
+            backups[target] = backup
+
+        for temporary, target in replacements:
+            os.replace(temporary, target)
+            published.append(target)
+    except Exception:
+        for target in published:
+            target.unlink(missing_ok=True)
+        try:
+            for _temporary, target in reversed(replacements):
+                backup = backups.get(target)
+                if backup is not None and backup.exists():
+                    os.replace(backup, target)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                "Round-two output publication and rollback both failed"
+            ) from rollback_error
+        raise
+    else:
+        for backup in backups.values():
+            if backup is not None:
+                backup.unlink(missing_ok=True)
+    finally:
+        for temporary, _target in replacements:
+            temporary.unlink(missing_ok=True)
+
+
 def finalize_round_two_review(workspace: Path) -> RoundTwoOutcomeResult:
     """Finalize a fully resolved blind review using only bundle-local evidence."""
 
@@ -948,8 +1017,12 @@ def finalize_round_two_review(workspace: Path) -> RoundTwoOutcomeResult:
         comparison_temporary = _write_temporary_text(
             comparison_path, _render_round_two_comparison(payload)
         )
-        os.replace(outcomes_temporary, outcomes_path)
-        os.replace(comparison_temporary, comparison_path)
+        _publish_output_pair(
+            (
+                (outcomes_temporary, outcomes_path),
+                (comparison_temporary, comparison_path),
+            )
+        )
     except Exception:
         outcomes_temporary.unlink(missing_ok=True)
         if comparison_temporary is not None:
