@@ -66,6 +66,10 @@ def _valid_sha256(value: Any) -> bool:
 def _gold_approval_valid(entry: dict[str, Any]) -> bool:
     return bool(
         _valid_sha256(entry.get("content_sha256"))
+        and (
+            "approved_for_fit_gold" not in entry
+            or _truthy(entry.get("approved_for_fit_gold"))
+        )
         and _truthy(entry.get("gold_eligible"))
         and _truthy(entry.get("review_approved"))
         and str(entry.get("review_label") or "").strip().casefold()
@@ -76,6 +80,12 @@ def _gold_approval_valid(entry: dict[str, Any]) -> bool:
         and str(entry.get("identity_key") or "").strip()
         and str(entry.get("sample_kind") or "").strip().casefold() == "patient"
     )
+
+
+def _manifest_records(manifest: object) -> object:
+    if not isinstance(manifest, dict):
+        return manifest
+    return manifest.get("files") if "files" in manifest else manifest.get("records")
 
 
 def _percentile(values: list[float], fraction: float) -> float:
@@ -93,9 +103,9 @@ def _percentile(values: list[float], fraction: float) -> float:
 
 def _load_manifest(path: Path) -> list[Path]:
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    raw_files = manifest.get("files") if isinstance(manifest, dict) else manifest
+    raw_files = _manifest_records(manifest)
     if not isinstance(raw_files, list):
-        raise ValueError("Manifest must be a JSON list or an object containing a 'files' list.")
+        raise ValueError("Manifest must be a JSON list or an object containing records.")
     files: list[Path] = []
     seen_paths: set[str] = set()
     seen_hashes: set[str] = set()
@@ -131,7 +141,7 @@ def _load_manifest(path: Path) -> list[Path]:
 
 def _load_gold_expectations(path: Path) -> dict[Path, list[int]]:
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    raw_files = manifest.get("files") if isinstance(manifest, dict) else manifest
+    raw_files = _manifest_records(manifest)
     if not isinstance(raw_files, list):
         return {}
     expectations: dict[Path, list[int]] = {}
@@ -151,7 +161,7 @@ def _load_gold_expectations(path: Path) -> dict[Path, list[int]]:
 
 def _load_manifest_metadata(path: Path) -> dict[Path, dict[str, str]]:
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    raw_files = manifest.get("files") if isinstance(manifest, dict) else manifest
+    raw_files = _manifest_records(manifest)
     if not isinstance(raw_files, list):
         return {}
     partition = str(manifest.get("partition") or "") if isinstance(manifest, dict) else ""
@@ -343,6 +353,9 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, object]:
         "review_count": sum(bool(row["identity"]["review_required"]) for row in rows),
         "gold_case_count": sum(row.get("gold_exact_match") is not None for row in rows),
         "gold_exact_match_count": sum(row.get("gold_exact_match") is True for row in rows),
+        "gold_major_wrong_sequence_count": sum(
+            row.get("gold_major_wrong_sequence") is True for row in rows
+        ),
         "taxonomy_case_count": sum(row.get("taxonomy_agreement") is not None for row in rows),
         "taxonomy_agreement_count": sum(row.get("taxonomy_agreement") is True for row in rows),
         "taxonomy_model_transition_count": sum(
@@ -352,6 +365,37 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, object]:
             status == "not_applicable_human_label_required"
             for status in taxonomy_statuses
         ),
+    }
+
+
+def _gold_anchor_metrics(
+    selected: list[int], expected: list[int] | None
+) -> dict[str, object]:
+    if expected is None:
+        return {
+            "gold_exact_match": None,
+            "gold_anchors_changed": None,
+            "gold_mean_abs_scan_delta": None,
+            "gold_max_abs_scan_delta": None,
+            "gold_major_wrong_sequence": None,
+        }
+    exact = selected == expected
+    if len(selected) != len(expected):
+        return {
+            "gold_exact_match": False,
+            "gold_anchors_changed": max(len(selected), len(expected)),
+            "gold_mean_abs_scan_delta": None,
+            "gold_max_abs_scan_delta": None,
+            "gold_major_wrong_sequence": True,
+        }
+    deltas = [abs(left - right) for left, right in zip(selected, expected)]
+    changed = sum(delta != 0 for delta in deltas)
+    return {
+        "gold_exact_match": exact,
+        "gold_anchors_changed": changed,
+        "gold_mean_abs_scan_delta": statistics.mean(deltas) if deltas else 0.0,
+        "gold_max_abs_scan_delta": max(deltas, default=0),
+        "gold_major_wrong_sequence": (not exact and changed >= 2),
     }
 
 
@@ -450,20 +494,7 @@ def benchmark(
             expected_scans = gold_expectations.get(input_file)
             metadata = case_metadata.get(input_file, {})
             selected_scans = [int(value) for value in first["identity"]["scan_indices"]]
-            gold_exact_match = (
-                selected_scans == expected_scans if expected_scans is not None else None
-            )
-            gold_max_scan_delta = (
-                max(
-                    (
-                        abs(selected - expected)
-                        for selected, expected in zip(selected_scans, expected_scans)
-                    ),
-                    default=0,
-                )
-                if expected_scans is not None and len(selected_scans) == len(expected_scans)
-                else None
-            )
+            gold_metrics = _gold_anchor_metrics(selected_scans, expected_scans)
             engine_outcome = classify_ladder_outcome(
                 {
                     "configured_ladder": metadata.get("ladder", ""),
@@ -506,8 +537,8 @@ def benchmark(
                     "deterministic": len(fingerprints) == 1 and len(identities) == 1,
                     "identity_fingerprints": fingerprints,
                     "identity": first["identity"],
-                    "gold_exact_match": gold_exact_match,
-                    "gold_max_scan_delta": gold_max_scan_delta,
+                    **gold_metrics,
+                    "gold_max_scan_delta": gold_metrics["gold_max_abs_scan_delta"],
                     "candidate_peak_count": first["candidate_peak_count"],
                     "estimated_combinations": first["estimated_combinations"],
                     "evaluated_combinations": first["evaluated_combinations"],
@@ -559,6 +590,9 @@ def benchmark(
         "deterministic": all(bool(row["deterministic"]) for row in rows),
         "gold_case_count": sum(row.get("gold_exact_match") is not None for row in rows),
         "gold_exact_match_count": sum(row.get("gold_exact_match") is True for row in rows),
+        "gold_major_wrong_sequence_count": sum(
+            row.get("gold_major_wrong_sequence") is True for row in rows
+        ),
         "overall": _summarize(rows),
         "by_ladder": by_ladder,
         "by_failure_family": by_failure_family,

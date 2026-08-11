@@ -998,3 +998,119 @@ def finalize_fit_improvement_wave(
         fitting_evaluation_count=fitting_count,
         ml_eligible_count=ml_count,
     )
+
+
+def build_approved_fit_gold(
+    round_two_outcomes: Mapping[str, Any],
+    development_outcomes: Mapping[str, Any],
+    approvals: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build hash- and identity-bound fitting gold from explicit approvals."""
+
+    reviewed_by_hash: dict[str, tuple[str, dict[str, Any]]] = {}
+    for source, payload in (
+        ("round_two_review", round_two_outcomes),
+        ("development_review", development_outcomes),
+    ):
+        cases = payload.get("cases") if isinstance(payload, Mapping) else None
+        if not isinstance(cases, list) or not all(
+            isinstance(case, Mapping) for case in cases
+        ):
+            raise ValueError(f"{source} outcomes must contain a cases list")
+        for raw_case in cases:
+            case = dict(raw_case)
+            content_hash = _normalized_hash(case.get("content_sha256"))
+            if len(content_hash) != 64:
+                raise ValueError(f"{source} outcome requires a valid SHA-256")
+            if content_hash in reviewed_by_hash:
+                raise ValueError("Reviewed fitting outcomes contain duplicate content")
+            reviewed_by_hash[content_hash] = (source, case)
+
+    records: list[dict[str, Any]] = []
+    seen_runs: set[str] = set()
+    for approval_key, raw_approval in sorted(approvals.items()):
+        approval = dict(raw_approval)
+        if not bool(approval.get("approved_for_fit_gold")):
+            continue
+        content_hash = _normalized_hash(approval_key)
+        declared_hash = _normalized_hash(approval.get("content_sha256"))
+        if len(content_hash) != 64 or declared_hash != content_hash:
+            raise ValueError("Fit-gold approval must be joined by matching SHA-256")
+        reviewed = reviewed_by_hash.get(content_hash)
+        if reviewed is None:
+            raise ValueError("Fit-gold approval has no hash-matched reviewed outcome")
+        truth_source, case = reviewed
+        label = str(case.get("label") or "").strip().casefold()
+        if label not in {"manual_adjusted", "reviewed_no_change"} or not bool(
+            case.get("fitting_evaluation_eligible")
+        ):
+            raise ValueError("Fit-gold approval is not a usable reviewed ladder")
+
+        ladder = _normalized_ladder(case.get("ladder"))
+        expected_count = 16 if ladder == "LIZ" else 21 if ladder == "ROX" else 0
+        raw_scans = case.get("review_scan_indices")
+        if not isinstance(raw_scans, list):
+            raise ValueError("Fit-gold review sequence must be a list")
+        scans = [int(value) for value in raw_scans]
+        if (
+            expected_count == 0
+            or len(scans) != expected_count
+            or any(float(value) != int(value) for value in raw_scans)
+            or any(right <= left for left, right in zip(scans, scans[1:]))
+        ):
+            raise ValueError("Fit-gold approval requires a complete ordered ladder")
+
+        path = Path(str(approval.get("path") or "")).expanduser().resolve()
+        if not path.is_file() or _sha256_file(path) != content_hash:
+            raise ValueError("Fit-gold source bytes do not match approved SHA-256")
+        sample_kind = str(
+            approval.get("sample_kind") or case.get("sample_kind") or ""
+        ).strip().casefold()
+        if sample_kind != "patient":
+            raise ValueError("Fit-gold approval requires patient clonality data")
+        physical_run = _normalized_run(
+            approval.get("physical_run_key") or case.get("physical_run_key")
+        )
+        case_run = _normalized_run(case.get("physical_run_key"))
+        if not physical_run or physical_run != case_run:
+            raise ValueError("Fit-gold approval physical run does not match review")
+        if physical_run in seen_runs:
+            raise ValueError("Fit-gold approvals contain a duplicate physical run")
+        seen_runs.add(physical_run)
+        identity_key = str(approval.get("identity_key") or "").strip()
+        reviewed_by = str(approval.get("reviewed_by") or "").strip()
+        reviewed_at = str(case.get("reviewed_at_utc") or "").strip()
+        if not identity_key or not reviewed_by or not reviewed_at:
+            raise ValueError("Fit-gold approval requires bound identity and review provenance")
+
+        records.append(
+            {
+                "path": str(path),
+                "content_sha256": content_hash,
+                "physical_run_key": str(case.get("physical_run_key") or ""),
+                "identity_key": identity_key,
+                "sample_kind": "patient",
+                "analysis_id": "clonality",
+                "ladder": ladder,
+                "expected_scan_indices": scans,
+                "failure_family": str(case.get("failure_signature") or ""),
+                "truth_source": truth_source,
+                "partition": "development_fit_gold",
+                "review_label": label,
+                "reviewed_at_utc": reviewed_at,
+                "reviewed_by": reviewed_by,
+                "review_approved": True,
+                "gold_eligible": True,
+                "approved_for_fit_gold": True,
+            }
+        )
+
+    if not records:
+        raise ValueError("Fit-gold approvals contain no usable reviewed ladders")
+    records.sort(key=lambda record: (record["content_sha256"], record["path"]))
+    return {
+        "schema_version": "hemafrag_approved_fit_gold_v1",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "record_count": len(records),
+        "records": records,
+    }

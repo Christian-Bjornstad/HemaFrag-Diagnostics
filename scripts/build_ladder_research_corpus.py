@@ -37,6 +37,7 @@ from core.research.ladder.corrections import (
 )
 from core.research.ladder.diagnostics import DiagnosticRecord, run_rust_diagnostic
 from core.research.ladder.fit_improvement import (
+    build_approved_fit_gold,
     finalize_fit_improvement_wave,
     freeze_fit_candidate,
     prepare_fit_improvement_experiment,
@@ -815,6 +816,68 @@ def _freeze_fit_candidate_command(args: argparse.Namespace) -> None:
     )
 
 
+def _export_fit_gold_command(args: argparse.Namespace) -> None:
+    workspace = args.workspace.resolve()
+    assert_canonical_production_workspace(workspace)
+    experiment = workspace / "rust_fit_improvement"
+    round_two = json.loads(
+        (workspace / "round_2_review_outcomes.json").read_text(encoding="utf-8")
+    )
+    development = json.loads(
+        (experiment / "development_outcomes.json").read_text(encoding="utf-8")
+    )
+    selected_cases: dict[str, dict[str, Any]] = {}
+    for manifest_path in (
+        workspace / "round_2_selection_withheld.json",
+        experiment / "development_selection_withheld.json",
+    ):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for case in manifest.get("cases") or []:
+            selected_cases[str(case.get("content_sha256") or "").casefold()] = dict(
+                case
+            )
+    approvals: dict[str, dict[str, Any]] = {}
+    approved_runs: set[str] = set()
+    omitted_duplicate_runs = 0
+    for payload in (round_two, development):
+        for outcome in payload.get("cases") or []:
+            if not bool(outcome.get("fitting_evaluation_eligible")):
+                continue
+            content_hash = str(outcome.get("content_sha256") or "").casefold()
+            selected = selected_cases.get(content_hash)
+            if selected is None:
+                raise ValueError("Reviewed fit-gold case is missing its hash-bound selection")
+            physical_run = str(outcome.get("physical_run_key") or "")
+            run_key = physical_run.strip().casefold()
+            if run_key in approved_runs:
+                omitted_duplicate_runs += 1
+                continue
+            approved_runs.add(run_key)
+            approvals[content_hash] = {
+                "path": str(selected.get("copied_path") or ""),
+                "content_sha256": content_hash,
+                "physical_run_key": physical_run,
+                "identity_key": f"patient:{physical_run}",
+                "sample_kind": str(selected.get("sample_kind") or "patient"),
+                "reviewed_by": args.reviewed_by,
+                "approved_for_fit_gold": True,
+            }
+    manifest = build_approved_fit_gold(round_two, development, approvals)
+    manifest["omitted_duplicate_run_count"] = omitted_duplicate_runs
+    output = experiment / "approved_fit_gold_manifest.json"
+    _write_json(output, manifest)
+    print(
+        json.dumps(
+            {
+                "output": str(output),
+                "record_count": manifest["record_count"],
+                "omitted_duplicate_run_count": omitted_duplicate_runs,
+            },
+            indent=2,
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -888,6 +951,11 @@ def main() -> None:
     freeze_fit.add_argument("--cli", required=True, type=Path)
     freeze_fit.add_argument("--configuration-json", default="{}")
     freeze_fit.set_defaults(handler=_freeze_fit_candidate_command)
+
+    export_fit_gold = commands.add_parser("export-fit-gold")
+    export_fit_gold.add_argument("--workspace", required=True, type=Path)
+    export_fit_gold.add_argument("--reviewed-by", default="chemist")
+    export_fit_gold.set_defaults(handler=_export_fit_gold_command)
 
     finalize_fit_validation = commands.add_parser("finalize-fit-validation")
     finalize_fit_validation.add_argument("--workspace", required=True, type=Path)

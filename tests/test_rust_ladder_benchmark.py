@@ -402,6 +402,63 @@ def test_ladder_benchmark_reports_all_repeat_tail_latency(
     )
 
 
+def test_ladder_benchmark_reports_exact_anchor_error_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cli = tmp_path / "fraggler-cli.exe"
+    cli.write_bytes(b"cli")
+    input_file = tmp_path / "case.fsa"
+    input_file.write_bytes(b"fixture")
+    content_hash = hashlib.sha256(input_file.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(
+        benchmark_module,
+        "_run_once",
+        lambda *_args, **_kwargs: (
+            0.1,
+            {
+                "ladder": "LIZ500_250",
+                "ladder_peak_count": 3,
+                "ladder_fit_preview": {
+                    "best_scan_indices": [10, 25, 31],
+                    "sizing_model": {},
+                },
+                "ladder_review_assessment": {"reason_codes": []},
+            },
+        ),
+    )
+    metadata = {
+        "content_sha256": content_hash,
+        "physical_run_key": "run-a",
+        "review_approved": "True",
+        "approved_for_fit_gold": "True",
+        "gold_eligible": "True",
+        "review_label": "manual_adjusted",
+        "reviewed_at_utc": "2026-08-11T12:00:00+00:00",
+        "reviewed_by": "chemist",
+        "analysis_id": "clonality",
+        "identity_key": "patient:run-a",
+        "sample_kind": "patient",
+    }
+
+    result = benchmark(
+        [input_file],
+        cli=cli,
+        repeats=1,
+        warmups=0,
+        timeout_seconds=10,
+        gold_expectations={input_file.resolve(): [10, 20, 30]},
+        case_metadata={input_file.resolve(): metadata},
+    )
+
+    row = result["files"][0]
+    assert row["gold_exact_match"] is False
+    assert row["gold_anchors_changed"] == 2
+    assert row["gold_mean_abs_scan_delta"] == pytest.approx(2.0)
+    assert row["gold_max_abs_scan_delta"] == 5
+    assert row["gold_major_wrong_sequence"] is True
+
+
 def test_ladder_benchmark_rejects_programmatic_hash_mismatch_before_runner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

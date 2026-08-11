@@ -15,11 +15,97 @@ from core.research.ladder.fit_improvement import (
     DEVELOPMENT_QUOTAS,
     VALIDATION_QUOTAS,
     assert_validation_unlocked,
+    build_approved_fit_gold,
     finalize_fit_improvement_wave,
     freeze_fit_candidate,
     prepare_fit_improvement_experiment,
     select_fit_improvement_waves,
 )
+
+
+def _reviewed_outcome(content_hash: str, *, ladder: str = "LIZ", run: str = "run-a"):
+    count = 16 if ladder == "LIZ" else 21
+    return {
+        "content_sha256": content_hash,
+        "physical_run_key": run,
+        "sample_kind": "patient",
+        "ladder": ladder,
+        "label": "manual_adjusted",
+        "reviewed_at_utc": "2026-08-11T12:00:00+00:00",
+        "review_scan_indices": list(range(100, 100 + count)),
+        "fitting_evaluation_eligible": True,
+        "failure_signature": "fit_rejected_with_usable_signal",
+    }
+
+
+def _gold_approval(path: Path, content_hash: str, *, run: str = "run-a"):
+    return {
+        "path": str(path),
+        "content_sha256": content_hash,
+        "physical_run_key": run,
+        "identity_key": f"patient:{run}",
+        "sample_kind": "patient",
+        "reviewed_by": "chemist",
+        "approved_for_fit_gold": True,
+    }
+
+
+def test_fit_gold_contains_only_usable_explicitly_approved_complete_ladders(tmp_path):
+    approved_file = tmp_path / "approved.fsa"
+    approved_file.write_bytes(b"approved")
+    approved_hash = hashlib.sha256(approved_file.read_bytes()).hexdigest()
+    excluded_hash = "e" * 64
+    outcomes = {
+        "cases": [
+            _reviewed_outcome(approved_hash),
+            {
+                **_reviewed_outcome(excluded_hash, run="run-excluded"),
+                "label": "excluded_missing_ladder_signal",
+                "review_scan_indices": [],
+                "fitting_evaluation_eligible": False,
+            },
+        ]
+    }
+
+    manifest = build_approved_fit_gold(
+        {"cases": []},
+        outcomes,
+        {approved_hash: _gold_approval(approved_file, approved_hash)},
+    )
+
+    assert manifest["record_count"] == 1
+    assert all(record["sample_kind"] == "patient" for record in manifest["records"])
+    assert all(record["approved_for_fit_gold"] is True for record in manifest["records"])
+    assert all(len(record["expected_scan_indices"]) in {16, 21} for record in manifest["records"])
+    assert all(record["content_sha256"] in {approved_hash} for record in manifest["records"])
+
+
+def test_fit_gold_rejects_changed_bytes(tmp_path):
+    approved_file = tmp_path / "changed.fsa"
+    approved_file.write_bytes(b"changed")
+    expected_hash = hashlib.sha256(b"original").hexdigest()
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        build_approved_fit_gold(
+            {"cases": []},
+            {"cases": [_reviewed_outcome(expected_hash)]},
+            {expected_hash: _gold_approval(approved_file, expected_hash)},
+        )
+
+
+def test_fit_gold_rejects_duplicate_physical_runs(tmp_path):
+    files = [tmp_path / "one.fsa", tmp_path / "two.fsa"]
+    for index, path in enumerate(files):
+        path.write_bytes(f"case-{index}".encode())
+    hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in files]
+    outcomes = {"cases": [_reviewed_outcome(value, run="same-run") for value in hashes]}
+    approvals = {
+        value: _gold_approval(path, value, run="same-run")
+        for value, path in zip(hashes, files)
+    }
+
+    with pytest.raises(ValueError, match="physical run"):
+        build_approved_fit_gold({"cases": []}, outcomes, approvals)
 from core.research.ladder.contracts import ResearchRoots
 
 
