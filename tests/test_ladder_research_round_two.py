@@ -63,6 +63,45 @@ def _classification(row: dict[str, object]) -> str:
     return "control"
 
 
+def _append_candidate(
+    diagnostics: list[dict[str, object]],
+    inventory: list[dict[str, object]],
+    key: str,
+    *,
+    cohort_group: str,
+    ladder: str,
+    run: str,
+    year: str,
+    reason: str,
+    assay: str,
+) -> None:
+    source = Path(f"C:/allowed/{year or 'unknown'}/{run}/{key}.fsa")
+    diagnostics.append(
+        {
+            "source_path": str(source),
+            "configured_ladder": ladder,
+            "outcome": (
+                "fit_rejected_with_usable_signal"
+                if cohort_group == "suspicious"
+                else "unresolved"
+            ),
+            "accepted": cohort_group == "control",
+            "review_required": cohort_group == "suspicious",
+            "reason_codes": [reason] if reason else [],
+            "assay": assay,
+        }
+    )
+    inventory.append(
+        {
+            "raw_path": str(source.resolve()),
+            "file": source.name,
+            "year": year,
+            "physical_run_key": run,
+            "content_sha256": f"{key}-hash",
+        }
+    )
+
+
 def test_round_two_selection_is_balanced_blind_and_isolated():
     diagnostics, inventory = _candidate_rows()
     manual_hashes = {"hash-018"}
@@ -115,6 +154,121 @@ def test_round_two_selection_is_independent_of_input_order():
     assert [case["content_sha256"] for case in shuffled.cases] == [
         case["content_sha256"] for case in expected.cases
     ]
+
+
+def test_round_two_backtracks_when_an_early_choice_blocks_a_feasible_group():
+    diagnostics: list[dict[str, object]] = []
+    inventory: list[dict[str, object]] = []
+    for ordinal in range(6):
+        _append_candidate(
+            diagnostics,
+            inventory,
+            f"liz-private-{ordinal}",
+            cohort_group="suspicious",
+            ladder="LIZ",
+            run=f"liz-private-run-{ordinal}",
+            year="2024",
+            reason="linear-fit",
+            assay="TCRgA",
+        )
+    _append_candidate(
+        diagnostics,
+        inventory,
+        "liz-shared",
+        cohort_group="suspicious",
+        ladder="LIZ",
+        run="shared-required-rox-run",
+        year="2026",
+        reason="baseline-like",
+        assay="IGH",
+    )
+    for ordinal in range(6):
+        _append_candidate(
+            diagnostics,
+            inventory,
+            "rox-required" if ordinal == 0 else f"rox-{ordinal}",
+            cohort_group="suspicious",
+            ladder="ROX",
+            run=("shared-required-rox-run" if ordinal == 0 else f"rox-run-{ordinal}"),
+            year="2025",
+            reason="compressed-rox",
+            assay="IGH",
+        )
+    for cohort_group, ladder, count in (
+        ("control", "LIZ", 3),
+        ("control", "ROX", 3),
+    ):
+        for ordinal in range(count):
+            _append_candidate(
+                diagnostics,
+                inventory,
+                f"{cohort_group}-{ladder}-{ordinal}",
+                cohort_group=cohort_group,
+                ladder=ladder,
+                run=f"{cohort_group}-{ladder}-run-{ordinal}",
+                year="2024" if ordinal % 2 == 0 else "2025",
+                reason="",
+                assay="TCRgA" if ordinal % 2 == 0 else "IGH",
+            )
+
+    result = select_round_two_cohort(
+        diagnostics,
+        inventory,
+        set(),
+        {"round-one-a", "round-one-b", "round-one-c"},
+        seed=7,
+    )
+
+    selected_hashes = {case["content_sha256"] for case in result.cases}
+    assert "liz-shared-hash" not in selected_hashes
+    assert "rox-required-hash" in selected_hashes
+
+
+def test_round_two_selection_meets_nonblank_diversity_contract():
+    diagnostics, inventory = _candidate_rows()
+
+    result = select_round_two_cohort(
+        diagnostics,
+        inventory,
+        set(),
+        {"round-one-a", "round-one-b", "round-one-c"},
+        seed=7,
+    )
+
+    assert len({case["year"] for case in result.cases if case["year"]}) >= 2
+    assert len(
+        {
+            case["reason_signature"]
+            for case in result.cases
+            if case["cohort_group"] == "suspicious"
+            and case["reason_signature"] != "none"
+        }
+    ) >= 2
+    assert len({case["assay"] for case in result.cases if case["assay"]}) >= 2
+
+
+@pytest.mark.parametrize("insufficient_dimension", ("year", "reason", "assay"))
+def test_round_two_rejects_impossible_nonblank_diversity(insufficient_dimension: str):
+    diagnostics, inventory = _candidate_rows()
+    if insufficient_dimension == "year":
+        for row in inventory:
+            row["year"] = "2024"
+        inventory[0]["year"] = ""
+    elif insufficient_dimension == "reason":
+        for row in diagnostics:
+            row["reason_codes"] = ["only-reason"]
+    else:
+        for row in diagnostics:
+            row["assay"] = "only-assay"
+
+    with pytest.raises(ValueError, match=rf"Diversity.*{insufficient_dimension}"):
+        select_round_two_cohort(
+            diagnostics,
+            inventory,
+            set(),
+            {"round-one-a", "round-one-b", "round-one-c"},
+            seed=7,
+        )
 
 
 @pytest.mark.parametrize(

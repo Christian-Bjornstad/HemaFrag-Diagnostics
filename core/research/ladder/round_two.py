@@ -20,6 +20,7 @@ GROUP_REQUIREMENTS = (
     ("control", "LIZ", 3),
     ("control", "ROX", 3),
 )
+MIN_DIVERSITY = 2
 
 
 @dataclass(frozen=True)
@@ -174,6 +175,147 @@ def _candidate_cases(
     return candidates
 
 
+def _diversity_values(
+    cases: Iterable[Mapping[str, Any]],
+) -> tuple[set[str], set[str], set[str]]:
+    case_list = list(cases)
+    years = {str(case["year"]) for case in case_list if str(case["year"]).strip()}
+    reasons = {
+        str(case["reason_signature"])
+        for case in case_list
+        if case["cohort_group"] == "suspicious"
+        and str(case["reason_signature"]).strip()
+        and case["reason_signature"] != "none"
+    }
+    assays = {str(case["assay"]) for case in case_list if str(case["assay"]).strip()}
+    return years, reasons, assays
+
+
+def _diversity_failures(cases: Iterable[Mapping[str, Any]]) -> list[str]:
+    values = _diversity_values(cases)
+    names = ("year", "reason", "assay")
+    return [
+        name for name, dimension in zip(names, values) if len(dimension) < MIN_DIVERSITY
+    ]
+
+
+def _joint_selection(
+    candidates: list[dict[str, Any]],
+    *,
+    seed: int,
+    require_diversity: bool,
+) -> tuple[dict[str, Any], ...] | None:
+    pools = [
+        sorted(
+            (
+                candidate
+                for candidate in candidates
+                if candidate["cohort_group"] == group
+                and candidate["ladder"] == ladder
+            ),
+            key=_canonical,
+        )
+        for group, ladder, _required_count in GROUP_REQUIREMENTS
+    ]
+    selected: list[dict[str, Any]] = []
+    used_hashes: set[str] = set()
+    used_runs: set[str] = set()
+    year_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
+    assay_counts: Counter[str] = Counter()
+
+    def available_from(
+        pool: list[dict[str, Any]], start: int = 0
+    ) -> list[tuple[int, dict[str, Any]]]:
+        return [
+            (index, candidate)
+            for index, candidate in enumerate(pool[start:], start)
+            if candidate["content_sha256"] not in used_hashes
+            and candidate["physical_run_key"] not in used_runs
+        ]
+
+    def diversity_remains_possible(
+        group_index: int,
+        start: int,
+        picked_in_group: int,
+    ) -> bool:
+        possible = list(selected)
+        for index in range(group_index, len(GROUP_REQUIREMENTS)):
+            required = GROUP_REQUIREMENTS[index][2]
+            remaining_slots = (
+                required - picked_in_group if index == group_index else required
+            )
+            if remaining_slots <= 0:
+                continue
+            pool_start = start if index == group_index else 0
+            possible.extend(
+                candidate
+                for _, candidate in available_from(pools[index], pool_start)
+            )
+        return not _diversity_failures(possible)
+
+    def search(
+        group_index: int,
+        start: int = 0,
+        picked_in_group: int = 0,
+    ) -> tuple[dict[str, Any], ...] | None:
+        if group_index == len(GROUP_REQUIREMENTS):
+            if require_diversity and _diversity_failures(selected):
+                return None
+            return tuple(selected)
+
+        group, ladder, required_count = GROUP_REQUIREMENTS[group_index]
+        if picked_in_group == required_count:
+            return search(group_index + 1)
+
+        available = available_from(pools[group_index], start)
+        if len(available) < required_count - picked_in_group:
+            return None
+        for later_index in range(group_index + 1, len(GROUP_REQUIREMENTS)):
+            later_required = GROUP_REQUIREMENTS[later_index][2]
+            if len(available_from(pools[later_index])) < later_required:
+                return None
+        if require_diversity and not diversity_remains_possible(
+            group_index, start, picked_in_group
+        ):
+            return None
+
+        ordered = sorted(
+            available,
+            key=lambda item: (
+                not bool(item[1]["year"]),
+                year_counts[item[1]["year"]],
+                group == "suspicious" and item[1]["reason_signature"] == "none",
+                reason_counts[item[1]["reason_signature"]],
+                not bool(item[1]["assay"]),
+                assay_counts[item[1]["assay"]],
+                _tie_break(seed, group, ladder, item[1]["content_sha256"]),
+                _canonical(item[1]),
+            ),
+        )
+        for candidate_index, choice in ordered:
+            selected.append(choice)
+            used_hashes.add(choice["content_sha256"])
+            used_runs.add(choice["physical_run_key"])
+            year_counts[choice["year"]] += 1
+            reason_counts[choice["reason_signature"]] += 1
+            assay_counts[choice["assay"]] += 1
+
+            result = search(group_index, candidate_index + 1, picked_in_group + 1)
+            if result is not None:
+                return result
+
+            selected.pop()
+            used_hashes.remove(choice["content_sha256"])
+            used_runs.remove(choice["physical_run_key"])
+            year_counts[choice["year"]] -= 1
+            reason_counts[choice["reason_signature"]] -= 1
+            assay_counts[choice["assay"]] -= 1
+        return None
+
+    return search(0)
+
+
 def select_round_two_cohort(
     diagnostics: Iterable[Mapping[str, Any]],
     inventory_rows: Iterable[Mapping[str, Any]],
@@ -187,53 +329,38 @@ def select_round_two_cohort(
     candidates = _candidate_cases(
         diagnostics, inventory_rows, manual_content_hashes, excluded_hashes
     )
-    selected: list[dict[str, Any]] = []
-    used_hashes: set[str] = set()
-    used_runs: set[str] = set()
-    year_counts: Counter[str] = Counter()
-    reason_counts: Counter[str] = Counter()
-    assay_counts: Counter[str] = Counter()
-
-    for group, ladder, required_count in GROUP_REQUIREMENTS:
-        pool = [
-            candidate
-            for candidate in candidates
-            if candidate["cohort_group"] == group and candidate["ladder"] == ladder
-        ]
-        for _ in range(required_count):
-            available = [
-                candidate
-                for candidate in pool
-                if candidate["content_sha256"] not in used_hashes
-                and candidate["physical_run_key"] not in used_runs
-            ]
-            if not available:
+    numeric_seed = int(seed)
+    quota_selection = _joint_selection(
+        candidates, seed=numeric_seed, require_diversity=False
+    )
+    if quota_selection is None:
+        for group, ladder, required_count in GROUP_REQUIREMENTS:
+            group_count = sum(
+                candidate["cohort_group"] == group and candidate["ladder"] == ladder
+                for candidate in candidates
+            )
+            if group_count < required_count:
                 raise ValueError(
                     f"Insufficient unique candidates for {group} {ladder}: "
                     f"required {required_count}"
                 )
-            choice = min(
-                available,
-                key=lambda candidate: (
-                    year_counts[candidate["year"]],
-                    reason_counts[candidate["reason_signature"]],
-                    assay_counts[candidate["assay"]],
-                    _tie_break(
-                        int(seed), group, ladder, candidate["content_sha256"]
-                    ),
-                    _canonical(candidate),
-                ),
-            )
-            selected.append(choice)
-            used_hashes.add(choice["content_sha256"])
-            used_runs.add(choice["physical_run_key"])
-            year_counts[choice["year"]] += 1
-            reason_counts[choice["reason_signature"]] += 1
-            assay_counts[choice["assay"]] += 1
+        raise ValueError(
+            "Insufficient globally disjoint candidates for round-two quotas"
+        )
 
-    if len({case["year"] for case in selected}) < 2:
-        raise ValueError("Round-two cohort must cover at least two years")
-    return RoundTwoSelection(cases=tuple(selected), seed=int(seed))
+    if not _diversity_failures(quota_selection):
+        selected = quota_selection
+    else:
+        selected = _joint_selection(
+            candidates, seed=numeric_seed, require_diversity=True
+        )
+        if selected is None:
+            failures = _diversity_failures(candidates)
+            detail = ", ".join(failures or ("joint year/reason/assay",))
+            raise ValueError(
+                f"Diversity requirements cannot be satisfied: {detail}"
+            )
+    return RoundTwoSelection(cases=selected, seed=numeric_seed)
 
 
 def _read_csv(path: Path) -> list[dict[str, Any]]:
