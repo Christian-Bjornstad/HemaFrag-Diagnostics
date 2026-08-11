@@ -326,6 +326,40 @@ def test_round_two_selection_is_independent_of_input_order():
     ]
 
 
+def test_round_two_selection_treats_physical_run_keys_case_insensitively():
+    diagnostics, inventory = _candidate_rows()
+    requirements = {
+        ("suspicious", "LIZ"): 6,
+        ("suspicious", "ROX"): 6,
+        ("control", "LIZ"): 3,
+        ("control", "ROX"): 3,
+    }
+    kept_diagnostics: list[dict[str, object]] = []
+    kept_inventory: list[dict[str, object]] = []
+    counts: Counter[tuple[str, str]] = Counter()
+    for diagnostic, inventory_row in zip(diagnostics, inventory):
+        key = (
+            _classification(diagnostic),
+            str(diagnostic["configured_ladder"])[:3],
+        )
+        if counts[key] >= requirements[key]:
+            continue
+        counts[key] += 1
+        kept_diagnostics.append(diagnostic)
+        kept_inventory.append(inventory_row)
+    kept_inventory[0]["physical_run_key"] = "2024_DATA/Run-A"
+    kept_inventory[1]["physical_run_key"] = "2024_data/run-a"
+
+    with pytest.raises(ValueError, match="globally disjoint"):
+        select_round_two_cohort(
+            kept_diagnostics,
+            kept_inventory,
+            set(),
+            {"round-one-a", "round-one-b", "round-one-c"},
+            seed=7,
+        )
+
+
 def test_round_two_public_order_does_not_encode_quota_groups():
     diagnostics, inventory = _candidate_rows()
 
@@ -890,6 +924,25 @@ def test_finalize_round_two_rejects_duplicate_hashes_and_runs(
     withheld_path = workspace / "round_2_selection_withheld.json"
     withheld = json.loads(withheld_path.read_text(encoding="utf-8"))
     withheld["cases"][1][field] = withheld["cases"][0][field]
+    withheld_path.write_text(json.dumps(withheld), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unique"):
+        round_two_module.finalize_round_two_review(
+            workspace, roots=_workspace_roots(workspace)
+        )
+
+
+def test_finalize_round_two_treats_physical_run_keys_case_insensitively(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    workspace, _manual_row, _excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    withheld_path = workspace / "round_2_selection_withheld.json"
+    withheld = json.loads(withheld_path.read_text(encoding="utf-8"))
+    withheld["cases"][0]["physical_run_key"] = "2024_DATA/Run-A"
+    withheld["cases"][1]["physical_run_key"] = "2024_data/run-a"
     withheld_path.write_text(json.dumps(withheld), encoding="utf-8")
 
     with pytest.raises(ValueError, match="unique"):

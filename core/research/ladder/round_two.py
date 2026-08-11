@@ -158,6 +158,10 @@ def _normalized_ladder(value: Any) -> str:
     return text
 
 
+def _normalized_run_key(value: Any) -> str:
+    return str(value or "").strip().replace("\\", "/").casefold()
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -367,7 +371,7 @@ def _joint_selection(
             (index, candidate)
             for index, candidate in enumerate(pool[start:], start)
             if candidate["content_sha256"] not in used_hashes
-            and candidate["physical_run_key"] not in used_runs
+            and _normalized_run_key(candidate["physical_run_key"]) not in used_runs
         ]
 
     def diversity_remains_possible(
@@ -432,7 +436,8 @@ def _joint_selection(
         for candidate_index, choice in ordered:
             selected.append(choice)
             used_hashes.add(choice["content_sha256"])
-            used_runs.add(choice["physical_run_key"])
+            normalized_run = _normalized_run_key(choice["physical_run_key"])
+            used_runs.add(normalized_run)
             year_counts[choice["year"]] += 1
             reason_counts[choice["reason_signature"]] += 1
             assay_counts[choice["assay"]] += 1
@@ -443,7 +448,7 @@ def _joint_selection(
 
             selected.pop()
             used_hashes.remove(choice["content_sha256"])
-            used_runs.remove(choice["physical_run_key"])
+            used_runs.remove(normalized_run)
             year_counts[choice["year"]] -= 1
             reason_counts[choice["reason_signature"]] -= 1
             assay_counts[choice["assay"]] -= 1
@@ -1112,7 +1117,7 @@ def _validate_round_two_manifest_cases(
     ) != ROUND_TWO_CASE_COUNT:
         raise ValueError("Round-two cases require unique valid content SHA-256 hashes")
     physical_runs = [
-        str(case.get("physical_run_key") or "").strip() for case in cases
+        _normalized_run_key(case.get("physical_run_key")) for case in cases
     ]
     if not all(physical_runs) or len(set(physical_runs)) != ROUND_TWO_CASE_COUNT:
         raise ValueError("Round-two cases require unique nonblank physical runs")

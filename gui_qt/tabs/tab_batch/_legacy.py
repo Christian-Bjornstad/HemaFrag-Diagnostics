@@ -770,6 +770,18 @@ class TabBatch(QWidget):
         cache_key = self._resolve_cache_key(Path(file_path))
         self._review_corrected_paths.discard(cache_key)
         self._review_session_entries_by_path.pop(cache_key, None)
+        retained_jobs: list[dict] = []
+        for job in self._review_session_jobs:
+            retained_files = [
+                path
+                for path in (job.get("files") or [])
+                if self._resolve_cache_key(Path(path)) != cache_key
+            ]
+            if not retained_files:
+                continue
+            job["files"] = retained_files
+            retained_jobs.append(job)
+        self._review_session_jobs = retained_jobs
         self._refresh_review_finalize_button()
         self._set_workflow_status(
             "Excluded no-ladder case removed from rerun and final-report inputs.",

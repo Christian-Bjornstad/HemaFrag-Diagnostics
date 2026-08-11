@@ -155,8 +155,8 @@ def _publish_bundle_files_atomically(
     finally:
         for temporary, _target in replacements:
             temporary.unlink(missing_ok=True)
-        for backup in backups.values():
-            if backup is not None:
+        for target, backup in backups.items():
+            if target not in backed_up and backup is not None:
                 backup.unlink(missing_ok=True)
 
 

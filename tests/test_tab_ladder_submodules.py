@@ -495,6 +495,65 @@ class TabLadderIOHelperTests(unittest.TestCase):
             self.assertFalse(list(bundle.glob(".*.tmp")))
             self.assertFalse(list(bundle.glob(".*.backup")))
 
+    def test_annotation_pair_preserves_backup_when_rollback_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "sample.fsa"
+            fsa.write_bytes(b"trace")
+            cases_path = self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            annotations_path = bundle / "ladder_review_annotations.json"
+            annotations_path.write_bytes(b'{"sentinel": true}\r\n')
+            original_cases = cases_path.read_bytes()
+            original_annotations = annotations_path.read_bytes()
+            real_replace = os.replace
+            publication_failed = False
+
+            def fail_publication_and_csv_rollback(source, destination):
+                nonlocal publication_failed
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if (
+                    not publication_failed
+                    and destination_path == annotations_path
+                    and source_path.suffix == ".tmp"
+                ):
+                    publication_failed = True
+                    raise OSError("injected annotation publication failure")
+                if (
+                    publication_failed
+                    and destination_path == cases_path
+                    and source_path.suffix == ".backup"
+                ):
+                    raise OSError("injected CSV rollback failure")
+                real_replace(source, destination)
+
+            with patch(
+                "gui_qt.tabs.tab_ladder._io.os.replace",
+                side_effect=fail_publication_and_csv_rollback,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "publication and rollback both failed"
+                ):
+                    save_review_bundle_annotation_worker(
+                        bundle,
+                        fsa,
+                        {
+                            "label": "reviewed_no_change",
+                            "label_note": "reviewed",
+                            "reviewed_at_utc": "2026-08-10T00:00:00+00:00",
+                            "adjustment_path": "",
+                        },
+                    )
+
+            backups = list(bundle.glob(".*.backup"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_bytes(), original_cases)
+            self.assertFalse(cases_path.exists())
+            self.assertEqual(annotations_path.read_bytes(), original_annotations)
+
     def test_save_review_bundle_annotation_worker_raises_on_unknown_path(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             fsa = Path(td) / "x.fsa"
@@ -552,10 +611,17 @@ class TabLadderRerunSelectionTests(unittest.TestCase):
         from gui_qt.tabs.tab_batch import TabBatch
 
         cache_key = resolve_cache_key(Path("excluded-no-ladder.fsa"))
+        retained_key = resolve_cache_key(Path("retained-adjustment.fsa"))
         fake_tab = SimpleNamespace(
             _review_session_active=True,
             _review_corrected_paths={cache_key},
             _review_session_entries_by_path={cache_key: {"entry": True}},
+            _review_session_jobs=[
+                {
+                    "name": "shared-job",
+                    "files": [cache_key, retained_key],
+                }
+            ],
             _resolve_cache_key=resolve_cache_key,
             _refresh_review_finalize_button=MagicMock(),
             _set_workflow_status=MagicMock(),
@@ -565,6 +631,10 @@ class TabLadderRerunSelectionTests(unittest.TestCase):
 
         self.assertNotIn(cache_key, fake_tab._review_corrected_paths)
         self.assertNotIn(cache_key, fake_tab._review_session_entries_by_path)
+        self.assertEqual(
+            fake_tab._review_session_jobs[0]["files"],
+            [retained_key],
+        )
         fake_tab._refresh_review_finalize_button.assert_called_once_with()
 
     def test_exclusion_clears_local_and_run_tab_rerun_state(self) -> None:
