@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -14,6 +15,7 @@ INVENTORY_SCHEMA_VERSION = "1.0"
 MANUAL_CORRECTION_SCHEMA_VERSION = "1.0"
 DIAGNOSTIC_SCHEMA_VERSION = "1.0"
 PARTITION_SCHEMA_VERSION = "1.0"
+PRODUCTION_WORKSPACE_NAME = "current"
 
 
 class LadderOutcome(str, Enum):
@@ -56,6 +58,43 @@ def _is_within(candidate: Path, parent: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _path_key(path: Path) -> str:
+    return os.path.normcase(str(Path(path).resolve()))
+
+
+def assert_canonical_production_roots(roots: ResearchRoots) -> ResearchRoots:
+    """Require the one approved production input/output boundary set."""
+
+    expected = ResearchRoots.default()
+    actual_raw = tuple(_path_key(path) for path in roots.raw_roots)
+    expected_raw = tuple(_path_key(path) for path in expected.raw_roots)
+    if (
+        actual_raw != expected_raw
+        or _path_key(roots.archive_root) != _path_key(expected.archive_root)
+        or _path_key(roots.output_root) != _path_key(expected.output_root)
+        or _path_key(roots.excluded_backup_root)
+        != _path_key(expected.excluded_backup_root)
+    ):
+        raise ValueError(
+            "Ladder research CLI requires the exact canonical production roots."
+        )
+    return roots
+
+
+def assert_canonical_production_workspace(workspace: Path) -> Path:
+    """Require the fixed production workspace below the canonical output root."""
+
+    candidate = Path(workspace).resolve()
+    expected = (
+        ResearchRoots.default().output_root / PRODUCTION_WORKSPACE_NAME
+    ).resolve()
+    if _path_key(candidate) != _path_key(expected):
+        raise ValueError(
+            f"Ladder research requires the canonical production workspace: {expected}"
+        )
+    return candidate
 
 
 def assert_allowed_raw_path(path: Path, roots: ResearchRoots) -> Path:

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -12,6 +15,8 @@ import pytest
 from core.research.ladder.contracts import ResearchRoots
 from core.research.ladder.diagnostics import normalize_rust_result
 from scripts.build_ladder_research_corpus import (
+    _assert_workspace,
+    _inventory_command,
     finalize_stage,
     inventory_stage,
     diagnose_stage,
@@ -64,6 +69,251 @@ def fixture_roots(tmp_path: Path) -> ResearchRoots:
         output_root=tmp_path / "research",
         excluded_backup_root=data / "backup",
     )
+
+
+def diagnostic_workspace(
+    tmp_path: Path,
+) -> tuple[ResearchRoots, Path, Path, Path]:
+    roots = fixture_roots(tmp_path)
+    source = roots.raw_roots[0] / "run-a" / "sample.fsa"
+    source.parent.mkdir()
+    source.write_bytes(b"source-v1")
+    workspace = roots.output_root / "fixture-run"
+    workspace.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "raw_path": str(source.resolve()),
+                "content_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "physical_run_key": "2024_DATA/run-a",
+                "sample_kind": "patient",
+            }
+        ]
+    ).to_csv(workspace / "inventory.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "record_kind": "review_case",
+                "resolved_full_path": str(source.resolve()),
+                "source_run_dir": "run-a",
+                "assay": "TCRgA",
+                "ladder": "LIZ",
+                "label": "",
+                "primary_reason": "rejected",
+                "reason_codes": "candidate_space_capped",
+            }
+        ]
+    ).to_csv(workspace / "review_cases.csv", index=False)
+    (workspace / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "roots": {
+                    "raw_roots": [str(path) for path in roots.raw_roots],
+                    "archive_root": str(roots.archive_root),
+                    "output_root": str(roots.output_root),
+                    "excluded_backup_root": str(roots.excluded_backup_root),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    cli = tmp_path / "fraggler-cli.exe"
+    cli.write_bytes(b"cli-v1")
+    return roots, workspace, source, cli
+
+
+def successful_diagnostic(input_file: Path, kwargs: dict[str, object]):
+    return normalize_rust_result(
+        {
+            "ladder": "LIZ500_250",
+            "ladder_peak_count": 20,
+            "ladder_fit_preview": {},
+            "ladder_review_assessment": {
+                "suggested_review": True,
+                "reason_codes": ["candidate_space_capped"],
+            },
+        },
+        source_path=input_file,
+        configured_ladder=str(kwargs["configured_ladder"]),
+        reviewed_label=str(kwargs.get("reviewed_label") or ""),
+    )
+
+
+def test_inventory_cli_rejects_caller_defined_roots_before_scanning(
+    tmp_path, monkeypatch
+):
+    called = False
+
+    def unexpected_inventory(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        "scripts.build_ladder_research_corpus.inventory_stage",
+        unexpected_inventory,
+    )
+    data = tmp_path / "DATA"
+    args = SimpleNamespace(
+        raw_root=[data / "2024_DATA", data / "backup"],
+        archive_root=tmp_path / "archive",
+        output_root=tmp_path / "research",
+    )
+
+    with pytest.raises(ValueError, match="canonical production roots"):
+        _inventory_command(args)
+
+    assert called is False
+
+
+def test_workspace_rejects_descendants_of_protected_inputs(tmp_path):
+    roots = fixture_roots(tmp_path)
+    roots = ResearchRoots(
+        raw_roots=roots.raw_roots,
+        archive_root=roots.archive_root,
+        output_root=tmp_path,
+        excluded_backup_root=roots.excluded_backup_root,
+    )
+
+    with pytest.raises(ValueError, match="protected input"):
+        _assert_workspace(roots.raw_roots[0] / "nested-output", roots)
+
+
+def test_finalize_orchestration_requires_exact_production_workspace(tmp_path):
+    roots, workspace, _source, _cli = diagnostic_workspace(tmp_path)
+
+    with pytest.raises(ValueError, match="canonical production workspace"):
+        finalize_stage(workspace)
+
+    assert roots.output_root != ResearchRoots.default().output_root
+
+
+def test_diagnostic_resume_reuses_only_exact_successful_provenance(tmp_path):
+    roots, workspace, source, cli = diagnostic_workspace(tmp_path)
+    calls: list[Path] = []
+
+    def runner(_cli, input_file, **kwargs):
+        calls.append(input_file)
+        return successful_diagnostic(input_file, kwargs)
+
+    first = diagnose_stage(
+        workspace,
+        cli=cli,
+        roots=roots,
+        timeout_seconds=7,
+        resume=True,
+        diagnostic_runner=runner,
+    )
+    unchanged = diagnose_stage(
+        workspace,
+        cli=cli,
+        roots=roots,
+        timeout_seconds=7,
+        resume=True,
+        diagnostic_runner=runner,
+    )
+
+    assert first["new_record_count"] == 1
+    assert unchanged["new_record_count"] == 0
+    assert calls == [source.resolve()]
+    record = json.loads((workspace / "diagnostics.ndjson").read_text(encoding="utf-8"))
+    assert record["source_sha256"] == hashlib.sha256(b"source-v1").hexdigest()
+    assert record["physical_run_key"] == "2024_DATA/run-a"
+    assert record["cli_sha256"] == hashlib.sha256(b"cli-v1").hexdigest()
+    assert record["diagnostic_settings_fingerprint"]
+    assert record["diagnostic_success"] is True
+
+    source.write_bytes(b"source-v2")
+    inventory = pd.read_csv(workspace / "inventory.csv", keep_default_na=False)
+    inventory.loc[0, "content_sha256"] = hashlib.sha256(b"source-v2").hexdigest()
+    inventory.to_csv(workspace / "inventory.csv", index=False)
+
+    stale_source = diagnose_stage(
+        workspace,
+        cli=cli,
+        roots=roots,
+        timeout_seconds=7,
+        resume=True,
+        diagnostic_runner=runner,
+    )
+
+    assert stale_source["new_record_count"] == 1
+    assert calls == [source.resolve(), source.resolve()]
+
+
+def test_diagnostic_resume_invalidates_changed_cli_and_settings(tmp_path):
+    roots, workspace, source, cli = diagnostic_workspace(tmp_path)
+    calls: list[Path] = []
+
+    def runner(_cli, input_file, **kwargs):
+        calls.append(input_file)
+        return successful_diagnostic(input_file, kwargs)
+
+    diagnose_stage(
+        workspace,
+        cli=cli,
+        roots=roots,
+        timeout_seconds=7,
+        resume=True,
+        diagnostic_runner=runner,
+    )
+    cli.write_bytes(b"cli-v2")
+    changed_cli = diagnose_stage(
+        workspace,
+        cli=cli,
+        roots=roots,
+        timeout_seconds=7,
+        resume=True,
+        diagnostic_runner=runner,
+    )
+    changed_settings = diagnose_stage(
+        workspace,
+        cli=cli,
+        roots=roots,
+        timeout_seconds=8,
+        resume=True,
+        diagnostic_runner=runner,
+    )
+
+    assert changed_cli["new_record_count"] == 1
+    assert changed_settings["new_record_count"] == 1
+    assert calls == [source.resolve(), source.resolve(), source.resolve()]
+
+
+def test_diagnostic_resume_retries_failed_records(tmp_path):
+    roots, workspace, source, cli = diagnostic_workspace(tmp_path)
+    calls = 0
+
+    def runner(_cli, input_file, **kwargs):
+        nonlocal calls
+        calls += 1
+        record = successful_diagnostic(input_file, kwargs)
+        if calls == 1:
+            return replace(
+                record,
+                transport_status="timeout",
+                issue_codes=("transport_timeout",),
+            )
+        return record
+
+    diagnose_stage(
+        workspace,
+        cli=cli,
+        roots=roots,
+        resume=True,
+        diagnostic_runner=runner,
+    )
+    retried = diagnose_stage(
+        workspace,
+        cli=cli,
+        roots=roots,
+        resume=True,
+        diagnostic_runner=runner,
+    )
+
+    assert retried["new_record_count"] == 1
+    assert calls == 2
+    record = json.loads((workspace / "diagnostics.ndjson").read_text(encoding="utf-8"))
+    assert record["diagnostic_success"] is True
 
 
 def test_end_to_end_builder_excludes_backup_and_writes_all_artifacts(tmp_path, monkeypatch):
@@ -198,7 +448,7 @@ def test_end_to_end_builder_excludes_backup_and_writes_all_artifacts(tmp_path, m
         resume=True,
         diagnostic_runner=fake_diagnostic,
     )
-    finalize_stage(workspace, seed=20260810)
+    finalize_stage(workspace, seed=20260810, roots=roots)
 
     assert EXPECTED_ARTIFACTS <= {path.name for path in workspace.iterdir()}
     assert len(pd.read_csv(workspace / "inventory.csv")) == 2

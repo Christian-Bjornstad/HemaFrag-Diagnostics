@@ -21,7 +21,11 @@ from core.analyses.clonality.ladder_review_labels import (
     is_review_resolved,
 )
 from core.ladder_adjustment_store import load_ladder_adjustment_record
-from core.research.ladder.contracts import ResearchRoots
+from core.research.ladder.contracts import (
+    ResearchRoots,
+    assert_canonical_production_roots,
+    assert_canonical_production_workspace,
+)
 from core.research.ladder.review_bundle import prepare_blind_review_bundle
 
 
@@ -170,6 +174,12 @@ def _candidate_cases(
         if sample_kind != "patient":
             continue
         content_hash = _normalized_hash(inventory_row.get("content_sha256"))
+        diagnostic_hash = _normalized_hash(diagnostic.get("source_sha256"))
+        if diagnostic_hash != content_hash:
+            raise ValueError(
+                "Round-two diagnostic/inventory SHA-256 mismatch for "
+                f"{source_path}"
+            )
         physical_run = str(inventory_row.get("physical_run_key") or "").strip()
         ladder = _normalized_ladder(
             diagnostic.get("configured_ladder")
@@ -508,6 +518,27 @@ def _research_roots_from_workspace(workspace: Path) -> ResearchRoots:
     return roots
 
 
+def _roots_key(roots: ResearchRoots) -> tuple[tuple[str, ...], str, str, str]:
+    return (
+        tuple(_path_key(path) for path in roots.raw_roots),
+        _path_key(roots.archive_root),
+        _path_key(roots.output_root),
+        _path_key(roots.excluded_backup_root),
+    )
+
+
+def _round_two_roots(
+    workspace: Path, roots: ResearchRoots | None
+) -> ResearchRoots:
+    manifest_roots = _research_roots_from_workspace(workspace)
+    if roots is None:
+        assert_canonical_production_workspace(workspace)
+        return assert_canonical_production_roots(manifest_roots)
+    if _roots_key(roots) != _roots_key(manifest_roots):
+        raise ValueError("Injected research roots must exactly match run_manifest.json")
+    return roots
+
+
 def _write_withheld_manifest_temporary(path: Path, payload: Mapping[str, Any]) -> Path:
     temporary: Path | None = None
     try:
@@ -535,12 +566,15 @@ def _write_withheld_manifest_temporary(path: Path, payload: Mapping[str, Any]) -
 
 
 def prepare_round_two_review(
-    workspace: Path, *, seed: int = DEFAULT_ROUND_TWO_SEED
+    workspace: Path,
+    *,
+    seed: int = DEFAULT_ROUND_TWO_SEED,
+    roots: ResearchRoots | None = None,
 ) -> RoundTwoReviewResult:
     """Select and publish a blind round-two bundle plus a withheld allocation."""
 
     target = Path(workspace).resolve()
-    roots = _research_roots_from_workspace(target)
+    roots = _round_two_roots(target, roots)
     bundle_dir = target / "round_2_review_bundle"
     withheld_path = target / "round_2_selection_withheld.json"
     if withheld_path.exists():
@@ -912,10 +946,13 @@ def _publish_output_pair(replacements: tuple[tuple[Path, Path], ...]) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def finalize_round_two_review(workspace: Path) -> RoundTwoOutcomeResult:
+def finalize_round_two_review(
+    workspace: Path, *, roots: ResearchRoots | None = None
+) -> RoundTwoOutcomeResult:
     """Finalize a fully resolved blind review using only bundle-local evidence."""
 
     target = Path(workspace).resolve()
+    _round_two_roots(target, roots)
     bundle_dir = target / "round_2_review_bundle"
     cases_path = bundle_dir / "ladder_review_cases.csv"
     withheld_path = target / "round_2_selection_withheld.json"

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import os
 import shutil
@@ -22,8 +23,11 @@ if str(REPO_ROOT) not in sys.path:
 import pandas as pd
 
 from core.research.ladder.contracts import (
+    DIAGNOSTIC_SCHEMA_VERSION,
     ResearchRoots,
     assert_allowed_raw_path,
+    assert_canonical_production_roots,
+    assert_canonical_production_workspace,
     stable_json_fingerprint,
 )
 from core.research.ladder.corrections import (
@@ -54,6 +58,14 @@ RESEARCH_RUN_SCHEMA = "hemafrag_ladder_research_run_v1"
 
 def _path_key(value: str | Path) -> str:
     return os.path.normcase(str(Path(value).resolve()))
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _json_safe(value: Any) -> Any:
@@ -96,8 +108,13 @@ def _assert_workspace(workspace: Path, roots: ResearchRoots) -> Path:
         raise ValueError(f"Workspace must be below the research output root: {output_root}") from exc
     for protected in (*roots.raw_roots, roots.archive_root, roots.excluded_backup_root):
         protected_resolved = protected.resolve()
-        if candidate == protected_resolved:
-            raise ValueError(f"Workspace cannot be a protected input root: {candidate}")
+        try:
+            candidate.relative_to(protected_resolved)
+        except ValueError:
+            continue
+        raise ValueError(
+            f"Workspace cannot be a protected input root or descendant: {candidate}"
+        )
     return candidate
 
 
@@ -201,6 +218,11 @@ def _roots_from_manifest(workspace: Path) -> ResearchRoots:
     )
 
 
+def _production_roots_from_manifest(workspace: Path) -> ResearchRoots:
+    target = assert_canonical_production_workspace(workspace)
+    return assert_canonical_production_roots(_roots_from_manifest(target))
+
+
 def _read_ndjson(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -223,6 +245,18 @@ def _write_ndjson(path: Path, records: list[dict[str, Any]]) -> None:
     temporary.replace(path)
 
 
+def _diagnostic_record_is_reusable(
+    record: dict[str, Any], provenance: dict[str, Any]
+) -> bool:
+    if record.get("schema_version") != DIAGNOSTIC_SCHEMA_VERSION:
+        return False
+    if record.get("diagnostic_success") is not True:
+        return False
+    if str(record.get("transport_status") or "") != "ok":
+        return False
+    return all(record.get(key) == value for key, value in provenance.items())
+
+
 def diagnose_stage(
     workspace: Path,
     *,
@@ -236,9 +270,19 @@ def diagnose_stage(
     """Run deterministic Rust diagnostics for every canonical review case."""
 
     target = Path(workspace).resolve()
-    roots = roots or _roots_from_manifest(target)
-    _assert_workspace(target, roots)
+    if roots is None:
+        roots = _production_roots_from_manifest(target)
+    else:
+        _assert_workspace(target, roots)
+    cli_path = Path(cli).resolve()
+    cli_sha256 = _sha256_file(cli_path)
     review_cases = pd.read_csv(target / "review_cases.csv", keep_default_na=False)
+    inventory = pd.read_csv(target / "inventory.csv", keep_default_na=False)
+    inventory_by_path = {
+        _path_key(row.get("raw_path") or row.get("resolved_full_path")): row
+        for row in inventory.to_dict(orient="records")
+        if row.get("raw_path") or row.get("resolved_full_path")
+    }
     output_path = target / "diagnostics.ndjson"
     existing = _read_ndjson(output_path) if resume else []
     by_source = {
@@ -247,7 +291,9 @@ def diagnose_stage(
         if record.get("source_path")
     }
 
+    reusable: dict[str, dict[str, Any]] = {}
     pending: dict[str, dict[str, Any]] = {}
+    settings_fingerprints: set[str] = set()
     for row in review_cases.to_dict(orient="records"):
         if str(row.get("record_kind") or "review_case") != "review_case":
             continue
@@ -256,22 +302,65 @@ def diagnose_stage(
             continue
         source = assert_allowed_raw_path(Path(raw_path), roots)
         key = _path_key(source)
-        if key in by_source:
+        inventory_row = inventory_by_path.get(key)
+        if inventory_row is None:
+            raise ValueError(f"Diagnostic source is missing from inventory: {source}")
+        source_sha256 = _sha256_file(source)
+        inventory_sha256 = str(inventory_row.get("content_sha256") or "").strip().lower()
+        if source_sha256 != inventory_sha256:
+            raise ValueError(
+                f"Diagnostic source SHA-256 does not match inventory: {source}"
+            )
+        physical_run_key = str(
+            inventory_row.get("physical_run_key") or ""
+        ).strip()
+        if not physical_run_key:
+            raise ValueError(
+                f"Diagnostic source has no physical_run_key in inventory: {source}"
+            )
+        settings_fingerprint = stable_json_fingerprint(
+            {
+                "analysis": "clonality",
+                "compact_json": True,
+                "configured_ladder": str(row.get("ladder") or ""),
+                "deterministic": True,
+                "diagnostic_schema_version": DIAGNOSTIC_SCHEMA_VERSION,
+                "research_run_schema": RESEARCH_RUN_SCHEMA,
+                "reviewed_label": str(row.get("label") or ""),
+                "timeout_seconds": int(timeout_seconds),
+            }
+        )
+        settings_fingerprints.add(settings_fingerprint)
+        provenance = {
+            "source_sha256": source_sha256,
+            "physical_run_key": physical_run_key,
+            "cli_sha256": cli_sha256,
+            "diagnostic_settings_fingerprint": settings_fingerprint,
+        }
+        prior = by_source.get(key)
+        if prior is not None and _diagnostic_record_is_reusable(prior, provenance):
+            reusable[key] = prior
             continue
-        pending.setdefault(key, {**row, "_source": source})
+        pending.setdefault(
+            key,
+            {**row, "_source": source, "_provenance": provenance},
+        )
 
     def execute(row: dict[str, Any]) -> dict[str, Any]:
         source = row.pop("_source")
+        provenance = row.pop("_provenance")
         record = diagnostic_runner(
-            Path(cli),
+            cli_path,
             source,
             configured_ladder=str(row.get("ladder") or ""),
             reviewed_label=str(row.get("label") or ""),
             timeout_seconds=timeout_seconds,
         )
         result = record.to_dict()
+        result.update(provenance)
         result.update(
             {
+                "diagnostic_success": record.transport_status == "ok",
                 "assay": str(row.get("assay") or ""),
                 "source_run_dir": str(row.get("source_run_dir") or ""),
                 "archive_primary_reason": str(row.get("primary_reason") or ""),
@@ -286,7 +375,7 @@ def diagnose_stage(
         for future in as_completed(futures):
             completed_rows.append(future.result())
 
-    combined = list(by_source.values()) + completed_rows
+    combined = list(reusable.values()) + completed_rows
     combined.sort(key=lambda row: _path_key(row["source_path"]))
     _write_ndjson(output_path, combined)
 
@@ -295,7 +384,10 @@ def diagnose_stage(
     manifest["stage"] = "diagnosed"
     manifest["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
     manifest["diagnostics"] = {
-        "cli": str(Path(cli).resolve()),
+        "cli": str(cli_path),
+        "cli_sha256": cli_sha256,
+        "diagnostic_schema_version": DIAGNOSTIC_SCHEMA_VERSION,
+        "settings_fingerprints": sorted(settings_fingerprints),
         "max_workers": max(1, int(max_workers)),
         "timeout_seconds": int(timeout_seconds),
         "record_count": len(combined),
@@ -324,12 +416,19 @@ def _bool(value: Any) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes"}
 
 
-def finalize_stage(workspace: Path, *, seed: int = 20260810) -> dict[str, Any]:
+def finalize_stage(
+    workspace: Path,
+    *,
+    seed: int = 20260810,
+    roots: ResearchRoots | None = None,
+) -> dict[str, Any]:
     """Create the initial gold records, review queue, summaries, and manifests."""
 
     target = Path(workspace).resolve()
-    roots = _roots_from_manifest(target)
-    _assert_workspace(target, roots)
+    if roots is None:
+        roots = _production_roots_from_manifest(target)
+    else:
+        _assert_workspace(target, roots)
     inventory = pd.read_csv(target / "inventory.csv", keep_default_na=False)
     corrections_path = target / "manual_corrections.csv"
     corrections = (
@@ -439,8 +538,9 @@ def _inventory_command(args: argparse.Namespace) -> None:
         raw_roots=raw_roots,
         archive_root=args.archive_root.resolve(),
         output_root=args.output_root.resolve(),
-        excluded_backup_root=raw_roots[0].parent / "backup",
+        excluded_backup_root=ResearchRoots.default().excluded_backup_root,
     )
+    assert_canonical_production_roots(roots)
     current = roots.output_root / "current"
     if current.exists():
         raise FileExistsError(
@@ -459,7 +559,7 @@ def _inventory_command(args: argparse.Namespace) -> None:
 
 def _prepare_review_command(args: argparse.Namespace) -> None:
     workspace = args.workspace.resolve()
-    roots = _roots_from_manifest(workspace)
+    roots = _production_roots_from_manifest(workspace)
     result = prepare_development_review_bundle(
         workspace / "development_manifest.json",
         workspace / "development_review_bundle",
@@ -472,6 +572,17 @@ def _prepare_review_command(args: argparse.Namespace) -> None:
                 "case_count": result.case_count,
                 "adjustment_database": str(result.adjustment_database),
             },
+            indent=2,
+        )
+    )
+
+
+def _refresh_inventory_command(args: argparse.Namespace) -> None:
+    workspace = args.workspace.resolve()
+    roots = _production_roots_from_manifest(workspace)
+    print(
+        json.dumps(
+            refresh_inventory_stage(roots, workspace)["counts"],
             indent=2,
         )
     )
@@ -521,17 +632,7 @@ def main() -> None:
 
     refresh = commands.add_parser("refresh-inventory")
     refresh.add_argument("--workspace", required=True, type=Path)
-    refresh.set_defaults(
-        handler=lambda args: print(
-            json.dumps(
-                refresh_inventory_stage(
-                    _roots_from_manifest(args.workspace.resolve()),
-                    args.workspace,
-                )["counts"],
-                indent=2,
-            )
-        )
-    )
+    refresh.set_defaults(handler=_refresh_inventory_command)
 
     diagnose = commands.add_parser("diagnose")
     diagnose.add_argument("--workspace", required=True, type=Path)

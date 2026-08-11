@@ -14,6 +14,7 @@ import pytest
 
 from core.ladder_adjustment_store import save_ladder_adjustment_record
 from core.research.ladder import round_two as round_two_module
+from core.research.ladder.contracts import ResearchRoots
 from core.research.ladder.round_two import (
     load_round_two_inputs,
     select_round_two_cohort,
@@ -43,6 +44,8 @@ def _candidate_rows() -> tuple[list[dict[str, object]], list[dict[str, object]]]
             diagnostics.append(
                 {
                     "source_path": str(source),
+                    "source_sha256": content_hash,
+                    "physical_run_key": f"run-{ordinal:03d}",
                     "configured_ladder": f"{ladder}500_250",
                     "outcome": outcome,
                     "accepted": cohort_group == "control",
@@ -89,6 +92,8 @@ def _round_two_workspace(tmp_path: Path, *, bad_hash: bool = False) -> Path:
             if bad_hash
             else hashlib.sha256(payload).hexdigest()
         )
+        diagnostic["source_sha256"] = inventory_row["content_sha256"]
+        diagnostic["physical_run_key"] = inventory_row["physical_run_key"]
 
     workspace = tmp_path / "research" / "current"
     workspace.mkdir(parents=True)
@@ -139,11 +144,26 @@ def _write_review_rows(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def _workspace_roots(workspace: Path) -> ResearchRoots:
+    manifest = json.loads(
+        (workspace / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    roots = manifest["roots"]
+    return ResearchRoots(
+        raw_roots=tuple(Path(value) for value in roots["raw_roots"]),
+        archive_root=Path(roots["archive_root"]),
+        output_root=Path(roots["output_root"]),
+        excluded_backup_root=Path(roots["excluded_backup_root"]),
+    )
+
+
 def _resolved_round_two_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Path, dict[str, str], dict[str, str]]:
     workspace = _round_two_workspace(tmp_path)
-    published = round_two_module.prepare_round_two_review(workspace, seed=7)
+    published = round_two_module.prepare_round_two_review(
+        workspace, seed=7, roots=_workspace_roots(workspace)
+    )
     cases_path = published.bundle_dir / "ladder_review_cases.csv"
     with cases_path.open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -223,6 +243,8 @@ def _append_candidate(
     diagnostics.append(
         {
             "source_path": str(source),
+            "source_sha256": f"{key}-hash",
+            "physical_run_key": run,
             "configured_ladder": ladder,
             "outcome": (
                 "fit_rejected_with_usable_signal"
@@ -347,6 +369,20 @@ def test_round_two_selector_rejects_non_patient_candidates():
     ]
 
     with pytest.raises(ValueError, match="suspicious LIZ"):
+        select_round_two_cohort(
+            diagnostics,
+            inventory,
+            set(),
+            {"round-one-a", "round-one-b", "round-one-c"},
+            seed=7,
+        )
+
+
+def test_round_two_selector_rejects_stale_diagnostic_content_hash():
+    diagnostics, inventory = _candidate_rows()
+    diagnostics[0]["source_sha256"] = "stale-content-hash"
+
+    with pytest.raises(ValueError, match="diagnostic.*inventory.*SHA-256"):
         select_round_two_cohort(
             diagnostics,
             inventory,
@@ -572,7 +608,9 @@ def test_load_round_two_inputs_reads_existing_research_artifacts(tmp_path: Path)
 def test_round_two_publication_keeps_allocation_outside_bundle(tmp_path: Path):
     workspace = _round_two_workspace(tmp_path)
 
-    result = round_two_module.prepare_round_two_review(workspace, seed=7)
+    result = round_two_module.prepare_round_two_review(
+        workspace, seed=7, roots=_workspace_roots(workspace)
+    )
 
     assert result.case_count == 18
     assert result.bundle_dir == workspace / "round_2_review_bundle"
@@ -638,6 +676,18 @@ def test_round_two_publication_keeps_allocation_outside_bundle(tmp_path: Path):
     }
 
 
+def test_round_two_orchestration_requires_canonical_production_workspace(
+    tmp_path: Path,
+):
+    workspace = _round_two_workspace(tmp_path)
+
+    with pytest.raises(ValueError, match="canonical production workspace"):
+        round_two_module.prepare_round_two_review(workspace, seed=7)
+
+    assert not (workspace / "round_2_review_bundle").exists()
+    assert not (workspace / "round_2_selection_withheld.json").exists()
+
+
 def test_round_two_publication_refuses_nonempty_bundle(tmp_path: Path):
     workspace = _round_two_workspace(tmp_path)
     bundle = workspace / "round_2_review_bundle"
@@ -646,7 +696,9 @@ def test_round_two_publication_refuses_nonempty_bundle(tmp_path: Path):
     marker.write_text("keep", encoding="utf-8")
 
     with pytest.raises(FileExistsError, match="non-empty"):
-        round_two_module.prepare_round_two_review(workspace, seed=7)
+        round_two_module.prepare_round_two_review(
+            workspace, seed=7, roots=_workspace_roots(workspace)
+        )
 
     assert marker.read_text(encoding="utf-8") == "keep"
     assert not (workspace / "round_2_selection_withheld.json").exists()
@@ -658,7 +710,9 @@ def test_round_two_publication_refuses_existing_withheld_manifest(tmp_path: Path
     withheld.write_text("keep", encoding="utf-8")
 
     with pytest.raises(FileExistsError, match="withheld"):
-        round_two_module.prepare_round_two_review(workspace, seed=7)
+        round_two_module.prepare_round_two_review(
+            workspace, seed=7, roots=_workspace_roots(workspace)
+        )
 
     assert withheld.read_text(encoding="utf-8") == "keep"
     assert not (workspace / "round_2_review_bundle").exists()
@@ -668,7 +722,9 @@ def test_round_two_hash_failure_leaves_no_published_artifacts(tmp_path: Path):
     workspace = _round_two_workspace(tmp_path, bad_hash=True)
 
     with pytest.raises(ValueError, match="SHA-256"):
-        round_two_module.prepare_round_two_review(workspace, seed=7)
+        round_two_module.prepare_round_two_review(
+            workspace, seed=7, roots=_workspace_roots(workspace)
+        )
 
     assert not (workspace / "round_2_review_bundle").exists()
     assert not (workspace / "round_2_selection_withheld.json").exists()
@@ -678,7 +734,10 @@ def test_round_two_hash_failure_leaves_no_published_artifacts(tmp_path: Path):
 
 def test_finalize_round_two_refuses_unresolved_bundle(tmp_path: Path):
     workspace = _round_two_workspace(tmp_path)
-    published = round_two_module.prepare_round_two_review(workspace, seed=7)
+    roots = _workspace_roots(workspace)
+    published = round_two_module.prepare_round_two_review(
+        workspace, seed=7, roots=roots
+    )
     cases_path = published.bundle_dir / "ladder_review_cases.csv"
     with cases_path.open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -687,10 +746,20 @@ def test_finalize_round_two_refuses_unresolved_bundle(tmp_path: Path):
     _write_review_rows(cases_path, rows)
 
     with pytest.raises(ValueError, match="unresolved"):
-        round_two_module.finalize_round_two_review(workspace)
+        round_two_module.finalize_round_two_review(workspace, roots=roots)
 
     assert not (workspace / "round_2_review_outcomes.json").exists()
     assert not (workspace / "round_2_review_comparison.md").exists()
+
+
+def test_finalize_round_two_requires_canonical_production_workspace(tmp_path: Path):
+    workspace = _round_two_workspace(tmp_path)
+    round_two_module.prepare_round_two_review(
+        workspace, seed=7, roots=_workspace_roots(workspace)
+    )
+
+    with pytest.raises(ValueError, match="canonical production workspace"):
+        round_two_module.finalize_round_two_review(workspace)
 
 
 def test_finalize_round_two_uses_label_specific_review_anchors(
@@ -700,7 +769,9 @@ def test_finalize_round_two_uses_label_specific_review_anchors(
         tmp_path, monkeypatch
     )
 
-    result = round_two_module.finalize_round_two_review(workspace)
+    result = round_two_module.finalize_round_two_review(
+        workspace, roots=_workspace_roots(workspace)
+    )
 
     payload = json.loads(result.outcomes_path.read_text(encoding="utf-8"))
     cases = {case["case_id"]: case for case in payload["cases"]}
@@ -749,7 +820,9 @@ def test_finalize_round_two_ignores_newer_wrong_ladder_record_in_bundle_database
         ladder=wrong_ladder,
     )
 
-    result = round_two_module.finalize_round_two_review(workspace)
+    result = round_two_module.finalize_round_two_review(
+        workspace, roots=_workspace_roots(workspace)
+    )
 
     payload = json.loads(result.outcomes_path.read_text(encoding="utf-8"))
     manual_case = next(
@@ -765,7 +838,9 @@ def test_finalize_round_two_excludes_missing_ladder_from_metrics(
         tmp_path, monkeypatch
     )
 
-    result = round_two_module.finalize_round_two_review(workspace)
+    result = round_two_module.finalize_round_two_review(
+        workspace, roots=_workspace_roots(workspace)
+    )
 
     assert result.total_count == 18
     assert result.excluded_count == 1
@@ -805,7 +880,9 @@ def test_finalize_round_two_rejects_unverified_manual_selected_peaks(
     )
 
     with pytest.raises(ValueError, match="verified selected_peaks"):
-        round_two_module.finalize_round_two_review(workspace)
+        round_two_module.finalize_round_two_review(
+            workspace, roots=_workspace_roots(workspace)
+        )
 
 
 @pytest.mark.parametrize("preexisting", (False, True))
@@ -843,7 +920,9 @@ def test_finalize_round_two_rolls_back_both_outputs_when_second_publish_fails(
     monkeypatch.setattr(round_two_module.os, "replace", fail_second_publication)
 
     with pytest.raises(OSError, match="injected second publication failure"):
-        round_two_module.finalize_round_two_review(workspace)
+        round_two_module.finalize_round_two_review(
+            workspace, roots=_workspace_roots(workspace)
+        )
 
     if preexisting:
         assert outcomes_path.read_bytes() == prior_outcomes
@@ -894,7 +973,9 @@ def test_prepare_review_cli_handler_retains_single_json_result(
         case_count=3,
         adjustment_database=tmp_path / "ladder_adjustments.sqlite3",
     )
-    monkeypatch.setattr(research_cli, "_roots_from_manifest", lambda _path: object())
+    monkeypatch.setattr(
+        research_cli, "_production_roots_from_manifest", lambda _path: object()
+    )
     monkeypatch.setattr(
         research_cli, "prepare_development_review_bundle", lambda *_args: bundle
     )
