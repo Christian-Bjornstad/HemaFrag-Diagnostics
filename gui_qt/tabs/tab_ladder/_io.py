@@ -30,6 +30,31 @@ from gui_qt.tabs.tab_ladder._summary import resolve_cache_key
 _BUNDLE_WRITE_LOCK = threading.RLock()
 
 
+def assert_review_bundle_open_allowed(bundle_dir: Path) -> None:
+    """Keep a validation wave locked until its Rust candidate is frozen."""
+
+    bundle = Path(bundle_dir).expanduser().resolve()
+    summary_path = bundle / "ladder_review_summary.json"
+    if not summary_path.is_file():
+        return
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if not isinstance(summary, dict):
+        raise ValueError("Review bundle summary must be a JSON object")
+    if str(summary.get("experiment_wave") or "").strip().casefold() != "validation":
+        return
+
+    experiment_raw = str(summary.get("experiment_root") or "").strip()
+    if not experiment_raw:
+        raise ValueError("Validation bundle is missing its experiment root")
+    experiment = Path(experiment_raw).expanduser().resolve()
+    if bundle.parent != experiment or experiment.name != "rust_fit_improvement":
+        raise ValueError("Validation bundle does not match its experiment root")
+
+    from core.research.ladder.fit_improvement import assert_validation_unlocked
+
+    assert_validation_unlocked(experiment.parent)
+
+
 def _read_bundle_csv(cases_path: Path) -> tuple[list[str], list[dict[str, Any]]]:
     """Read a ladder-review bundle CSV preserving field order.
 
@@ -172,6 +197,7 @@ def load_review_bundle_worker(bundle_dir: Path) -> dict:
     missing — caller surfaces that to the chemist via the red status
     bar.
     """
+    assert_review_bundle_open_allowed(bundle_dir)
     cases_path = bundle_dir / "ladder_review_cases.csv"
     if not cases_path.exists():
         raise FileNotFoundError(f"Missing review bundle file: {cases_path.name}")

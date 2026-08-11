@@ -89,6 +89,9 @@ def configure_review_bundle_adjustment_store(
 
     if options.review_bundle is None:
         return None
+    from gui_qt.tabs.tab_ladder._io import assert_review_bundle_open_allowed
+
+    assert_review_bundle_open_allowed(options.review_bundle)
     database_path = (
         options.review_bundle / "ladder_adjustments.sqlite3"
     ).resolve()

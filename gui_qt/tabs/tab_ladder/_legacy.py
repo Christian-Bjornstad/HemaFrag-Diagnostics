@@ -164,6 +164,10 @@ class TabLadder(QWidget):
         row3.addWidget(self.btn_rerun_review_bundle)
         layout.addLayout(row3)
 
+        self.review_progress_label = QLabel("Reviewed 0 / 0 — Remaining 0")
+        self.review_progress_label.setObjectName("PageSubtitle")
+        layout.addWidget(self.review_progress_label)
+
         # Phase 12.3 — chip-strip overview above the file list.
         # One chip per loaded bundle case (reviewed/needs_review/
         # file_unreachable/untouched). Click a chip to select that
@@ -1338,6 +1342,7 @@ class TabLadder(QWidget):
         self.btn_open_editor.setEnabled(self._current_file is not None and not self._metadata_loading)
         self.btn_refresh_meta.setEnabled(self._current_file is not None)
         self._refresh_review_bundle_run_button()
+        self._sync_chip_strip()
 
         result = payload.get("result") or {}
         failed_jobs = result.get("failed_jobs", [])
@@ -1711,6 +1716,14 @@ class TabLadder(QWidget):
         `self._review_bundle_cases`. The chip strip clears to empty
         when no bundle is loaded.
         """
+        rows = cases if cases is not None else getattr(
+            self, "_review_bundle_cases", None
+        ) or []
+        progress_label = getattr(self, "review_progress_label", None)
+        if progress_label is not None:
+            from gui_qt.tabs.tab_ladder._summary import review_progress_text
+
+            progress_label.setText(review_progress_text(rows))
         try:
             from gui_qt.tabs.tab_ladder._overview import ChipStripOverview
         except Exception:
@@ -1719,9 +1732,6 @@ class TabLadder(QWidget):
         strip = getattr(self, "_chip_strip", None)
         if strip is None or not isinstance(strip, ChipStripOverview):
             return
-        rows = cases if cases is not None else getattr(
-            self, "_review_bundle_cases", None
-        ) or []
         strip.setRows(rows)
 
     def _on_scan_result(self, request_id: int, source: Path, files: list[Path]) -> None:

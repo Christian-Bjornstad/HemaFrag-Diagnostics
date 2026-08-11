@@ -22,6 +22,7 @@ from core.ladder_adjustment_store import (
 )
 
 from gui_qt.tabs.tab_ladder._io import (
+    assert_review_bundle_open_allowed,
     build_review_annotation,
     load_review_bundle_worker,
     review_case_paths_from_bundle,
@@ -39,6 +40,7 @@ from gui_qt.tabs.tab_ladder._summary import (
     manual_adjustment_consumption,
     metadata_from_entry,
     resolve_cache_key,
+    review_progress_text,
 )
 from gui_qt.tabs.tab_ladder._workers import (
     find_report_matches_worker,
@@ -56,6 +58,36 @@ def _posix_text(fake_path: str) -> str:
 
 class TabLadderSummaryHelperTests(unittest.TestCase):
     """Pure helpers in `_summary.py`."""
+
+    def test_review_progress_text_counts_all_resolved_labels(self) -> None:
+        rows = [
+            {"label": "manual_adjusted"},
+            {"label": "reviewed_no_change"},
+            {"label": ""},
+        ]
+
+        self.assertEqual(
+            review_progress_text(rows),
+            "Reviewed 2 / 3 — Remaining 1",
+        )
+
+    def test_validation_bundle_requires_candidate_freeze(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            experiment = Path(td) / "rust_fit_improvement"
+            bundle = experiment / "validation_60"
+            bundle.mkdir(parents=True)
+            (bundle / "ladder_review_summary.json").write_text(
+                json.dumps(
+                    {
+                        "experiment_wave": "validation",
+                        "experiment_root": str(experiment),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "frozen candidate"):
+                assert_review_bundle_open_allowed(bundle)
 
     def test_resolve_cache_key_passes_through(self) -> None:
         # Use a relative path so Windows doesn't prefix with a drive.

@@ -16,6 +16,14 @@ from config import APP_SETTINGS
 from core.analyses.clonality.ladder_review_labels import is_review_resolved
 
 
+def review_progress_text(rows: list[dict]) -> str:
+    """Return the stable bundle-review progress text shown in Ladder Studio."""
+
+    total = len(rows or [])
+    reviewed = sum(1 for row in rows or [] if is_review_resolved(row.get("label")))
+    return f"Reviewed {reviewed} / {total} — Remaining {total - reviewed}"
+
+
 def resolve_cache_key(file_path: Path) -> Path:
     """Resolve a (possibly not-yet-existing) path into a canonical key.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
 import pytest
@@ -51,3 +52,32 @@ def test_review_bundle_startup_overrides_decoy_adjustment_store(
     assert configured == expected
     assert Path(os.environ["HEMAFRAG_LADDER_ADJUSTMENT_DB"]).resolve() == expected
     assert not expected.exists()
+
+
+def test_validation_bundle_is_refused_before_adjustment_store_is_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    bundle = tmp_path / "rust_fit_improvement" / "validation_60"
+    bundle.mkdir(parents=True)
+    (bundle / "ladder_review_cases.csv").write_text(
+        "full_path,label\n", encoding="utf-8"
+    )
+    (bundle / "ladder_review_summary.json").write_text(
+        json.dumps(
+            {
+                "experiment_wave": "validation",
+                "experiment_root": str(bundle.parent),
+            }
+        ),
+        encoding="utf-8",
+    )
+    decoy = tmp_path / "decoy.sqlite3"
+    monkeypatch.setenv("HEMAFRAG_LADDER_ADJUSTMENT_DB", str(decoy))
+    options = parse_startup_options(
+        ["qt_app.py", "--ladder-review-bundle", str(bundle)]
+    )
+
+    with pytest.raises(ValueError, match="frozen candidate"):
+        configure_review_bundle_adjustment_store(options)
+
+    assert os.environ["HEMAFRAG_LADDER_ADJUSTMENT_DB"] == str(decoy)
