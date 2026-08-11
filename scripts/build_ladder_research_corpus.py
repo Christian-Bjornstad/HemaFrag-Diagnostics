@@ -44,6 +44,7 @@ from core.research.ladder.inventory import (
 from core.research.ladder.partitions import (
     assign_partitions,
     build_gold_records,
+    build_provisional_records,
     partition_manifest,
 )
 from core.research.ladder.review_bundle import prepare_development_review_bundle
@@ -416,6 +417,65 @@ def _bool(value: Any) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes"}
 
 
+def _ladder_family(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text.startswith("LIZ"):
+        return "LIZ"
+    if text.startswith("ROX"):
+        return "ROX"
+    return text
+
+
+def _load_manual_correction_approvals(
+    workspace: Path,
+) -> dict[tuple[str, str], dict[str, str]]:
+    approvals_path = workspace / "manual_correction_approvals.csv"
+    if not approvals_path.exists() or approvals_path.stat().st_size <= 1:
+        return {}
+    approvals = pd.read_csv(approvals_path, keep_default_na=False)
+    required = {
+        "content_sha256",
+        "ladder",
+        "review_approved",
+        "review_label",
+        "reviewed_at_utc",
+        "reviewed_by",
+    }
+    missing = sorted(required - set(approvals.columns))
+    if missing:
+        raise ValueError(f"Manual correction approvals are missing columns: {missing}")
+    result: dict[tuple[str, str], dict[str, str]] = {}
+    for row in approvals.to_dict(orient="records"):
+        if not _bool(row.get("review_approved")):
+            continue
+        content_hash = str(row.get("content_sha256") or "").strip().lower()
+        ladder = _ladder_family(row.get("ladder"))
+        review_label = str(row.get("review_label") or "").strip().casefold()
+        reviewed_at = str(row.get("reviewed_at_utc") or "").strip()
+        reviewed_by = str(row.get("reviewed_by") or "").strip()
+        if (
+            len(content_hash) != 64
+            or any(character not in "0123456789abcdef" for character in content_hash)
+            or review_label != "manual_adjusted"
+            or ladder not in {"LIZ", "ROX"}
+            or not reviewed_at
+            or not reviewed_by
+        ):
+            raise ValueError(
+                "Approved manual corrections require a valid content hash, ladder, "
+                "manual_adjusted label, reviewer, and timestamp"
+            )
+        key = (content_hash, ladder)
+        if key in result:
+            raise ValueError(f"Duplicate manual correction approval: {key}")
+        result[key] = {
+            "review_label": review_label,
+            "reviewed_at_utc": reviewed_at,
+            "reviewed_by": reviewed_by,
+        }
+    return result
+
+
 def finalize_stage(
     workspace: Path,
     *,
@@ -446,20 +506,33 @@ def finalize_stage(
         _path_key(row["raw_path"]): row for row in inventory.to_dict(orient="records")
     }
 
+    approvals = _load_manual_correction_approvals(target)
     candidates: list[dict[str, Any]] = []
     for correction in corrections.to_dict(orient="records"):
-        if not _bool(correction.get("gold_eligible")):
+        if not _bool(correction.get("provisional_eligible")):
+            continue
+        analysis_id = str(correction.get("analysis_id") or "").strip().casefold()
+        sample_kind = str(correction.get("sample_kind") or "").strip().casefold()
+        if analysis_id != "clonality" or sample_kind != "patient":
             continue
         source_path = str(correction["source_path"])
         raw = inventory_by_path.get(_path_key(source_path))
         if raw is None:
             continue
+        if str(raw.get("sample_kind") or "").strip().casefold() != "patient":
+            continue
         diagnostic = diagnostic_by_path.get(_path_key(source_path), {})
-        truth_source = (
+        historical_truth_source = (
             "manual_v2" if correction.get("schema_kind") == "v2" else "manual_legacy"
         )
-        content_hash = str(raw["content_sha256"])
-        ladder = str(correction.get("ladder") or "")
+        content_hash = str(raw["content_sha256"]).strip().lower()
+        if str(correction.get("source_sha256") or "").strip().lower() != content_hash:
+            raise ValueError(
+                f"Provisional correction SHA-256 does not match inventory: {source_path}"
+            )
+        ladder = _ladder_family(correction.get("ladder"))
+        approval = approvals.get((content_hash, ladder))
+        review_approved = approval is not None
         candidates.append(
             {
                 "record_id": f"{content_hash}:{ladder}",
@@ -468,29 +541,73 @@ def finalize_stage(
                 "content_sha256": content_hash,
                 "ladder": ladder,
                 "failure_family": str(diagnostic.get("outcome") or "manual_corrected"),
-                "truth_source": truth_source,
+                "truth_source": (
+                    "reviewed_correction"
+                    if review_approved
+                    else historical_truth_source
+                ),
+                "historical_truth_source": historical_truth_source,
                 "expected_scan_indices": [
                     int(round(float(value)))
                     for value in _parse_json_list(correction.get("selected_times"))
                 ],
-                "gold_eligible": True,
+                "analysis_id": analysis_id,
+                "identity_key": str(correction.get("identity_key") or ""),
+                "sample_kind": sample_kind,
+                "provisional_eligible": True,
+                "gold_eligible": review_approved,
+                "review_approved": review_approved,
+                "review_label": (
+                    approval["review_label"] if approval is not None else ""
+                ),
+                "reviewed_at_utc": (
+                    approval["reviewed_at_utc"] if approval is not None else ""
+                ),
+                "reviewed_by": (
+                    approval["reviewed_by"] if approval is not None else ""
+                ),
                 "sidecar_path": str(correction.get("sidecar_path") or ""),
             }
         )
 
+    provisional = build_provisional_records(candidates)
+    provisional_assigned = assign_partitions(provisional, seed=seed)
     gold = build_gold_records(candidates)
-    assigned = assign_partitions(gold, seed=seed)
+    if gold.empty:
+        assigned = gold.copy()
+        assigned["partition"] = pd.Series(dtype="object")
+    else:
+        assigned = gold.merge(
+            provisional_assigned[["record_id", "partition"]],
+            on="record_id",
+            how="left",
+            validate="one_to_one",
+        )
+        if assigned["partition"].isna().any():
+            raise ValueError(
+                "Approved gold evidence is outside the provisional partition scope"
+            )
     gold_records = assigned.to_dict(orient="records") if not assigned.empty else []
     _write_json(
         target / "gold_records.json",
         {"record_count": len(gold_records), "seed": seed, "records": gold_records},
     )
+    _write_json(
+        target / "development_manifest.json",
+        partition_manifest(
+            provisional_assigned,
+            "development",
+            require_approval=False,
+        ),
+    )
     for partition, filename in (
-        ("development", "development_manifest.json"),
         ("locked_validation", "locked_validation_manifest.json"),
         ("release", "release_manifest.json"),
     ):
-        _write_json(target / filename, partition_manifest(assigned, partition))
+        _write_json(
+            target / filename,
+            partition_manifest(assigned, partition, require_approval=True),
+        )
 
     backed_paths = {_path_key(record["path"]) for record in gold_records}
     review_queue = [
@@ -523,6 +640,10 @@ def finalize_stage(
     manifest["finalize"] = {
         "seed": int(seed),
         "gold_record_count": len(gold_records),
+        "provisional_evidence_count": len(provisional),
+        "approved_correction_count": sum(
+            _bool(record.get("review_approved")) for record in candidates
+        ),
         "review_queue_count": len(review_queue),
         "partition_counts": assigned["partition"].value_counts().to_dict()
         if not assigned.empty

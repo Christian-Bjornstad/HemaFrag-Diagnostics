@@ -28,6 +28,9 @@ class ManualCorrectionRecord:
     ladder: str
     channel: str
     assay: str
+    analysis_id: str
+    identity_key: str
+    sample_kind: str
     selected_steps: tuple[int, ...]
     selected_times: tuple[float, ...]
     expected_bp: tuple[float, ...]
@@ -38,6 +41,8 @@ class ManualCorrectionRecord:
     save_verified: bool | None
     operator: str
     reviewed_at_utc: str
+    provisional_eligible: bool
+    approval_status: str
     gold_eligible: bool
     issue_codes: tuple[str, ...]
 
@@ -88,6 +93,9 @@ def parse_adjustment_sidecar(
     *,
     expected_ladder: str | None = None,
     expected_step_count: int | None = None,
+    expected_analysis_id: str = "clonality",
+    expected_identity_key: str | None = None,
+    expected_sample_kind: str | None = None,
 ) -> ManualCorrectionRecord:
     """Parse one legacy or v2 sidecar into a provenance-rich record."""
 
@@ -136,6 +144,11 @@ def parse_adjustment_sidecar(
     )
     channel = str(analysis.get("size_standard_channel") or "") if is_v2 else ""
     assay = str(analysis.get("assay") or "") if is_v2 else ""
+    analysis_id = str(
+        (analysis.get("analysis_id") if is_v2 else expected_analysis_id) or ""
+    ).strip().casefold()
+    identity_key = str(expected_identity_key or "").strip()
+    sample_kind = str(expected_sample_kind or "").strip().casefold()
     standard_count = LADDER_STEP_COUNTS.get(ladder)
     configured_count = standard_count if is_v2 else expected_step_count
     complete = bool(
@@ -156,6 +169,10 @@ def parse_adjustment_sidecar(
     if not complete:
         issues.append("partial_mapping")
     if is_v2:
+        if not analysis_id:
+            issues.append("analysis_id_missing")
+        elif analysis_id != "clonality":
+            issues.append("non_clonality_analysis")
         if not declared_hash:
             issues.append("source_hash_missing")
         elif not hash_matches:
@@ -170,7 +187,12 @@ def parse_adjustment_sidecar(
         elif standard_count != expected_step_count:
             issues.append("legacy_configuration_conflict")
 
-    gold_eligible = not issues
+    if not identity_key or not sample_kind:
+        issues.append("patient_identity_missing")
+    elif sample_kind != "patient":
+        issues.append("non_patient_sample")
+
+    provisional_eligible = not issues
     return ManualCorrectionRecord(
         sidecar_path=sidecar,
         source_path=source,
@@ -181,6 +203,9 @@ def parse_adjustment_sidecar(
         ladder=ladder,
         channel=channel,
         assay=assay,
+        analysis_id=analysis_id,
+        identity_key=identity_key,
+        sample_kind=sample_kind,
         selected_steps=selected_steps,
         selected_times=selected_times,
         expected_bp=expected_bp,
@@ -191,7 +216,9 @@ def parse_adjustment_sidecar(
         save_verified=save_verified,
         operator=str(review.get("operator") or ""),
         reviewed_at_utc=str(review.get("saved_at_utc") or ""),
-        gold_eligible=gold_eligible,
+        provisional_eligible=provisional_eligible,
+        approval_status="provisional",
+        gold_eligible=False,
         issue_codes=tuple(issues),
     )
 
@@ -205,13 +232,15 @@ def _find_matching_fsa(sidecar: Path) -> Path | None:
     return None
 
 
-def _configuration_lookup(inventory: Any) -> dict[str, tuple[str, int | None]]:
+def _configuration_lookup(
+    inventory: Any,
+) -> dict[str, tuple[str, int | None, str, str]]:
     if inventory is None or not hasattr(inventory, "tracking"):
         return {}
     tracking = inventory.tracking
     if tracking.empty or "IdentityKey" not in tracking.columns:
         return {}
-    lookup: dict[str, tuple[str, int | None]] = {}
+    lookup: dict[str, tuple[str, int | None, str, str]] = {}
     for row in tracking.to_dict(orient="records"):
         identity = str(row.get("IdentityKey") or "")
         source_key = f"{row.get('SourceRunDir') or ''}::{row.get('File') or ''}"
@@ -219,7 +248,12 @@ def _configuration_lookup(inventory: Any) -> dict[str, tuple[str, int | None]]:
             continue
         raw_count = row.get("LadderExpectedStepCount")
         count = None if pd.isna(raw_count) else int(raw_count)
-        configuration = (str(row.get("Ladder") or ""), count)
+        configuration = (
+            str(row.get("Ladder") or ""),
+            count,
+            identity or source_key,
+            str(row.get("SampleKind") or ""),
+        )
         if identity:
             lookup[identity] = configuration
         if source_key != "::":
@@ -248,13 +282,17 @@ def discover_adjustments(
                 continue
             safe_source = assert_allowed_raw_path(source, roots)
             identity = f"{safe_source.parent.name}::{safe_source.name}"
-            ladder, expected_count = configuration.get(identity, ("", None))
+            ladder, expected_count, identity_key, sample_kind = configuration.get(
+                identity, ("", None, "", "")
+            )
             records.append(
                 parse_adjustment_sidecar(
                     safe_sidecar,
                     safe_source,
                     expected_ladder=ladder or None,
                     expected_step_count=expected_count,
+                    expected_identity_key=identity_key or None,
+                    expected_sample_kind=sample_kind or None,
                 )
             )
     return records
@@ -289,7 +327,8 @@ def reconcile_manual_evidence(
             "evidence_kind": "sidecar",
             "record_key": str(record.source_path),
             "sidecar_path": str(record.sidecar_path),
-            "gold_eligible": record.gold_eligible,
+            "provisional_eligible": record.provisional_eligible,
+            "gold_eligible": False,
         }
         for record in sidecars
     ]
@@ -305,6 +344,7 @@ def reconcile_manual_evidence(
                     "evidence_kind": "annotation",
                     "record_key": resolved,
                     "sidecar_path": str(row.get("adjustment_path") or ""),
+                    "provisional_eligible": False,
                     "gold_eligible": False,
                 }
             )
@@ -327,6 +367,7 @@ def reconcile_manual_evidence(
                     "evidence_kind": "workbook",
                     "record_key": identity,
                     "sidecar_path": "",
+                    "provisional_eligible": False,
                     "gold_eligible": False,
                 }
             )
@@ -341,7 +382,13 @@ def reconcile_manual_evidence(
 
     evidence_frame = pd.DataFrame.from_records(
         evidence,
-        columns=("evidence_kind", "record_key", "sidecar_path", "gold_eligible"),
+        columns=(
+            "evidence_kind",
+            "record_key",
+            "sidecar_path",
+            "provisional_eligible",
+            "gold_eligible",
+        ),
     )
     issues_frame = pd.DataFrame.from_records(
         issues, columns=("issue_code", "record_key", "detail")
@@ -349,7 +396,10 @@ def reconcile_manual_evidence(
     summary = {
         "schema_version": MANUAL_CORRECTION_SCHEMA_VERSION,
         "sidecar_record_count": len(sidecars),
-        "gold_eligible_sidecar_count": sum(record.gold_eligible for record in sidecars),
+        "provisional_sidecar_count": sum(
+            record.provisional_eligible for record in sidecars
+        ),
+        "gold_eligible_sidecar_count": 0,
         "evidence_count": len(evidence_frame),
         "issue_count": len(issues_frame),
     }

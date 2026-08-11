@@ -50,6 +50,34 @@ def _stable_fingerprint(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y"}
+
+
+def _valid_sha256(value: Any) -> bool:
+    text = str(value or "").strip()
+    return len(text) == 64 and all(
+        character in "0123456789abcdefABCDEF" for character in text
+    )
+
+
+def _gold_approval_valid(entry: dict[str, Any]) -> bool:
+    return bool(
+        _valid_sha256(entry.get("content_sha256"))
+        and _truthy(entry.get("gold_eligible"))
+        and _truthy(entry.get("review_approved"))
+        and str(entry.get("review_label") or "").strip().casefold()
+        in {"manual_adjusted", "reviewed_no_change"}
+        and str(entry.get("reviewed_at_utc") or "").strip()
+        and str(entry.get("reviewed_by") or "").strip()
+        and str(entry.get("analysis_id") or "").strip().casefold() == "clonality"
+        and str(entry.get("identity_key") or "").strip()
+        and str(entry.get("sample_kind") or "").strip().casefold() == "patient"
+    )
+
+
 def _percentile(values: list[float], fraction: float) -> float:
     if not values:
         return 0.0
@@ -112,6 +140,8 @@ def _load_gold_expectations(path: Path) -> dict[Path, list[int]]:
             entry.get("expected_scan_indices"), list
         ):
             continue
+        if not _gold_approval_valid(entry):
+            continue
         candidate = Path(str(entry.get("path") or "")).expanduser().resolve()
         expectations[candidate] = [
             int(round(float(value))) for value in entry["expected_scan_indices"]
@@ -137,6 +167,14 @@ def _load_manifest_metadata(path: Path) -> dict[Path, dict[str, str]]:
             "ladder": str(entry.get("ladder") or ""),
             "content_sha256": str(entry.get("content_sha256") or ""),
             "physical_run_key": str(entry.get("physical_run_key") or ""),
+            "review_approved": str(entry.get("review_approved") or ""),
+            "review_label": str(entry.get("review_label") or ""),
+            "reviewed_at_utc": str(entry.get("reviewed_at_utc") or ""),
+            "reviewed_by": str(entry.get("reviewed_by") or ""),
+            "analysis_id": str(entry.get("analysis_id") or ""),
+            "identity_key": str(entry.get("identity_key") or ""),
+            "sample_kind": str(entry.get("sample_kind") or ""),
+            "gold_eligible": str(entry.get("gold_eligible") or ""),
         }
     return metadata
 
@@ -343,6 +381,15 @@ def benchmark(
         for path, scans in gold_expectations.items()
     }
     files, verified_hashes = _validate_benchmark_inputs(files, case_metadata)
+    for gold_path in gold_expectations:
+        if gold_path not in verified_hashes:
+            raise ValueError(
+                f"Gold expectation does not match a benchmark input: {gold_path}"
+            )
+        if not _gold_approval_valid(case_metadata.get(gold_path) or {}):
+            raise ValueError(
+                f"Gold benchmarking requires explicit review approval: {gold_path}"
+            )
     rows: list[dict[str, Any]] = []
 
     with tempfile.TemporaryDirectory(prefix="hemafrag_ladder_benchmark_") as temp_root:

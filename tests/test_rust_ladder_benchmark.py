@@ -105,6 +105,7 @@ def test_ladder_benchmark_manifest_supports_list_and_object(tmp_path):
 def test_ladder_benchmark_loads_optional_manual_gold(tmp_path):
     input_file = tmp_path / "manual.fsa"
     input_file.write_bytes(b"fixture")
+    content_hash = hashlib.sha256(input_file.read_bytes()).hexdigest()
     manifest = tmp_path / "gold.json"
     manifest.write_text(
         json.dumps(
@@ -112,7 +113,16 @@ def test_ladder_benchmark_loads_optional_manual_gold(tmp_path):
                 "files": [
                     {
                         "path": str(input_file),
+                        "content_sha256": content_hash,
                         "expected_scan_indices": [10.0, 20.2, 31],
+                        "review_approved": True,
+                        "review_label": "manual_adjusted",
+                        "reviewed_at_utc": "2026-08-11T08:00:00+00:00",
+                        "reviewed_by": "chemist",
+                        "analysis_id": "clonality",
+                        "identity_key": "patient-001",
+                        "sample_kind": "patient",
+                        "gold_eligible": True,
                     }
                 ]
             }
@@ -122,6 +132,60 @@ def test_ladder_benchmark_loads_optional_manual_gold(tmp_path):
     assert _load_gold_expectations(manifest) == {
         input_file.resolve(): [10, 20, 31]
     }
+
+
+def test_ladder_benchmark_does_not_load_unapproved_gold_expectations(tmp_path):
+    input_file = tmp_path / "provisional.fsa"
+    input_file.write_bytes(b"fixture")
+    manifest = tmp_path / "provisional.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "path": str(input_file),
+                        "expected_scan_indices": [10, 20, 31],
+                        "review_approved": False,
+                        "analysis_id": "clonality",
+                        "sample_kind": "patient",
+                        "gold_eligible": False,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _load_gold_expectations(manifest) == {}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("identity_key", ""), ("content_sha256", "not-a-sha256")),
+)
+def test_ladder_benchmark_rejects_gold_without_bound_identity_or_hash(
+    tmp_path, field, value
+):
+    input_file = tmp_path / "manual.fsa"
+    input_file.write_bytes(b"fixture")
+    entry = {
+        "path": str(input_file),
+        "content_sha256": hashlib.sha256(input_file.read_bytes()).hexdigest(),
+        "expected_scan_indices": [10, 20, 31],
+        "review_approved": True,
+        "review_label": "manual_adjusted",
+        "reviewed_at_utc": "2026-08-11T08:00:00+00:00",
+        "reviewed_by": "chemist",
+        "analysis_id": "clonality",
+        "identity_key": "patient-001",
+        "sample_kind": "patient",
+        "gold_eligible": True,
+    }
+    entry[field] = value
+    manifest = tmp_path / "invalid-gold.json"
+    manifest.write_text(json.dumps({"files": [entry]}), encoding="utf-8")
+
+    assert _load_gold_expectations(manifest) == {}
 
 
 def test_ladder_benchmark_loads_research_case_metadata(tmp_path):
@@ -141,6 +205,14 @@ def test_ladder_benchmark_loads_research_case_metadata(tmp_path):
                         "ladder": "LIZ",
                         "content_sha256": "abc",
                         "physical_run_key": "2026_data/run-a",
+                        "review_approved": True,
+                        "review_label": "manual_adjusted",
+                        "reviewed_at_utc": "2026-08-11T08:00:00+00:00",
+                        "reviewed_by": "chemist",
+                        "analysis_id": "clonality",
+                        "identity_key": "patient-001",
+                        "sample_kind": "patient",
+                        "gold_eligible": True,
                     }
                 ],
             }
@@ -156,6 +228,14 @@ def test_ladder_benchmark_loads_research_case_metadata(tmp_path):
             "ladder": "LIZ",
             "content_sha256": "abc",
             "physical_run_key": "2026_data/run-a",
+            "review_approved": "True",
+            "review_label": "manual_adjusted",
+            "reviewed_at_utc": "2026-08-11T08:00:00+00:00",
+            "reviewed_by": "chemist",
+            "analysis_id": "clonality",
+            "identity_key": "patient-001",
+            "sample_kind": "patient",
+            "gold_eligible": "True",
         }
     }
 
@@ -348,6 +428,43 @@ def test_ladder_benchmark_rejects_programmatic_hash_mismatch_before_runner(
                 input_file.resolve(): {
                     "content_sha256": "0" * 64,
                     "physical_run_key": "run-a",
+                }
+            },
+        )
+
+    assert called is False
+
+
+def test_ladder_benchmark_rejects_unapproved_programmatic_gold_before_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cli = tmp_path / "fraggler-cli.exe"
+    cli.write_bytes(b"cli")
+    input_file = tmp_path / "case.fsa"
+    input_file.write_bytes(b"fixture")
+    content_hash = hashlib.sha256(input_file.read_bytes()).hexdigest()
+    called = False
+
+    def unexpected_run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("runner must not execute")
+
+    monkeypatch.setattr(benchmark_module, "_run_once", unexpected_run)
+
+    with pytest.raises(ValueError, match="explicit review approval"):
+        benchmark(
+            [input_file],
+            cli=cli,
+            repeats=1,
+            warmups=0,
+            gold_expectations={input_file.resolve(): [10, 20]},
+            case_metadata={
+                input_file.resolve(): {
+                    "content_sha256": content_hash,
+                    "review_approved": "False",
+                    "analysis_id": "clonality",
+                    "sample_kind": "patient",
                 }
             },
         )

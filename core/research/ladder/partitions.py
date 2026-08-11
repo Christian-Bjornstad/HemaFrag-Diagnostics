@@ -11,10 +11,10 @@ from .contracts import PARTITION_SCHEMA_VERSION, stable_json_fingerprint
 
 
 TRUTH_RANK = {
+    "reviewed_correction": 100,
+    "reviewed_no_change": 90,
     "manual_v2": 50,
     "manual_legacy": 40,
-    "reviewed_correction": 30,
-    "reviewed_no_change": 25,
     "reviewed_consensus": 20,
 }
 
@@ -31,6 +31,52 @@ def _scan_tuple(value: Any) -> tuple[int, ...]:
     return tuple(int(round(float(item))) for item in value)
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y"}
+
+
+def _approval_mask(frame: pd.DataFrame) -> pd.Series:
+    required = {
+        "gold_eligible",
+        "review_approved",
+        "review_label",
+        "reviewed_at_utc",
+        "reviewed_by",
+        "analysis_id",
+        "identity_key",
+        "sample_kind",
+    }
+    if not required <= set(frame.columns):
+        return pd.Series(False, index=frame.index, dtype=bool)
+    return (
+        frame["gold_eligible"].map(_truthy)
+        & frame["review_approved"].map(_truthy)
+        & frame["review_label"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .isin({"manual_adjusted", "reviewed_no_change"})
+        & frame["reviewed_at_utc"].fillna("").astype(str).str.strip().ne("")
+        & frame["reviewed_by"].fillna("").astype(str).str.strip().ne("")
+        & frame["analysis_id"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .eq("clonality")
+        & frame["identity_key"].fillna("").astype(str).str.strip().ne("")
+        & frame["sample_kind"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .eq("patient")
+    )
+
+
 def build_gold_records(
     records: Iterable[dict[str, Any]] | pd.DataFrame,
 ) -> pd.DataFrame:
@@ -44,9 +90,58 @@ def build_gold_records(
     if missing:
         raise ValueError(f"Gold records are missing required columns: {missing}")
     if "gold_eligible" in frame.columns:
-        frame = frame[frame["gold_eligible"].fillna(False).astype(bool)].copy()
+        frame = frame[frame["gold_eligible"].map(_truthy)].copy()
+    frame = frame[_approval_mask(frame)].copy()
     if frame.empty:
         return frame
+
+    return _resolve_ranked_records(frame)
+
+
+def build_provisional_records(
+    records: Iterable[dict[str, Any]] | pd.DataFrame,
+) -> pd.DataFrame:
+    """Retain technically valid patient-clonality evidence for blind review."""
+
+    frame = _frame(records)
+    if frame.empty:
+        return frame
+    required = {
+        "content_sha256",
+        "ladder",
+        "truth_source",
+        "expected_scan_indices",
+        "provisional_eligible",
+        "analysis_id",
+        "identity_key",
+        "sample_kind",
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"Provisional records are missing required columns: {missing}")
+    frame = frame[
+        frame["provisional_eligible"].map(_truthy)
+        & frame["analysis_id"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .eq("clonality")
+        & frame["identity_key"].fillna("").astype(str).str.strip().ne("")
+        & frame["sample_kind"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .eq("patient")
+    ].copy()
+    if frame.empty:
+        return frame
+    return _resolve_ranked_records(frame)
+
+
+def _resolve_ranked_records(frame: pd.DataFrame) -> pd.DataFrame:
+    """Resolve duplicate scoped evidence after rejecting mapping conflicts."""
 
     selected: list[pd.Series] = []
     for (content_hash, ladder), group in frame.groupby(
@@ -193,12 +288,27 @@ def validate_partition_isolation(records: pd.DataFrame) -> None:
             )
 
 
-def partition_manifest(records: pd.DataFrame, partition: str) -> dict[str, Any]:
+def partition_manifest(
+    records: pd.DataFrame,
+    partition: str,
+    *,
+    require_approval: bool | None = None,
+) -> dict[str, Any]:
     """Create the manifest shape consumed by the Rust ladder benchmark."""
 
     subset = records[records["partition"].eq(partition)].copy()
+    approval_required = (
+        partition in {"locked_validation", "release"}
+        if require_approval is None
+        else bool(require_approval)
+    )
+    if approval_required and not subset.empty and not _approval_mask(subset).all():
+        raise ValueError(
+            f"Partition {partition} requires explicit review approval for every record"
+        )
     sort_column = "record_id" if "record_id" in subset.columns else "path"
-    subset = subset.sort_values(sort_column)
+    if not subset.empty and sort_column in subset.columns:
+        subset = subset.sort_values(sort_column)
     files = [
         {
             "path": str(row["path"]),
@@ -208,6 +318,14 @@ def partition_manifest(records: pd.DataFrame, partition: str) -> dict[str, Any]:
             "ladder": str(row["ladder"]),
             "truth_source": str(row["truth_source"]),
             "failure_family": str(row.get("failure_family") or ""),
+            "review_approved": _truthy(row.get("review_approved")),
+            "review_label": str(row.get("review_label") or ""),
+            "reviewed_at_utc": str(row.get("reviewed_at_utc") or ""),
+            "reviewed_by": str(row.get("reviewed_by") or ""),
+            "analysis_id": str(row.get("analysis_id") or ""),
+            "identity_key": str(row.get("identity_key") or ""),
+            "sample_kind": str(row.get("sample_kind") or ""),
+            "gold_eligible": _truthy(row.get("gold_eligible")),
         }
         for row in subset.to_dict(orient="records")
     ]

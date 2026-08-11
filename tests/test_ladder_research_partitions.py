@@ -6,6 +6,7 @@ import pytest
 from core.research.ladder.partitions import (
     assign_partitions,
     build_gold_records,
+    build_provisional_records,
     partition_manifest,
     validate_partition_isolation,
 )
@@ -19,6 +20,12 @@ def gold_record(
     family: str = "rejected",
     truth_source: str = "manual_v2",
     scans: list[int] | None = None,
+    approved: bool = True,
+    gold_eligible: bool = True,
+    provisional_eligible: bool = True,
+    analysis_id: str = "clonality",
+    identity_key: str = "patient-001",
+    sample_kind: str = "patient",
 ) -> dict[str, object]:
     return {
         "record_id": record_id,
@@ -29,7 +36,15 @@ def gold_record(
         "failure_family": family,
         "truth_source": truth_source,
         "expected_scan_indices": scans or [10, 20, 30],
-        "gold_eligible": True,
+        "gold_eligible": gold_eligible,
+        "provisional_eligible": provisional_eligible,
+        "review_approved": approved,
+        "review_label": "manual_adjusted" if approved else "",
+        "reviewed_at_utc": "2026-08-11T08:00:00+00:00" if approved else "",
+        "reviewed_by": "chemist" if approved else "",
+        "analysis_id": analysis_id,
+        "identity_key": identity_key,
+        "sample_kind": sample_kind,
     }
 
 
@@ -60,6 +75,54 @@ def test_conflicting_gold_mappings_for_identical_content_are_rejected():
 
     with pytest.raises(ValueError, match="Conflicting gold mappings"):
         build_gold_records([first, second])
+
+
+@pytest.mark.parametrize(
+    "record",
+    (
+        gold_record("unapproved", run="run-a", content="hash-a", approved=False),
+        gold_record(
+            "non-clonality",
+            run="run-a",
+            content="hash-a",
+            analysis_id="flt3",
+        ),
+        gold_record(
+            "non-patient",
+            run="run-a",
+            content="hash-a",
+            sample_kind="pk",
+        ),
+        gold_record(
+            "missing-identity",
+            run="run-a",
+            content="hash-a",
+            identity_key="",
+        ),
+        gold_record(
+            "not-gold-eligible",
+            run="run-a",
+            content="hash-a",
+            gold_eligible=False,
+        ),
+    ),
+)
+def test_gold_records_require_explicit_patient_clonality_approval(record):
+    assert build_gold_records([record]).empty
+
+
+def test_provisional_records_require_bound_patient_identity():
+    valid = gold_record("valid", run="run-a", content="hash-a")
+    missing_identity = gold_record(
+        "missing-identity",
+        run="run-b",
+        content="hash-b",
+        identity_key="",
+    )
+
+    records = build_provisional_records([valid, missing_identity])
+
+    assert records["record_id"].tolist() == ["valid"]
 
 
 def test_physical_run_never_crosses_partitions():
@@ -136,5 +199,23 @@ def test_partition_manifest_matches_benchmark_contract():
             "ladder": "LIZ",
             "truth_source": "manual_v2",
             "failure_family": "rejected",
+            "review_approved": True,
+            "review_label": "manual_adjusted",
+            "reviewed_at_utc": "2026-08-11T08:00:00+00:00",
+            "reviewed_by": "chemist",
+            "analysis_id": "clonality",
+            "identity_key": "patient-001",
+            "sample_kind": "patient",
+            "gold_eligible": True,
         }
     ]
+
+
+def test_locked_manifest_refuses_unapproved_records():
+    frame = pd.DataFrame(
+        [gold_record("a", run="run-a", content="hash-a", approved=False)]
+    )
+    frame["partition"] = "locked_validation"
+
+    with pytest.raises(ValueError, match="explicit review approval"):
+        partition_manifest(frame, "locked_validation")

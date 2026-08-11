@@ -14,9 +14,11 @@ import pytest
 
 from core.research.ladder.contracts import ResearchRoots
 from core.research.ladder.diagnostics import normalize_rust_result
+from scripts import build_ladder_research_corpus as corpus_module
 from scripts.build_ladder_research_corpus import (
     _assert_workspace,
     _inventory_command,
+    _load_manual_correction_approvals,
     finalize_stage,
     inventory_stage,
     diagnose_stage,
@@ -316,6 +318,101 @@ def test_diagnostic_resume_retries_failed_records(tmp_path):
     assert record["diagnostic_success"] is True
 
 
+@pytest.mark.parametrize(("approved", "gold_count"), ((False, 0), (True, 1)))
+def test_finalize_requires_explicit_review_approval_for_gold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    approved: bool,
+    gold_count: int,
+):
+    roots, workspace, source, _cli = diagnostic_workspace(tmp_path)
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    pd.DataFrame(
+        [
+            {
+                "schema_kind": "v2",
+                "source_path": str(source),
+                "source_sha256": source_hash,
+                "ladder": "LIZ",
+                "selected_times": json.dumps(list(range(100, 260, 10))),
+                "sidecar_path": "",
+                "analysis_id": "clonality",
+                "identity_key": "patient-001",
+                "sample_kind": "patient",
+                "provisional_eligible": True,
+                "gold_eligible": False,
+            }
+        ]
+    ).to_csv(workspace / "manual_corrections.csv", index=False)
+    (workspace / "diagnostics.ndjson").write_text(
+        json.dumps(
+            {
+                "source_path": str(source),
+                "transport_status": "ok",
+                "configured_ladder": "LIZ",
+                "outcome": "fit_rejected_with_usable_signal",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if approved:
+        pd.DataFrame(
+            [
+                {
+                    "content_sha256": source_hash,
+                    "ladder": "LIZ",
+                    "review_approved": True,
+                    "review_label": "manual_adjusted",
+                    "reviewed_at_utc": "2026-08-11T08:00:00+00:00",
+                    "reviewed_by": "chemist",
+                }
+            ]
+        ).to_csv(workspace / "manual_correction_approvals.csv", index=False)
+
+    partition_calls = 0
+    real_assign_partitions = corpus_module.assign_partitions
+
+    def tracked_assign_partitions(records, *, seed):
+        nonlocal partition_calls
+        partition_calls += 1
+        return real_assign_partitions(records, seed=seed)
+
+    monkeypatch.setattr(corpus_module, "assign_partitions", tracked_assign_partitions)
+
+    finalize_stage(workspace, roots=roots)
+
+    gold = json.loads((workspace / "gold_records.json").read_text(encoding="utf-8"))
+    development = json.loads(
+        (workspace / "development_manifest.json").read_text(encoding="utf-8")
+    )
+    assert gold["record_count"] == gold_count
+    assert partition_calls == 1
+    assert development["file_count"] == 1
+    assert development["files"][0]["review_approved"] is approved
+    if approved:
+        assert gold["records"][0]["truth_source"] == "reviewed_correction"
+        assert gold["records"][0]["reviewed_by"] == "chemist"
+
+
+def test_manual_correction_approval_rejects_non_hex_content_hash(tmp_path: Path):
+    pd.DataFrame(
+        [
+            {
+                "content_sha256": "g" * 64,
+                "ladder": "LIZ",
+                "review_approved": True,
+                "review_label": "manual_adjusted",
+                "reviewed_at_utc": "2026-08-11T08:00:00+00:00",
+                "reviewed_by": "chemist",
+            }
+        ]
+    ).to_csv(tmp_path / "manual_correction_approvals.csv", index=False)
+
+    with pytest.raises(ValueError, match="valid content hash"):
+        _load_manual_correction_approvals(tmp_path)
+
+
 def test_end_to_end_builder_excludes_backup_and_writes_all_artifacts(tmp_path, monkeypatch):
     roots = fixture_roots(tmp_path)
     run = roots.raw_roots[0] / "run-a"
@@ -351,6 +448,7 @@ def test_end_to_end_builder_excludes_backup_and_writes_all_artifacts(tmp_path, m
                     "Ladder": "LIZ",
                     "LadderExpectedStepCount": 16,
                     "ManualAdjustmentUsed": True,
+                    "SampleKind": "patient",
                 }
             ]
         ).to_excel(writer, sheet_name="Runs", index=False)
@@ -454,8 +552,15 @@ def test_end_to_end_builder_excludes_backup_and_writes_all_artifacts(tmp_path, m
     assert len(pd.read_csv(workspace / "inventory.csv")) == 2
     assert diagnosed_paths == [source.resolve()]
     gold = json.loads((workspace / "gold_records.json").read_text(encoding="utf-8"))
-    assert gold["record_count"] == 1
-    assert gold["records"][0]["truth_source"] == "manual_legacy"
+    assert gold["record_count"] == 0
+    corrections = pd.read_csv(workspace / "manual_corrections.csv", keep_default_na=False)
+    assert corrections.loc[0, "provisional_eligible"]
+    assert not corrections.loc[0, "gold_eligible"]
+    development = json.loads(
+        (workspace / "development_manifest.json").read_text(encoding="utf-8")
+    )
+    assert development["file_count"] == 1
+    assert development["files"][0]["review_approved"] is False
     for artifact in workspace.iterdir():
         if artifact.suffix.casefold() not in {".csv", ".json", ".ndjson"}:
             continue

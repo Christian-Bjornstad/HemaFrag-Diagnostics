@@ -96,7 +96,7 @@ def test_legacy_partial_mapping_preserves_missing_step(tmp_path):
     assert "partial_mapping" in record.issue_codes
 
 
-def test_complete_configured_legacy_mapping_is_gold_eligible(tmp_path):
+def test_complete_configured_legacy_mapping_is_provisional_not_gold(tmp_path):
     source = write_source(tmp_path)
     sidecar = write_sidecar(source, legacy_payload(tuple(range(16))))
 
@@ -105,11 +105,17 @@ def test_complete_configured_legacy_mapping_is_gold_eligible(tmp_path):
         source,
         expected_ladder="LIZ",
         expected_step_count=16,
+        expected_identity_key="patient-001",
+        expected_sample_kind="patient",
     )
 
     assert record.schema_kind == "legacy"
     assert record.complete is True
-    assert record.gold_eligible is True
+    assert record.analysis_id == "clonality"
+    assert record.identity_key == "patient-001"
+    assert record.sample_kind == "patient"
+    assert record.provisional_eligible is True
+    assert record.gold_eligible is False
 
 
 def test_legacy_mapping_without_inventory_configuration_is_not_gold(tmp_path):
@@ -130,6 +136,62 @@ def test_v2_hash_mismatch_is_not_gold_eligible(tmp_path):
 
     assert record.gold_eligible is False
     assert "source_hash_mismatch" in record.issue_codes
+
+
+def test_valid_v2_patient_clonality_is_provisional_not_gold(tmp_path):
+    source = write_source(tmp_path)
+    sidecar = write_sidecar(source, v2_payload(source))
+
+    record = parse_adjustment_sidecar(
+        sidecar,
+        source,
+        expected_identity_key="patient-001",
+        expected_sample_kind="patient",
+    )
+
+    assert record.analysis_id == "clonality"
+    assert record.identity_key == "patient-001"
+    assert record.sample_kind == "patient"
+    assert record.provisional_eligible is True
+    assert record.gold_eligible is False
+    assert record.approval_status == "provisional"
+
+
+def test_v2_non_clonality_analysis_is_rejected_and_retained(tmp_path):
+    source = write_source(tmp_path)
+    payload = v2_payload(source)
+    payload["analysis"]["analysis_id"] = "flt3"
+    sidecar = write_sidecar(source, payload)
+
+    record = parse_adjustment_sidecar(
+        sidecar,
+        source,
+        expected_identity_key="patient-001",
+        expected_sample_kind="patient",
+    )
+
+    assert record.analysis_id == "flt3"
+    assert record.provisional_eligible is False
+    assert record.gold_eligible is False
+    assert "non_clonality_analysis" in record.issue_codes
+
+
+def test_v2_non_patient_identity_is_rejected_and_retained(tmp_path):
+    source = write_source(tmp_path)
+    sidecar = write_sidecar(source, v2_payload(source))
+
+    record = parse_adjustment_sidecar(
+        sidecar,
+        source,
+        expected_identity_key="control-001",
+        expected_sample_kind="pk",
+    )
+
+    assert record.identity_key == "control-001"
+    assert record.sample_kind == "pk"
+    assert record.provisional_eligible is False
+    assert record.gold_eligible is False
+    assert "non_patient_sample" in record.issue_codes
 
 
 def test_discovery_ignores_appledouble_sidecars(tmp_path):
@@ -161,6 +223,7 @@ def test_discovery_uses_source_run_and_file_when_identity_is_opaque(tmp_path):
                     "File": "sample.fsa",
                     "Ladder": "LIZ",
                     "LadderExpectedStepCount": 16,
+                    "SampleKind": "patient",
                 }
             ]
         )
@@ -170,7 +233,11 @@ def test_discovery_uses_source_run_and_file_when_identity_is_opaque(tmp_path):
 
     assert len(records) == 1
     assert records[0].ladder == "LIZ"
-    assert records[0].gold_eligible is True
+    assert records[0].analysis_id == "clonality"
+    assert records[0].identity_key == "PT-opaque-patient-identity"
+    assert records[0].sample_kind == "patient"
+    assert records[0].provisional_eligible is True
+    assert records[0].gold_eligible is False
 
 
 def test_reconciliation_keeps_annotation_and_workbook_evidence_without_sidecar(tmp_path):
