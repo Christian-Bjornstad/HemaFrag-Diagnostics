@@ -16,6 +16,7 @@ from core.ladder_adjustment_store import save_ladder_adjustment_record
 from core.research.ladder import round_two as round_two_module
 from core.research.ladder.contracts import ResearchRoots
 from core.research.ladder.round_two import (
+    classify_controller_supplied_round_two_migration,
     load_round_two_inputs,
     select_round_two_cohort,
 )
@@ -178,16 +179,18 @@ def _resolved_round_two_workspace(
     excluded_row["label_note"] = "No usable ladder signal"
     _write_review_rows(cases_path, rows)
 
+    expected_count = 16 if manual_row["ladder"] == "LIZ" else 21
+    observed_times = [101.0, 198.0, 305.0] + [
+        float(400 + 100 * index) for index in range(expected_count - 3)
+    ]
     selected_peaks = [
         {
             "step_index": index,
             "candidate_index": index,
-            "expected_bp": expected_bp,
+            "expected_bp": float(35 + 10 * index),
             "observed_time": observed_time,
         }
-        for index, (expected_bp, observed_time) in enumerate(
-            ((35.0, 101.0), (50.0, 198.0), (75.0, 305.0))
-        )
+        for index, observed_time in enumerate(observed_times)
     ]
     payload = {
         "schema_version": "hemafrag_ladder_adjustment_v2",
@@ -346,6 +349,71 @@ def test_round_two_public_order_does_not_encode_quota_groups():
     assert sum(
         left != right for left, right in zip(public_allocation, public_allocation[1:])
     ) > 3
+
+
+def test_controller_supplied_migration_is_matched_by_hash_and_never_gold():
+    selection_cases = [
+        {
+            "case_id": f"{index + 1:03d}",
+            "content_sha256": f"{index + 1:064x}",
+            "copied_path": f"C:/quarantined-name-{index + 1}.fsa",
+        }
+        for index in range(18)
+    ]
+    supplied_rows = []
+    for index, case in enumerate(selection_cases):
+        if index < 8:
+            label = "manual_adjusted"
+        elif index == 8:
+            label = "reviewed_no_change"
+        else:
+            label = ""
+        supplied_rows.append(
+            {
+                "content_sha256": case["content_sha256"],
+                "label": label,
+                "label_note": "controller supplied evidence",
+                "full_path": f"D:/must-not-be-used/{index}.fsa",
+            }
+        )
+    random.Random(42).shuffle(supplied_rows)
+
+    normalized = classify_controller_supplied_round_two_migration(
+        selection_cases,
+        supplied_rows,
+    )
+
+    assert [row["content_sha256"] for row in normalized] == [
+        case["content_sha256"] for case in selection_cases
+    ]
+    assert Counter(row["evidence_classification"] for row in normalized) == {
+        "resolved_decision_evidence": 9,
+        "excluded_error_evidence": 9,
+    }
+    assert Counter(row["label"] for row in normalized) == {
+        "manual_adjusted": 8,
+        "reviewed_no_change": 1,
+        "": 9,
+    }
+    assert all(row["requires_re_review"] is True for row in normalized)
+    assert all(row["gold_eligible"] is False for row in normalized)
+    assert all("full_path" not in row and "copied_path" not in row for row in normalized)
+
+
+def test_controller_supplied_migration_requires_exact_unique_selection_hashes():
+    selection_cases = [
+        {"case_id": "001", "content_sha256": "1" * 64},
+        {"case_id": "002", "content_sha256": "2" * 64},
+    ]
+
+    with pytest.raises(ValueError, match="exactly match"):
+        classify_controller_supplied_round_two_migration(
+            selection_cases,
+            [
+                {"content_sha256": "1" * 64, "label": "manual_adjusted"},
+                {"content_sha256": "3" * 64, "label": ""},
+            ],
+        )
 
 
 def test_round_two_selector_rejects_non_patient_candidates():
@@ -762,6 +830,283 @@ def test_finalize_round_two_requires_canonical_production_workspace(tmp_path: Pa
         round_two_module.finalize_round_two_review(workspace)
 
 
+def test_finalize_round_two_requires_exactly_eighteen_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    workspace, _manual_row, _excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    withheld_path = workspace / "round_2_selection_withheld.json"
+    withheld = json.loads(withheld_path.read_text(encoding="utf-8"))
+    removed = withheld["cases"].pop()
+    withheld["case_count"] = 17
+    withheld_path.write_text(json.dumps(withheld), encoding="utf-8")
+    cases_path = workspace / "round_2_review_bundle" / "ladder_review_cases.csv"
+    with cases_path.open(encoding="utf-8", newline="") as handle:
+        rows = [
+            row
+            for row in csv.DictReader(handle)
+            if row["source_run_dir"] != removed["case_id"]
+        ]
+    _write_review_rows(cases_path, rows)
+
+    with pytest.raises(ValueError, match="exactly 18"):
+        round_two_module.finalize_round_two_review(
+            workspace, roots=_workspace_roots(workspace)
+        )
+
+
+def test_finalize_round_two_revalidates_withheld_quota_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    workspace, _manual_row, _excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    withheld_path = workspace / "round_2_selection_withheld.json"
+    withheld = json.loads(withheld_path.read_text(encoding="utf-8"))
+    case = next(
+        item
+        for item in withheld["cases"]
+        if item["cohort_group"] == "suspicious" and item["ladder"] == "LIZ"
+    )
+    case["cohort_group"] = "control"
+    withheld_path.write_text(json.dumps(withheld), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="quota"):
+        round_two_module.finalize_round_two_review(
+            workspace, roots=_workspace_roots(workspace)
+        )
+
+
+@pytest.mark.parametrize("field", ("content_sha256", "physical_run_key"))
+def test_finalize_round_two_rejects_duplicate_hashes_and_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+):
+    workspace, _manual_row, _excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    withheld_path = workspace / "round_2_selection_withheld.json"
+    withheld = json.loads(withheld_path.read_text(encoding="utf-8"))
+    withheld["cases"][1][field] = withheld["cases"][0][field]
+    withheld_path.write_text(json.dumps(withheld), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unique"):
+        round_two_module.finalize_round_two_review(
+            workspace, roots=_workspace_roots(workspace)
+        )
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "message"),
+    (
+        ("outside", "contained"),
+        ("missing", "exist"),
+        ("changed", "SHA-256"),
+    ),
+)
+def test_finalize_round_two_rehashes_contained_bundle_copies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+    message: str,
+):
+    workspace, _manual_row, _excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    withheld_path = workspace / "round_2_selection_withheld.json"
+    withheld = json.loads(withheld_path.read_text(encoding="utf-8"))
+    case = withheld["cases"][1]
+    cases_path = workspace / "round_2_review_bundle" / "ladder_review_cases.csv"
+    with cases_path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    row = next(item for item in rows if item["source_run_dir"] == case["case_id"])
+    copied_path = Path(row["full_path"])
+    if failure_mode == "outside":
+        outside = tmp_path / "outside-copy.fsa"
+        outside.write_bytes(copied_path.read_bytes())
+        row["full_path"] = str(outside)
+        case["copied_path"] = str(outside)
+        _write_review_rows(cases_path, rows)
+        withheld_path.write_text(json.dumps(withheld), encoding="utf-8")
+    elif failure_mode == "missing":
+        copied_path.unlink()
+    else:
+        copied_path.write_bytes(b"changed after selection")
+
+    with pytest.raises(ValueError, match=message):
+        round_two_module.finalize_round_two_review(
+            workspace, roots=_workspace_roots(workspace)
+        )
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "message"),
+    (
+        ("partial", "full contiguous"),
+        ("noncontiguous", "full contiguous"),
+        ("nonincreasing", "strictly increasing"),
+    ),
+)
+def test_finalize_round_two_requires_complete_ordered_manual_mapping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+    message: str,
+):
+    workspace, manual_row, _excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    expected_count = 16 if manual_row["ladder"] == "LIZ" else 21
+    count = 3 if failure_mode == "partial" else expected_count
+    step_indices = list(range(count))
+    if failure_mode == "noncontiguous":
+        step_indices[-1] = expected_count
+    observed_times = [float(100 + 10 * index) for index in range(count)]
+    if failure_mode == "nonincreasing":
+        observed_times[2] = observed_times[1]
+    payload = {
+        "selected_peaks": [
+            {"step_index": step, "observed_time": observed}
+            for step, observed in zip(step_indices, observed_times)
+        ],
+        "validation": {"save_verified": True},
+    }
+    database = workspace / "round_2_review_bundle" / "ladder_adjustments.sqlite3"
+    monkeypatch.setenv("HEMAFRAG_LADDER_ADJUSTMENT_DB", str(database))
+    save_ladder_adjustment_record(
+        Path(manual_row["full_path"]),
+        payload,
+        ladder=("LIZ500_250" if manual_row["ladder"] == "LIZ" else "ROX400HD"),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        round_two_module.finalize_round_two_review(
+            workspace, roots=_workspace_roots(workspace)
+        )
+
+
+@pytest.mark.parametrize("contradiction", ("adjustment_path", "database"))
+def test_finalize_round_two_rejects_exclusion_with_adjustment_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    contradiction: str,
+):
+    workspace, _manual_row, excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    cases_path = workspace / "round_2_review_bundle" / "ladder_review_cases.csv"
+    if contradiction == "adjustment_path":
+        with cases_path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        row = next(
+            item
+            for item in rows
+            if item["source_run_dir"] == excluded_row["source_run_dir"]
+        )
+        row["adjustment_path"] = str(cases_path.parent / "contradiction.sqlite3")
+        _write_review_rows(cases_path, rows)
+    else:
+        database = cases_path.parent / "ladder_adjustments.sqlite3"
+        monkeypatch.setenv("HEMAFRAG_LADDER_ADJUSTMENT_DB", str(database))
+        save_ladder_adjustment_record(
+            Path(excluded_row["full_path"]),
+            {"selected_peaks": [], "validation": {"save_verified": True}},
+            ladder=(
+                "LIZ500_250" if excluded_row["ladder"] == "LIZ" else "ROX400HD"
+            ),
+        )
+
+    with pytest.raises(ValueError, match="excluded.*adjustment"):
+        round_two_module.finalize_round_two_review(
+            workspace, roots=_workspace_roots(workspace)
+        )
+
+
+@pytest.mark.parametrize("field", ("label_note", "reviewed_at_utc"))
+def test_finalize_round_two_requires_exclusion_note_and_timestamp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+):
+    workspace, _manual_row, excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    cases_path = workspace / "round_2_review_bundle" / "ladder_review_cases.csv"
+    with cases_path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    row = next(
+        item
+        for item in rows
+        if item["source_run_dir"] == excluded_row["source_run_dir"]
+    )
+    row[field] = ""
+    _write_review_rows(cases_path, rows)
+
+    with pytest.raises(ValueError, match="note and review timestamp"):
+        round_two_module.finalize_round_two_review(
+            workspace, roots=_workspace_roots(workspace)
+        )
+
+
+def test_finalize_round_two_rejects_no_change_with_adjustment_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    workspace, manual_row, excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    cases_path = workspace / "round_2_review_bundle" / "ladder_review_cases.csv"
+    with cases_path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    row = next(
+        item
+        for item in rows
+        if item["source_run_dir"]
+        not in {manual_row["source_run_dir"], excluded_row["source_run_dir"]}
+    )
+    database = cases_path.parent / "ladder_adjustments.sqlite3"
+    monkeypatch.setenv("HEMAFRAG_LADDER_ADJUSTMENT_DB", str(database))
+    save_ladder_adjustment_record(
+        Path(row["full_path"]),
+        {"selected_peaks": [], "validation": {"save_verified": True}},
+        ladder=("LIZ500_250" if row["ladder"] == "LIZ" else "ROX400HD"),
+    )
+
+    with pytest.raises(ValueError, match="reviewed_no_change.*adjustment"):
+        round_two_module.finalize_round_two_review(
+            workspace, roots=_workspace_roots(workspace)
+        )
+
+
+def test_round_two_comparison_escapes_markdown_table_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    workspace, _manual_row, _excluded_row = _resolved_round_two_workspace(
+        tmp_path, monkeypatch
+    )
+    withheld_path = workspace / "round_2_selection_withheld.json"
+    withheld = json.loads(withheld_path.read_text(encoding="utf-8"))
+    case = withheld["cases"][0]
+    case["assay"] = "A|B\nC"
+    case["reason_signature"] = "reason|tick`\nnext"
+    withheld_path.write_text(json.dumps(withheld), encoding="utf-8")
+    cases_path = workspace / "round_2_review_bundle" / "ladder_review_cases.csv"
+    with cases_path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    row = next(item for item in rows if item["source_run_dir"] == case["case_id"])
+    row["assay"] = case["assay"]
+    _write_review_rows(cases_path, rows)
+
+    result = round_two_module.finalize_round_two_review(
+        workspace, roots=_workspace_roots(workspace)
+    )
+
+    comparison = result.comparison_path.read_text(encoding="utf-8")
+    assert "A\\|B<br>C" in comparison
+    assert "reason\\|tick\\`<br>next" in comparison
+
+
 def test_finalize_round_two_uses_label_specific_review_anchors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -781,8 +1126,10 @@ def test_finalize_round_two_uses_label_specific_review_anchors(
         case for case in cases.values() if case["label"] == "reviewed_no_change"
     )
 
-    assert manual_case["review_scan_indices"] == [101.0, 198.0, 305.0]
-    assert [item["delta_scan"] for item in manual_case["anchor_deltas"]] == [
+    expected_count = 16 if manual_row["ladder"] == "LIZ" else 21
+    assert len(manual_case["review_scan_indices"]) == expected_count
+    assert manual_case["review_scan_indices"][:3] == [101.0, 198.0, 305.0]
+    assert [item["delta_scan"] for item in manual_case["anchor_deltas"][:3]] == [
         1.0,
         -2.0,
         5.0,
@@ -828,7 +1175,9 @@ def test_finalize_round_two_ignores_newer_wrong_ladder_record_in_bundle_database
     manual_case = next(
         case for case in payload["cases"] if case["label"] == "manual_adjusted"
     )
-    assert manual_case["review_scan_indices"] == [101.0, 198.0, 305.0]
+    expected_count = 16 if manual_row["ladder"] == "LIZ" else 21
+    assert len(manual_case["review_scan_indices"]) == expected_count
+    assert manual_case["review_scan_indices"][:3] == [101.0, 198.0, 305.0]
 
 
 def test_finalize_round_two_excludes_missing_ladder_from_metrics(

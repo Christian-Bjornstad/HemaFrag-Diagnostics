@@ -38,6 +38,8 @@ GROUP_REQUIREMENTS = (
     ("control", "LIZ", 3),
     ("control", "ROX", 3),
 )
+ROUND_TWO_CASE_COUNT = sum(required for _group, _ladder, required in GROUP_REQUIREMENTS)
+ROUND_TWO_EXPECTED_STEP_COUNTS = {"LIZ": 16, "ROX": 21}
 MIN_DIVERSITY = 2
 ROUND_TWO_BUNDLE_NAME = "Blind Ladder Round-Two Review"
 ROUND_TWO_PUBLIC_CASE_FIELDS = (
@@ -77,6 +79,65 @@ class RoundTwoOutcomeResult:
     ml_eligible_count: int
 
 
+def classify_controller_supplied_round_two_migration(
+    selection_cases: Iterable[Mapping[str, Any]],
+    supplied_rows: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize controller-provided legacy evidence without reading source paths.
+
+    Every row is joined exclusively by content SHA-256. Migrated evidence always
+    requires a fresh review and is never directly eligible for gold data.
+    """
+
+    selected = [dict(case) for case in selection_cases]
+    selected_hashes = [_normalized_hash(case.get("content_sha256")) for case in selected]
+    if any(not _is_sha256(value) for value in selected_hashes) or len(
+        set(selected_hashes)
+    ) != len(selected_hashes):
+        raise ValueError("Selection cases require unique SHA-256 content hashes")
+
+    supplied_by_hash: dict[str, Mapping[str, Any]] = {}
+    for row in supplied_rows:
+        content_hash = _normalized_hash(row.get("content_sha256"))
+        if not _is_sha256(content_hash) or content_hash in supplied_by_hash:
+            raise ValueError(
+                "Controller-supplied rows require unique SHA-256 content hashes"
+            )
+        supplied_by_hash[content_hash] = row
+    if set(supplied_by_hash) != set(selected_hashes):
+        raise ValueError(
+            "Controller-supplied hashes must exactly match the selected case hashes"
+        )
+
+    result: list[dict[str, Any]] = []
+    for case, content_hash in zip(selected, selected_hashes):
+        supplied = supplied_by_hash[content_hash]
+        label = str(supplied.get("label") or "").strip().casefold()
+        if label in {"manual_adjusted", "reviewed_no_change"}:
+            classification = "resolved_decision_evidence"
+        elif not label:
+            classification = "excluded_error_evidence"
+        else:
+            raise ValueError(
+                f"Unsupported controller-supplied review label for {content_hash}: {label}"
+            )
+        result.append(
+            {
+                "case_id": str(case.get("case_id") or ""),
+                "content_sha256": content_hash,
+                "label": label,
+                "label_note": str(supplied.get("label_note") or ""),
+                "source_reviewed_at_utc": str(
+                    supplied.get("reviewed_at_utc") or ""
+                ),
+                "evidence_classification": classification,
+                "requires_re_review": True,
+                "gold_eligible": False,
+            }
+        )
+    return result
+
+
 def _path_key(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -95,6 +156,14 @@ def _normalized_ladder(value: Any) -> str:
     if text.startswith("ROX"):
         return "ROX"
     return text
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _truthy(value: Any) -> bool:
@@ -684,6 +753,7 @@ def _verified_manual_scan_indices(
         raise ValueError(
             f"Manual case {case_id} has unsupported ladder identity: {ladder}"
         )
+    expected_count = ROUND_TWO_EXPECTED_STEP_COUNTS[ladder_family]
     requested_identity = str(ladder or "").strip().upper()
     ordered_aliases = tuple(
         dict.fromkeys(
@@ -713,29 +783,48 @@ def _verified_manual_scan_indices(
             continue
 
         indexed: list[tuple[int, float]] = []
-        valid = True
         for peak in selected_peaks:
             if not isinstance(peak, dict):
-                valid = False
-                break
+                raise ValueError(
+                    f"Manual case {case_id} must contain a full contiguous "
+                    f"{expected_count}-step selected_peaks mapping"
+                )
             try:
-                step_index = int(peak["step_index"])
+                raw_step_index = peak["step_index"]
+                step_index = int(raw_step_index)
                 observed_time = float(peak["observed_time"])
             except (KeyError, TypeError, ValueError):
-                valid = False
-                break
-            if step_index < 0 or not math.isfinite(observed_time):
-                valid = False
-                break
+                raise ValueError(
+                    f"Manual case {case_id} must contain a full contiguous "
+                    f"{expected_count}-step selected_peaks mapping"
+                ) from None
+            try:
+                integral_step = float(raw_step_index) == float(step_index)
+            except (TypeError, ValueError):
+                integral_step = False
+            if not integral_step or step_index < 0 or not math.isfinite(observed_time):
+                raise ValueError(
+                    f"Manual case {case_id} must contain a full contiguous "
+                    f"{expected_count}-step selected_peaks mapping"
+                )
             indexed.append((step_index, observed_time))
-        if not valid:
-            continue
 
         indexed.sort()
         step_indices = [step_index for step_index, _value in indexed]
-        if len(set(step_indices)) != len(step_indices):
-            continue
-        return [value for _step_index, value in indexed]
+        if step_indices != list(range(expected_count)):
+            raise ValueError(
+                f"Manual case {case_id} must contain a full contiguous "
+                f"{expected_count}-step selected_peaks mapping"
+            )
+        scan_indices = [value for _step_index, value in indexed]
+        if any(
+            left >= right
+            for left, right in zip(scan_indices, scan_indices[1:])
+        ):
+            raise ValueError(
+                f"Manual case {case_id} selected_peaks scans must be strictly increasing"
+            )
+        return scan_indices
 
     raise ValueError(
         f"Manual case {case_id} has no verified selected_peaks in the bundle database "
@@ -808,9 +897,24 @@ def _repeated_error_patterns(cases: list[dict[str, Any]]) -> list[dict[str, Any]
     return result
 
 
+def _markdown_cell(value: Any) -> str:
+    text = str(value or "")
+    return (
+        text.replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("`", "\\`")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", "<br>")
+    )
+
+
 def _markdown_count_table(title: str, counts: Mapping[str, int]) -> list[str]:
     lines = [f"## {title}", "", "| Value | Count |", "|---|---:|"]
-    lines.extend(f"| {value or '(blank)'} | {count} |" for value, count in counts.items())
+    lines.extend(
+        f"| {_markdown_cell(value) or '(blank)'} | {count} |"
+        for value, count in counts.items()
+    )
     lines.append("")
     return lines
 
@@ -850,10 +954,22 @@ def _render_round_two_comparison(payload: Mapping[str, Any]) -> str:
     )
     for case in payload["cases"]:
         delta_values = [item["delta_scan"] for item in case["anchor_deltas"]]
+        escaped_case = {
+            key: _markdown_cell(case[key])
+            for key in (
+                "case_id",
+                "label",
+                "ladder",
+                "year",
+                "assay",
+                "cohort_group",
+                "failure_signature",
+            )
+        }
         lines.append(
             "| {case_id} | {label} | {ladder} | {year} | {assay} | "
             "{cohort_group} | {failure_signature} | {rust} | {review} | {delta} |".format(
-                **case,
+                **escaped_case,
                 rust=json.dumps(case["rust_preview_scan_indices"]),
                 review=json.dumps(case["review_scan_indices"]),
                 delta=json.dumps(delta_values),
@@ -864,9 +980,14 @@ def _render_round_two_comparison(payload: Mapping[str, Any]) -> str:
     if patterns:
         for pattern in patterns:
             lines.append(
-                "- `{failure_signature}`: {case_count} manually corrected suspicious "
+                "- {failure_signature}: {case_count} manually corrected suspicious "
                 "cases; maximum absolute scan delta {maximum_absolute_delta_scan}.".format(
-                    **pattern
+                    **{
+                        **pattern,
+                        "failure_signature": _markdown_cell(
+                            pattern["failure_signature"]
+                        ),
+                    }
                 )
             )
     else:
@@ -946,6 +1067,60 @@ def _publish_output_pair(replacements: tuple[tuple[Path, Path], ...]) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _is_sha256(value: str) -> bool:
+    if len(value) != 64:
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_round_two_manifest_cases(
+    cases: list[dict[str, Any]],
+) -> None:
+    if len(cases) != ROUND_TWO_CASE_COUNT:
+        raise ValueError(
+            f"Round-two finalization requires exactly {ROUND_TWO_CASE_COUNT} cases"
+        )
+    expected_ids = [f"{index:03d}" for index in range(1, ROUND_TWO_CASE_COUNT + 1)]
+    case_ids = [str(case.get("case_id") or "").strip() for case in cases]
+    if case_ids != expected_ids:
+        raise ValueError("Round-two case IDs must be the contiguous sequence 001-018")
+
+    quota_counts = Counter(
+        (
+            str(case.get("cohort_group") or "").strip().casefold(),
+            _normalized_ladder(case.get("ladder")),
+        )
+        for case in cases
+    )
+    expected_quotas = Counter(
+        {(group, ladder): count for group, ladder, count in GROUP_REQUIREMENTS}
+    )
+    if quota_counts != expected_quotas:
+        raise ValueError(
+            "Round-two withheld cohort does not satisfy the required quota counts"
+        )
+
+    content_hashes = [
+        _normalized_hash(case.get("content_sha256")) for case in cases
+    ]
+    if not all(_is_sha256(value) for value in content_hashes) or len(
+        set(content_hashes)
+    ) != ROUND_TWO_CASE_COUNT:
+        raise ValueError("Round-two cases require unique valid content SHA-256 hashes")
+    physical_runs = [
+        str(case.get("physical_run_key") or "").strip() for case in cases
+    ]
+    if not all(physical_runs) or len(set(physical_runs)) != ROUND_TWO_CASE_COUNT:
+        raise ValueError("Round-two cases require unique nonblank physical runs")
+    copied_paths = [_path_key(case.get("copied_path")) for case in cases]
+    if not all(copied_paths) or len(set(copied_paths)) != ROUND_TWO_CASE_COUNT:
+        raise ValueError("Round-two cases require unique nonblank copied paths")
+
+
 def finalize_round_two_review(
     workspace: Path, *, roots: ResearchRoots | None = None
 ) -> RoundTwoOutcomeResult:
@@ -966,7 +1141,12 @@ def finalize_round_two_review(
         raise ValueError("Round-two withheld manifest must contain a cases list")
     withheld_cases = [dict(case) for case in withheld_cases_raw]
     expected_count = int(withheld.get("case_count") or 0)
-    if expected_count <= 0 or len(review_rows) != expected_count or len(withheld_cases) != expected_count:
+    if expected_count != ROUND_TWO_CASE_COUNT:
+        raise ValueError(
+            f"Round-two finalization requires exactly {ROUND_TWO_CASE_COUNT} cases"
+        )
+    _validate_round_two_manifest_cases(withheld_cases)
+    if len(review_rows) != expected_count or len(withheld_cases) != expected_count:
         raise ValueError("Round-two CSV and withheld manifest case counts do not match")
 
     rows_by_id = {str(row.get("source_run_dir") or "").strip(): row for row in review_rows}
@@ -991,13 +1171,60 @@ def finalize_round_two_review(
         )
 
     outcome_cases: list[dict[str, Any]] = []
+    bundle_files_root = (bundle_dir / "files").resolve()
     for case_id in sorted(rows_by_id):
         row = rows_by_id[case_id]
         withheld_case = cases_by_id[case_id]
         source_path = Path(str(row.get("full_path") or ""))
         if _path_key(source_path) != _path_key(withheld_case.get("copied_path")):
             raise ValueError(f"Round-two case {case_id} copied path does not match")
+        copied_path = source_path.resolve()
+        try:
+            copied_relative = copied_path.relative_to(bundle_files_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Round-two case {case_id} copied file must be contained in the bundle files directory"
+            ) from exc
+        if not copied_relative.parts or copied_relative.parts[0] != case_id:
+            raise ValueError(
+                f"Round-two case {case_id} copied file must be contained in its case directory"
+            )
+        if not copied_path.is_file():
+            raise ValueError(f"Round-two case {case_id} copied file does not exist")
+        expected_hash = _normalized_hash(withheld_case.get("content_sha256"))
+        if _sha256_file(copied_path) != expected_hash:
+            raise ValueError(
+                f"Round-two case {case_id} copied file SHA-256 does not match selection"
+            )
+        if str(row.get("file") or "").strip() != copied_path.name or str(
+            withheld_case.get("file") or ""
+        ).strip() != copied_path.name:
+            raise ValueError(f"Round-two case {case_id} copied file identity does not match")
+        if _normalized_ladder(row.get("ladder")) != _normalized_ladder(
+            withheld_case.get("ladder")
+        ):
+            raise ValueError(f"Round-two case {case_id} ladder identity does not match")
+        if str(row.get("assay") or "").strip() != str(
+            withheld_case.get("assay") or ""
+        ).strip():
+            raise ValueError(f"Round-two case {case_id} assay identity does not match")
         label = str(row.get("label") or "").strip().casefold()
+        reviewed_at_utc = str(row.get("reviewed_at_utc") or "").strip()
+        if (
+            not reviewed_at_utc
+            and label != "excluded_missing_ladder_signal"
+        ):
+            raise ValueError(
+                f"Round-two case {case_id} requires a review timestamp"
+            )
+        stored_adjustment = load_ladder_adjustment_record(
+            copied_path,
+            database_path=adjustment_database,
+        )
+        has_adjustment = stored_adjustment is not None or copied_path.with_suffix(
+            ".ladder_adj.json"
+        ).exists()
+        adjustment_path = str(row.get("adjustment_path") or "").strip()
         rust_scans = _scan_indices(
             withheld_case.get("preview_scan_indices"),
             context=f"Round-two case {case_id} Rust preview",
@@ -1010,8 +1237,23 @@ def finalize_round_two_review(
                 case_id=case_id,
             )
         elif label == "reviewed_no_change":
+            if adjustment_path or has_adjustment:
+                raise ValueError(
+                    f"Round-two reviewed_no_change case {case_id} has contradictory adjustment evidence"
+                )
             review_scans = list(rust_scans)
         elif label == "excluded_missing_ladder_signal":
+            if (
+                not str(row.get("label_note") or "").strip()
+                or not reviewed_at_utc
+            ):
+                raise ValueError(
+                    f"Round-two excluded case {case_id} requires a note and review timestamp"
+                )
+            if adjustment_path or has_adjustment:
+                raise ValueError(
+                    f"Round-two excluded case {case_id} has contradictory adjustment evidence"
+                )
             review_scans = []
         else:  # The centralized policy currently makes this unreachable.
             raise ValueError(f"Unsupported resolved label for round-two case {case_id}")
@@ -1029,7 +1271,7 @@ def finalize_round_two_review(
                 "selection_reason": str(withheld_case.get("selection_reason") or ""),
                 "label": label,
                 "label_note": str(row.get("label_note") or ""),
-                "reviewed_at_utc": str(row.get("reviewed_at_utc") or ""),
+                "reviewed_at_utc": reviewed_at_utc,
                 "rust_preview_scan_indices": rust_scans,
                 "review_scan_indices": review_scans,
                 "anchor_deltas": (
