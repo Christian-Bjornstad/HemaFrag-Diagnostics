@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::abif::AbifRecord;
 use crate::contract::AnalysisKind;
 use crate::engine::EngineError;
+use crate::ladder_search::{
+    LadderRescueInput, PeakEvidence, SearchBudget, liz_local_rescue_candidates,
+};
 use crate::ladders::LadderKind;
 use crate::signal::{
     Peak, baseline_correct_guarded_nonnegative, baseline_correct_min_window_nonnegative,
@@ -3328,6 +3331,11 @@ fn build_ladder_fit_preview_with_arbiter(
         }
     }
 
+    if ladder == LadderKind::Liz500250 {
+        best_preview = best_preview
+            .map(|preview| apply_liz_tier_one_rescue(preview, &best_peaks, sample_trace, ladder));
+    }
+
     // The final pass only enables ROX visual-start repair. Re-running the
     // complete deterministic LIZ search here cannot change LIZ output and
     // doubles all of its candidate and repair work.
@@ -3366,6 +3374,71 @@ fn build_ladder_fit_preview_with_arbiter(
     }
 
     (best_peaks, best_preview)
+}
+
+fn apply_liz_tier_one_rescue(
+    mut preview: LadderFitPreview,
+    peak_features: &[Peak],
+    sample_trace: &[f64],
+    ladder: LadderKind,
+) -> LadderFitPreview {
+    if !should_try_liz_tier_one_rescue(&preview) {
+        return preview;
+    }
+    let current = selected_preview_scans(&preview);
+    let input = LadderRescueInput::new(
+        ladder.sizes().to_vec(),
+        current.clone(),
+        peak_features
+            .iter()
+            .map(|peak| PeakEvidence {
+                scan: peak.index,
+                height: peak.height,
+                prominence: peak.prominence,
+                local_baseline: peak.local_baseline,
+                width: peak.width,
+            })
+            .collect(),
+    );
+    let Some(outcome) = liz_local_rescue_candidates(&input, SearchBudget::tier_one()) else {
+        return preview;
+    };
+    preview.search_diagnostics = Some(outcome.diagnostics);
+    let rescued = outcome.candidate.scan_indices;
+    if rescued == current {
+        return preview;
+    }
+    let rescued_model = fit_best_sizing_model(&rescued, ladder.sizes(), sample_trace);
+    if let (Some((current_max, current_mean, current_r2, _)), Some(model)) =
+        (preview_linear_metrics(&preview), rescued_model.as_ref())
+    {
+        let qc = &model.qc_metrics;
+        if qc.linear_trend_max_abs_error_bp > current_max + 0.50
+            || qc.linear_trend_mean_abs_error_bp > current_mean + 0.15
+            || qc.linear_trend_r2 + 0.00001 < current_r2
+        {
+            return preview;
+        }
+    }
+    preview.best_scan_indices = rescued.clone();
+    preview.best_curvature_score = Some(curvature_score(ladder.sizes(), &rescued));
+    preview.best_quadratic_r2 = Some(quadratic_fit_r2(
+        ladder.sizes(),
+        &rescued
+            .iter()
+            .map(|value| *value as f64)
+            .collect::<Vec<_>>(),
+    ));
+    preview.sizing_model = rescued_model;
+    preview.refinement = apex_recenter_refinement_preview(&current, &rescued, ladder.sizes());
+    preview
+}
+
+fn should_try_liz_tier_one_rescue(preview: &LadderFitPreview) -> bool {
+    let Some((linear_max, linear_mean, linear_r2, _)) = preview_linear_metrics(preview) else {
+        return true;
+    };
+    !(linear_max <= 4.0 && linear_mean <= 1.5 && linear_r2 >= 0.99985)
 }
 
 fn should_try_alternative_ladder_lanes(
@@ -19654,7 +19727,7 @@ mod tests {
         rox_early_window_peak_candidates, rox_post_blob_pool_override,
         rox_start_pair_candidate_improves_current, rox_tail_family_candidate_improves_current,
         score_combination, select_best_combination, select_ladder_peaks,
-        trace_has_negative_baseline,
+        should_try_liz_tier_one_rescue, trace_has_negative_baseline,
     };
 
     fn make_test_peak(index: usize, prominence: f64) -> Peak {
@@ -19726,6 +19799,12 @@ mod tests {
         let y = vec![1.0, 3.0, 7.0, 13.0, 21.0];
         let r2 = quadratic_fit_r2(&x, &y);
         assert!(r2 > 0.999);
+    }
+
+    #[test]
+    fn liz_tier_one_does_not_run_for_high_confidence_fast_fit() {
+        let preview = make_test_preview(vec![1534, 1639, 1793], 0.04, 0.9999, 0.0, 0.0);
+        assert!(!should_try_liz_tier_one_rescue(&preview));
     }
 
     #[test]

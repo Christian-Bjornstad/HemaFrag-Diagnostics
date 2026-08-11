@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +31,14 @@ impl SearchBudget {
 
     pub const fn allows_expansion(&self, expansions_used: usize) -> bool {
         expansions_used < self.expansion_limit
+    }
+
+    pub const fn tier_one() -> Self {
+        Self::new(FitTier::Rescue2s, 50_000, 2_000)
+    }
+
+    pub const fn tier_two() -> Self {
+        Self::new(FitTier::DeepRescue10s, 500_000, 10_000)
     }
 }
 
@@ -84,6 +93,159 @@ impl SearchCandidate {
 pub struct SearchOutcome {
     pub candidate: SearchCandidate,
     pub diagnostics: SearchDiagnostics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PeakEvidence {
+    pub scan: usize,
+    pub height: f64,
+    pub prominence: f64,
+    pub local_baseline: f64,
+    pub width: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LadderRescueInput {
+    pub expected_basepairs: Vec<f64>,
+    pub current_scan_indices: Vec<usize>,
+    pub peaks: Vec<PeakEvidence>,
+}
+
+impl LadderRescueInput {
+    pub fn new(
+        expected_basepairs: Vec<f64>,
+        current_scan_indices: Vec<usize>,
+        peaks: Vec<PeakEvidence>,
+    ) -> Self {
+        Self {
+            expected_basepairs,
+            current_scan_indices,
+            peaks,
+        }
+    }
+}
+
+fn median(values: &mut [f64]) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let middle = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[middle - 1] + values[middle]) * 0.5
+    } else {
+        values[middle]
+    }
+}
+
+pub fn score_candidate_sequence(input: &LadderRescueInput, scans: &[usize]) -> Option<f64> {
+    if scans.len() != input.expected_basepairs.len()
+        || scans.len() < 3
+        || !scans.windows(2).all(|pair| pair[1] > pair[0])
+        || !input
+            .expected_basepairs
+            .windows(2)
+            .all(|pair| pair[1] > pair[0])
+    {
+        return None;
+    }
+    let mut scales = scans
+        .windows(2)
+        .zip(input.expected_basepairs.windows(2))
+        .map(|(scan, bp)| (scan[1] - scan[0]) as f64 / (bp[1] - bp[0]))
+        .collect::<Vec<_>>();
+    let scale = median(&mut scales).max(1e-9);
+    let geometry = scales
+        .iter()
+        .map(|value| ((value / scale) - 1.0).abs())
+        .sum::<f64>()
+        / scales.len() as f64;
+    let by_scan = input
+        .peaks
+        .iter()
+        .map(|peak| (peak.scan, peak))
+        .collect::<BTreeMap<_, _>>();
+    let feature_penalty = scans
+        .iter()
+        .map(|scan| {
+            let Some(peak) = by_scan.get(scan) else {
+                return 4.0;
+            };
+            let height = peak.height.max(1.0);
+            let purity = (peak.prominence.max(0.0) / height).clamp(0.0, 1.0);
+            let baseline_ratio = (peak.local_baseline.max(0.0) / height).clamp(0.0, 1.5);
+            (1.0 - purity) * 0.35 + baseline_ratio * 0.65
+        })
+        .sum::<f64>()
+        / scans.len() as f64;
+    Some(geometry * 10.0 + feature_penalty)
+}
+
+pub fn arbiter_select_candidate(
+    current: &SearchCandidate,
+    candidates: &[SearchCandidate],
+    minimum_margin: f64,
+) -> SearchCandidate {
+    let best = candidates
+        .iter()
+        .min_by(|left, right| SearchCandidate::stable_cmp(left, right));
+    match best {
+        Some(candidate) if candidate.score + minimum_margin < current.score => candidate.clone(),
+        _ => current.clone(),
+    }
+}
+
+pub fn liz_local_rescue_candidates(
+    input: &LadderRescueInput,
+    budget: SearchBudget,
+) -> Option<SearchOutcome> {
+    let current_score = score_candidate_sequence(input, &input.current_scan_indices)?;
+    let current = SearchCandidate {
+        fit_tier: FitTier::Fast,
+        scan_indices: input.current_scan_indices.clone(),
+        score: current_score,
+    };
+    let second = *input.current_scan_indices.get(1)?;
+    let third = *input.current_scan_indices.get(2)?;
+    let reference_gap = third.saturating_sub(second).max(1) as f64;
+    let mut candidates = Vec::new();
+    let mut expansions = 0usize;
+    for peak in &input.peaks {
+        if !budget.allows_expansion(expansions) {
+            break;
+        }
+        expansions += 1;
+        if peak.scan >= second {
+            continue;
+        }
+        let ratio = (second - peak.scan) as f64 / reference_gap;
+        if !(0.22..=0.82).contains(&ratio) {
+            continue;
+        }
+        let mut scans = input.current_scan_indices.clone();
+        scans[0] = peak.scan;
+        if let Some(score) = score_candidate_sequence(input, &scans) {
+            candidates.push(SearchCandidate {
+                fit_tier: FitTier::Rescue2s,
+                scan_indices: scans,
+                score,
+            });
+        }
+    }
+    candidates.sort_by(SearchCandidate::stable_cmp);
+    candidates.dedup_by(|left, right| left.scan_indices == right.scan_indices);
+    let selected = arbiter_select_candidate(&current, &candidates, 0.05);
+    let runner_up = candidates
+        .iter()
+        .find(|candidate| candidate.scan_indices != selected.scan_indices)
+        .map(|candidate| candidate.score);
+    let mut diagnostics = SearchDiagnostics::empty(budget.fit_tier, budget.expansion_limit);
+    diagnostics.expansions_used = expansions;
+    diagnostics.complete_candidate_count = candidates.len();
+    diagnostics.best_score = Some(selected.score);
+    diagnostics.runner_up_score = runner_up;
+    diagnostics.score_margin = runner_up.map(|score| score - selected.score);
+    Some(SearchOutcome {
+        candidate: selected,
+        diagnostics,
+    })
 }
 
 pub fn completed_tier_or_previous(
@@ -153,5 +315,41 @@ mod tests {
             serde_json::from_value::<SearchDiagnostics>(value).unwrap(),
             diagnostics
         );
+    }
+
+    fn evidence(scan: usize, height: f64, prominence: f64) -> PeakEvidence {
+        PeakEvidence {
+            scan,
+            height,
+            prominence,
+            local_baseline: 0.0,
+            width: 3.0,
+        }
+    }
+
+    #[test]
+    fn liz_rescue_replaces_wrong_first_anchor_without_moving_stable_interior() {
+        let expected_bp = vec![35.0, 50.0, 75.0, 100.0, 139.0, 150.0];
+        let current = vec![1505, 1640, 1790, 1940, 2174, 2240];
+        let peaks = vec![
+            evidence(1505, 250.0, 80.0),
+            evidence(1544, 900.0, 850.0),
+            evidence(1640, 1000.0, 950.0),
+            evidence(1790, 1100.0, 1050.0),
+            evidence(1940, 1000.0, 950.0),
+            evidence(2174, 950.0, 900.0),
+            evidence(2240, 900.0, 850.0),
+        ];
+        let input = LadderRescueInput::new(expected_bp, current.clone(), peaks);
+        let outcome = liz_local_rescue_candidates(&input, SearchBudget::tier_one()).unwrap();
+        assert_eq!(outcome.candidate.scan_indices[0], 1544);
+        assert_eq!(&outcome.candidate.scan_indices[1..], &current[1..]);
+    }
+
+    #[test]
+    fn arbiter_keeps_current_on_equal_score() {
+        let current = candidate(FitTier::Fast, &[10, 20], 2.0);
+        let rescue = candidate(FitTier::Rescue2s, &[10, 21], 2.0);
+        assert_eq!(arbiter_select_candidate(&current, &[rescue], 0.1), current);
     }
 }
