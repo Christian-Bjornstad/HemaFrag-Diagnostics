@@ -158,8 +158,12 @@ def _prepare_review_bundle(
     ],
     summary_fields: Mapping[str, Any] | None = None,
     readme_body: str | None = None,
+    published_bundle_dir: Path | None = None,
 ) -> ReviewBundleResult:
     destination = _assert_output_path(Path(bundle_dir), roots)
+    published_destination = _assert_output_path(
+        Path(published_bundle_dir or destination), roots
+    )
     if destination.exists() and (
         not destination.is_dir() or any(destination.iterdir())
     ):
@@ -200,7 +204,7 @@ def _prepare_review_bundle(
                     f"SHA-256 mismatch after copying {source}: expected {expected_hash}, got {copied_hash}"
                 )
 
-            published_copy = destination / copied.relative_to(staging)
+            published_copy = published_destination / copied.relative_to(staging)
             public_case = {
                 "case_id": case_id,
                 "copied_path": str(published_copy),
@@ -220,7 +224,7 @@ def _prepare_review_bundle(
             writer.writeheader()
             writer.writerows(review_rows)
 
-        adjustment_database = destination / "ladder_adjustments.sqlite3"
+        adjustment_database = published_destination / "ladder_adjustments.sqlite3"
         summary = {
             "schema_version": REVIEW_BUNDLE_SCHEMA_VERSION,
             "generated_at_utc": generated_at,
@@ -270,9 +274,9 @@ def _prepare_review_bundle(
         raise
 
     return ReviewBundleResult(
-        bundle_dir=destination,
+        bundle_dir=published_destination,
         case_count=len(review_rows),
-        adjustment_database=destination / "ladder_adjustments.sqlite3",
+        adjustment_database=published_destination / "ladder_adjustments.sqlite3",
     )
 
 
@@ -283,6 +287,8 @@ def prepare_blind_review_bundle(
     *,
     bundle_name: str,
     public_case_fields: Sequence[str],
+    summary_fields: Mapping[str, Any] | None = None,
+    published_bundle_dir: Path | None = None,
 ) -> ReviewBundleResult:
     """Create a minimal app-facing blind bundle with an atomic publisher."""
 
@@ -294,6 +300,8 @@ def prepare_blind_review_bundle(
         public_case_fields=public_case_fields,
         review_case_fields=BLIND_REVIEW_CASE_FIELDS,
         review_row_factory=_blind_review_row,
+        summary_fields=summary_fields,
+        published_bundle_dir=published_bundle_dir,
     )
 
 

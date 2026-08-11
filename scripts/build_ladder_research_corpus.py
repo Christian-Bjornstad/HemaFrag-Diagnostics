@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,6 +36,11 @@ from core.research.ladder.corrections import (
     reconcile_manual_evidence,
 )
 from core.research.ladder.diagnostics import DiagnosticRecord, run_rust_diagnostic
+from core.research.ladder.fit_improvement import (
+    finalize_fit_improvement_wave,
+    freeze_fit_candidate,
+    prepare_fit_improvement_experiment,
+)
 from core.research.ladder.inventory import (
     build_inventory,
     load_canonical_review_cases,
@@ -741,6 +747,74 @@ def _finalize_round_two_command(args: argparse.Namespace) -> None:
     )
 
 
+def _prepare_fit_improvement_command(args: argparse.Namespace) -> None:
+    result = prepare_fit_improvement_experiment(
+        args.workspace.resolve(), seed=args.seed
+    )
+    print(
+        json.dumps(
+            {
+                "experiment_dir": str(result.experiment_dir),
+                "development_bundle": str(result.development.bundle_dir),
+                "development_case_count": result.development.case_count,
+                "validation_bundle": str(result.validation.bundle_dir),
+                "validation_case_count": result.validation.case_count,
+            },
+            indent=2,
+        )
+    )
+
+
+def _finalize_fit_wave_command(args: argparse.Namespace, wave: str) -> None:
+    result = finalize_fit_improvement_wave(args.workspace.resolve(), wave)
+    print(
+        json.dumps(
+            {
+                "wave": result.wave,
+                "outcomes_path": str(result.outcomes_path),
+                "comparison_path": str(result.comparison_path),
+                "total_count": result.total_count,
+                "excluded_count": result.excluded_count,
+                "fitting_evaluation_count": result.fitting_evaluation_count,
+                "ml_eligible_count": result.ml_eligible_count,
+            },
+            indent=2,
+        )
+    )
+
+
+def _freeze_fit_candidate_command(args: argparse.Namespace) -> None:
+    assert_canonical_production_workspace(args.workspace.resolve())
+    configuration = json.loads(args.configuration_json)
+    if not isinstance(configuration, dict):
+        raise ValueError("--configuration-json must decode to a JSON object")
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = freeze_fit_candidate(
+        args.workspace.resolve(),
+        binary=args.cli.resolve(),
+        configuration=configuration,
+        git_revision=completed.stdout.strip(),
+    )
+    print(
+        json.dumps(
+            {
+                "manifest_path": str(result.manifest_path),
+                "binary_path": str(result.binary_path),
+                "binary_sha256": result.binary_sha256,
+                "configuration_fingerprint": result.configuration_fingerprint,
+                "git_revision": result.git_revision,
+            },
+            indent=2,
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -797,6 +871,29 @@ def main() -> None:
     finalize_round_two = commands.add_parser("finalize-round-two")
     finalize_round_two.add_argument("--workspace", required=True, type=Path)
     finalize_round_two.set_defaults(handler=_finalize_round_two_command)
+
+    prepare_fit = commands.add_parser("prepare-fit-improvement")
+    prepare_fit.add_argument("--workspace", required=True, type=Path)
+    prepare_fit.add_argument("--seed", type=int, default=20260811)
+    prepare_fit.set_defaults(handler=_prepare_fit_improvement_command)
+
+    finalize_fit_development = commands.add_parser("finalize-fit-development")
+    finalize_fit_development.add_argument("--workspace", required=True, type=Path)
+    finalize_fit_development.set_defaults(
+        handler=lambda args: _finalize_fit_wave_command(args, "development")
+    )
+
+    freeze_fit = commands.add_parser("freeze-fit-candidate")
+    freeze_fit.add_argument("--workspace", required=True, type=Path)
+    freeze_fit.add_argument("--cli", required=True, type=Path)
+    freeze_fit.add_argument("--configuration-json", default="{}")
+    freeze_fit.set_defaults(handler=_freeze_fit_candidate_command)
+
+    finalize_fit_validation = commands.add_parser("finalize-fit-validation")
+    finalize_fit_validation.add_argument("--workspace", required=True, type=Path)
+    finalize_fit_validation.set_defaults(
+        handler=lambda args: _finalize_fit_wave_command(args, "validation")
+    )
 
     args = parser.parse_args()
     args.handler(args)
