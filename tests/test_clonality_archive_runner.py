@@ -218,15 +218,18 @@ def test_archive_tab_opens_discovered_ladder_review_bundle(
 
 
 def test_about_text_browsers_have_explicit_readable_contrast(qapp):
+    from gui_qt.styles import VIBRANT_PRO_QSS
     from gui_qt.tabs.tab_about import TabAbout
 
     tab = TabAbout()
-    browsers = tab.findChildren(QTextBrowser)
+    browsers = tab.findChildren(QTextBrowser, "AboutTextBrowser")
 
-    assert len(browsers) == 2
+    assert browsers
     assert all(browser.styleSheet() == "" for browser in browsers)
     assert all(
-        "color: #334e63" in browser.document().defaultStyleSheet()
+        "a { color: #2563EB; }" in browser.document().defaultStyleSheet()
         for browser in browsers
     )
+    assert "QTextBrowser#AboutTextBrowser" in VIBRANT_PRO_QSS
+    assert "color: #102235" in VIBRANT_PRO_QSS
     tab.close()

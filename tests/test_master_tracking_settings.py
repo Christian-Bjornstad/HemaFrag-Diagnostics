@@ -57,4 +57,3 @@ def test_unavailable_optional_master_does_not_fail_patient_run(tmp_path, monkeyp
 
     assert tracking_excel.update_global_clonality_tracking_workbook([{}]) is None
     assert qc_tracker.update_global_flt3_tracking_workbook([{}]) is None
-
