@@ -1,7 +1,7 @@
 # HemaFrag Clinical Workbench Design
 
 **Date:** 2026-08-12  
-**Status:** Approved visual direction; awaiting written-spec review  
+**Status:** Approved
 **Branch:** `codex/ui-polish`
 
 ## Goal
