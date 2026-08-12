@@ -55,12 +55,32 @@ QScrollArea#TabScrollArea > QWidget > QWidget {
     border-right: 1px solid #17324a;
 }
 
-#SidebarBrand {
+#SidebarBrandLockup {
+    background: transparent;
+    border-bottom: 1px solid #17324a;
+}
+
+#SidebarBrandMark {
+    background: #12395b;
+    color: #ffffff;
+    border: 1px solid #2563eb;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 900;
+}
+
+#SidebarBrandText {
     color: #f8fbff;
-    font-size: 17px;
-    font-weight: 800;
-    padding: 26px 20px 18px 20px;
-    letter-spacing: 1.4px;
+    font-size: 15px;
+    font-weight: 900;
+    letter-spacing: 1.2px;
+}
+
+#SidebarBrandDescriptor {
+    color: #8ba6bd;
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.7px;
 }
 
 #SidebarButton {
@@ -97,7 +117,7 @@ QScrollArea#TabScrollArea > QWidget > QWidget {
     background: transparent;
     color: #eff6ff;
     text-align: left;
-    padding: 12px 20px;
+    padding: 10px 20px;
     border: none;
     font-weight: 700;
     font-size: 14px;
@@ -122,7 +142,7 @@ QScrollArea#TabScrollArea > QWidget > QWidget {
     background: transparent;
     color: #94a3b8;
     text-align: left;
-    padding: 10px 20px 10px 40px;
+    padding: 8px 20px 8px 40px;
     border: none;
     font-weight: 500;
     font-size: 13px;

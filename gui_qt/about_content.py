@@ -6,6 +6,7 @@ from app_meta import APP_NAME, APP_VERSION
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+THIRD_PARTY_NOTICE_PATH = REPO_ROOT / "THIRD_PARTY_NOTICES.md"
 UPSTREAM_LICENSE_PATH = REPO_ROOT / "LICENSES" / "fraggler_MIT.txt"
 
 APP_OVERVIEW = {
