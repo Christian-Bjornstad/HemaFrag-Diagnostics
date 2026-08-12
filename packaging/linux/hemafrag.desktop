@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=HemaFrag Diagnostics
+Comment=Fragment analysis, ladder QC, and diagnostic report workflow
+Exec=HemaFrag
+TryExec=HemaFrag
+Icon=hemafrag
+Terminal=false
+Categories=Science;Utility;
+StartupNotify=true
+StartupWMClass=HemaFrag

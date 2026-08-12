@@ -69,15 +69,33 @@ Current limitation:
 Use the existing Python application to freeze reference timings and artifacts:
 
 ```bash
-python3 scripts/freeze_v2_baseline.py \
+python scripts/freeze_v2_baseline.py \
   --scenario-file fraggler-v2/baselines/scenarios.example.json \
-  --output-dir validation_outputs/fraggler_v2_baseline
+  --output-dir validation_outputs/fraggler_v2_baseline \
+  --repeats 3
+```
+
+The example scenarios resolve local data through environment variables. On
+Windows PowerShell:
+
+```powershell
+$env:HEMAFRAG_DATA_ROOT = "C:\path\to\clonality"
+$env:HEMAFRAG_FLT3_ROOT = "C:\path\to\flt3"
+python scripts/freeze_v2_baseline.py `
+  --scenario-file fraggler-v2/baselines/scenarios.example.json `
+  --output-dir validation_outputs/fraggler_v2_baseline `
+  --repeats 3
 ```
 
 The script writes:
 - `baseline_manifest.json`
-- per-scenario summaries
-- copied artifacts when configured by the scenario
+- per-scenario summaries with deterministic result fingerprints
+- p50/p95 wall times and optional process-RSS observations
+- compact file/content hashes without copying raw FSA data
+- aggregate batch-stage timings for the combined QC/DIT scenario
+
+Missing local data is recorded as `unavailable`. Add `--strict-missing` when a
+scheduled validation run should fail if any required corpus path is absent.
 
 ## Example requests
 

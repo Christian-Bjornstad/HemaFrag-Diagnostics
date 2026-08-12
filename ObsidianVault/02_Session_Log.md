@@ -1,3 +1,12 @@
+## 2026-08-09 - Plan 15 Optimization, Stability, And App Icon
+
+- Kept the Python/PyQt orchestration and Rust numerical-engine design after reviewing measured hotspots; no additional language or clinical ladder-policy change was justified.
+- Improved fresh source startup median from `4.986 s` to `3.231 s` by lazy-loading scientific/report libraries and removing an unreachable FLT3 validation page from startup.
+- Hardened the legacy Python arPLS path with cached CSC matrices and finite/flat/short-trace handling while preserving the old numerical result. Diagnostic Rust ladder selection, rejection, review, and fallback policy remain unchanged.
+- Centralized source/frozen/platform icon resolution, added the Windows AppUserModelID, fixed portable PyInstaller specs/resources, added Linux desktop metadata, and added a no-new-EXE Windows shortcut creator for the approved Python environment.
+- Verified live Windows source and packaged icons, built/launched the Windows package, checked ZIP integrity and bundled Rust CLI, and installed/imported the unchanged ABI3 wheel under Python `3.14.0`.
+- Verification: Python `561 passed, 3 skipped`; focused safety `86 passed, 1 skipped`; Rust `93 passed, 1 ignored`; native package check passed. Private real-FSA reruns and work-computer visual pinning remain operator checks.
+
 ## 2026-07-27 - Cleanup Triage
 
 - Removed stale cleanup/planning/install docs and Windows batch helpers from git, including old `plans/00-10`, `.hermes/plans`, Py3.14 migration docs, setup docs, `AGENTS.md`, and `memory.md`.
@@ -57,6 +66,47 @@ Phase 1 (delete-not-archive, per user):
 - Outstanding latent issue: `gui_qt/tabs/tab_archive_runner.py` and `gui_qt/tabs/tab_flt3_validation.py` swallow ImportError for missing scripts (`run_clonality_yearly`, `combine_clonality_yearly_overview`, `run_flt3_backfill_validation`) and silently flag features unavailable. Tracking only; outside Phase 1 scope.
 - Commits: `37112cb` (Phase 0), Phase 1 commit lands next.
 # HemaFrag Session Log
+
+## 2026-07-28 - Plan 13 Throughput And Report Provenance
+
+- Added per-process immutable FSA reuse and unified Python/Rust/numeric concurrency budgeting. Real alternating A/B preserved exact output parity while improving median/p95 by `5.42%/13.88%`; the deterministic 25-file FLT3 matrix favored eight workers (`13.59 s` p95) over six (`14.59 s`).
+- Removed the PyO3 JSON text reparse, aligned its ABI floor with Python 3.10, and added an append-safe SQLite workbook-snapshot prototype. Native NumPy bridge benchmarking and production-ledger migration remain gated.
+- Added source/engine/correction provenance to entries, HTML, and tracking. The real combined smoke retained `8` patient plus `14` QC entries with hashes on `22/22` workbook rows; full verification passed (`466 passed, 3 skipped`).
+
+## 2026-07-28 - Plan 13 Workflow, Trends, And Release Audit
+
+- Ladder Studio now persists exact correction-consumption evidence and shows read-only candidate margins; child manifests only mark a correction consumed when the analyzed sidecar hash matches. Review/report rerun tests remain green.
+- Added advisory QC trend sheets with explicit 20-run baseline selection, plus versioned General profiles and provenance. Three real General ROX repeats were deterministic and exposed/fixed two dormant General-path failures.
+- Automated engineering gates pass; clinical promotion remains blocked pending FLT3 area-bias evidence and chemist review. Final verification: Python `479 passed, 3 skipped`; Rust core `81 passed, 1 ignored` plus `5` contract tests; PyO3 check passed.
+
+## 2026-07-28 - Plan 13 Benchmark Foundation
+
+- Added a reproducible, atomic benchmark runner with input hashes, engine provenance, deterministic output fingerprints, stage timing, RSS observations, and portable real-data scenarios for LIZ, ROX, combined DIT/QC, and FLT3.
+- Built the ignored Rust CLI and froze three deterministic repeats at `validation_outputs/plan13_phase0_repeat3_final/`: combined output retained 22 DIT plus 14 QC entries; FLT3 passed 25/25 with one saved manual correction.
+- Phase 0 remains open for the 1/2/4/6/8 worker matrix, general mode, reviewed artifact/failure cases, and finer stage metrics; native-wheel Python compatibility and Rust tracking-marker attribution are recorded follow-ups.
+
+## 2026-07-28 - Plan 13 Recovery And Provenance
+
+- Added atomic batch run manifests and v2 manual-correction provenance; review bundles now link to the originating run, and restart reruns recover the full original patient/QC job cohort.
+- Final correction rebuilds validate original total/QC counts before publication. DIT HTML and clonality tracking workbooks publish atomically, and workbook identity-key replacement remains idempotent.
+- Real smoke recorded 22 inputs as 8 patient plus 14 QC entries with matching workbook rows; verification passed (`444 passed, 3 skipped`) plus focused recovery/transaction tests.
+
+## 2026-07-28 - Plan 13 Sizing Shadow
+
+- Added deterministic, non-promotable leave-one-anchor comparisons for linear, quadratic, monotone PCHIP, and Local Southern sizing; benchmark single-file scenarios now retain this evidence.
+- Initial real proxy split by assay: LIZ favored linear (~1.03 bp MAE), while ROX slightly favored Local Southern (~0.15 bp). Runtime sizing remains unchanged until independent reviewed fragment references and assay-window gates exist.
+
+## 2026-07-28 - Plan 13 Confidence, Artifact, And Baseline Shadows
+
+- Added read-only top-K local ladder ambiguity, threshold-perturbation, clipping/pull-up/morphology/tail, and arPLS/airPLS/rolling-quantile evidence to single-file benchmarks; every result is explicitly non-promotable.
+- Three-repeat real LIZ/ROX evidence is deterministic at `validation_outputs/plan13_phase2_shadow_repeat3/`; runtime anchors ranked first, but LIZ threshold support was unstable and baseline alternatives materially changed peak counts and quantitative signal.
+- Production analysis remains unchanged. Full verification passed (`452 passed, 3 skipped`); reviewed artifact/peak labels, independent sizing references, and assay-specific bias gates remain required.
+
+## 2026-07-27 - Manual Ladder Rerun Reliability And Improvement Roadmap
+
+- Fixed false-success ladder saves with atomic write/reload verification; saved manual mappings now remain usable when Rust returns no fit, including FLT3 Rust-only handling.
+- Added regression coverage for sidecar persistence, Rust-failure recovery, and preservation of cached QC entries during final report rebuild; also removed the stale About-tab import left by the prior notice-file cleanup.
+- Activated the gated roadmap at `plans/13_app_quality_speed_precision_roadmap.md` on branch `codex/plan-13-quality-speed-precision`; algorithm changes remain gated by reviewed real-FSA benchmarks.
 
 ## 2026-07-27 - Clonality Parallel Labeling Workflow
 

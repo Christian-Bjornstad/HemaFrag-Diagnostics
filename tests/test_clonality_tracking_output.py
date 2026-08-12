@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+from openpyxl import load_workbook
 
 from config import APP_SETTINGS
 from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
@@ -67,14 +69,93 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             self.assertIn("Control_Runs", sheets)
             self.assertIn("PK_Peaks", sheets)
             self.assertIn("Dashboard", sheets)
+            self.assertEqual(
+                sheets,
+                ["Dashboard", "Runs", "Patient_Runs", "Control_Runs", "PK_Peaks"],
+            )
 
             patients = pd.read_excel(workbook, sheet_name="Patient_Runs", engine="openpyxl")
             controls = pd.read_excel(workbook, sheet_name="Control_Runs", engine="openpyxl")
             peaks = pd.read_excel(workbook, sheet_name="PK_Peaks", engine="openpyxl")
+            runs = pd.read_excel(workbook, sheet_name="Runs", engine="openpyxl")
             self.assertEqual(len(patients), 1)
             self.assertEqual(len(controls), 1)
             self.assertEqual(controls.iloc[0]["Control"], "PK")
             self.assertEqual(len(peaks), 1)
+            self.assertIn("ManualAdjustmentUsed", runs.columns)
+            for removed in (
+                "SourceFsaSha256",
+                "ManualAdjustmentSha256",
+                "AnalysisVersion",
+                "LadderEngine",
+                "LadderReasonCodes",
+                "PullUpCandidate",
+                "SaturationCandidate",
+            ):
+                self.assertNotIn(removed, runs.columns)
+
+            wb = load_workbook(workbook, data_only=False)
+            formulas = [
+                cell.value
+                for sheet in wb.worksheets
+                for row in sheet.iter_rows()
+                for cell in row
+                if isinstance(cell.value, str) and cell.value.startswith("=")
+            ]
+            self.assertFalse(any("1048576" in formula for formula in formulas))
+            self.assertFalse(
+                any(
+                    f"${letter}:${letter}" in formula
+                    for formula in formulas
+                    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                )
+            )
+            dashboard = wb["Dashboard"]
+            self.assertEqual(dashboard["A16"].value, "Assay")
+            self.assertEqual(dashboard["A17"].value, "FR1")
+            self.assertEqual(dashboard["C5"].value, 0)
+            for sheet_name in ("Runs", "Patient_Runs", "Control_Runs", "PK_Peaks"):
+                sheet = wb[sheet_name]
+                self.assertEqual(
+                    sheet.freeze_panes,
+                    "F2" if sheet_name == "PK_Peaks" else "G2",
+                )
+                self.assertEqual(sheet.auto_filter.ref, sheet.dimensions)
+                identity_column = next(
+                    cell.column_letter
+                    for cell in sheet[1]
+                    if cell.value == "IdentityKey"
+                )
+                self.assertTrue(sheet.column_dimensions[identity_column].hidden)
+            wb.close()
+
+    def test_manual_adjustment_is_tracked_but_not_counted_as_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook = Path(tmp) / "Clonality_Tracking.xlsx"
+            manual = _entry(
+                "26OUM00001_FR1__220526_A01_H9TEST01.fsa",
+                dit="26OUM00001",
+            )
+            manual["ladder_qc_status"] = "manual_adjustment"
+            manual["ladder_fit_strategy"] = "manual_adjustment"
+            review = _entry(
+                "26OUM00002_FR1__220526_A02_H9TEST01.fsa",
+                dit="26OUM00002",
+            )
+            review["ladder_qc_status"] = "review_required"
+
+            update_clonality_tracking_workbook(workbook, [manual, review])
+
+            runs = pd.read_excel(workbook, sheet_name="Runs", engine="openpyxl")
+            manual_row = runs.loc[runs["LadderFitStrategy"].eq("manual_adjustment")].iloc[0]
+            self.assertTrue(bool(manual_row["ManualAdjustmentUsed"]))
+            wb = load_workbook(workbook, data_only=True)
+            dashboard = wb["Dashboard"]
+            self.assertEqual(dashboard["C5"].value, 1)
+            self.assertEqual(dashboard["D5"].value, 1)
+            self.assertEqual(dashboard["E17"].value, 1)
+            self.assertEqual(dashboard["F17"].value, 1)
+            wb.close()
 
     def test_tracking_workbook_writes_ml_columns_when_present(self) -> None:
         import math
@@ -168,6 +249,42 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             self.assertEqual(runs.iloc[0][CHEMIST_LABEL_COLUMN], "monoklonal")
             self.assertEqual(patients.iloc[0][CHEMIST_LABEL_COLUMN], "monoklonal")
 
+    def test_batch_refresh_preserves_independent_dual_channel_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook = Path(tmp) / "Clonality_Tracking.xlsx"
+            entry = _entry(
+                "26OUM00001_IGK__220526_A01_H9TEST01.fsa",
+                assay="IGK",
+                dit="26OUM00001",
+            )
+            update_clonality_tracking_workbook(workbook, [entry])
+
+            session = LabelingSession(excel_path=str(workbook))
+            session.load()
+            session.label_sample(0, "polyklonal", channel="DATA1")
+            session.label_sample(0, "monoklonal", channel="DATA2")
+            self.assertEqual(session.save_to_excel(), 2)
+
+            update_clonality_tracking_workbook(workbook, [entry])
+
+            runs = pd.read_excel(
+                workbook,
+                sheet_name="Runs",
+                engine="openpyxl",
+            )
+            self.assertEqual(
+                runs.iloc[0]["ClonalityChemistLabel_DATA1"],
+                "polyklonal",
+            )
+            self.assertEqual(
+                runs.iloc[0]["ClonalityChemistLabel_DATA2"],
+                "monoklonal",
+            )
+            self.assertTrue(
+                pd.isna(runs.iloc[0][CHEMIST_LABEL_COLUMN])
+                or runs.iloc[0][CHEMIST_LABEL_COLUMN] == ""
+            )
+
     def test_tracking_workbook_derives_missing_dit_case_insensitively(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workbook = Path(tmp) / "Clonality_Tracking.xlsx"
@@ -243,6 +360,13 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
                 )
 
             self.assertEqual(result["failed_jobs"], [])
+            manifest_path = Path(result["run_manifest_path"])
+            self.assertTrue(manifest_path.is_file())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["status"], "completed")
+            self.assertEqual(manifest["counts"]["expected_jobs"], 2)
+            self.assertEqual(manifest["counts"]["dit_entries"], 2)
+            self.assertEqual(manifest["counts"]["qc_entries"], 1)
             self.assertFalse(qc_kwargs["update_qc_trends"])
             self.assertFalse((output_root / "ASSAY_REPORTS").exists())
             self.assertFalse((output_root / "HemaFrag_QC_Trends.xlsx").exists())

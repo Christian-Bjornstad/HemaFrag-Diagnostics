@@ -33,6 +33,21 @@ Artifacts:
 - Native desktop bundle with `HemaFrag.exe`
 - Same packaged app behavior as macOS/Linux
 
+For the hospital/work-computer deployment where a new packaged executable is
+not allowed, run the source tree with the approved Python 3.14 environment and
+the installed `fraggler-kernels` wheel.  A Windows shortcut with the HemaFrag
+icon can be created without installing or distributing another executable:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\create_windows_shortcut.ps1 `
+  -PythonPath "C:\path\to\approved-python-3.14\python.exe"
+```
+
+The shortcut points to that existing Python interpreter, launches `qt_app.py`,
+uses the repository as its working directory, and uses `assets/app_icon.ico`.
+The app also sets a stable Windows AppUserModelID before Qt starts, so a source
+launch uses the HemaFrag taskbar identity instead of the generic Python group.
+
 ## Quick Start
 
 ### Build macOS
@@ -111,6 +126,18 @@ Recommended GitHub release assets:
 - `HemaFrag_Windows.zip`
 
 ## Troubleshooting
+
+### The old icon still appears on Windows
+
+1. Confirm the title bar and Alt-Tab entry show HemaFrag while the app is open.
+2. Unpin only the old HemaFrag/Python shortcut, close the app, then start it
+   from the newly generated shortcut and pin that running HemaFrag window.
+3. Confirm the shortcut's **Properties → Change Icon** path points to the
+   current `assets\app_icon.ico`.
+
+Windows can cache a pinned shortcut's old icon even when the running Qt window
+is correct.  Do not delete the global Windows icon cache or unrelated pinned
+items as a first troubleshooting step.
 
 ### Linux launch fails with missing library errors
 - Ensure the full zip was extracted, including `_internal`

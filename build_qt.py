@@ -13,18 +13,24 @@ from app_meta import APP_BUNDLE_ID, APP_VERSION
 # Monkey-patch dis._get_const_info to swallow known Python 3.10 bytecode IndexErrors
 _orig_get_const_info = getattr(dis, '_get_const_info', None)
 if _orig_get_const_info:
-    def _patched_get_const_info(arg, constants):
+    def _patched_get_const_info(*args, **kwargs):
         try:
-            return _orig_get_const_info(arg, constants)
+            return _orig_get_const_info(*args, **kwargs)
         except IndexError:
+            # Python 3.10/3.11 use ``(arg, constants)`` while newer
+            # interpreters include the opcode first.  In both forms the
+            # argument is immediately before the constants tuple.
+            arg = args[-2] if len(args) >= 2 else kwargs.get("arg")
             return arg, repr(arg)
     dis._get_const_info = _patched_get_const_info
 
 APP_NAME = "HemaFrag"
+BUNDLE_ID = APP_BUNDLE_ID
 PROJECT_ROOT = Path(__file__).resolve().parent
 DIST_DIR = PROJECT_ROOT / "dist"
 RELEASE_DIR = DIST_DIR / "releases"
 HOOK_DIR = PROJECT_ROOT / "packaging" / "hooks"
+SPEC_DIR = PROJECT_ROOT / "build" / "specs" / sys.platform
 LEGACY_LINUX_GUIDE = PROJECT_ROOT / "LINUX_GUIDE.md"
 
 COMMON_HIDDEN_IMPORTS = [
@@ -71,7 +77,10 @@ def _pyinstaller_sep() -> str:
 
 
 def _format_data_arg(src: str, dest: str) -> str:
-    return f"--add-data={src}{_pyinstaller_sep()}{dest}"
+    source = Path(src)
+    if not source.is_absolute():
+        source = PROJECT_ROOT / source
+    return f"--add-data={source}{_pyinstaller_sep()}{dest}"
 
 
 def _format_binary_arg(src: str, dest: str) -> str:
@@ -88,7 +97,7 @@ def _collect_linux_binaries() -> list[str]:
     return args
 
 
-def _build_pyinstaller_args() -> list[str]:
+def _build_pyinstaller_args(*, include_rust_engine: bool = True) -> list[str]:
     args = [
         "qt_app.py",
         f"--name={APP_NAME}",
@@ -97,7 +106,7 @@ def _build_pyinstaller_args() -> list[str]:
         "--windowed",
         f"--distpath={DIST_DIR}",
         f"--workpath={PROJECT_ROOT / 'build'}",
-        f"--specpath={PROJECT_ROOT}",
+        f"--specpath={SPEC_DIR}",
         f"--additional-hooks-dir={HOOK_DIR}",
         f"--runtime-hook={HOOK_DIR / 'runtime_desktop.py'}",
     ]
@@ -107,36 +116,38 @@ def _build_pyinstaller_args() -> list[str]:
     for mod in COMMON_HIDDEN_IMPORTS:
         args.append(f"--hidden-import={mod}")
 
-    # Add Rust engine binary
-    rust_bin_src = PROJECT_ROOT / "fraggler-v2" / "target" / "release" / "fraggler-cli"
-    if sys.platform == "win32":
-        rust_bin_src = rust_bin_src.with_suffix(".exe")
-    fallback_rust_bin = PROJECT_ROOT / "bin" / rust_bin_src.name
-    
-    if rust_bin_src.exists():
-        print(f"Bundling Rust engine: {rust_bin_src}")
-        # Binary destination: root of the bundle
-        args.append(_format_binary_arg(str(rust_bin_src), "."))
-    elif fallback_rust_bin.exists():
-        print(f"Bundling Rust engine fallback: {fallback_rust_bin}")
-        args.append(_format_binary_arg(str(fallback_rust_bin), "."))
-    else:
-        print(f"WARN: Rust engine binary not found at {rust_bin_src}. Building it now...")
-        subprocess.run(
-            ["cargo", "build", "--release", "-p", "fraggler-cli"],
-            cwd=PROJECT_ROOT / "fraggler-v2",
-            check=True
-        )
+    if include_rust_engine:
+        # Add Rust engine binary. Tests can inspect the static packaging
+        # contract without triggering a native build on machines without Rust.
+        rust_bin_src = PROJECT_ROOT / "fraggler-v2" / "target" / "release" / "fraggler-cli"
+        if sys.platform == "win32":
+            rust_bin_src = rust_bin_src.with_suffix(".exe")
+        fallback_rust_bin = PROJECT_ROOT / "bin" / rust_bin_src.name
+
         if rust_bin_src.exists():
-             args.append(_format_binary_arg(str(rust_bin_src), "."))
+            print(f"Bundling Rust engine: {rust_bin_src}")
+            # Binary destination: root of the bundle
+            args.append(_format_binary_arg(str(rust_bin_src), "."))
+        elif fallback_rust_bin.exists():
+            print(f"Bundling Rust engine fallback: {fallback_rust_bin}")
+            args.append(_format_binary_arg(str(fallback_rust_bin), "."))
         else:
-             print("ERROR: Failed to build Rust engine binary.")
+            print(f"WARN: Rust engine binary not found at {rust_bin_src}. Building it now...")
+            subprocess.run(
+                ["cargo", "build", "--release", "-p", "fraggler-cli"],
+                cwd=PROJECT_ROOT / "fraggler-v2",
+                check=True,
+            )
+            if rust_bin_src.exists():
+                args.append(_format_binary_arg(str(rust_bin_src), "."))
+            else:
+                print("ERROR: Failed to build Rust engine binary.")
 
     if sys.platform == "darwin":
-        args.append("--icon=assets/app_icon.icns")
-        args.append(f"--osx-bundle-identifier={APP_BUNDLE_ID}")
+        args.append(f"--icon={PROJECT_ROOT / 'assets' / 'app_icon.icns'}")
+        args.append(f"--osx-bundle-identifier={BUNDLE_ID}")
     elif sys.platform == "win32":
-        args.append("--icon=assets/app_icon.ico")
+        args.append(f"--icon={PROJECT_ROOT / 'assets' / 'app_icon.ico'}")
     elif sys.platform == "linux":
         args.extend(_collect_linux_binaries())
 
@@ -164,6 +175,7 @@ def _prepare_build_dirs() -> None:
         PROJECT_ROOT / "build" / APP_NAME,
     ]:
         _remove_path(path)
+    SPEC_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _zip_path(src: Path, zip_path: Path, root_name: str | None = None) -> Path:
@@ -254,6 +266,13 @@ def _post_build_linux() -> None:
     if LEGACY_LINUX_GUIDE.exists():
         shutil.copy2(LEGACY_LINUX_GUIDE, release_dir / "LINUX_GUIDE.md")
     _write_text(release_dir / "README.txt", _linux_readme_text())
+
+    desktop_source = PROJECT_ROOT / "packaging" / "linux" / "hemafrag.desktop"
+    if desktop_source.exists():
+        shutil.copy2(desktop_source, release_dir / "HemaFrag.desktop")
+    linux_icon_dir = release_dir / "share" / "icons" / "hicolor" / "256x256" / "apps"
+    linux_icon_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(PROJECT_ROOT / "assets" / "app_icon.png", linux_icon_dir / "hemafrag.png")
 
     launcher = release_dir / APP_NAME
     if launcher.exists():

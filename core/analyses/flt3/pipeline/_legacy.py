@@ -6,6 +6,7 @@ import os
 import __main__
 from pathlib import Path
 import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -33,9 +34,11 @@ from core.analysis import (
     compute_ladder_qc_metrics,
     estimate_running_baseline,
     get_ladder_candidates,
+    prepare_size_standard_trace,
 )
-from core.engine_flags import strict_rust_ladder_enabled
+from core.engine_flags import rust_owned_ladder_enabled
 from core.analyses.flt3.classification import classify_fsa
+from core.analyses.flt3.distance import calculate_entry_bp_distance_metrics
 from core.analyses.flt3.config import (
     ASSAY_CONFIG,
     BP_CORRECTION_OFFSETS,
@@ -332,6 +335,19 @@ def _scan_files(fsa_dir: Path, mode: str = "all") -> list[Path]:
 
 
 def _should_use_multiprocessing() -> bool:
+    # FLT3 is already parallelised across patient jobs by the batch runner.
+    # Spawning two additional process pools per patient is especially costly on
+    # Windows (fresh Python/Pandas/SciPy imports per child) and dwarfs the
+    # millisecond in-process Rust ladder fit.
+    if os.name == "nt":
+        return False
+    try:
+        from config import APP_SETTINGS
+
+        if APP_SETTINGS.get("engine", {}).get("use_rust", False):
+            return False
+    except Exception:
+        pass
     disabled = os.environ.get("FRAGGLER_DISABLE_MULTIPROCESSING", "").strip().lower()
     if disabled in {"1", "true", "yes", "on"}:
         return False
@@ -3624,7 +3640,7 @@ def _should_attempt_flt3_template_rescue(
 ) -> bool:
     del assay, analysis_type
 
-    if strict_rust_ladder_enabled():
+    if rust_owned_ladder_enabled():
         return False
 
     if _flt3_gs500rox_rust_only_ladder_mode():
@@ -3638,11 +3654,14 @@ def _should_attempt_flt3_template_rescue(
     }:
         return False
 
+    strategy = str(getattr(fsa, "ladder_fit_strategy", "") or "")
+    if strategy == "manual_adjustment":
+        return False
+
     if bool(getattr(fsa, "ladder_review_required", False)):
         return True
 
-    strategy = str(getattr(fsa, "ladder_fit_strategy", "") or "")
-    if strategy in {"manual_adjustment", "short_trace", "trace_bootstrap_review", "short_trace_partial"}:
+    if strategy in {"short_trace", "trace_bootstrap_review", "short_trace_partial"}:
         return True
 
     rust_reason_codes = {
@@ -3737,6 +3756,7 @@ def _attempt_lenient_rox_fit(
                 min_size_standard_height=cfg["min_h"],
                 size_standard_channel="DATA4",
             )
+            fsa = prepare_size_standard_trace(fsa)
             fsa = find_size_standard_peaks(fsa)
             ss_peaks = getattr(fsa, "size_standard_peaks", None)
             ss_peak_count = 0 if ss_peaks is None else int(getattr(ss_peaks, "shape", [0])[0])
@@ -3891,6 +3911,9 @@ def _analyse_fsa_candidate(
         )
         if fsa is not None:
             fsa.analysis_id = "flt3"
+            if str(getattr(fsa, "analysis_status", "") or "") == "ladder_review_only":
+                setattr(fsa, "_flt3_sizing_method", "rust_rejected_review")
+                return fsa
             setattr(fsa, "_flt3_sizing_method", "rust_liz500_250")
             setattr(
                 fsa,
@@ -3906,6 +3929,10 @@ def _analyse_fsa_candidate(
         ladder_fit_profile=LADDER_FIT_PROFILE_FLT3_GS500ROX,
     )
     if fsa is not None:
+        if str(getattr(fsa, "analysis_status", "") or "") == "ladder_review_only":
+            fsa.analysis_id = "flt3"
+            setattr(fsa, "_flt3_sizing_method", "rust_rejected_review")
+            return fsa
         short_trace_missing_steps, trace_last_index = _flt3_short_trace_missing_steps(
             fsa,
             assay,
@@ -3934,7 +3961,7 @@ def _analyse_fsa_candidate(
             setattr(fsa, "_flt3_template_rescue_skipped", True)
         setattr(fsa, "_flt3_sizing_method", _infer_sizing_method(fsa))
         return fsa
-    if strict_rust_ladder_enabled():
+    if rust_owned_ladder_enabled():
         return None
     if _flt3_gs500rox_rust_only_ladder_mode():
         return None
@@ -5578,6 +5605,123 @@ def _apply_gs500rox_start_family_prior_if_review_band(fsa: FsaFile) -> FsaFile:
     return remapped
 
 
+def _build_ladder_review_only_entry(fsa_path: Path, meta: dict, fsa: FsaFile) -> dict:
+    """Retain a rejected FLT3 ladder without producing a mutation result."""
+    size_standard_mode = flt3_size_standard_mode()
+    expected_steps = list(
+        map(float, np.asarray(getattr(fsa, "expected_ladder_steps", []), dtype=float))
+    )
+    peak_columns = [
+        "peak_id",
+        "basepairs",
+        "peaks",
+        "area",
+        "label",
+        "keep",
+        "source_channel",
+    ]
+    peaks = pd.DataFrame(columns=peak_columns)
+    trace_channels = list(meta.get("trace_channels") or [meta["primary_peak_channel"]])
+    raw_ymax = 1000.0
+    for channel in trace_channels:
+        try:
+            trace = np.asarray(fsa.fsa[channel], dtype=float)
+            if trace.size and np.any(np.isfinite(trace)):
+                raw_ymax = max(raw_ymax, float(np.nanmax(trace)) * 1.1)
+        except Exception:
+            continue
+
+    entry = {
+        "analysis": "flt3",
+        "analysis_status": "ladder_review_only",
+        "result_status": "ladder_review_required",
+        "fsa": fsa,
+        "file_name": fsa.file_name,
+        "original_file_path": str(Path(getattr(fsa, "file", fsa_path) or fsa_path).resolve()),
+        "peaks_by_channel": {meta["primary_peak_channel"]: peaks},
+        "trace_channels": trace_channels,
+        "primary_peak_channel": meta["primary_peak_channel"],
+        "ymax": raw_ymax,
+        "assay": meta["assay"],
+        "analysis_type": meta.get("analysis_type"),
+        "parallel": meta.get("parallel"),
+        "well_id": meta.get("well_id"),
+        "specimen_id": meta.get("specimen_id"),
+        "selection_key": meta.get("selection_key"),
+        "group": meta.get("group", "sample"),
+        "ladder": str(getattr(fsa, "ladder", "") or size_standard_mode["internal_ladder"]),
+        "size_standard": str(size_standard_mode["size_standard"]),
+        "internal_ladder": str(size_standard_mode["internal_ladder"]),
+        "size_standard_channel": str(
+            getattr(fsa, "rust_size_standard_channel", None)
+            or getattr(fsa, "size_standard_channel", None)
+            or size_standard_mode["size_standard_channel"]
+        ),
+        "bp_min": meta["bp_min"],
+        "bp_max": meta["bp_max"],
+        "dit": extract_dit_from_name(fsa.file_name),
+        "ladder_qc_status": "review_required",
+        "ladder_r2": np.nan,
+        "n_ladder_steps": 0,
+        "n_size_standard_peaks": 0,
+        "ladder_fit_strategy": "rust_rejected_review",
+        "ladder_search_tier": str(getattr(fsa, "rust_ladder_fit_tier", "") or ""),
+        "ladder_missing_expected_steps": expected_steps,
+        "ladder_fit_note": str(getattr(fsa, "ladder_fit_note", "") or ""),
+        "ladder_review_required": True,
+        "ladder_review_reason": str(getattr(fsa, "rust_review_primary_reason", "") or ""),
+        "ladder_review_reason_codes": list(getattr(fsa, "rust_review_reason_codes", []) or []),
+        "ladder_review_summary": str(getattr(fsa, "rust_review_summary", "") or ""),
+        "ladder_selected_baseline_like_anchor_count": int(
+            getattr(fsa, "rust_selected_baseline_like_anchor_count", 0) or 0
+        ),
+        "ladder_selected_cleaner_neighbor_count": int(
+            getattr(fsa, "rust_selected_cleaner_neighbor_count", 0) or 0
+        ),
+        "ladder_selected_strong_baseline_anchor_count": int(
+            getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0) or 0
+        ),
+        "ladder_expected_step_count": len(expected_steps),
+        "ladder_fitted_step_count": 0,
+        "injection_time": int(meta.get("injection_time", 0) or 0),
+        "selected_injection": f"{int(meta.get('injection_time', 0) or 0)}s",
+        "selected_injection_time": int(meta.get("injection_time", 0) or 0),
+        "preferred_injection_time": _preferred_injection_time(meta),
+        "protocol_injection_time": meta.get("protocol_injection_time", meta.get("injection_time", 0)),
+        "source_run_dir": meta.get("source_run_dir", ""),
+        "run_name": meta.get("run_name", ""),
+        "run_date": meta.get("run_date", ""),
+        "run_time": meta.get("run_time", ""),
+        "injection_protocol": meta.get("injection_protocol", ""),
+        "selection_reason": "Automatic ladder rejected; manual ladder review required",
+        "alternate_injections": [],
+        "alternate_injections_summary": "",
+        "sizing_method": "rust_rejected_review",
+        "manual_ratio_selection": _default_manual_ratio_selection(),
+        "ratio_mode": "not_available_ladder_review",
+        "manual_ratio_selection_valid": False,
+        "manual_ratio_selection_reason": "Ladder review required before peak selection",
+        "selected_wt_peak_id": None,
+        "selected_wt_peak_ids": [],
+        "selected_mutant_peak_ids": [],
+        "selected_wt_bp": np.nan,
+        "selected_wt_bps": [],
+        "selected_mutant_bps": [],
+        "selected_wt_area": 0.0,
+        "selected_wt_areas": [],
+        "selected_mutant_area": 0.0,
+        "selected_mutant_areas": [],
+        "selected_wt_channel": None,
+        "selected_wt_channels": [],
+        "selected_mutant_channels": [],
+        "peak_qc_pass": False,
+        "peak_qc_status": "ladder_review_required",
+    }
+    from core.analysis_provenance import attach_analysis_provenance
+
+    return attach_analysis_provenance(entry)
+
+
 def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
     size_standard_mode = flt3_size_standard_mode()
     ladder_only_qc = _flt3_ladder_only_qc_mode()
@@ -5589,6 +5733,13 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
     )
     if fsa is None:
         return None
+
+    if str(getattr(fsa, "analysis_status", "") or "") == "ladder_review_only":
+        print_warning(
+            f"[LADDER_REVIEW] Keeping {fsa_path.name} for Ladder Editor; "
+            "FLT3/NPM1 peaks were not interpreted."
+        )
+        return _build_ladder_review_only_entry(fsa_path, meta, fsa)
 
     _apply_bp_offset(fsa, meta["assay"])
     peak_channels = meta.get("peak_channels", [meta["primary_peak_channel"]])
@@ -5870,7 +6021,7 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
     else:
         peak_qc_pass, peak_qc_reason = _peak_qc_status(peaks, meta.get("group", "sample"))
 
-    return {
+    entry = {
         "fsa": fsa,
         "peaks_by_channel": {meta["primary_peak_channel"]: peaks},
         "trace_channels": meta["trace_channels"],
@@ -5899,12 +6050,22 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         "n_ladder_steps": metrics.get("n_ladder_steps"),
         "n_size_standard_peaks": metrics.get("n_size_standard_peaks"),
         "ladder_fit_strategy": ladder_fit_strategy,
+        "ladder_search_tier": str(getattr(fsa, "rust_ladder_fit_tier", "") or ""),
         "ladder_missing_expected_steps": ladder_missing_expected_steps,
         "ladder_fit_note": ladder_fit_note,
         "ladder_review_required": ladder_review_required,
         "ladder_review_reason": ladder_review_reason,
         "ladder_review_reason_codes": ladder_review_reason_codes,
         "ladder_review_summary": ladder_review_summary,
+        "ladder_selected_baseline_like_anchor_count": int(
+            getattr(fsa, "rust_selected_baseline_like_anchor_count", 0) or 0
+        ),
+        "ladder_selected_cleaner_neighbor_count": int(
+            getattr(fsa, "rust_selected_cleaner_neighbor_count", 0) or 0
+        ),
+        "ladder_selected_strong_baseline_anchor_count": int(
+            getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0) or 0
+        ),
         "gs500rox_start_prior_mode": (
             str(gs500rox_start_prior_proposal.get("mode", ""))
             if isinstance(gs500rox_start_prior_proposal, dict)
@@ -5998,6 +6159,9 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         "peak_qc_pass": peak_qc_pass,
         "peak_qc_status": peak_qc_reason,
     }
+    from core.analysis_provenance import attach_analysis_provenance
+
+    return attach_analysis_provenance(entry)
 
 
 def _candidate_audit_record(path: Path, meta: dict, status: str, reason: str) -> dict:
@@ -6146,6 +6310,16 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
 def _calculate_ratios(entries: list[dict]) -> None:
     """Calculate FLT3 mutant ratios and store explicit numerator/denominator fields."""
     for entry in entries:
+        if entry.get("analysis_status") == "ladder_review_only":
+            entry["ratio_mode"] = "not_available_ladder_review"
+            entry["manual_ratio_selection_valid"] = False
+            entry["manual_ratio_selection_reason"] = "Ladder review required before peak selection"
+            entry["ratio_numerator_area"] = 0.0
+            entry["ratio_denominator_area"] = 0.0
+            entry["ratio"] = 0.0
+            entry["mutant_fraction"] = 0.0
+            entry["wt_mutant_bp_metrics"] = []
+            continue
         resolved = _resolve_flt3_ratio_selection(entry)
         entry["manual_ratio_selection"] = resolved.get("manual_ratio_selection", _default_manual_ratio_selection())
         entry["ratio_mode"] = resolved.get("ratio_mode", "auto")
@@ -6168,6 +6342,7 @@ def _calculate_ratios(entries: list[dict]) -> None:
         entry["ratio_denominator_area"] = float(resolved.get("ratio_denominator_area", 0.0))
         entry["ratio"] = float(resolved.get("ratio", 0.0))
         entry["mutant_fraction"] = float(resolved.get("mutant_fraction", 0.0))
+        entry["wt_mutant_bp_metrics"] = calculate_entry_bp_distance_metrics(entry)
 
 
 def _summarize_peak_areas(entry: dict) -> tuple[float, float]:
@@ -6228,6 +6403,17 @@ def _summarize_detected_peaks(entry: dict) -> dict:
         mut_main_bp = mut_bps[mut_main_idx]
         mut_main_area = float(mut_areas[mut_main_idx])
 
+    bp_metrics = calculate_entry_bp_distance_metrics(
+        {
+            **entry,
+            "selected_wt_bp": wt_bp,
+            "selected_wt_bps": resolved.get("selected_wt_bps", []),
+            "selected_mutant_bps": mut_bps,
+            "selected_wt_channels": resolved.get("selected_wt_channels", []),
+            "selected_mutant_channels": mut_channels,
+        }
+    )
+
     return {
         "ratio_mode": resolved.get("ratio_mode", "auto"),
         "manual_ratio_selection_valid": bool(resolved.get("manual_ratio_selection_valid", False)),
@@ -6247,10 +6433,13 @@ def _summarize_detected_peaks(entry: dict) -> dict:
         "mut_area_total": float(sum(mut_areas)),
         "mut_main_bp": mut_main_bp,
         "mut_main_area": mut_main_area,
+        "bp_distance_metrics": bp_metrics,
     }
 
 
 def _interpret_entry(entry: dict) -> str:
+    if entry.get("analysis_status") == "ladder_review_only":
+        return "Ingen resultat - ladder review kreves"
     assay = entry["assay"]
     ratio = float(entry.get("ratio", 0.0))
     peak_summary = _summarize_detected_peaks(entry)
@@ -6312,6 +6501,18 @@ def generate_flt3_peak_report(entries: list[dict], outdir: Path) -> None:
                 "WT_bp": round(float(peak_summary["wt_bp"]), 2) if not np.isnan(peak_summary["wt_bp"]) else "",
                 "WT_Area": round(peak_summary["wt_area"], 2),
                 "Mutant_bp": ", ".join(f"{bp:.2f}" for bp in peak_summary["mut_bps"]),
+                "WT_Mutant_Delta_bp": ", ".join(
+                    f"{float(metric['delta_bp']):.2f}" for metric in peak_summary["bp_distance_metrics"]
+                ),
+                "Rounded_Delta_bp": ", ".join(
+                    str(int(metric["rounded_delta_bp"])) for metric in peak_summary["bp_distance_metrics"]
+                ),
+                "Codon_Distance": ", ".join(
+                    f"{float(metric['codon_distance']):.2f}" for metric in peak_summary["bp_distance_metrics"]
+                ),
+                "Divisible_By_3": ", ".join(
+                    "yes" if metric["divisible_by_3"] else "no" for metric in peak_summary["bp_distance_metrics"]
+                ),
                 "Mutant_Area": ", ".join(f"{area:.2f}" for area in peak_summary["mut_areas"]),
                 "Mutant_Area_Total": round(peak_summary["mut_area_total"], 2),
                 "RatioNumeratorArea": round(float(entry.get("ratio_numerator_area", 0.0)), 2),
@@ -6562,11 +6763,14 @@ def _tracker_control_marker_row(entry: dict, marker_spec: dict, peak_summary: di
         "SourceRunDir": base_row["SourceRunDir"],
         "DIT": base_row["DIT"],
         "Assay": base_row["Assay"],
+        "AnalysisType": base_row["AnalysisType"],
+        "SpecimenID": base_row["SpecimenID"],
         "Control": base_row["Control"],
         "RunDate": base_row["RunDate"],
         "RunCode": base_row["RunCode"],
         "Well": base_row["Well"],
         "Batch": base_row["Batch"],
+        "InjectionTimeSeconds": base_row["InjectionTimeSeconds"],
         "MarkerName": marker_spec["name"],
         "Kind": "sample",
         "Channel": entry.get("primary_peak_channel") if marker_spec.get("channel") == "primary" else marker_spec.get("channel", ""),
@@ -6584,22 +6788,75 @@ def _tracker_control_marker_row(entry: dict, marker_spec: dict, peak_summary: di
     }
 
 
+def _finite_float_or_nan(value) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return number if np.isfinite(number) else np.nan
+
+
 def _tracker_run_row(entry: dict, base_row: dict, peak_summary: dict, interpretation: str) -> dict:
     row = dict(base_row)
     wt_bp = peak_summary.get("wt_bp", np.nan)
     wt_area = peak_summary.get("wt_area", np.nan)
     mut_bp = peak_summary.get("mut_main_bp", np.nan)
     mut_area = peak_summary.get("mut_main_area", np.nan)
-    ratio = float(entry.get("ratio", np.nan))
+    ratio = _finite_float_or_nan(entry.get("ratio"))
+    numerator = _finite_float_or_nan(
+        entry.get("ratio_numerator_area", peak_summary.get("mut_area_total"))
+    )
+    denominator = _finite_float_or_nan(
+        entry.get("ratio_denominator_area", wt_area)
+    )
+    mutant_fraction = _finite_float_or_nan(entry.get("mutant_fraction"))
+    peak_qc = str(entry.get("peak_qc_status") or "")
+    peak_qc_pass = entry.get("peak_qc_pass")
+    if peak_qc_pass is None:
+        peak_qc_pass = peak_qc.strip().lower() in {
+            "ok",
+            "negative_control",
+            "not_evaluated_ladder_only",
+        }
+    ratio_mode = str(peak_summary.get("ratio_mode") or "")
+    if ratio_mode == "manual_required":
+        result_status = "manual_ratio_required"
+    elif not bool(peak_qc_pass):
+        result_status = "qc_review"
+    else:
+        result_status = "complete"
     row.update(
         {
-            "PeakQC": str(entry.get("peak_qc_status") or ""),
-            "RatioMode": str(peak_summary.get("ratio_mode") or ""),
+            "PeakQCPass": bool(peak_qc_pass),
+            "PeakQC": peak_qc,
+            "RatioMode": ratio_mode,
+            "ManualSelectionValid": bool(
+                peak_summary.get("manual_ratio_selection_valid", False)
+            ),
+            "ManualSelectionReason": str(
+                peak_summary.get("manual_ratio_selection_reason") or ""
+            ),
             "WT_BP": round(float(wt_bp), 2) if np.isfinite(wt_bp) else "",
             "WT_Area": round(float(wt_area), 2) if np.isfinite(wt_area) and float(wt_area) > 0 else "",
+            "MutantBPs": ", ".join(
+                f"{float(value):.2f}"
+                for value in peak_summary.get("mut_bps", [])
+                if np.isfinite(value)
+            ),
+            "MutantAreas": ", ".join(
+                f"{float(value):.2f}"
+                for value in peak_summary.get("mut_areas", [])
+                if np.isfinite(value)
+            ),
+            "MutantAreaTotal": round(float(peak_summary.get("mut_area_total", 0.0)), 2),
             "MutantMain_BP": round(float(mut_bp), 2) if np.isfinite(mut_bp) else "",
             "MutantMain_Area": round(float(mut_area), 2) if np.isfinite(mut_area) and float(mut_area) > 0 else "",
+            "RatioNumeratorArea": round(numerator, 2) if np.isfinite(numerator) else "",
+            "RatioDenominatorArea": round(denominator, 2) if np.isfinite(denominator) else "",
             "Ratio": round(ratio, 4) if np.isfinite(ratio) else "",
+            "MutantFraction": round(mutant_fraction, 4) if np.isfinite(mutant_fraction) else "",
+            "PositiveCall": interpretation.startswith("Positiv "),
+            "ResultStatus": result_status,
             "Interpretation": interpretation,
         }
     )
@@ -6649,11 +6906,14 @@ def _tracker_ladder_marker_row(entry: dict, marker_spec: dict, base_row: dict) -
         "SourceRunDir": base_row["SourceRunDir"],
         "DIT": base_row["DIT"],
         "Assay": base_row["Assay"],
+        "AnalysisType": base_row["AnalysisType"],
+        "SpecimenID": base_row["SpecimenID"],
         "Control": base_row["Control"],
         "RunDate": base_row["RunDate"],
         "RunCode": base_row["RunCode"],
         "Well": base_row["Well"],
         "Batch": base_row["Batch"],
+        "InjectionTimeSeconds": base_row["InjectionTimeSeconds"],
         "MarkerName": marker_spec["name"],
         "Kind": "ladder",
         "Channel": marker_spec.get("channel", ""),
@@ -6690,14 +6950,22 @@ def _build_flt3_npm1_tracker_frames(entries: list[dict]) -> tuple[pd.DataFrame, 
             continue
 
         control_code = control_code_for_entry(entry)
-        if control_code not in {"RK", "PK"}:
+        if control_code != "PK" or str(entry.get("assay") or "") != "FLT3-D835":
             continue
 
         for marker_spec in marker_specs_for_entry(entry):
-            if marker_spec.get("kind") == "sample":
-                peak_rows.append(_tracker_control_marker_row(entry, marker_spec, peak_summary, base_row))
-            else:
-                peak_rows.append(_tracker_ladder_marker_row(entry, marker_spec, base_row))
+            if (
+                marker_spec.get("kind") == "sample"
+                and str(marker_spec.get("peak_label") or "").upper() == "MUT"
+            ):
+                peak_rows.append(
+                    _tracker_control_marker_row(
+                        entry,
+                        marker_spec,
+                        peak_summary,
+                        base_row,
+                    )
+                )
 
     return (
         pd.DataFrame(run_rows, columns=RUN_SHEET_COLUMNS),
@@ -6829,21 +7097,41 @@ def run_pipeline(
     """
     Kjor FLT3-pipeline pa alle .fsa-filer i fsa_dir.
     """
+    pipeline_started = time.perf_counter()
     fsa_dir, assay_dir = normalize_pipeline_paths(fsa_dir, base_outdir, assay_folder_name)
 
+    scan_started = time.perf_counter()
     raw_files = _scan_files(fsa_dir, mode=mode)
+    scan_seconds = time.perf_counter() - scan_started
 
+    classification_started = time.perf_counter()
     if _should_use_multiprocessing() and len(raw_files) >= 2:
         from multiprocessing import Pool, cpu_count
-        n_workers = max(1, cpu_count() - 1)
+        from core.concurrency import (
+            initialize_worker_concurrency,
+            resolve_concurrency_plan,
+        )
+
+        concurrency_plan = resolve_concurrency_plan(
+            requested_outer_workers=max(1, cpu_count() - 1),
+            task_count=len(raw_files),
+        )
         try:
-            with Pool(n_workers) as pool:
+            with Pool(
+                concurrency_plan.outer_workers,
+                initializer=initialize_worker_concurrency,
+                initargs=(
+                    concurrency_plan.rust_threads_per_worker,
+                    concurrency_plan.numeric_threads_per_worker,
+                ),
+            ) as pool:
                 meta_results = pool.map(classify_fsa, raw_files)
         except Exception:
             meta_results = [classify_fsa(p) for p in raw_files]
     else:
         meta_results = [classify_fsa(p) for p in raw_files]
     classified = [(p, m) for p, m in zip(raw_files, meta_results) if m is not None]
+    classification_seconds = time.perf_counter() - classification_started
 
     if not classified:
         return [] if return_entries else None
@@ -6855,17 +7143,34 @@ def run_pipeline(
     sorted_groups = sorted(groups.items())
     candidates_list = [c for _, c in sorted_groups]
 
+    selection_started = time.perf_counter()
     if _should_use_multiprocessing() and len(candidates_list) >= 2:
         from multiprocessing import Pool, cpu_count
-        n_workers = max(1, cpu_count() - 1)
+        from core.concurrency import (
+            initialize_worker_concurrency,
+            resolve_concurrency_plan,
+        )
+
+        concurrency_plan = resolve_concurrency_plan(
+            requested_outer_workers=max(1, cpu_count() - 1),
+            task_count=len(candidates_list),
+        )
         try:
-            with Pool(n_workers) as pool:
+            with Pool(
+                concurrency_plan.outer_workers,
+                initializer=initialize_worker_concurrency,
+                initargs=(
+                    concurrency_plan.rust_threads_per_worker,
+                    concurrency_plan.numeric_threads_per_worker,
+                ),
+            ) as pool:
                 results = pool.map(_select_best_entry, candidates_list)
         except Exception as ex:
             print_warning(f"[PARALLEL] Multiprocessing failed during FLT3 selection ({ex}), falling back to sequential.")
             results = [_select_best_entry(c) for c in candidates_list]
     else:
         results = [_select_best_entry(c) for c in candidates_list]
+    selection_seconds = time.perf_counter() - selection_started
 
     entries = []
     for i, entry in enumerate(results):
@@ -6880,25 +7185,54 @@ def run_pipeline(
     if not entries:
         return [] if return_entries else None
 
+    if any(entry.get("ladder_review_required") for entry in entries):
+        from core.analyses.clonality.ladder_review_gate import write_ladder_review_gate
+
+        review_bundle = write_ladder_review_gate(
+            entries,
+            assay_dir / "ladder_review_gate",
+            source="flt3_pipeline",
+        )
+        print_warning(
+            f"[LADDER_REVIEW] {review_bundle['review_case_count']} file(s) written to "
+            f"{review_bundle['cases_path']} for Ladder Editor."
+        )
+
+    output_started = time.perf_counter()
     _calculate_ratios(entries)
     generate_flt3_peak_report(entries, assay_dir)
     generate_flt3_bp_validation_report(entries, assay_dir)
+    output_seconds = time.perf_counter() - output_started
     resolved_tracking_excel_path = tracking_excel_path or resolve_analysis_excel_output_path(
         "flt3",
         assay_dir,
         FLT3_QC_TRENDS_FILENAME,
     )
+    tracking_started = time.perf_counter()
     if update_tracking_workbook:
         update_flt3_npm1_qc_tracker_workbook(
             resolved_tracking_excel_path,
             entries,
         )
         update_global_flt3_tracking_workbook(entries)
+    tracking_seconds = time.perf_counter() - tracking_started
 
-    return finalize_pipeline_run(
+    report_started = time.perf_counter()
+    result = finalize_pipeline_run(
         entries,
         assay_dir,
         return_entries=return_entries,
         make_dit_reports=make_dit_reports,
         mode=mode,
     )
+    report_seconds = time.perf_counter() - report_started
+    total_seconds = time.perf_counter() - pipeline_started
+    print_green(
+        "[FLT3 PERF] "
+        f"files={len(raw_files)} groups={len(candidates_list)} entries={len(entries)} "
+        f"scan={scan_seconds:.2f}s classify={classification_seconds:.2f}s "
+        f"selection={selection_seconds:.2f}s outputs={output_seconds:.2f}s "
+        f"tracking={tracking_seconds:.2f}s html={report_seconds:.2f}s "
+        f"total={total_seconds:.2f}s"
+    )
+    return result

@@ -1,8 +1,11 @@
 """Local Fraggler runtime derived and heavily modified from upstream `willros/fraggler` (MIT)."""
+from __future__ import annotations
 
+import importlib
 import sys
 import os
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 _mpl_cache_root = Path(tempfile.gettempdir()) / "fraggler-mpl-cache"
@@ -54,43 +57,51 @@ def print_blue(text, prefix="[SUMMARIZE]"):
     print(f"{bcolors.OKBLUE}{prefix}: {text}{bcolors.ENDC}")
 
 import numpy as np
-import matplotlib
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import SplineTransformer
-from sklearn.metrics import mean_squared_error, r2_score
-from scipy.interpolate import UnivariateSpline
-from scipy import sparse
-from scipy.sparse import linalg
 from numpy.linalg import norm
-from Bio import SeqIO
-from scipy import signal
-import matplotlib.pyplot as plt
-import pandas as pd
-import altair as alt
-from lmfit.models import VoigtModel, GaussianModel, LorentzianModel
 import re
 from datetime import datetime
 import argparse
-import warnings
 import platform
-import panel as pn
-import pandas_flavor as pf
 from typing import Optional
 
 
-warnings.filterwarnings("ignore")
-# for windows user
+class _LazyModule:
+    """Import an analysis/report dependency only when its API is first used."""
+
+    def __init__(self, module_name: str):
+        self._module_name = module_name
+        self._module = None
+
+    def _load(self):
+        if self._module is None:
+            self._module = importlib.import_module(self._module_name)
+        return self._module
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+
+# These packages are substantial and are not needed to draw the main Qt
+# window.  Lazy loading cuts source-startup latency while preserving the
+# public functions in this compatibility module.
+pd = _LazyModule("pandas")
+alt = _LazyModule("altair")
+plt = _LazyModule("matplotlib.pyplot")
+pn = _LazyModule("panel")
+sparse = _LazyModule("scipy.sparse")
+linalg = _LazyModule("scipy.sparse.linalg")
+signal = _LazyModule("scipy.signal")
+
+
+# Select the non-interactive backend before pyplot is imported.
 if platform.system() == "Windows":
-    matplotlib.use("agg")
+    os.environ.setdefault("MPLBACKEND", "Agg")
 
 
 from .ladders import LADDERS
 
 
 ### UTILITY FUNCTIONS ###
-@pf.register_dataframe_method
 def pivot_wider(
     df_: pd.DataFrame, index: list, names_from: list, values_from: list
 ) -> pd.DataFrame:
@@ -123,6 +134,20 @@ def pivot_wider(
     return df
 
 
+@lru_cache(maxsize=32)
+def _arpls_penalty_matrix(length: int, lam: float):
+    """Build the immutable CSC penalty matrix reused by equal-length traces."""
+    diag = np.ones(length - 2)
+    difference = sparse.spdiags(
+        [diag, -2 * diag, diag],
+        [0, -1, -2],
+        length,
+        length - 2,
+        format="csc",
+    )
+    return (float(lam) * difference.dot(difference.T)).tocsc()
+
+
 def baseline_arPLS(y, ratio=0.99, lam=100, niter=1000, full_output=False):
     """
     Taken from:
@@ -131,28 +156,49 @@ def baseline_arPLS(y, ratio=0.99, lam=100, niter=1000, full_output=False):
     from this paper:
     https://pubs.rsc.org/en/content/articlelanding/2015/AN/C4AN01061B#!divAbstract
     """
-    L = len(y)
+    values = np.asarray(y, dtype=float).reshape(-1)
+    L = values.size
+    if L == 0:
+        result = values.copy()
+        return (result, result.copy(), {"num_iter": 0, "stop_criterion": 0.0}) if full_output else result
+    if L < 3:
+        result = values.copy()
+        return (result, np.zeros_like(result), {"num_iter": 0, "stop_criterion": 0.0}) if full_output else result
 
-    diag = np.ones(L - 2)
-    D = sparse.spdiags([diag, -2 * diag, diag], [0, -1, -2], L, L - 2)
+    finite = np.isfinite(values)
+    if not np.any(finite):
+        result = np.zeros_like(values)
+        return (result, result.copy(), {"num_iter": 0, "stop_criterion": 0.0}) if full_output else result
+    if not np.all(finite):
+        indices = np.arange(L, dtype=float)
+        values = np.interp(indices, indices[finite], values[finite])
 
-    H = lam * D.dot(D.T)  # The transposes are flipped w.r.t the Algorithm on pg. 252
+    H = _arpls_penalty_matrix(L, float(lam))
 
     w = np.ones(L)
-    W = sparse.spdiags(w, 0, L, L)
+    W = sparse.spdiags(w, 0, L, L, format="csc")
 
     crit = 1
     count = 0
 
     while crit > ratio:
-        z = linalg.spsolve(W + H, W * y)
-        d = y - z
+        z = linalg.spsolve(W + H, w * values)
+        d = values - z
         dn = d[d < 0]
+
+        if dn.size == 0:
+            crit = 0.0
+            break
 
         m = np.mean(dn)
         s = np.std(dn)
 
-        w_new = 1 / (1 + np.exp(2 * (d - (2 * s - m)) / s))
+        if not np.isfinite(s) or s <= np.finfo(float).eps:
+            crit = 0.0
+            break
+
+        exponent = np.clip(2 * (d - (2 * s - m)) / s, -700.0, 700.0)
+        w_new = 1 / (1 + np.exp(exponent))
 
         crit = norm(w_new - w) / norm(w)
 
@@ -234,6 +280,7 @@ class FsaFile:
         min_size_standard_height: int,
         normalize: bool = False,
         size_standard_channel: Optional[str] = None,
+        artifact=None,
     ) -> None:
         """
         A class to represent and process fragment size analysis (FSA) files.
@@ -318,7 +365,12 @@ class FsaFile:
                 self.size_standard_channel = None
             # ----------------------------------------------------
 
-        self.fsa = SeqIO.read(file, "abi").annotations["abif_raw"]
+        if artifact is None:
+            from core.fsa_artifact import load_fsa_artifact
+
+            artifact = load_fsa_artifact(self.file)
+        self.fsa_artifact = artifact
+        self.fsa = artifact.abif_raw
         self.sample_channel = sample_channel
         self.normalize = normalize
 
@@ -374,6 +426,9 @@ class FsaFile:
         self,
         degree=2,
     ):
+        from sklearn.linear_model import LinearRegression
+        from sklearn.metrics import r2_score
+        from sklearn.preprocessing import PolynomialFeatures
 
         data_channels = [x for x in self.fsa.items() if "DATA" in x[0]]
         best_r2 = 0
@@ -577,6 +632,8 @@ def calculate_best_combination_of_size_standard_peaks(fsa):
         the best combination of size standard peaks.
     """
 
+    from scipy.interpolate import UnivariateSpline
+
     combinations = fsa.best_size_standard_combinations
 
     best_combinations = (
@@ -617,6 +674,10 @@ def fit_size_standard_to_ladder(fsa):
         - `sample_data_with_basepairs`: DataFrame with sample data and fitted base pairs.
         - `fitted_to_model`: Boolean indicating if the fitting was successful.
     """
+
+    from sklearn.linear_model import LinearRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import SplineTransformer
 
     best_combination = fsa.best_size_standard
     n_knots = 3
@@ -803,6 +864,8 @@ def plot_size_standard_peaks(fsa):
 
 
 def plot_model_fit(fsa):
+    from sklearn.metrics import mean_squared_error, r2_score
+
     ladder_size = fsa.ladder_steps
     best_combination = fsa.best_size_standard
 
@@ -1196,6 +1259,8 @@ def fit_lmfit_model_to_area(fsa, peak_finding_model: str):
       and the fit report.
     - The R-squared value of the fit is extracted from the fit report for each peak.
     """
+    from lmfit.models import GaussianModel, LorentzianModel, VoigtModel
+
     if peak_finding_model == "gauss":
         model = GaussianModel()
     elif peak_finding_model == "voigt":
@@ -1279,7 +1344,8 @@ def calculate_quotients(fsa):
             .drop_duplicates()
         )
 
-        wide = df.pivot_wider(
+        wide = pivot_wider(
+            df,
             index=["assay", "basepairs"],
             names_from=["peak_name"],
             values_from=["amplitude"],

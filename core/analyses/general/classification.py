@@ -21,6 +21,8 @@ def classify_fsa(fsa_path: Path) -> dict | None:
         "assay": GENERAL_ASSAY_NAME,
         "group": "sample",
         "ladder": runtime["ladder"],
+        "general_profile": runtime,
+        "size_standard_channel": runtime["size_standard_channel"],
         "trace_channels": runtime["trace_channels"],
         "peak_channels": runtime["peak_channels"],
         "primary_peak_channel": runtime["primary_peak_channel"],

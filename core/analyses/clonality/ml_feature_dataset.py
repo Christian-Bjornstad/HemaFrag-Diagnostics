@@ -18,18 +18,26 @@ from core.analyses.clonality.cohort_features import (
     enrich_feature_frame_with_cohort_context,
 )
 from core.analyses.clonality.interpretation import features_from_entry, interpret_entry
+from core.analyses.clonality.interpretation_units import (
+    INTERPRETATION_UNIT_SCHEMA_VERSION,
+    InterpretationUnit,
+    channel_local_numeric_features,
+    interpretation_units_for_assay,
+)
 from core.analyses.clonality.ml_data_contract import (
     CHEMIST_LABEL_COLUMN,
     is_trace_feature,
 )
 from core.analyses.clonality.trace_features import (
     TRACE_FEATURE_SCHEMA_VERSION,
-    flatten_numeric_features,
 )
 
 
-ML_FEATURE_DATASET_VERSION = "clonality_ml_feature_dataset_v3"
-_LEGACY_FEATURE_DATASET_VERSION = "clonality_ml_feature_dataset_v2"
+ML_FEATURE_DATASET_VERSION = "clonality_ml_feature_dataset_v4_channel"
+_LEGACY_FEATURE_DATASET_VERSIONS = {
+    "clonality_ml_feature_dataset_v2",
+    "clonality_ml_feature_dataset_v3",
+}
 FEATURE_DATASET_FILENAMES = {
     "features": "clonality_ml_trace_features.csv",
     "errors": "clonality_ml_trace_errors.csv",
@@ -39,11 +47,15 @@ FEATURE_METADATA_COLUMNS = (
     "FeatureDatasetVersion",
     "TraceFeatureSchemaVersion",
     "CohortFeatureSchemaVersion",
+    "InterpretationUnitSchemaVersion",
     "IdentityKey",
     "FsaSourceHash",
     "FsaContentHash",
     "DIT",
     "Assay",
+    "InterpretationUnit",
+    "Channel",
+    "TargetName",
     "SourceRunKey",
     "RunDate",
     "Well",
@@ -112,6 +124,8 @@ def build_clonality_trace_feature_dataset(
             str(record.get("FsaContentHash") or ""),
             str(record.get("TraceFeatureSchemaVersion") or ""),
             str(record.get("CohortFeatureSchemaVersion") or ""),
+            str(record.get("InterpretationUnitSchemaVersion") or ""),
+            str(record.get("InterpretationUnit") or ""),
         ): record
         for record in records
     }
@@ -142,19 +156,31 @@ def build_clonality_trace_feature_dataset(
             if progress_callback:
                 progress_callback(ordinal, total, "error")
             continue
-        completion_key = (
-            identity,
-            content_hash,
-            TRACE_FEATURE_SCHEMA_VERSION,
-            COHORT_FEATURE_SCHEMA_VERSION,
-        )
-        if completion_key in completed_records:
-            skipped_existing += 1
-            existing = completed_records[completion_key]
-            existing[CHEMIST_LABEL_COLUMN] = _clean_text(
-                tracking_row.get(CHEMIST_LABEL_COLUMN)
+        tracked_assay = _clean_text(tracking_row.get("Assay"))
+        units = interpretation_units_for_assay(tracked_assay)
+        completion_keys = [
+            (
+                identity,
+                content_hash,
+                TRACE_FEATURE_SCHEMA_VERSION,
+                COHORT_FEATURE_SCHEMA_VERSION,
+                INTERPRETATION_UNIT_SCHEMA_VERSION,
+                unit.unit_id,
             )
-            existing["DIT"] = _clean_text(tracking_row.get("DIT"))
+            for unit in units
+        ]
+        if completion_keys and all(
+            key in completed_records for key in completion_keys
+        ):
+            skipped_existing += 1
+            for unit, completion_key in zip(units, completion_keys):
+                existing = completed_records[completion_key]
+                existing[CHEMIST_LABEL_COLUMN] = _label_for_unit(
+                    tracking_row,
+                    unit,
+                    unit_count=len(units),
+                )
+                existing["DIT"] = _clean_text(tracking_row.get("DIT"))
             if progress_callback:
                 progress_callback(ordinal, total, "already_complete")
             continue
@@ -163,20 +189,36 @@ def build_clonality_trace_feature_dataset(
             entry = analyze_file(fsa_path)
             if not isinstance(entry, dict):
                 raise RuntimeError("analysis returned no entry")
-            tracked_assay = _clean_text(tracking_row.get("Assay"))
             analyzed_assay = _clean_text(entry.get("assay"))
             if _assay_key(tracked_assay) != _assay_key(analyzed_assay):
                 raise ValueError(
                     f"assay mismatch: workbook={tracked_assay!r}, analyzed={analyzed_assay!r}"
                 )
             rule = interpret_entry(entry)
-            features = flatten_numeric_features(features_from_entry(entry))
-            if not any(is_trace_feature(column) for column in features):
-                raise ValueError("analysis produced no raw trace features")
-            record = _metadata_record(tracking_row, rule, content_hash=content_hash)
-            record.update(features)
-            records.append(record)
-            completed_records[completion_key] = record
+            all_features = features_from_entry(entry)
+            if not units:
+                raise ValueError(
+                    f"assay {tracked_assay!r} has no configured interpretation units"
+                )
+            for unit, completion_key in zip(units, completion_keys):
+                features = channel_local_numeric_features(
+                    all_features,
+                    unit.channel,
+                )
+                if not any(is_trace_feature(column) for column in features):
+                    raise ValueError(
+                        f"analysis produced no raw trace features for {unit.unit_id}"
+                    )
+                record = _metadata_record(
+                    tracking_row,
+                    rule,
+                    unit=unit,
+                    unit_count=len(units),
+                    content_hash=content_hash,
+                )
+                record.update(features)
+                records.append(record)
+                completed_records[completion_key] = record
             processed += 1
             status = "complete"
         except Exception as exc:
@@ -234,6 +276,9 @@ def write_clonality_trace_feature_artifact(
         "dataset_version": ML_FEATURE_DATASET_VERSION,
         "trace_feature_schema_version": TRACE_FEATURE_SCHEMA_VERSION,
         "cohort_feature_schema_version": COHORT_FEATURE_SCHEMA_VERSION,
+        "interpretation_unit_schema_version": (
+            INTERPRETATION_UNIT_SCHEMA_VERSION
+        ),
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "code_revision": _git_revision(),
         "settings_fingerprint": _settings_fingerprint(),
@@ -250,6 +295,10 @@ def write_clonality_trace_feature_artifact(
         "trace_feature_count": int(sum(is_trace_feature(column) for column in feature_columns)),
         "feature_columns": feature_columns,
         "assay_counts": _counts(dataset.features, "Assay"),
+        "interpretation_unit_counts": _counts(
+            dataset.features,
+            "InterpretationUnit",
+        ),
         "label_counts": _counts(dataset.features, CHEMIST_LABEL_COLUMN),
         "audit_status": str((audit_report or {}).get("status") or ""),
         "audit_issue_codes": [
@@ -284,25 +333,36 @@ def load_resumable_feature_artifact(output_dir: Path | str) -> pd.DataFrame:
     dataset_version = manifest.get("dataset_version")
     if dataset_version not in {
         ML_FEATURE_DATASET_VERSION,
-        _LEGACY_FEATURE_DATASET_VERSION,
+        *_LEGACY_FEATURE_DATASET_VERSIONS,
     }:
         raise ValueError("existing feature artifact uses a different dataset version")
     if manifest.get("trace_feature_schema_version") != TRACE_FEATURE_SCHEMA_VERSION:
         raise ValueError("existing feature artifact uses a different trace feature schema")
     if manifest.get("cohort_feature_schema_version") != COHORT_FEATURE_SCHEMA_VERSION:
         raise ValueError("existing feature artifact uses a different cohort feature schema")
-    if manifest.get("settings_fingerprint") != _settings_fingerprint():
+    if (
+        dataset_version == ML_FEATURE_DATASET_VERSION
+        and manifest.get("interpretation_unit_schema_version")
+        != INTERPRETATION_UNIT_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            "existing feature artifact uses a different interpretation unit schema"
+        )
+    valid_fingerprints = {_settings_fingerprint()}
+    if dataset_version in _LEGACY_FEATURE_DATASET_VERSIONS:
+        valid_fingerprints.add(_legacy_settings_fingerprint())
+    if manifest.get("settings_fingerprint") not in valid_fingerprints:
         raise ValueError("existing feature artifact uses different clonality settings")
     try:
         frame = pd.read_csv(features_path)
     except pd.errors.EmptyDataError:
         return pd.DataFrame()
-    if dataset_version == _LEGACY_FEATURE_DATASET_VERSION:
-        frame = _upgrade_v2_feature_artifact(frame)
+    if dataset_version in _LEGACY_FEATURE_DATASET_VERSIONS:
+        frame = _upgrade_legacy_feature_artifact(frame)
     return frame
 
 
-def _upgrade_v2_feature_artifact(frame: pd.DataFrame) -> pd.DataFrame:
+def _upgrade_legacy_feature_artifact(frame: pd.DataFrame) -> pd.DataFrame:
     """Migrate derived scalar/context fields without reading raw traces again."""
     upgraded = frame.copy()
     required = {
@@ -342,30 +402,88 @@ def _upgrade_v2_feature_artifact(frame: pd.DataFrame) -> pd.DataFrame:
     for legacy_column, cohort_column in cohort_aliases.items():
         if cohort_column in upgraded.columns:
             upgraded[legacy_column] = upgraded[cohort_column]
-    upgraded["FeatureDatasetVersion"] = ML_FEATURE_DATASET_VERSION
-    return upgraded
+    if "InterpretationUnit" in upgraded.columns:
+        upgraded["FeatureDatasetVersion"] = ML_FEATURE_DATASET_VERSION
+        upgraded["InterpretationUnitSchemaVersion"] = (
+            INTERPRETATION_UNIT_SCHEMA_VERSION
+        )
+        return upgraded
+
+    records: list[dict[str, Any]] = []
+    metadata_names = set(FEATURE_METADATA_COLUMNS)
+    for raw in upgraded.to_dict(orient="records"):
+        units = interpretation_units_for_assay(raw.get("Assay"))
+        for unit in units:
+            record = {
+                key: value
+                for key, value in raw.items()
+                if key in metadata_names
+            }
+            record.update(
+                {
+                    "FeatureDatasetVersion": ML_FEATURE_DATASET_VERSION,
+                    "InterpretationUnitSchemaVersion": (
+                        INTERPRETATION_UNIT_SCHEMA_VERSION
+                    ),
+                    "InterpretationUnit": unit.unit_id,
+                    "Channel": unit.channel,
+                    "TargetName": unit.target_name,
+                    CHEMIST_LABEL_COLUMN: (
+                        _clean_text(raw.get(CHEMIST_LABEL_COLUMN))
+                        if len(units) == 1
+                        else ""
+                    ),
+                }
+            )
+            numeric = {
+                key: value
+                for key, value in raw.items()
+                if key not in metadata_names
+            }
+            record.update(channel_local_numeric_features(numeric, unit.channel))
+            records.append(record)
+    return pd.DataFrame(records)
 
 
 def _metadata_record(
     tracking_row: pd.Series,
     rule: Mapping[str, Any],
     *,
+    unit: InterpretationUnit,
+    unit_count: int,
     content_hash: str,
 ) -> dict[str, Any]:
     return {
         "FeatureDatasetVersion": ML_FEATURE_DATASET_VERSION,
         "TraceFeatureSchemaVersion": TRACE_FEATURE_SCHEMA_VERSION,
         "CohortFeatureSchemaVersion": COHORT_FEATURE_SCHEMA_VERSION,
+        "InterpretationUnitSchemaVersion": (
+            INTERPRETATION_UNIT_SCHEMA_VERSION
+        ),
         "IdentityKey": _clean_text(tracking_row.get("IdentityKey")),
         "FsaSourceHash": _clean_text(tracking_row.get("FsaSourceHash")),
         "FsaContentHash": content_hash,
         "DIT": _clean_text(tracking_row.get("DIT")),
         "Assay": _clean_text(tracking_row.get("Assay")),
+        "InterpretationUnit": unit.unit_id,
+        "Channel": unit.channel,
+        "TargetName": unit.target_name,
         "SourceRunKey": _source_run_key(tracking_row.get("SourceRunDir")),
         "RunDate": _clean_text(tracking_row.get("RunDate")),
         "Well": _clean_text(tracking_row.get("Well")),
-        CHEMIST_LABEL_COLUMN: _clean_text(tracking_row.get(CHEMIST_LABEL_COLUMN)),
-        "RuleSuggestion": _clean_text(rule.get("ClonalitySuggestion")),
+        CHEMIST_LABEL_COLUMN: _label_for_unit(
+            tracking_row,
+            unit,
+            unit_count=unit_count,
+        ),
+        "RuleSuggestion": (
+            _clean_text(rule.get("ClonalitySuggestion"))
+            if unit_count == 1
+            else ""
+        ),
+        "LegacyAssayRuleSuggestion": _clean_text(
+            rule.get("ClonalitySuggestion")
+        ),
         "RuleConfidence": _finite_or_zero(rule.get("ClonalityConfidence")),
         "RuleReviewNeeded": bool(rule.get("ClonalityReviewNeeded", False)),
         "RuleEvidence": _clean_text(rule.get("ClonalityEvidence")),
@@ -388,10 +506,15 @@ def _dataset_result(
                     "FsaSourceHash",
                     "TraceFeatureSchemaVersion",
                     "CohortFeatureSchemaVersion",
+                    "InterpretationUnitSchemaVersion",
+                    "InterpretationUnit",
                 ],
                 keep="last",
             )
-            .sort_values(["Assay", "DIT", "IdentityKey"], kind="stable")
+            .sort_values(
+                ["InterpretationUnit", "DIT", "IdentityKey"],
+                kind="stable",
+            )
             .reset_index(drop=True)
         )
         features = enrich_feature_frame_with_cohort_context(features)
@@ -412,6 +535,8 @@ def _existing_feature_records(frame: pd.DataFrame | None) -> list[dict[str, Any]
         "FsaSourceHash",
         "TraceFeatureSchemaVersion",
         "CohortFeatureSchemaVersion",
+        "InterpretationUnitSchemaVersion",
+        "InterpretationUnit",
     }
     required.add("FsaContentHash")
     if not required.issubset(frame.columns):
@@ -437,8 +562,26 @@ def _settings_fingerprint() -> str:
         "nonspecific_peaks": NONSPECIFIC_PEAKS,
         "trace_feature_schema_version": TRACE_FEATURE_SCHEMA_VERSION,
         "cohort_feature_schema_version": COHORT_FEATURE_SCHEMA_VERSION,
+        "interpretation_unit_schema_version": (
+            INTERPRETATION_UNIT_SCHEMA_VERSION
+        ),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _legacy_settings_fingerprint() -> str:
+    payload = {
+        "assay_reference_ranges": ASSAY_REFERENCE_RANGES,
+        "nonspecific_peaks": NONSPECIFIC_PEAKS,
+        "trace_feature_schema_version": TRACE_FEATURE_SCHEMA_VERSION,
+        "cohort_feature_schema_version": COHORT_FEATURE_SCHEMA_VERSION,
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -487,6 +630,20 @@ def _clean_text(value: Any) -> str:
     except (TypeError, ValueError):
         pass
     return str(value).strip()
+
+
+def _label_for_unit(
+    tracking_row: Mapping[str, Any],
+    unit: InterpretationUnit,
+    *,
+    unit_count: int,
+) -> str:
+    channel_label = _clean_text(tracking_row.get(unit.label_column))
+    if channel_label:
+        return channel_label
+    if unit_count == 1:
+        return _clean_text(tracking_row.get(CHEMIST_LABEL_COLUMN))
+    return ""
 
 
 def _source_run_key(value: Any) -> str:

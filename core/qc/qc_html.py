@@ -23,6 +23,20 @@ from core.html_reports import interpret_sl_quality
 import core.assay_config as master
 
 
+def _control_display_sort_key(entry: dict) -> tuple[int, str]:
+    """Display clonality controls as PK, RK, NK within each assay."""
+    file_name = str(getattr(entry.get("fsa"), "file_name", "") or "")
+    control = control_id_from_filename(file_name)
+    priority = {
+        "PK": 0,
+        "PK1": 0,
+        "PK2": 0,
+        "RK": 1,
+        "NK": 2,
+    }.get(control, 3)
+    return priority, file_name.casefold()
+
+
 def build_qc_html(entries: list[dict], out_html: Path, rules: QCRules, excel_path: Path) -> None:
     out_html.parent.mkdir(parents=True, exist_ok=True)
 
@@ -143,7 +157,13 @@ hr { border: none; border-top: 1px solid #e6e6e6; margin: 1.2rem 0; }
         "</tr>"
     )
 
-    all_entries = sorted(entries, key=lambda e: (e.get("assay", ""), e["fsa"].file_name))
+    all_entries = sorted(
+        entries,
+        key=lambda e: (
+            normalize_assay_qc(e.get("assay", "UNKNOWN")),
+            *_control_display_sort_key(e),
+        ),
+    )
     for e in all_entries:
         fsa_name = e["fsa"].file_name
         ctrl = control_id_from_filename(fsa_name)
@@ -184,7 +204,7 @@ hr { border: none; border-top: 1px solid #e6e6e6; margin: 1.2rem 0; }
     html.append("<p class='small'>Markører: lilla = sample-peak, gul = ladder-peak (vertikale linjer = expected bp).</p>")
 
     for assay in ordered:
-        a_entries = sorted(by_assay.get(assay, []), key=lambda e: e["fsa"].file_name)
+        a_entries = sorted(by_assay.get(assay, []), key=_control_display_sort_key)
         if not a_entries:
             continue
 
@@ -214,11 +234,11 @@ hr { border: none; border-top: 1px solid #e6e6e6; margin: 1.2rem 0; }
     # -----------------------------------------------------
     # 3) SIZE LADDER DATA (for QC files som er SL)
     # -----------------------------------------------------
-    qc_sl_entries = [
+    qc_sl_entries = sorted([
         e for e in all_entries 
         if normalize_assay_qc(e.get("assay", "UNKNOWN")) == "SL"
         and control_id_from_filename(e["fsa"].file_name) in ("PK", "PK1", "PK2")
-    ]
+    ], key=_control_display_sort_key)
     if qc_sl_entries:
         html.append("<h2>Size Ladder (SL) – Fragmentfordeling</h2>")
         html.append("<p class='small'>Målte verdier per SL-fil i denne QC-kjøringen.</p>")

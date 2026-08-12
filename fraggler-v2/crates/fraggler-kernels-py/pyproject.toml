@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "fraggler-kernels"
-version = "0.1.0"
+version = "0.1.2"
 description = "In-process fraggler-core Rust engine for HemaFrag, exposed via PyO3"
 requires-python = ">=3.10,<3.16"
 authors = [{ name = "HemaFrag Diagnostics" }]

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
@@ -6,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::abif::AbifRecord;
 use crate::contract::AnalysisKind;
 use crate::engine::EngineError;
+use crate::ladder_search::{
+    LadderRescueInput, PeakEvidence, SearchBudget, deep_rescue_candidates,
+    liz_core_first_rescue_candidates, score_candidate_sequence,
+};
 use crate::ladders::LadderKind;
 use crate::signal::{
     Peak, baseline_correct_guarded_nonnegative, baseline_correct_min_window_nonnegative,
@@ -15,9 +20,14 @@ use crate::signal::{
 
 const MAX_CANDIDATE_COMBINATIONS: usize = 2_000_000;
 const BEAM_SEARCH_TRIGGER_COMBINATIONS: usize = 100_000;
+const LIZ_BEAM_SEARCH_TRIGGER_COMBINATIONS: usize = 4_000;
+const LIZ_EXACT_AUDIT_ENV: &str = "HEMAFRAG_LADDER_AUDIT_EXACT_LIZ";
+const LIZ_FULL_REPAIR_AUDIT_ENV: &str = "HEMAFRAG_LADDER_AUDIT_FULL_LIZ_REPAIRS";
+const CAPPED_FULL_POOL_BEAM_AUDIT_ENV: &str = "HEMAFRAG_LADDER_AUDIT_CAPPED_FULL_POOL_BEAM";
 const BEAM_SEARCH_WIDTH: usize = 192;
+const LIZ_BEAM_SEARCH_WIDTH: usize = 512;
 const BEAM_SEARCH_FINAL_CAP: usize = 4096;
-const LIZ_EXACT_RERUN_MAX_COMBINATIONS: usize = 600_000;
+const LIZ_EXACT_RERUN_MAX_COMBINATIONS: usize = 10_000;
 const LIZ_SUSPICIOUS_LINEAR_MAX_BP: f64 = 13.5;
 const LIZ_SUSPICIOUS_LINEAR_MEAN_BP: f64 = 6.8;
 const LIZ_SUSPICIOUS_LINEAR_R2_MIN: f64 = 0.9973;
@@ -138,6 +148,7 @@ const CLONAL_DOMINANCE_RATIO: f64 = 1.7;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LadderFitPreview {
+    pub search_tier: String,
     pub max_allowed_peak_gap: usize,
     pub gap_expansions: usize,
     pub estimated_combination_count: usize,
@@ -148,6 +159,8 @@ pub struct LadderFitPreview {
     pub best_quadratic_r2: Option<f64>,
     pub sizing_model: Option<SizingModelPreview>,
     pub refinement: Option<RefinementPreview>,
+    #[serde(default)]
+    pub search_diagnostics: Option<crate::ladder_search::SearchDiagnostics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -238,6 +251,9 @@ pub struct LadderReviewAssessment {
     pub evaluated_combination_count: Option<usize>,
     pub best_curvature_score: Option<f64>,
     pub max_abs_error_bp: Option<f64>,
+    pub selected_baseline_like_anchor_count: usize,
+    pub selected_cleaner_neighbor_count: usize,
+    pub selected_strong_baseline_anchor_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -255,6 +271,7 @@ pub struct PrimitiveAnalysisResult {
     pub ladder_review_assessment: LadderReviewAssessment,
     pub clonality_preview: Option<ClonalityPreview>,
     pub flt3_preview: Option<Flt3Preview>,
+    pub timings_us: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -323,7 +340,12 @@ pub fn analyze_fsa_primitives(
     path: &Utf8Path,
     analysis_kind: Option<&AnalysisKind>,
 ) -> Result<PrimitiveAnalysisResult, EngineError> {
+    let total_started = Instant::now();
+    let parse_started = Instant::now();
     let record = AbifRecord::from_path(path)?;
+    let abif_parse_us = elapsed_micros_u64(parse_started);
+
+    let channel_setup_started = Instant::now();
     let file_name = record.file_name.clone();
     let data_channels = record.data_channels();
     let size_standard_channel = select_size_standard_channel(&record, &file_name, analysis_kind)
@@ -374,6 +396,9 @@ pub fn analyze_fsa_primitives(
             .ok_or_else(|| EngineError::PrimitiveAnalysis {
                 message: format!("sample channel {sample_channel} is missing numeric data"),
             })?;
+    let channel_trace_setup_us = elapsed_micros_u64(channel_setup_started);
+
+    let baseline_started = Instant::now();
     let corrected =
         baseline_correct_guarded_nonnegative(&size_standard_trace, 0.99, 100.0, 1000, 200, 0.10)?;
     let quantile_corrected = baseline_correct_quantile_nonnegative(&size_standard_trace, 200, 0.10);
@@ -387,6 +412,9 @@ pub fn analyze_fsa_primitives(
     } else {
         Vec::new()
     };
+    let baseline_correction_us = elapsed_micros_u64(baseline_started);
+
+    let candidate_detection_started = Instant::now();
     let mut default_ladder_peaks = select_ladder_peaks(
         &size_standard_trace,
         &corrected,
@@ -430,7 +458,10 @@ pub fn analyze_fsa_primitives(
             ladder,
         )
     };
+    let candidate_detection_us = elapsed_micros_u64(candidate_detection_started);
+
     let dye_names = dye_names(&record);
+    let ladder_fit_started = Instant::now();
     let (ladder_peaks, ladder_fit_preview) = build_ladder_fit_preview_with_arbiter(
         default_ladder_peaks,
         alternative_lanes,
@@ -438,8 +469,14 @@ pub fn analyze_fsa_primitives(
         &size_standard_trace,
         ladder,
     );
+    let ladder_fit_us = elapsed_micros_u64(ladder_fit_started);
+
+    let review_started = Instant::now();
     let ladder_review_assessment =
         build_ladder_review_assessment(ladder, &ladder_peaks, ladder_fit_preview.as_ref());
+    let review_assessment_us = elapsed_micros_u64(review_started);
+
+    let downstream_preview_started = Instant::now();
     let clonality_preview = if matches!(analysis_kind, Some(AnalysisKind::Clonality)) {
         ladder_fit_preview.as_ref().and_then(|preview| {
             preview
@@ -478,6 +515,18 @@ pub fn analyze_fsa_primitives(
     } else {
         None
     };
+    let downstream_preview_us = elapsed_micros_u64(downstream_preview_started);
+    let total_us = elapsed_micros_u64(total_started);
+    let timings_us = BTreeMap::from([
+        ("abif_parse".to_owned(), abif_parse_us),
+        ("baseline_correction".to_owned(), baseline_correction_us),
+        ("candidate_detection".to_owned(), candidate_detection_us),
+        ("channel_trace_setup".to_owned(), channel_trace_setup_us),
+        ("downstream_preview".to_owned(), downstream_preview_us),
+        ("ladder_fit".to_owned(), ladder_fit_us),
+        ("review_assessment".to_owned(), review_assessment_us),
+        ("total".to_owned(), total_us),
+    ]);
 
     Ok(PrimitiveAnalysisResult {
         file_name,
@@ -493,7 +542,12 @@ pub fn analyze_fsa_primitives(
         ladder_review_assessment,
         clonality_preview,
         flt3_preview,
+        timings_us,
     })
+}
+
+fn elapsed_micros_u64(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 fn build_ladder_review_assessment(
@@ -545,6 +599,9 @@ fn build_ladder_review_assessment(
             evaluated_combination_count: None,
             best_curvature_score: None,
             max_abs_error_bp: None,
+            selected_baseline_like_anchor_count: 0,
+            selected_cleaner_neighbor_count: 0,
+            selected_strong_baseline_anchor_count: 0,
         };
     };
 
@@ -570,6 +627,9 @@ fn build_ladder_review_assessment(
         .map(|model| model.qc_metrics.max_abs_error_bp);
     let high_confidence_complete_fit =
         is_high_confidence_complete_fit(preview, scan_indices.len(), expected_peak_count);
+    let mut selected_baseline_like_anchor_count = 0usize;
+    let mut selected_cleaner_neighbor_count = 0usize;
+    let mut selected_strong_baseline_anchor_count = 0usize;
 
     if preview.candidate_generation_capped {
         reason_codes.push("candidate_space_capped".to_owned());
@@ -719,17 +779,19 @@ fn build_ladder_review_assessment(
         if scan_indices.len() == expected_peak_count
             && matches!(ladder, LadderKind::Rox400Hd | LadderKind::Liz500250)
         {
-            let (baseline_like_count, cleaner_neighbor_count) =
+            let (baseline_like_count, cleaner_neighbor_count, strong_baseline_count) =
                 selected_baseline_like_anchor_counts(ladder, &scan_indices, ladder_peaks);
-            let suspicious_selected_peaks = baseline_like_count >= 2
-                || (baseline_like_count >= 1
-                    && cleaner_neighbor_count >= 1
-                    && qc.linear_trend_max_abs_error_bp >= 5.0);
+            selected_baseline_like_anchor_count = baseline_like_count;
+            selected_cleaner_neighbor_count = cleaner_neighbor_count;
+            selected_strong_baseline_anchor_count = strong_baseline_count;
+            let suspicious_selected_peaks = strong_baseline_count >= 1
+                || baseline_like_count >= 2
+                || (baseline_like_count >= 1 && cleaner_neighbor_count >= 1);
             if suspicious_selected_peaks {
                 reason_codes.push("selected_baseline_like_ladder_peaks".to_owned());
                 summary_parts.push(format!(
-                    "{} selected ladder anchors look baseline-/foot-like despite a complete fit.",
-                    baseline_like_count
+                    "{} selected ladder anchors look baseline-/foot-like despite a complete fit; {} have cleaner nearby alternatives.",
+                    baseline_like_count, cleaner_neighbor_count
                 ));
             }
             if ladder == LadderKind::Liz500250 {
@@ -913,6 +975,9 @@ fn build_ladder_review_assessment(
         evaluated_combination_count: Some(preview.evaluated_combination_count),
         best_curvature_score: preview.best_curvature_score,
         max_abs_error_bp,
+        selected_baseline_like_anchor_count,
+        selected_cleaner_neighbor_count,
+        selected_strong_baseline_anchor_count,
     }
 }
 
@@ -920,13 +985,13 @@ fn selected_baseline_like_anchor_counts(
     ladder: LadderKind,
     scan_indices: &[usize],
     ladder_peaks: &[Peak],
-) -> (usize, usize) {
+) -> (usize, usize, usize) {
     let selected = scan_indices
         .iter()
         .filter_map(|scan| ladder_peaks.iter().find(|peak| peak.index == *scan))
         .collect::<Vec<_>>();
     if selected.is_empty() {
-        return (0, 0);
+        return (0, 0, 0);
     }
 
     let prominence_ref = median(
@@ -951,6 +1016,7 @@ fn selected_baseline_like_anchor_counts(
 
     let mut baseline_like_count = 0usize;
     let mut cleaner_neighbor_count = 0usize;
+    let mut strong_baseline_count = 0usize;
     for peak in selected {
         let height = peak.height.max(1.0);
         let prominence = peak.prominence.max(0.0);
@@ -988,9 +1054,16 @@ fn selected_baseline_like_anchor_counts(
         {
             baseline_like_count += 1;
         }
+        if strong_baseline_signal {
+            strong_baseline_count += 1;
+        }
     }
 
-    (baseline_like_count, cleaner_neighbor_count)
+    (
+        baseline_like_count,
+        cleaner_neighbor_count,
+        strong_baseline_count,
+    )
 }
 
 fn selected_weak_liz_anchor_counts(scan_indices: &[usize], ladder_peaks: &[Peak]) -> (usize, bool) {
@@ -1319,14 +1392,22 @@ fn select_ladder_peaks(
         matches!(ladder, LadderKind::Liz500250 | LadderKind::Gs500Rox);
     let is_rox_family = matches!(ladder, LadderKind::Rox400Hd | LadderKind::Gs500Rox);
     let min_candidate_span = if is_rox_family { 1100 } else { 850 };
-    let mut raw_candidates = adaptive_top_peak_candidates(
-        raw_trace,
-        raw_min_height,
-        min_distance,
-        max_peaks,
-        target_candidate_count,
-        min_candidate_span,
-    );
+    // A negative-offset ladder lane must not compete as a raw candidate lane:
+    // peak heights then depend on the arbitrary detector offset, and broad
+    // baseline structure can displace real corrected peaks from the capped
+    // pool. The independent guarded/quantile/morphological lanes remain.
+    let mut raw_candidates = if trace_has_negative_baseline(raw_trace) {
+        Vec::new()
+    } else {
+        adaptive_top_peak_candidates(
+            raw_trace,
+            raw_min_height,
+            min_distance,
+            max_peaks,
+            target_candidate_count,
+            min_candidate_span,
+        )
+    };
     let mut corrected_candidates = adaptive_top_peak_candidates(
         corrected_trace,
         corrected_min_height,
@@ -1539,6 +1620,23 @@ fn select_ladder_peaks(
     raw_candidates
 }
 
+fn trace_has_negative_baseline(values: &[f64]) -> bool {
+    let mut finite_count = 0usize;
+    let mut negative_count = 0usize;
+    let mut minimum = f64::INFINITY;
+    for value in values.iter().copied().filter(|value| value.is_finite()) {
+        finite_count += 1;
+        if value < 0.0 {
+            negative_count += 1;
+        }
+        minimum = minimum.min(value);
+    }
+    if finite_count == 0 {
+        return false;
+    }
+    negative_count.saturating_mul(20) >= finite_count || minimum < -50.0
+}
+
 fn rox_post_blob_pool_override(
     merged_candidates: &[Peak],
     ladder_filtered: &[Peak],
@@ -1631,6 +1729,30 @@ fn liz_fit_is_high_confidence_stable(best: &CombinationScore) -> bool {
         && best.linear_r2 >= 0.99960
 }
 
+fn liz_initial_fit_can_skip_repairs(
+    best: &CombinationScore,
+    repair_peak_features: &[Peak],
+) -> bool {
+    if best.indices.len() != LadderKind::Liz500250.expected_peak_count()
+        || !liz_fit_is_high_confidence_stable(best)
+        || ladder_gap_template_penalty(LadderKind::Liz500250, &best.indices) > 0.35
+    {
+        return false;
+    }
+    let (baseline_like, cleaner_neighbors, strong_baseline) = selected_baseline_like_anchor_counts(
+        LadderKind::Liz500250,
+        &best.indices,
+        repair_peak_features,
+    );
+    let (weak_count, very_weak_tail) =
+        selected_weak_liz_anchor_counts(&best.indices, repair_peak_features);
+    baseline_like == 0
+        && cleaner_neighbors == 0
+        && strong_baseline == 0
+        && weak_count == 0
+        && !very_weak_tail
+}
+
 fn count_peaks_in_range(peaks: &[Peak], start: usize, end: usize) -> usize {
     peaks
         .iter()
@@ -1670,17 +1792,23 @@ fn liz_blob_suspect_peak_candidates(
         morph_corrected_trace,
         snip_corrected_trace,
     ] {
+        // `find_peaks(values, values[snapped], 1)` below used to rescan the
+        // complete trace for every smoothed candidate. Peak shape does not
+        // depend on the height threshold, and distance=1 retains every local
+        // maximum, so one indexed pass is exactly equivalent for candidates
+        // whose snapped height is at least 6.
+        let apex_peaks_by_index = find_peaks(values, 6.0, 1)
+            .into_iter()
+            .map(|peak| (peak.index, peak))
+            .collect::<BTreeMap<_, _>>();
         for radius in [2usize, 4usize, 6usize] {
             let smooth = moving_average_smooth(values, radius);
             let mut peaks = find_peaks(&smooth, 6.0, window_distance);
             for peak in &mut peaks {
                 let snapped = snap_peak_to_local_apex(values, peak.index, 8);
                 if snapped != peak.index && snapped < values.len() {
-                    let rescored = find_peaks(values, values[snapped].max(6.0), 1)
-                        .into_iter()
-                        .find(|candidate| candidate.index == snapped);
-                    if let Some(candidate) = rescored {
-                        *peak = candidate;
+                    if let Some(candidate) = apex_peaks_by_index.get(&snapped) {
+                        *peak = candidate.clone();
                     } else {
                         peak.index = snapped;
                         peak.height = values[snapped];
@@ -1766,11 +1894,12 @@ fn liz_window_peak_candidates(
         let peaks = find_peaks(values, 6.0, window_distance);
         pooled.extend(
             peaks
-                .into_iter()
+                .iter()
+                .cloned()
                 .filter(|peak| (1400..=LIZ_DEFAULT_LANE_TIME_MAX).contains(&peak.index)),
         );
         pooled.extend(
-            find_peaks(values, 6.0, window_distance)
+            peaks
                 .into_iter()
                 .filter(|peak| (4381..=4600).contains(&peak.index)),
         );
@@ -3155,6 +3284,10 @@ fn build_ladder_fit_preview_with_arbiter(
     ladder: LadderKind,
 ) -> (Vec<Peak>, Option<LadderFitPreview>) {
     let mut best_peaks = default_ladder_peaks;
+    let mut rescue_peak_sets = vec![best_peaks.clone()];
+    rescue_peak_sets.extend(alternative_lanes.iter().cloned());
+    let deep_rescue_peaks =
+        merge_candidate_sets(&rescue_peak_sets, 5, ladder.expected_peak_count() * 2 + 25);
     let mut best_preview =
         build_ladder_fit_preview(&best_peaks, sample_trace, ladder_trace, ladder, false);
     let default_peaks_for_guard = best_peaks.clone();
@@ -3203,8 +3336,19 @@ fn build_ladder_fit_preview_with_arbiter(
         }
     }
 
-    let final_preview =
-        build_ladder_fit_preview(&best_peaks, sample_trace, ladder_trace, ladder, true);
+    if ladder == LadderKind::Liz500250 {
+        best_preview = best_preview
+            .map(|preview| apply_liz_tier_one_rescue(preview, &best_peaks, sample_trace, ladder));
+    }
+
+    // The final pass only enables ROX visual-start repair. Re-running the
+    // complete deterministic LIZ search here cannot change LIZ output and
+    // doubles all of its candidate and repair work.
+    let final_preview = if ladder == LadderKind::Liz500250 {
+        None
+    } else {
+        build_ladder_fit_preview(&best_peaks, sample_trace, ladder_trace, ladder, true)
+    };
     if final_preview.is_some() {
         best_preview = final_preview;
     }
@@ -3232,9 +3376,185 @@ fn build_ladder_fit_preview_with_arbiter(
                         .or(default_preview_for_guard);
             }
         }
+        best_preview = best_preview.map(|preview| {
+            apply_rox_deep_rescue(preview, &deep_rescue_peaks, sample_trace, ladder)
+        });
     }
 
     (best_peaks, best_preview)
+}
+
+fn apply_rox_deep_rescue(
+    mut preview: LadderFitPreview,
+    peak_features: &[Peak],
+    sample_trace: &[f64],
+    ladder: LadderKind,
+) -> LadderFitPreview {
+    let current = selected_preview_scans(&preview);
+    let input = LadderRescueInput::new(
+        ladder.sizes().to_vec(),
+        current.clone(),
+        peak_features
+            .iter()
+            .map(|peak| PeakEvidence {
+                scan: peak.index,
+                height: peak.height,
+                prominence: peak.prominence,
+                local_baseline: peak.local_baseline,
+                width: peak.width,
+            })
+            .collect(),
+    );
+    if score_candidate_sequence(&input, &current).is_some_and(|score| score <= 1.0) {
+        return preview;
+    }
+    let Some(outcome) = deep_rescue_candidates(&input, SearchBudget::tier_two(), 256) else {
+        return preview;
+    };
+    preview.search_diagnostics = Some(outcome.diagnostics);
+    let rescued = outcome.candidate.scan_indices;
+    if rescued == current {
+        return preview;
+    }
+    let rescued_model = fit_best_sizing_model(&rescued, ladder.sizes(), sample_trace);
+    if let (Some((current_max, current_mean, current_r2, _)), Some(model)) =
+        (preview_linear_metrics(&preview), rescued_model.as_ref())
+    {
+        let qc = &model.qc_metrics;
+        if !rox_deep_rescue_qc_allows(
+            current_max,
+            current_mean,
+            current_r2,
+            qc.linear_trend_max_abs_error_bp,
+            qc.linear_trend_mean_abs_error_bp,
+            qc.linear_trend_r2,
+        ) {
+            return preview;
+        }
+    }
+    preview.search_tier = "deep_rescue_10s".to_owned();
+    preview.best_scan_indices = rescued.clone();
+    preview.best_curvature_score = Some(curvature_score(ladder.sizes(), &rescued));
+    preview.best_quadratic_r2 = Some(quadratic_fit_r2(
+        ladder.sizes(),
+        &rescued
+            .iter()
+            .map(|value| *value as f64)
+            .collect::<Vec<_>>(),
+    ));
+    preview.sizing_model = rescued_model;
+    preview.refinement = apex_recenter_refinement_preview(&current, &rescued, ladder.sizes());
+    preview
+}
+
+fn rox_deep_rescue_qc_allows(
+    current_max: f64,
+    current_mean: f64,
+    current_r2: f64,
+    candidate_max: f64,
+    candidate_mean: f64,
+    candidate_r2: f64,
+) -> bool {
+    let high_error_improvement = current_max > 8.0
+        && candidate_max + 0.5 < current_max
+        && candidate_mean <= current_mean + 0.20;
+    let stable_fit_recenter = current_max <= 4.5
+        && candidate_max <= current_max + 0.50
+        && candidate_mean <= current_mean + 0.15
+        && candidate_r2 + 0.00001 >= current_r2;
+    high_error_improvement || stable_fit_recenter
+}
+
+fn apply_liz_tier_one_rescue(
+    mut preview: LadderFitPreview,
+    peak_features: &[Peak],
+    sample_trace: &[f64],
+    ladder: LadderKind,
+) -> LadderFitPreview {
+    if !should_try_liz_tier_one_rescue(&preview) {
+        return preview;
+    }
+    let current = selected_preview_scans(&preview);
+    let input = LadderRescueInput::new(
+        ladder.sizes().to_vec(),
+        current.clone(),
+        peak_features
+            .iter()
+            .map(|peak| PeakEvidence {
+                scan: peak.index,
+                height: peak.height,
+                prominence: peak.prominence,
+                local_baseline: peak.local_baseline,
+                width: peak.width,
+            })
+            .collect(),
+    );
+    let Some(outcome) = liz_core_first_rescue_candidates(&input, SearchBudget::tier_one(), 128)
+    else {
+        return preview;
+    };
+    preview.search_diagnostics = Some(outcome.diagnostics);
+    let rescued = outcome.candidate.scan_indices;
+    if rescued == current {
+        return preview;
+    }
+    let core_sizes = &ladder.sizes()[1..];
+    let current_core_model = fit_best_sizing_model(&current[1..], core_sizes, sample_trace);
+    let rescued_core_model = fit_best_sizing_model(&rescued[1..], core_sizes, sample_trace);
+    let (Some(current_core), Some(rescued_core)) =
+        (current_core_model.as_ref(), rescued_core_model.as_ref())
+    else {
+        return preview;
+    };
+    let current_qc = &current_core.qc_metrics;
+    let rescued_qc = &rescued_core.qc_metrics;
+    if !liz_core_candidate_qc_allows(
+        current_qc.linear_trend_max_abs_error_bp,
+        current_qc.linear_trend_mean_abs_error_bp,
+        current_qc.linear_trend_r2,
+        rescued_qc.linear_trend_max_abs_error_bp,
+        rescued_qc.linear_trend_mean_abs_error_bp,
+        rescued_qc.linear_trend_r2,
+    ) {
+        return preview;
+    }
+    let rescued_model = fit_best_sizing_model(&rescued, ladder.sizes(), sample_trace);
+    preview.best_scan_indices = rescued.clone();
+    preview.best_curvature_score = Some(curvature_score(ladder.sizes(), &rescued));
+    preview.best_quadratic_r2 = Some(quadratic_fit_r2(
+        ladder.sizes(),
+        &rescued
+            .iter()
+            .map(|value| *value as f64)
+            .collect::<Vec<_>>(),
+    ));
+    preview.sizing_model = rescued_model;
+    preview.refinement = apex_recenter_refinement_preview(&current, &rescued, ladder.sizes());
+    preview
+}
+
+fn liz_core_candidate_qc_allows(
+    current_max: f64,
+    current_mean: f64,
+    current_r2: f64,
+    candidate_max: f64,
+    candidate_mean: f64,
+    candidate_r2: f64,
+) -> bool {
+    let clear_improvement = candidate_max + 0.5 < current_max
+        && candidate_mean <= current_mean + 0.15
+        && candidate_r2 + 0.00001 >= current_r2;
+    let guarded_non_regression = candidate_max <= current_max + 0.25
+        && candidate_mean <= current_mean + 0.10
+        && candidate_r2 + 0.00001 >= current_r2;
+    clear_improvement || guarded_non_regression
+}
+
+fn should_try_liz_tier_one_rescue(preview: &LadderFitPreview) -> bool {
+    let Some((linear_max, linear_mean, linear_r2, _)) = preview_linear_metrics(preview) else {
+        return true;
+    };
+    !(linear_max <= 4.0 && linear_mean <= 1.5 && linear_r2 >= 0.99985)
 }
 
 fn should_try_alternative_ladder_lanes(
@@ -3864,13 +4184,19 @@ fn build_ladder_fit_preview(
     ladder: LadderKind,
     allow_visual_start_repair: bool,
 ) -> Option<LadderFitPreview> {
+    let primary_beam_search_trigger =
+        if ladder == LadderKind::Liz500250 && !liz_exact_audit_enabled() {
+            LIZ_BEAM_SEARCH_TRIGGER_COMBINATIONS
+        } else {
+            BEAM_SEARCH_TRIGGER_COMBINATIONS
+        };
     let baseline_preview = build_ladder_fit_preview_with_candidate_pool(
         ladder_peaks,
         ladder_peaks,
         sample_trace,
         ladder_trace,
         ladder,
-        BEAM_SEARCH_TRIGGER_COMBINATIONS,
+        primary_beam_search_trigger,
         allow_visual_start_repair,
     );
     if ladder != LadderKind::Liz500250 {
@@ -3895,7 +4221,7 @@ fn build_ladder_fit_preview(
                     sample_trace,
                     ladder_trace,
                     ladder,
-                    BEAM_SEARCH_TRIGGER_COMBINATIONS,
+                    primary_beam_search_trigger,
                     allow_visual_start_repair,
                 ),
                 ladder_peaks,
@@ -3932,9 +4258,9 @@ fn build_ladder_fit_preview(
         .unwrap_or(false);
     if should_try_liz_broad_preview {
         let corrected =
-            baseline_correct_guarded_nonnegative(sample_trace, 0.99, 100.0, 1000, 200, 0.10)
-                .unwrap_or_else(|_| sample_trace.to_vec());
-        let quantile_corrected = baseline_correct_quantile_nonnegative(sample_trace, 200, 0.10);
+            baseline_correct_guarded_nonnegative(ladder_trace, 0.99, 100.0, 1000, 200, 0.10)
+                .unwrap_or_else(|_| ladder_trace.to_vec());
+        let quantile_corrected = baseline_correct_quantile_nonnegative(ladder_trace, 200, 0.10);
         let tail_extension_peaks = liz_tail_extension_candidates(
             &corrected,
             &quantile_corrected,
@@ -3954,7 +4280,7 @@ fn build_ladder_fit_preview(
                         sample_trace,
                         ladder_trace,
                         ladder,
-                        BEAM_SEARCH_TRIGGER_COMBINATIONS,
+                        primary_beam_search_trigger,
                         allow_visual_start_repair,
                     ),
                     &tail_augmented,
@@ -3990,7 +4316,7 @@ fn build_ladder_fit_preview(
                     sample_trace,
                     ladder_trace,
                     ladder,
-                    BEAM_SEARCH_TRIGGER_COMBINATIONS,
+                    primary_beam_search_trigger,
                     allow_visual_start_repair,
                 ),
                 &blob_lane_peaks,
@@ -4011,7 +4337,7 @@ fn build_ladder_fit_preview(
             };
         }
         let broad_ladder_peaks = liz_broad_peak_candidates(
-            sample_trace,
+            ladder_trace,
             &corrected,
             &quantile_corrected,
             ladder.expected_peak_count() * 2 + 15,
@@ -4024,7 +4350,7 @@ fn build_ladder_fit_preview(
                     sample_trace,
                     ladder_trace,
                     ladder,
-                    BEAM_SEARCH_TRIGGER_COMBINATIONS,
+                    primary_beam_search_trigger,
                     allow_visual_start_repair,
                 ),
                 &broad_ladder_peaks,
@@ -4052,9 +4378,9 @@ fn build_ladder_fit_preview(
         .is_some_and(|model| model.qc_metrics.linear_trend_max_abs_error_bp > 10.0);
     if should_try_local_anchor_grid {
         let corrected =
-            baseline_correct_guarded_nonnegative(sample_trace, 0.99, 100.0, 1000, 200, 0.10)
-                .unwrap_or_else(|_| sample_trace.to_vec());
-        let quantile_corrected = baseline_correct_quantile_nonnegative(sample_trace, 200, 0.10);
+            baseline_correct_guarded_nonnegative(ladder_trace, 0.99, 100.0, 1000, 200, 0.10)
+                .unwrap_or_else(|_| ladder_trace.to_vec());
+        let quantile_corrected = baseline_correct_quantile_nonnegative(ladder_trace, 200, 0.10);
         let grid_augmented = preserve_liz_local_anchor_grid_candidates(
             ladder_peaks,
             &corrected,
@@ -4071,7 +4397,7 @@ fn build_ladder_fit_preview(
                     sample_trace,
                     ladder_trace,
                     ladder,
-                    BEAM_SEARCH_TRIGGER_COMBINATIONS,
+                    primary_beam_search_trigger,
                     allow_visual_start_repair,
                 ),
                 &grid_augmented,
@@ -4098,9 +4424,9 @@ fn build_ladder_fit_preview(
         .is_some_and(|preview| liz_preview_has_weak_or_baseline_selection(preview, ladder_peaks));
     if should_try_weak_anchor_grid {
         let corrected =
-            baseline_correct_guarded_nonnegative(sample_trace, 0.99, 100.0, 1000, 200, 0.10)
-                .unwrap_or_else(|_| sample_trace.to_vec());
-        let quantile_corrected = baseline_correct_quantile_nonnegative(sample_trace, 200, 0.10);
+            baseline_correct_guarded_nonnegative(ladder_trace, 0.99, 100.0, 1000, 200, 0.10)
+                .unwrap_or_else(|_| ladder_trace.to_vec());
+        let quantile_corrected = baseline_correct_quantile_nonnegative(ladder_trace, 200, 0.10);
         let grid_augmented = preserve_liz_local_anchor_grid_candidates(
             ladder_peaks,
             &corrected,
@@ -4117,7 +4443,7 @@ fn build_ladder_fit_preview(
                     sample_trace,
                     ladder_trace,
                     ladder,
-                    BEAM_SEARCH_TRIGGER_COMBINATIONS,
+                    primary_beam_search_trigger,
                     allow_visual_start_repair,
                 ),
                 &grid_augmented,
@@ -4157,14 +4483,19 @@ fn liz_preview_linear_metrics(preview: &LadderFitPreview) -> Option<(f64, f64, f
 }
 
 fn liz_preview_weak_baseline_score(preview: &LadderFitPreview, peaks: &[Peak]) -> usize {
-    let (baseline_count, cleaner_neighbor_count) = selected_baseline_like_anchor_counts(
-        LadderKind::Liz500250,
-        &preview.best_scan_indices,
-        peaks,
-    );
+    let (baseline_count, cleaner_neighbor_count, strong_baseline_count) =
+        selected_baseline_like_anchor_counts(
+            LadderKind::Liz500250,
+            &preview.best_scan_indices,
+            peaks,
+        );
     let (weak_count, very_weak_tail) =
         selected_weak_liz_anchor_counts(&preview.best_scan_indices, peaks);
-    baseline_count + cleaner_neighbor_count.min(1) + weak_count + usize::from(very_weak_tail)
+    baseline_count
+        + cleaner_neighbor_count.min(1)
+        + strong_baseline_count
+        + weak_count
+        + usize::from(very_weak_tail)
 }
 
 fn liz_preview_has_weak_or_baseline_selection(preview: &LadderFitPreview, peaks: &[Peak]) -> bool {
@@ -4219,11 +4550,13 @@ fn maybe_rerun_exact_liz_preview(
     ladder_trace: &[f64],
 ) -> Option<LadderFitPreview> {
     let current = preview?;
-    if !preview_is_suspicious_for_exact_liz_retry(&current) {
+    if liz_preview_is_high_confidence_bounded(&current, ladder_peaks) {
         return Some(current);
     }
     let estimate = current.estimated_combination_count;
-    if estimate <= BEAM_SEARCH_TRIGGER_COMBINATIONS || estimate > LIZ_EXACT_RERUN_MAX_COMBINATIONS {
+    if estimate <= LIZ_BEAM_SEARCH_TRIGGER_COMBINATIONS
+        || estimate > LIZ_EXACT_RERUN_MAX_COMBINATIONS
+    {
         return Some(current);
     }
 
@@ -4242,6 +4575,54 @@ fn maybe_rerun_exact_liz_preview(
         }
         _ => Some(current),
     }
+}
+
+fn liz_exact_audit_enabled() -> bool {
+    std::env::var(LIZ_EXACT_AUDIT_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn liz_full_repair_audit_enabled() -> bool {
+    std::env::var(LIZ_FULL_REPAIR_AUDIT_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn capped_full_pool_beam_audit_enabled() -> bool {
+    std::env::var(CAPPED_FULL_POOL_BEAM_AUDIT_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn liz_preview_is_high_confidence_bounded(
+    preview: &LadderFitPreview,
+    ladder_peaks: &[Peak],
+) -> bool {
+    if preview.candidate_generation_capped
+        || preview.best_scan_indices.len() != LadderKind::Liz500250.expected_peak_count()
+        || liz_preview_has_weak_or_baseline_selection(preview, ladder_peaks)
+    {
+        return false;
+    }
+    let Some(model) = preview.sizing_model.as_ref() else {
+        return false;
+    };
+    let metrics = &model.qc_metrics;
+    metrics.monotonic_on_ladder
+        && metrics.linear_trend_max_abs_error_bp <= 6.0
+        && metrics.linear_trend_mean_abs_error_bp <= 2.5
+        && metrics.linear_trend_r2 >= 0.9995
+        && metrics.max_abs_error_bp <= 1.5
 }
 
 fn preview_is_suspicious_for_exact_liz_retry(preview: &LadderFitPreview) -> bool {
@@ -4816,6 +5197,11 @@ fn build_ladder_fit_preview_with_candidate_pool(
         .iter()
         .map(|peak| peak.index)
         .collect::<Vec<_>>();
+    let beam_width = if ladder == LadderKind::Liz500250 {
+        LIZ_BEAM_SEARCH_WIDTH
+    } else {
+        BEAM_SEARCH_WIDTH
+    };
 
     // For ROX ladders, filter out early blob peaks from the candidate pool.
     // OK ROX fits always start at ≥1520; peaks below that are blob artifacts.
@@ -4862,6 +5248,8 @@ fn build_ladder_fit_preview_with_candidate_pool(
     let mut estimated_combination_count = 0usize;
     let mut candidate_generation_capped = false;
     let mut combinations = Vec::new();
+    let mut used_relaxed_fallback = false;
+    let mut used_capped_full_pool_beam = false;
 
     for expansion in 0..=LADDER_MAX_GAP_EXPANSIONS {
         estimated_combination_count = estimate_combination_count_capped(
@@ -4873,6 +5261,25 @@ fn build_ladder_fit_preview_with_candidate_pool(
         candidate_generation_capped = estimated_combination_count > MAX_CANDIDATE_COMBINATIONS;
         gap_expansions = expansion;
         if candidate_generation_capped {
+            if capped_full_pool_beam_audit_enabled() {
+                let peak_feature_by_index = active_ladder_peaks
+                    .iter()
+                    .map(|peak| (peak.index, peak.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                combinations = generate_peak_combinations_beam(
+                    active_peak_indices,
+                    target_len,
+                    max_allowed_peak_gap,
+                    ladder.sizes(),
+                    &peak_feature_by_index,
+                    beam_width,
+                    BEAM_SEARCH_FINAL_CAP,
+                );
+                if !combinations.is_empty() {
+                    used_capped_full_pool_beam = true;
+                    candidate_generation_capped = false;
+                }
+            }
             break;
         }
 
@@ -4887,7 +5294,7 @@ fn build_ladder_fit_preview_with_candidate_pool(
                 max_allowed_peak_gap,
                 ladder.sizes(),
                 &peak_feature_by_index,
-                BEAM_SEARCH_WIDTH,
+                beam_width,
                 BEAM_SEARCH_FINAL_CAP,
             )
         } else {
@@ -4902,6 +5309,26 @@ fn build_ladder_fit_preview_with_candidate_pool(
             break;
         }
         max_allowed_peak_gap = max_allowed_peak_gap.saturating_add(LADDER_GAP_EXPANSION_STEP);
+    }
+
+    if !candidate_generation_capped
+        && combinations.is_empty()
+        && active_peak_indices.len() >= target_len
+    {
+        let peak_feature_by_index = active_ladder_peaks
+            .iter()
+            .map(|peak| (peak.index, peak.clone()))
+            .collect::<BTreeMap<_, _>>();
+        combinations = generate_peak_combinations_beam(
+            active_peak_indices,
+            target_len,
+            usize::MAX,
+            ladder.sizes(),
+            &peak_feature_by_index,
+            beam_width,
+            BEAM_SEARCH_FINAL_CAP,
+        );
+        used_relaxed_fallback = !combinations.is_empty();
     }
 
     if candidate_generation_capped {
@@ -4945,7 +5372,7 @@ fn build_ladder_fit_preview_with_candidate_pool(
                         reduced_max_gap,
                         ladder.sizes(),
                         &peak_feature_by_index,
-                        BEAM_SEARCH_WIDTH,
+                        beam_width,
                         BEAM_SEARCH_FINAL_CAP,
                     )
                 } else if reduced_estimate <= MAX_CANDIDATE_COMBINATIONS {
@@ -5182,6 +5609,7 @@ fn build_ladder_fit_preview_with_candidate_pool(
                 }
 
                 return Some(LadderFitPreview {
+                    search_tier: "reduced_pool_fallback".to_owned(),
                     max_allowed_peak_gap: reduced_max_gap,
                     gap_expansions,
                     estimated_combination_count: reduced_estimate,
@@ -5195,10 +5623,12 @@ fn build_ladder_fit_preview_with_candidate_pool(
                     best_quadratic_r2: best.as_ref().map(|entry| entry.quadratic_r2),
                     sizing_model,
                     refinement,
+                    search_diagnostics: None,
                 });
             }
         }
         return Some(LadderFitPreview {
+            search_tier: "candidate_cap_failure".to_owned(),
             max_allowed_peak_gap,
             gap_expansions,
             estimated_combination_count,
@@ -5209,6 +5639,7 @@ fn build_ladder_fit_preview_with_candidate_pool(
             best_quadratic_r2: None,
             sizing_model: None,
             refinement: None,
+            search_diagnostics: None,
         });
     }
     let ladder_sizes = ladder.sizes();
@@ -5423,7 +5854,17 @@ fn build_ladder_fit_preview_with_candidate_pool(
         refinement = None;
     }
 
+    let search_tier = if used_relaxed_fallback {
+        "robust_relaxed_beam"
+    } else if used_capped_full_pool_beam {
+        "audit_capped_full_pool_beam"
+    } else if estimated_combination_count > beam_search_trigger {
+        "primary_beam"
+    } else {
+        "primary_exact"
+    };
     Some(LadderFitPreview {
+        search_tier: search_tier.to_owned(),
         max_allowed_peak_gap,
         gap_expansions,
         estimated_combination_count,
@@ -5437,6 +5878,7 @@ fn build_ladder_fit_preview_with_candidate_pool(
         best_quadratic_r2: best.as_ref().map(|entry| entry.quadratic_r2),
         sizing_model,
         refinement,
+        search_diagnostics: None,
     })
 }
 
@@ -15721,6 +16163,15 @@ fn select_best_combination(
     let initial_best_for_regression_guard = best.clone();
     let initial_best_for_rox_minor_start = best.clone();
 
+    if ladder == LadderKind::Liz500250
+        && !liz_full_repair_audit_enabled()
+        && best
+            .as_ref()
+            .is_some_and(|score| liz_initial_fit_can_skip_repairs(score, repair_peak_features))
+    {
+        return best;
+    }
+
     if let Some(candidate) = repair_rox_strong_family_window_sequence(
         best.as_ref(),
         ladder_sizes,
@@ -19371,12 +19822,14 @@ mod tests {
         CombinationScore, LadderFitPreview, LadderQcMetrics, SamplePeakGroupPreview,
         SamplePeakPreview, SizingModelPreview, apply_ladder_apex_recenter,
         bp_trend_metrics_for_indices, build_assay_group_preview, build_clonality_preview,
-        build_flt3_preview, build_ladder_review_assessment, build_sample_mapping_preview,
-        compute_ladder_qc_metrics, curvature_score, estimate_combination_count_capped,
-        eval_polynomial, expected_clonality_ladder_kind, filter_liz_peak_pool_for_fit,
-        filter_rox_peak_pool_for_fit, fit_polynomial_least_squares, generate_peak_combinations,
-        ladder_domain_penalty, ladder_gap_template_penalty, ladder_peak_sequence_penalty,
-        liz_linear_first_candidate_is_acceptable, local_peak_quality_penalty, quadratic_fit_r2,
+        build_flt3_preview, build_ladder_fit_preview, build_ladder_fit_preview_with_candidate_pool,
+        build_ladder_review_assessment, build_sample_mapping_preview, compute_ladder_qc_metrics,
+        curvature_score, estimate_combination_count_capped, eval_polynomial,
+        expected_clonality_ladder_kind, filter_liz_peak_pool_for_fit, filter_rox_peak_pool_for_fit,
+        fit_polynomial_least_squares, generate_peak_combinations, ladder_domain_penalty,
+        ladder_gap_template_penalty, ladder_peak_sequence_penalty, liz_core_candidate_qc_allows,
+        liz_initial_fit_can_skip_repairs, liz_linear_first_candidate_is_acceptable,
+        liz_preview_is_high_confidence_bounded, local_peak_quality_penalty, quadratic_fit_r2,
         refine_best_combination, repair_anchor_block_sequence,
         repair_gs500rox_start_anchor_sequence, repair_liz_consistent_height_family_sequence,
         repair_liz_first_anchor_family_sequence, repair_liz_linear_first_start_sequence,
@@ -19387,10 +19840,39 @@ mod tests {
         repair_rox_large_100_120_gap_sequence, repair_rox_nonlinear_start_pair_sequence,
         repair_rox_start_pair_sequence, repair_rox_start_prefix_pair_sequence,
         repair_rox_strong_family_window_sequence, repair_rox_tail_family_sequence,
-        rox_early_window_peak_candidates, rox_post_blob_pool_override,
+        rox_deep_rescue_qc_allows, rox_early_window_peak_candidates, rox_post_blob_pool_override,
         rox_start_pair_candidate_improves_current, rox_tail_family_candidate_improves_current,
         score_combination, select_best_combination, select_ladder_peaks,
+        should_try_liz_tier_one_rescue, trace_has_negative_baseline,
     };
+
+    #[test]
+    fn rox_deep_rescue_rejects_ambiguous_middle_quality_fit() {
+        assert!(!rox_deep_rescue_qc_allows(
+            5.48, 2.71, 0.99900, 4.83, 2.78, 0.99913,
+        ));
+    }
+
+    #[test]
+    fn rox_deep_rescue_allows_stable_low_error_recenter() {
+        assert!(rox_deep_rescue_qc_allows(
+            3.91, 1.37, 0.999748, 3.88, 1.43, 0.999745,
+        ));
+    }
+
+    #[test]
+    fn liz_core_candidate_qc_rejects_core_regression() {
+        assert!(!liz_core_candidate_qc_allows(
+            2.0, 0.8, 0.99990, 3.0, 1.1, 0.99970,
+        ));
+    }
+
+    #[test]
+    fn liz_core_candidate_qc_allows_clear_core_improvement() {
+        assert!(liz_core_candidate_qc_allows(
+            9.0, 3.0, 0.9970, 3.5, 1.2, 0.9997,
+        ));
+    }
 
     fn make_test_peak(index: usize, prominence: f64) -> Peak {
         Peak {
@@ -19422,6 +19904,7 @@ mod tests {
         max_abs_error_bp: f64,
     ) -> LadderFitPreview {
         LadderFitPreview {
+            search_tier: "test".to_owned(),
             max_allowed_peak_gap: 100,
             gap_expansions: 0,
             estimated_combination_count: 1,
@@ -19450,6 +19933,7 @@ mod tests {
                 sample_mapping: None,
             }),
             refinement: None,
+            search_diagnostics: None,
         }
     }
 
@@ -19459,6 +19943,12 @@ mod tests {
         let y = vec![1.0, 3.0, 7.0, 13.0, 21.0];
         let r2 = quadratic_fit_r2(&x, &y);
         assert!(r2 > 0.999);
+    }
+
+    #[test]
+    fn liz_tier_one_does_not_run_for_high_confidence_fast_fit() {
+        let preview = make_test_preview(vec![1534, 1639, 1793], 0.04, 0.9999, 0.0, 0.0);
+        assert!(!should_try_liz_tier_one_rescue(&preview));
     }
 
     #[test]
@@ -19510,6 +20000,17 @@ mod tests {
         );
         let indices = peaks.iter().map(|peak| peak.index).collect::<Vec<_>>();
         assert_eq!(indices, vec![2, 6]);
+    }
+
+    #[test]
+    fn negative_ladder_baseline_disables_the_raw_candidate_lane() {
+        assert!(trace_has_negative_baseline(&[-120.0; 200]));
+        let mut mostly_positive = vec![12.0; 200];
+        mostly_positive[50] = -75.0;
+        assert!(trace_has_negative_baseline(&mostly_positive));
+        let mut harmless_noise = vec![12.0; 200];
+        harmless_noise[50] = -2.0;
+        assert!(!trace_has_negative_baseline(&harmless_noise));
     }
 
     #[test]
@@ -23402,6 +23903,38 @@ mod tests {
     }
 
     #[test]
+    fn ladder_review_never_waives_a_strongly_baseline_like_selected_anchor() {
+        let scans = vec![
+            1550usize, 1630, 1710, 1790, 1870, 1950, 2030, 2110, 2190, 2270, 2350, 2430, 2510,
+            2590, 2670, 2750,
+        ];
+        let mut peaks = scans
+            .iter()
+            .map(|scan| make_test_peak(*scan, 120.0))
+            .collect::<Vec<_>>();
+        peaks[7] = Peak {
+            index: scans[7],
+            height: 100.0,
+            prominence: 30.0,
+            width: 4.0,
+            local_baseline: 60.0,
+            score: 35.0,
+        };
+        let preview = make_test_preview(scans, 0.10, 1.0, 0.0, 0.0);
+
+        let assessment =
+            build_ladder_review_assessment(LadderKind::Liz500250, &peaks, Some(&preview));
+
+        assert!(assessment.suggested_review);
+        assert_eq!(assessment.selected_strong_baseline_anchor_count, 1);
+        assert!(
+            assessment
+                .reason_codes
+                .contains(&"selected_baseline_like_ladder_peaks".to_owned())
+        );
+    }
+
+    #[test]
     fn ladder_review_keeps_weak_start_when_complete_fit_is_not_high_confidence() {
         let scans = vec![
             1550usize, 1630, 1710, 1790, 1870, 1950, 2030, 2110, 2190, 2270, 2350, 2430, 2510,
@@ -23529,5 +24062,145 @@ mod tests {
             2912, 2972, 3031, 3149, 3266, 3382, 3498, 3613,
         ];
         assert_eq!(ladder_gap_template_penalty(LadderKind::Rox400Hd, &rox), 0.0);
+    }
+
+    #[test]
+    fn liz_bounded_acceptance_requires_complete_strong_unambiguous_fit() {
+        let scans = vec![
+            1523usize, 1600, 1747, 1887, 2111, 2168, 2226, 2462, 2751, 3066, 3301, 3360, 3666,
+            3946, 4174, 4221,
+        ];
+        let peaks = scans
+            .iter()
+            .map(|scan| make_test_peak(*scan, 180.0))
+            .collect::<Vec<_>>();
+        let mut preview = make_test_preview(scans, 0.1, 0.99999, 0.2, 0.35);
+        let metrics = &mut preview.sizing_model.as_mut().unwrap().qc_metrics;
+        metrics.linear_trend_max_abs_error_bp = 4.0;
+        metrics.linear_trend_mean_abs_error_bp = 1.8;
+        metrics.linear_trend_r2 = 0.9998;
+
+        assert!(liz_preview_is_high_confidence_bounded(&preview, &peaks));
+
+        preview
+            .sizing_model
+            .as_mut()
+            .unwrap()
+            .qc_metrics
+            .linear_trend_mean_abs_error_bp = 2.6;
+        assert!(!liz_preview_is_high_confidence_bounded(&preview, &peaks));
+    }
+
+    #[test]
+    fn liz_repair_fast_path_rejects_weak_selected_anchor() {
+        let scans = vec![
+            1523usize, 1600, 1747, 1887, 2111, 2168, 2226, 2462, 2751, 3066, 3301, 3360, 3666,
+            3946, 4174, 4221,
+        ];
+        let mut peaks = scans
+            .iter()
+            .map(|scan| make_test_peak(*scan, 180.0))
+            .collect::<Vec<_>>();
+        let peak_map = peaks
+            .iter()
+            .map(|peak| (peak.index, peak.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let clean_score = score_combination(
+            &scans,
+            LadderKind::Liz500250.sizes(),
+            LadderKind::Liz500250,
+            &peak_map,
+            &peaks,
+        );
+        assert!(liz_initial_fit_can_skip_repairs(&clean_score, &peaks));
+
+        peaks[7].height = 12.0;
+        peaks[7].prominence = 3.0;
+        peaks[7].local_baseline = 9.0;
+        peaks[7].score = 3.0;
+        assert!(!liz_initial_fit_can_skip_repairs(&clean_score, &peaks));
+    }
+
+    #[test]
+    fn relaxed_rust_beam_recovers_full_fit_when_gap_bound_has_no_sequence() {
+        let mut scans = vec![
+            1500usize, 1575, 1725, 1865, 2088, 2144, 2201, 2435, 2718, 3030, 3261, 3320, 3623,
+            3901, 4127, 4173,
+        ];
+        scans[8] += 5_000;
+        for index in 9..scans.len() {
+            scans[index] += 5_000;
+        }
+        let peaks = scans
+            .iter()
+            .map(|scan| make_test_peak(*scan, 180.0))
+            .collect::<Vec<_>>();
+        let trace = vec![0.0; 12_000];
+
+        let preview = build_ladder_fit_preview_with_candidate_pool(
+            &peaks,
+            &peaks,
+            &trace,
+            &trace,
+            LadderKind::Liz500250,
+            4_000,
+            false,
+        )
+        .expect("relaxed Rust beam should return a full candidate sequence");
+
+        assert_eq!(preview.search_tier, "robust_relaxed_beam");
+        assert_eq!(preview.best_scan_indices.len(), scans.len());
+    }
+
+    #[test]
+    fn liz_ladder_anchor_selection_is_independent_of_sample_trace_peaks() {
+        let expected_scans = vec![
+            1523usize, 1600, 1747, 1887, 2111, 2168, 2226, 2462, 2751, 3066, 3301, 3360, 3666,
+            3946, 4174, 4221,
+        ];
+        let mut suspicious_scans = expected_scans.clone();
+        suspicious_scans[4] += 120;
+        let candidate_peaks = suspicious_scans
+            .iter()
+            .map(|scan| make_test_peak(*scan, 180.0))
+            .collect::<Vec<_>>();
+
+        let mut ladder_trace = vec![0.0; 4600];
+        for scan in &expected_scans {
+            ladder_trace[*scan - 1] = 20.0;
+            ladder_trace[*scan] = 500.0;
+            ladder_trace[*scan + 1] = 20.0;
+        }
+
+        let quiet_sample = vec![0.0; ladder_trace.len()];
+        let mut unrelated_sample = vec![0.0; ladder_trace.len()];
+        for (index, scan) in expected_scans.iter().enumerate() {
+            let shifted = scan + 25 + index;
+            unrelated_sample[shifted - 1] = 50.0;
+            unrelated_sample[shifted] = 1500.0;
+            unrelated_sample[shifted + 1] = 50.0;
+        }
+
+        let quiet_preview = build_ladder_fit_preview(
+            &candidate_peaks,
+            &quiet_sample,
+            &ladder_trace,
+            LadderKind::Liz500250,
+            false,
+        )
+        .expect("quiet sample should still produce a LIZ fit");
+        let unrelated_preview = build_ladder_fit_preview(
+            &candidate_peaks,
+            &unrelated_sample,
+            &ladder_trace,
+            LadderKind::Liz500250,
+            false,
+        )
+        .expect("unrelated sample peaks should not prevent a LIZ fit");
+
+        assert_eq!(
+            quiet_preview.best_scan_indices,
+            unrelated_preview.best_scan_indices
+        );
     }
 }

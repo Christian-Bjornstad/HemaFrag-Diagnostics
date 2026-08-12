@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -14,19 +15,9 @@ jobs:
         with:
           python-version: "3.10"
       - name: Install Python dependencies
-        run: python3 -m pip install -r requirements.txt
-      - name: Compile key modules
-        run: |
-          python3 -m py_compile \
-            qt_app.py \
-            gui_qt/main_window.py \
-            gui_qt/tabs/tab_batch.py \
-            gui_qt/tabs/tab_ladder.py \
-            gui_qt/dialogs/ladder_dialog.py \
-            core/batch.py \
-            core/runner.py \
-            core/analyses/clonality/ladder_review_gate.py \
-            core/utils.py
+        run: python3 -m pip install -r requirements.txt pytest
+      - name: Compile application modules
+        run: python3 -m compileall -q qt_app.py gui_qt core
       - name: Run unit tests
         run: python3 -m unittest tests/test_ladder_review_gate.py tests/test_water_filter.py
 
@@ -39,7 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
+      - name: Build standalone crates
+        run: cargo build --release -p fraggler-core -p fraggler-cli -p fraggler-desktop
+      - name: Check Python bindings
+        run: cargo check -p fraggler-kernels-py
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude fraggler-kernels-py

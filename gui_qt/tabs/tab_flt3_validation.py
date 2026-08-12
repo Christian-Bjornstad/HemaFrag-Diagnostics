@@ -306,7 +306,7 @@ class TabFlt3Validation(QWidget):
         self.run_name.setText(str(validation.get("run_name", "")))
         self.require_run_name_contains.setText(str(validation.get("require_run_name_contains", "")))
         self.years.setText(",".join(str(year) for year in validation.get("years", ["2025", "2026"])))
-        self.workers.setValue(int(validation.get("workers", 6) or 6))
+        self.workers.setValue(int(validation.get("workers", 8) or 8))
         self.limit.setValue(int(validation.get("limit", 0) or 0))
         self.timeout_seconds.setValue(int(validation.get("timeout_seconds", 45) or 45))
         self.checkpoint_every.setValue(int(validation.get("checkpoint_every", 100) or 100))

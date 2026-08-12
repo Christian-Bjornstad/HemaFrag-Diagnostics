@@ -68,7 +68,11 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "engine": {
         "use_rust": True,
+        # Rust owns ladder-anchor selection. The legacy Python selector can be
+        # re-enabled temporarily with python_ladder_compatibility_fallback.
+        "rust_owned_ladder": True,
         "strict_rust_ladder": False,
+        "python_ladder_compatibility_fallback": False,
         "rust_timeout_seconds": 60,
         "rust_timeout_seconds_rox": 120,
         "rust_timeout_seconds_liz": 60,
@@ -95,7 +99,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
-                "global_tracking_excel_path": "/Volumes/T7 Shield/HemaFrag_Clonality_All_Runs.xlsx",
+                # Optional shared/master workbook. Blank disables global updates
+                # until the operator selects a reachable file in Settings.
+                "global_tracking_excel_path": "",
                 "run_date_filter": "latest",
                 "aggregate_by_patient": True,
                 "patient_id_regex": r"\d{2}OUM\d{5}",
@@ -151,18 +157,34 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
-                "global_tracking_excel_path": "/Volumes/T7 Shield/HemaFrag_FLT3_All_Runs.xlsx",
+                "global_tracking_excel_path": "",
                 "run_date_filter": "latest",
                 "aggregate_by_patient": True,
                 "patient_id_regex": r"\d{2}OUM\d{5}",
                 "aggregate_dit_reports": True,
+            },
+            "archive_runner": {
+                "year_label": "2025",
+                "input_root": str(Path.home()),
+                "output_root": str(Path.home()),
+                "run_name": "",
+                "last_run_root": "",
+                "combined_workbook_path": "",
+                "last_selected_run_root": "",
+                "max_workers": 1,
+                "folder_workers": 1,
+                "resume_existing": False,
+                "include_sl": False,
+                "refresh_each_folder": False,
+                "cleanup_staging_root": False,
+                "generate_html": False,
             },
             "validation": {
                 "data_root": str(Path("/Volumes/T7 Shield/DATA/flt3")),
                 "output_root": str(Path.home()),
                 "run_name": "",
                 "years": ["2025", "2026"],
-                "workers": 6,
+                "workers": min(8, max(1, int(os.cpu_count() or 1) - 1)),
                 "limit": 0,
                 "include_npm1": False,
                 "dit_only": False,
@@ -189,12 +211,24 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
             "pipeline": {
                 "mode": "all",
                 "assay_filter_substring": "",
+                "profile_schema_version": "hemafrag_general_profile_v1",
+                "profile_id": "general_default",
+                "profile_version": 1,
+                "validation_status": "unvalidated",
                 "ladder": GENERAL_DEFAULT_LADDER,
+                "size_standard_channel": "DATA4",
                 "trace_channels": list(GENERAL_DEFAULT_TRACE_CHANNELS),
                 "peak_channels": list(GENERAL_DEFAULT_TRACE_CHANNELS),
                 "primary_peak_channel": GENERAL_DEFAULT_PRIMARY_CHANNEL,
                 "bp_min": GENERAL_DEFAULT_BP_MIN,
                 "bp_max": GENERAL_DEFAULT_BP_MAX,
+                "report_fields": [
+                    "source_sha256",
+                    "profile",
+                    "ladder_qc",
+                    "trace_channels",
+                    "bp_range",
+                ],
             },
         },
     },
@@ -346,12 +380,50 @@ def _migrate_legacy_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
         if not profile_pipeline.get("assay_filter_substring"):
             profile_pipeline["assay_filter_substring"] = pipeline.get("assay_filter_substring", default_pipeline.get("assay_filter_substring", ""))
         if analysis_id == "general":
+            profile_pipeline.setdefault(
+                "profile_schema_version",
+                default_pipeline.get(
+                    "profile_schema_version",
+                    "hemafrag_general_profile_v1",
+                ),
+            )
+            profile_pipeline.setdefault(
+                "profile_id",
+                default_pipeline.get("profile_id", "general_default"),
+            )
+            profile_pipeline.setdefault(
+                "profile_version",
+                default_pipeline.get("profile_version", 1),
+            )
+            profile_pipeline.setdefault(
+                "validation_status",
+                default_pipeline.get("validation_status", "unvalidated"),
+            )
             profile_pipeline.setdefault("ladder", default_pipeline.get("ladder", GENERAL_DEFAULT_LADDER))
+            profile_pipeline.setdefault(
+                "size_standard_channel",
+                default_pipeline.get("size_standard_channel", "DATA4"),
+            )
             profile_pipeline.setdefault("trace_channels", copy.deepcopy(default_pipeline.get("trace_channels", list(GENERAL_DEFAULT_TRACE_CHANNELS))))
             profile_pipeline.setdefault("peak_channels", copy.deepcopy(default_pipeline.get("peak_channels", list(GENERAL_DEFAULT_TRACE_CHANNELS))))
             profile_pipeline.setdefault("primary_peak_channel", default_pipeline.get("primary_peak_channel", GENERAL_DEFAULT_PRIMARY_CHANNEL))
             profile_pipeline.setdefault("bp_min", default_pipeline.get("bp_min", GENERAL_DEFAULT_BP_MIN))
             profile_pipeline.setdefault("bp_max", default_pipeline.get("bp_max", GENERAL_DEFAULT_BP_MAX))
+            profile_pipeline.setdefault(
+                "report_fields",
+                copy.deepcopy(
+                    default_pipeline.get(
+                        "report_fields",
+                        [
+                            "source_sha256",
+                            "profile",
+                            "ladder_qc",
+                            "trace_channels",
+                            "bp_range",
+                        ],
+                    )
+                ),
+            )
         if analysis_id == "clonality":
             archive_runner = profile.setdefault("archive_runner", {})
             if not isinstance(archive_runner.get("input_root"), str) or not archive_runner.get("input_root"):
@@ -380,12 +452,39 @@ def _migrate_legacy_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
 
 def _normalize_general_pipeline_settings(profile_pipeline: Dict[str, Any]) -> None:
     """Clamp general runtime settings to the supported ladder/channel contract."""
+    profile_pipeline["profile_schema_version"] = "hemafrag_general_profile_v1"
+    profile_id = str(profile_pipeline.get("profile_id") or "general_default").strip()
+    profile_pipeline["profile_id"] = profile_id or "general_default"
+    try:
+        profile_pipeline["profile_version"] = max(
+            1,
+            int(profile_pipeline.get("profile_version") or 1),
+        )
+    except (TypeError, ValueError):
+        profile_pipeline["profile_version"] = 1
+    validation_status = str(
+        profile_pipeline.get("validation_status") or "unvalidated"
+    ).strip().lower()
+    if validation_status not in {"unvalidated", "validated", "retired"}:
+        validation_status = "unvalidated"
+    profile_pipeline["validation_status"] = validation_status
+
     ladder = str(profile_pipeline.get("ladder", GENERAL_DEFAULT_LADDER)).strip() or GENERAL_DEFAULT_LADDER
     if ladder.upper() == "LIZ500":
         ladder = "LIZ500_250"
     if ladder not in GENERAL_LADDERS:
         ladder = GENERAL_DEFAULT_LADDER
     profile_pipeline["ladder"] = ladder
+    default_size_standard_channel = (
+        "DATA105" if ladder == "LIZ500_250" else "DATA4"
+    )
+    size_standard_channel = str(
+        profile_pipeline.get("size_standard_channel")
+        or default_size_standard_channel
+    ).strip().upper()
+    if size_standard_channel not in {"DATA4", "DATA5", "DATA105"}:
+        size_standard_channel = default_size_standard_channel
+    profile_pipeline["size_standard_channel"] = size_standard_channel
 
     trace_channels = profile_pipeline.get("trace_channels", GENERAL_DEFAULT_TRACE_CHANNELS)
     if not isinstance(trace_channels, list):
@@ -416,6 +515,21 @@ def _normalize_general_pipeline_settings(profile_pipeline: Dict[str, Any]) -> No
         profile_pipeline["bp_max"] = float(profile_pipeline.get("bp_max", GENERAL_DEFAULT_BP_MAX))
     except (TypeError, ValueError):
         profile_pipeline["bp_max"] = GENERAL_DEFAULT_BP_MAX
+    report_fields = profile_pipeline.get("report_fields")
+    if not isinstance(report_fields, list):
+        report_fields = []
+    report_fields = [
+        str(value).strip()
+        for value in report_fields
+        if str(value).strip()
+    ]
+    profile_pipeline["report_fields"] = report_fields or [
+        "source_sha256",
+        "profile",
+        "ladder_qc",
+        "trace_channels",
+        "bp_range",
+    ]
 
 def _validate_settings(settings: Dict[str, Any]) -> None:
     """Basic validation for critical settings."""
@@ -481,6 +595,11 @@ def _validate_settings(settings: Dict[str, Any]) -> None:
             profile_batch["tracking_excel_path"] = defaults["batch"].get("tracking_excel_path", "")
         if not isinstance(profile_batch.get("global_tracking_excel_path"), str):
             profile_batch["global_tracking_excel_path"] = defaults["batch"].get("global_tracking_excel_path", "")
+        # Older settings shipped with a Mac-only T7 path. On Windows that path
+        # can trigger slow access failures at the end of every patient run.
+        global_tracking_path = str(profile_batch.get("global_tracking_excel_path") or "").strip()
+        if os.name == "nt" and global_tracking_path.replace("\\", "/").startswith("/Volumes/"):
+            profile_batch["global_tracking_excel_path"] = ""
         if profile_batch.get("run_date_filter") not in {"all", "latest"}:
             profile_batch["run_date_filter"] = defaults["batch"].get("run_date_filter", "all")
         if not isinstance(profile_batch.get("patient_id_regex"), str):

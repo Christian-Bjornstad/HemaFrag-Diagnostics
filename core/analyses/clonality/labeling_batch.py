@@ -14,6 +14,10 @@ import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
 
+from core.analyses.clonality.interpretation_units import (
+    CHANNEL_CHEMIST_LABEL_COLUMNS,
+    interpretation_units_for_assay,
+)
 from core.analyses.clonality.ml_data_contract import (
     CHEMIST_LABEL_COLUMN,
     load_tracking_run_table,
@@ -86,12 +90,8 @@ def build_clonality_labeling_batch(
     if excluded and "Assay" in tracking.columns:
         assay_names = tracking["Assay"].fillna("").astype(str).str.strip()
         tracking = tracking.loc[~assay_names.isin(excluded)].copy()
-    labels = (
-        tracking[CHEMIST_LABEL_COLUMN]
-        .fillna("")
-        .map(normalize_annotation_label)
-    )
-    tracking = tracking.loc[labels.eq("")].copy()
+    incomplete = tracking.apply(_row_has_unlabeled_channel, axis=1)
+    tracking = tracking.loc[incomplete].copy()
     if tracking.empty:
         raise ValueError("tracking workbook has no unlabeled patient rows")
 
@@ -99,6 +99,11 @@ def build_clonality_labeling_batch(
     features["_AssayKey"] = features["Assay"].map(_assay_key)
     join_columns = ["IdentityKey", "_AssayKey"]
     _reject_duplicate_keys(tracking, join_columns, "tracking")
+    if "InterpretationUnit" in features.columns:
+        features = _collapse_channel_features_for_selection(
+            features,
+            join_columns=join_columns,
+        )
     _reject_duplicate_keys(features, join_columns, "features")
 
     numeric_feature_columns = [
@@ -215,6 +220,8 @@ def build_clonality_labeling_batch(
     selected["ClonalityConfidence"] = selected["_RuleConfidence"]
     selected["ClonalityReviewNeeded"] = selected["_RuleReviewNeeded"]
     selected[CHEMIST_LABEL_COLUMN] = ""
+    for column in CHANNEL_CHEMIST_LABEL_COLUMNS:
+        selected[column] = ""
 
     original_columns = [
         column
@@ -225,6 +232,7 @@ def build_clonality_labeling_batch(
         dict.fromkeys(
             [
                 *original_columns,
+                *CHANNEL_CHEMIST_LABEL_COLUMNS,
                 "ClonalitySuggestion",
                 "ClonalityConfidence",
                 "ClonalityReviewNeeded",
@@ -342,58 +350,93 @@ def merge_clonality_labeling_batch(
     target_path = Path(target_workbook).expanduser()
     batch = load_tracking_run_table(batch_path).frame
     target = load_tracking_run_table(target_path).frame
-    _require_columns(
-        batch,
-        {"IdentityKey", "Assay", CHEMIST_LABEL_COLUMN},
-        "batch workbook",
-    )
+    _require_columns(batch, {"IdentityKey", "Assay"}, "batch workbook")
     _require_columns(target, {"IdentityKey", "Assay"}, "target workbook")
-    if CHEMIST_LABEL_COLUMN not in target.columns:
-        target[CHEMIST_LABEL_COLUMN] = ""
+    label_columns = [
+        column
+        for column in (CHEMIST_LABEL_COLUMN, *CHANNEL_CHEMIST_LABEL_COLUMNS)
+        if column in batch.columns
+    ]
+    if not label_columns:
+        raise KeyError("batch workbook has no chemist label columns")
+    for column in label_columns:
+        if column not in target.columns:
+            target[column] = ""
 
     batch = batch.copy()
     target = target.copy()
     batch["_AssayKey"] = batch["Assay"].map(_assay_key)
     target["_AssayKey"] = target["Assay"].map(_assay_key)
     key_columns = ["IdentityKey", "_AssayKey"]
-    labels = (
-        batch[CHEMIST_LABEL_COLUMN]
-        .fillna("")
-        .map(normalize_annotation_label)
+    labeled_pieces = []
+    for label_column in label_columns:
+        labels = (
+            batch[label_column]
+            .fillna("")
+            .map(normalize_annotation_label)
+        )
+        piece = batch.loc[labels.ne(""), key_columns].copy()
+        piece["LabelColumn"] = label_column
+        piece["ChemistLabel"] = labels.loc[labels.ne("")]
+        labeled_pieces.append(piece)
+    labeled = (
+        pd.concat(labeled_pieces, ignore_index=True)
+        if labeled_pieces
+        else pd.DataFrame(
+            columns=[*key_columns, "LabelColumn", "ChemistLabel"]
+        )
     )
-    labeled = batch.loc[labels.ne(""), key_columns + [CHEMIST_LABEL_COLUMN]].copy()
-    labeled[CHEMIST_LABEL_COLUMN] = labels.loc[labels.ne("")]
     invalid = sorted(
-        set(labeled[CHEMIST_LABEL_COLUMN]) - set(ANNOTATION_CLASSES_ORDER)
+        set(labeled["ChemistLabel"]) - set(ANNOTATION_CLASSES_ORDER)
     )
     if invalid:
-        raise ValueError(f"batch contains invalid chemist labels: {', '.join(invalid)}")
-    duplicate = labeled.duplicated(subset=key_columns, keep=False)
+        raise ValueError(
+            f"batch contains invalid chemist labels: {', '.join(invalid)}"
+        )
+    labeled_key_columns = [*key_columns, "LabelColumn"]
+    duplicate = labeled.duplicated(subset=labeled_key_columns, keep=False)
     if duplicate.any():
         conflicts = (
             labeled.loc[duplicate]
-            .groupby(key_columns)[CHEMIST_LABEL_COLUMN]
+            .groupby(labeled_key_columns)["ChemistLabel"]
             .nunique()
         )
         if conflicts.gt(1).any():
-            raise ValueError("batch contains conflicting labels for one IdentityKey+Assay")
-        labeled = labeled.drop_duplicates(subset=key_columns, keep="last")
+            raise ValueError(
+                "batch contains conflicting labels for one "
+                "IdentityKey+Assay+channel"
+            )
+        labeled = labeled.drop_duplicates(
+            subset=labeled_key_columns,
+            keep="last",
+        )
 
     target_key_map = {
-        (str(row["IdentityKey"]), str(row["_AssayKey"])): _clean_text(
-            row.get(CHEMIST_LABEL_COLUMN)
+        (str(row["IdentityKey"]), str(row["_AssayKey"]), label_column): (
+            _clean_text(row.get(label_column))
         )
         for _, row in target.iterrows()
+        for label_column in label_columns
     }
-    updates: dict[tuple[str, str], str] = {}
+    updates: dict[tuple[str, str, str], str] = {}
     unchanged = 0
     conflicts: list[dict[str, str]] = []
     missing: list[dict[str, str]] = []
     for _, row in labeled.iterrows():
-        key = (str(row["IdentityKey"]), str(row["_AssayKey"]))
-        new_label = str(row[CHEMIST_LABEL_COLUMN]).strip()
+        key = (
+            str(row["IdentityKey"]),
+            str(row["_AssayKey"]),
+            str(row["LabelColumn"]),
+        )
+        new_label = str(row["ChemistLabel"]).strip()
         if key not in target_key_map:
-            missing.append({"IdentityKey": key[0], "AssayKey": key[1]})
+            missing.append(
+                {
+                    "IdentityKey": key[0],
+                    "AssayKey": key[1],
+                    "LabelColumn": key[2],
+                }
+            )
             continue
         current_label = target_key_map[key]
         if current_label == new_label:
@@ -403,6 +446,7 @@ def merge_clonality_labeling_batch(
                 {
                     "IdentityKey": key[0],
                     "AssayKey": key[1],
+                    "LabelColumn": key[2],
                     "TargetLabel": current_label,
                     "BatchLabel": new_label,
                 }
@@ -525,6 +569,41 @@ def _select_diverse_rows(
     return result
 
 
+def _row_has_unlabeled_channel(row: pd.Series) -> bool:
+    units = interpretation_units_for_assay(row.get("Assay"))
+    if not units:
+        return not bool(_clean_text(row.get(CHEMIST_LABEL_COLUMN)))
+    legacy = normalize_annotation_label(row.get(CHEMIST_LABEL_COLUMN))
+    for unit in units:
+        channel_label = normalize_annotation_label(row.get(unit.label_column))
+        if not channel_label and not (len(units) == 1 and legacy):
+            return True
+    return False
+
+
+def _collapse_channel_features_for_selection(
+    features: pd.DataFrame,
+    *,
+    join_columns: list[str],
+) -> pd.DataFrame:
+    aggregations: dict[str, str] = {}
+    for column in features.columns:
+        if column in join_columns:
+            continue
+        if (
+            pd.api.types.is_numeric_dtype(features[column])
+            or pd.api.types.is_bool_dtype(features[column])
+        ):
+            aggregations[column] = "mean"
+        else:
+            aggregations[column] = "first"
+    return (
+        features.groupby(join_columns, as_index=False, sort=False)
+        .agg(aggregations)
+        .reset_index(drop=True)
+    )
+
+
 def _expand_selected_to_parallel_rows(
     selected: pd.DataFrame,
     eligible_rows: pd.DataFrame,
@@ -621,7 +700,7 @@ def _balanced_quotas(
 
 def _write_label_updates(
     workbook_path: Path,
-    updates: Mapping[tuple[str, str], str],
+    updates: Mapping[tuple[str, str, str], str],
 ) -> None:
     workbook = load_workbook(workbook_path)
     try:
@@ -638,17 +717,23 @@ def _write_label_updates(
             assay_column = headers.get("Assay")
             if identity_column is None or assay_column is None:
                 continue
-            label_column = headers.get(CHEMIST_LABEL_COLUMN)
-            if label_column is None:
-                label_column = sheet.max_column + 1
-                sheet.cell(1, label_column, CHEMIST_LABEL_COLUMN)
             for row_number in range(2, sheet.max_row + 1):
-                key = (
-                    str(sheet.cell(row_number, identity_column).value or "").strip(),
-                    _assay_key(sheet.cell(row_number, assay_column).value),
+                identity = str(
+                    sheet.cell(row_number, identity_column).value or ""
+                ).strip()
+                assay = _assay_key(
+                    sheet.cell(row_number, assay_column).value
                 )
-                if key in updates:
-                    sheet.cell(row_number, label_column, updates[key])
+                for key, value in updates.items():
+                    if key[:2] != (identity, assay):
+                        continue
+                    label_name = key[2]
+                    label_column = headers.get(label_name)
+                    if label_column is None:
+                        label_column = sheet.max_column + 1
+                        sheet.cell(1, label_column, label_name)
+                        headers[label_name] = label_column
+                    sheet.cell(row_number, label_column, value)
         temporary = workbook_path.with_suffix(workbook_path.suffix + ".tmp")
         workbook.save(temporary)
         os.replace(temporary, workbook_path)

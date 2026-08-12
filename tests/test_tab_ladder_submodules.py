@@ -8,25 +8,39 @@ a QApplication or constructing a TabLadder widget.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from core.ladder_adjustment_store import (
+    load_ladder_adjustment_record,
+    save_ladder_adjustment_record,
+)
 
 from gui_qt.tabs.tab_ladder._io import (
+    assert_review_bundle_open_allowed,
+    build_review_annotation,
     load_review_bundle_worker,
     review_case_paths_from_bundle,
+    save_missing_ladder_exclusion_worker,
     save_review_bundle_annotation_worker,
+    save_review_bundle_rerun_status_worker,
 )
 from gui_qt.tabs.tab_ladder._summary import (
     chip_state,
     count_chip_states,
     entry_cache_key,
     entry_original_path,
+    format_ladder_confidence_shadow,
     format_file_item,
+    manual_adjustment_consumption,
     metadata_from_entry,
     resolve_cache_key,
+    review_progress_text,
 )
 from gui_qt.tabs.tab_ladder._workers import (
     find_report_matches_worker,
@@ -45,6 +59,36 @@ def _posix_text(fake_path: str) -> str:
 class TabLadderSummaryHelperTests(unittest.TestCase):
     """Pure helpers in `_summary.py`."""
 
+    def test_review_progress_text_counts_all_resolved_labels(self) -> None:
+        rows = [
+            {"label": "manual_adjusted"},
+            {"label": "reviewed_no_change"},
+            {"label": ""},
+        ]
+
+        self.assertEqual(
+            review_progress_text(rows),
+            "Reviewed 2 / 3 — Remaining 1",
+        )
+
+    def test_validation_bundle_requires_candidate_freeze(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            experiment = Path(td) / "rust_fit_improvement"
+            bundle = experiment / "validation_60"
+            bundle.mkdir(parents=True)
+            (bundle / "ladder_review_summary.json").write_text(
+                json.dumps(
+                    {
+                        "experiment_wave": "validation",
+                        "experiment_root": str(experiment),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "frozen candidate"):
+                assert_review_bundle_open_allowed(bundle)
+
     def test_resolve_cache_key_passes_through(self) -> None:
         # Use a relative path so Windows doesn't prefix with a drive.
         p = Path("tmp_xenon_test_42/foo.fsa")
@@ -52,6 +96,68 @@ class TabLadderSummaryHelperTests(unittest.TestCase):
         # str-based comparison that ignores the leading "C:/..." Windows
         # prefix issue: both are resolved via the same mechanism.
         self.assertIsInstance(result, Path)
+
+    def test_manual_adjustment_consumption_requires_successful_manual_entry(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fsa = Path(td) / "sample.fsa"
+            fsa.write_bytes(b"trace")
+            database = str(Path(td) / "adjustments.sqlite3")
+            with patch.dict(
+                os.environ,
+                {"HEMAFRAG_LADDER_ADJUSTMENT_DB": database},
+            ):
+                save_ladder_adjustment_record(fsa, {})
+                adjustment_hash = str(
+                    load_ladder_adjustment_record(fsa)["payload_sha256"]
+                )
+                result = {
+                    "failed_jobs": [],
+                    "ladder_review_gate": {"review_case_count": 0},
+                    "dit_report_entries": [
+                        {
+                            "original_file_path": str(fsa),
+                            "ladder_fit_strategy": "manual_adjustment",
+                            "analysis_provenance": {
+                                "ladder_fit_strategy": "manual_adjustment",
+                                "manual_adjustment_consumed": True,
+                                "manual_adjustment_sha256": adjustment_hash,
+                                "source_sha256": "b" * 64,
+                            },
+                        }
+                    ],
+                }
+
+                status = manual_adjustment_consumption(result, fsa)
+
+                self.assertTrue(status["consumed"])
+                self.assertEqual(status["status"], "consumed")
+                self.assertEqual(
+                    status["manual_adjustment_sha256"],
+                    adjustment_hash,
+                )
+
+                result["ladder_review_gate"]["review_case_count"] = 1
+                status = manual_adjustment_consumption(result, fsa)
+                self.assertFalse(status["consumed"])
+                self.assertIn("review", status["reason"].lower())
+
+    def test_format_ladder_confidence_shadow_is_explicitly_read_only(
+        self,
+    ) -> None:
+        text = format_ladder_confidence_shadow(
+            {
+                "runtime_selected_rank": 1,
+                "top1_top2_score_margin": 0.403,
+                "stable_under_tested_thresholds": True,
+            }
+        )
+
+        self.assertIn("Selected rank 1", text)
+        self.assertIn("top-2 margin 0.403", text)
+        self.assertIn("threshold stable", text)
+        self.assertIn("shadow only", text)
 
     def test_resolve_cache_key_handles_unresolvable(self) -> None:
         # A non-existent file should still resolve via expanduser().
@@ -160,6 +266,25 @@ class TabLadderIOHelperTests(unittest.TestCase):
             self.assertEqual(len(result["rows"]), 2)
             self.assertEqual(len(result["missing_paths"]), 1)
 
+    def test_load_review_bundle_worker_links_existing_run_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fsa = Path(td) / "real.fsa"
+            fsa.write_bytes(b"x")
+            self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            manifest = Path(td) / "hemafrag_run_test.json"
+            manifest.write_text("{}", encoding="utf-8")
+            (Path(td) / "ladder_review_summary.json").write_text(
+                __import__("json").dumps({"run_manifest_path": str(manifest)}),
+                encoding="utf-8",
+            )
+
+            result = load_review_bundle_worker(Path(td))
+
+            self.assertEqual(result["run_manifest_path"], manifest)
+
     def test_load_review_bundle_worker_raises_when_csv_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(FileNotFoundError):
@@ -213,6 +338,254 @@ class TabLadderIOHelperTests(unittest.TestCase):
             annotations_path = Path(td) / "ladder_review_annotations.json"
             self.assertTrue(annotations_path.exists())
 
+    def test_missing_ladder_annotation_has_no_adjustment_path(self) -> None:
+        annotation = build_review_annotation(
+            "excluded_missing_ladder_signal",
+            "No usable ladder signal; preparation error.",
+            reviewed_at_utc="2026-08-10T00:00:00+00:00",
+        )
+
+        self.assertEqual(annotation["label"], "excluded_missing_ladder_signal")
+        self.assertEqual(annotation["adjustment_path"], "")
+
+    def test_missing_ladder_action_writes_no_adjustment_record(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "no-ladder.fsa"
+            fsa.write_bytes(b"fsa")
+            self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            isolated_db = bundle / "adjustments.sqlite3"
+            with patch.dict(
+                os.environ,
+                {"HEMAFRAG_LADDER_ADJUSTMENT_DB": str(isolated_db)},
+            ):
+                saved = save_missing_ladder_exclusion_worker(
+                    bundle,
+                    fsa,
+                    note="No usable ladder signal; preparation error.",
+                    reviewed_at_utc="2026-08-10T00:00:00+00:00",
+                )
+
+                self.assertEqual(saved["label"], "excluded_missing_ladder_signal")
+                self.assertEqual(saved["adjustment_path"], "")
+                self.assertIsNone(load_ladder_adjustment_record(fsa))
+                self.assertFalse(isolated_db.exists())
+                self.assertFalse(fsa.with_suffix(".ladder_adj.json").exists())
+
+    def test_missing_ladder_exclusion_rejects_already_adjusted_row(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "adjusted.fsa"
+            fsa.write_bytes(b"fsa")
+            (bundle / "ladder_review_cases.csv").write_text(
+                (
+                    "full_path,file,label,adjustment_path\n"
+                    f"{fsa},{fsa.name},manual_adjusted,{bundle / 'ladder_adjustments.sqlite3'}\n"
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "unresolved"):
+                save_missing_ladder_exclusion_worker(
+                    bundle,
+                    fsa,
+                    note="No usable ladder signal; preparation error.",
+                    reviewed_at_utc="2026-08-10T00:00:00+00:00",
+                )
+
+    def test_missing_ladder_exclusion_rejects_bundle_local_adjustment_record(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "adjusted.fsa"
+            fsa.write_bytes(b"fsa")
+            self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            bundle_database = bundle / "ladder_adjustments.sqlite3"
+            with patch.dict(
+                os.environ,
+                {"HEMAFRAG_LADDER_ADJUSTMENT_DB": str(bundle_database)},
+            ):
+                save_ladder_adjustment_record(fsa, {"selected_peaks": []})
+            with patch.dict(
+                os.environ,
+                {
+                    "HEMAFRAG_LADDER_ADJUSTMENT_DB": str(
+                        bundle / "decoy-default.sqlite3"
+                    )
+                },
+            ):
+                with self.assertRaisesRegex(ValueError, "adjustment"):
+                    save_missing_ladder_exclusion_worker(
+                        bundle,
+                        fsa,
+                        note="No usable ladder signal; preparation error.",
+                        reviewed_at_utc="2026-08-10T00:00:00+00:00",
+                    )
+
+    def test_annotation_pair_rolls_back_when_second_publication_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "sample.fsa"
+            fsa.write_bytes(b"trace")
+            cases_path = self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            annotations_path = bundle / "ladder_review_annotations.json"
+            annotations_path.write_bytes(b'{"sentinel": true}\r\n')
+            original_cases = cases_path.read_bytes()
+            original_annotations = annotations_path.read_bytes()
+            real_replace = os.replace
+            failed_once = False
+
+            def fail_second_publication(source, destination):
+                nonlocal failed_once
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if (
+                    not failed_once
+                    and destination_path == annotations_path
+                    and source_path.suffix == ".tmp"
+                ):
+                    failed_once = True
+                    raise OSError("injected annotation publication failure")
+                real_replace(source, destination)
+
+            with patch(
+                "gui_qt.tabs.tab_ladder._io.os.replace",
+                side_effect=fail_second_publication,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "injected annotation publication failure"
+                ):
+                    save_review_bundle_annotation_worker(
+                        bundle,
+                        fsa,
+                        {
+                            "label": "reviewed_no_change",
+                            "label_note": "reviewed",
+                            "reviewed_at_utc": "2026-08-10T00:00:00+00:00",
+                            "adjustment_path": "",
+                        },
+                    )
+
+            self.assertEqual(cases_path.read_bytes(), original_cases)
+            self.assertEqual(annotations_path.read_bytes(), original_annotations)
+            self.assertFalse(list(bundle.glob(".*.tmp")))
+            self.assertFalse(list(bundle.glob(".*.backup")))
+
+    def test_annotation_pair_preserves_inputs_when_second_backup_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "sample.fsa"
+            fsa.write_bytes(b"trace")
+            cases_path = self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            annotations_path = bundle / "ladder_review_annotations.json"
+            annotations_path.write_bytes(b'{"sentinel": true}\r\n')
+            original_cases = cases_path.read_bytes()
+            original_annotations = annotations_path.read_bytes()
+            real_replace = os.replace
+
+            def fail_second_backup(source, destination):
+                if (
+                    Path(source) == annotations_path
+                    and Path(destination).suffix == ".backup"
+                ):
+                    raise OSError("injected annotation backup failure")
+                real_replace(source, destination)
+
+            with patch(
+                "gui_qt.tabs.tab_ladder._io.os.replace",
+                side_effect=fail_second_backup,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "injected annotation backup failure"
+                ):
+                    save_review_bundle_annotation_worker(
+                        bundle,
+                        fsa,
+                        {
+                            "label": "reviewed_no_change",
+                            "label_note": "reviewed",
+                            "reviewed_at_utc": "2026-08-10T00:00:00+00:00",
+                            "adjustment_path": "",
+                        },
+                    )
+
+            self.assertEqual(cases_path.read_bytes(), original_cases)
+            self.assertEqual(annotations_path.read_bytes(), original_annotations)
+            self.assertFalse(list(bundle.glob(".*.tmp")))
+            self.assertFalse(list(bundle.glob(".*.backup")))
+
+    def test_annotation_pair_preserves_backup_when_rollback_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "sample.fsa"
+            fsa.write_bytes(b"trace")
+            cases_path = self._write_csv(
+                td,
+                [{"full_path": str(fsa), "file": fsa.name, "label": ""}],
+            )
+            annotations_path = bundle / "ladder_review_annotations.json"
+            annotations_path.write_bytes(b'{"sentinel": true}\r\n')
+            original_cases = cases_path.read_bytes()
+            original_annotations = annotations_path.read_bytes()
+            real_replace = os.replace
+            publication_failed = False
+
+            def fail_publication_and_csv_rollback(source, destination):
+                nonlocal publication_failed
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if (
+                    not publication_failed
+                    and destination_path == annotations_path
+                    and source_path.suffix == ".tmp"
+                ):
+                    publication_failed = True
+                    raise OSError("injected annotation publication failure")
+                if (
+                    publication_failed
+                    and destination_path == cases_path
+                    and source_path.suffix == ".backup"
+                ):
+                    raise OSError("injected CSV rollback failure")
+                real_replace(source, destination)
+
+            with patch(
+                "gui_qt.tabs.tab_ladder._io.os.replace",
+                side_effect=fail_publication_and_csv_rollback,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "publication and rollback both failed"
+                ):
+                    save_review_bundle_annotation_worker(
+                        bundle,
+                        fsa,
+                        {
+                            "label": "reviewed_no_change",
+                            "label_note": "reviewed",
+                            "reviewed_at_utc": "2026-08-10T00:00:00+00:00",
+                            "adjustment_path": "",
+                        },
+                    )
+
+            backups = list(bundle.glob(".*.backup"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_bytes(), original_cases)
+            self.assertFalse(cases_path.exists())
+            self.assertEqual(annotations_path.read_bytes(), original_annotations)
+
     def test_save_review_bundle_annotation_worker_raises_on_unknown_path(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             fsa = Path(td) / "x.fsa"
@@ -227,6 +600,192 @@ class TabLadderIOHelperTests(unittest.TestCase):
                     Path(_posix_text("/never/seen.fsa")),
                     {"label": "reviewed_no_change"},
                 )
+
+    def test_save_review_bundle_rerun_status_worker_persists_consumption(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td)
+            fsa = bundle / "sample.fsa"
+            fsa.write_bytes(b"trace")
+            cases = bundle / "ladder_review_cases.csv"
+            cases.write_text(
+                f"full_path,label\n{fsa},manual_adjusted\n",
+                encoding="utf-8",
+            )
+            manifest = bundle / "run_manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+
+            updated = save_review_bundle_rerun_status_worker(
+                bundle,
+                {
+                    str(fsa): {
+                        "status": "consumed",
+                        "manual_adjustment_sha256": "c" * 64,
+                    }
+                },
+                run_manifest_path=manifest,
+                rerun_at_utc="2026-07-28T12:00:00+00:00",
+            )
+            loaded = load_review_bundle_worker(bundle)["rows"][0]
+
+            self.assertEqual(updated, 1)
+            self.assertEqual(loaded["rerun_status"], "consumed")
+            self.assertEqual(loaded["consumed_adjustment_sha256"], "c" * 64)
+            self.assertEqual(
+                loaded["rerun_manifest_path"],
+                str(manifest.resolve()),
+            )
+
+
+class TabLadderRerunSelectionTests(unittest.TestCase):
+    def test_run_tab_unregisters_excluded_case_from_review_session(self) -> None:
+        from gui_qt.tabs.tab_batch import TabBatch
+
+        cache_key = resolve_cache_key(Path("excluded-no-ladder.fsa"))
+        retained_key = resolve_cache_key(Path("retained-adjustment.fsa"))
+        fake_tab = SimpleNamespace(
+            _review_session_active=True,
+            _review_corrected_paths={cache_key},
+            _review_session_entries_by_path={cache_key: {"entry": True}},
+            _review_session_jobs=[
+                {
+                    "name": "shared-job",
+                    "files": [cache_key, retained_key],
+                }
+            ],
+            _resolve_cache_key=resolve_cache_key,
+            _refresh_review_finalize_button=MagicMock(),
+            _set_workflow_status=MagicMock(),
+        )
+
+        TabBatch.unregister_ladder_review_update(fake_tab, cache_key)
+
+        self.assertNotIn(cache_key, fake_tab._review_corrected_paths)
+        self.assertNotIn(cache_key, fake_tab._review_session_entries_by_path)
+        self.assertEqual(
+            fake_tab._review_session_jobs[0]["files"],
+            [retained_key],
+        )
+        fake_tab._refresh_review_finalize_button.assert_called_once_with()
+
+    def test_exclusion_clears_local_and_run_tab_rerun_state(self) -> None:
+        from gui_qt.tabs.tab_ladder import TabLadder
+
+        excluded_fsa = Path("excluded-no-ladder.fsa").resolve()
+        cache_key = resolve_cache_key(excluded_fsa)
+        review_case = {"full_path": str(excluded_fsa), "label": ""}
+        run_tab = SimpleNamespace(
+            unregister_ladder_review_update=MagicMock()
+        )
+        fake_tab = SimpleNamespace(
+            _review_case_by_path={cache_key: review_case},
+            _review_bundle_cases=[review_case],
+            _recent_reviewed_files={cache_key},
+            _review_session_entries_by_path={cache_key: {"entry": True}},
+            _manual_rerun_consumption_by_path={cache_key: {"consumed": True}},
+            _current_file=None,
+            _resolve_cache_key=resolve_cache_key,
+            _sync_chip_strip=MagicMock(),
+            _rebuild_file_list=MagicMock(),
+            _select_file=MagicMock(),
+            _refresh_review_bundle_run_button=MagicMock(),
+            _set_status=MagicMock(),
+            _run_tab_for_review=lambda: run_tab,
+        )
+        annotation = {
+            "label": "excluded_missing_ladder_signal",
+            "label_note": "No usable ladder signal; preparation error.",
+            "reviewed_at_utc": "2026-08-10T00:00:00+00:00",
+            "adjustment_path": "",
+        }
+
+        TabLadder._on_missing_ladder_exclusion_saved(
+            fake_tab, cache_key, annotation
+        )
+
+        self.assertNotIn(cache_key, fake_tab._recent_reviewed_files)
+        self.assertNotIn(cache_key, fake_tab._review_session_entries_by_path)
+        self.assertNotIn(cache_key, fake_tab._manual_rerun_consumption_by_path)
+        run_tab.unregister_ladder_review_update.assert_called_once_with(cache_key)
+
+    def test_excluded_bundle_case_is_not_rerun_ready_even_if_recent(self) -> None:
+        from gui_qt.tabs.tab_ladder import TabLadder
+
+        excluded_fsa = Path("excluded-no-ladder.fsa")
+        fake_tab = SimpleNamespace(
+            _review_bundle_cases=[
+                {
+                    "full_path": str(excluded_fsa),
+                    "label": "excluded_missing_ladder_signal",
+                }
+            ],
+            _recent_reviewed_files={resolve_cache_key(excluded_fsa)},
+            _resolve_cache_key=resolve_cache_key,
+        )
+
+        rerunnable, recent_rerunnable = TabLadder._review_bundle_rerun_counts(
+            fake_tab
+        )
+
+        self.assertEqual(rerunnable, 0)
+        self.assertEqual(recent_rerunnable, 0)
+
+    def test_excluded_bundle_case_disables_rerun_button(self) -> None:
+        from PyQt6.QtWidgets import QApplication
+        from gui_qt.tabs.tab_ladder import TabLadder
+
+        app = QApplication.instance() or QApplication([])
+        excluded_fsa = Path("excluded-no-ladder.fsa")
+        tab = TabLadder()
+        try:
+            tab._review_bundle_dir = Path("review-bundle")
+            tab._review_bundle_cases = [
+                {
+                    "full_path": str(excluded_fsa),
+                    "label": "excluded_missing_ladder_signal",
+                }
+            ]
+            tab._recent_reviewed_files = {resolve_cache_key(excluded_fsa)}
+
+            tab._refresh_review_bundle_run_button()
+
+            self.assertFalse(tab.btn_rerun_review_bundle.isEnabled())
+            self.assertEqual(
+                tab.btn_rerun_review_bundle.text(),
+                "Run Reviewed Files + Reports",
+            )
+        finally:
+            tab.close()
+            app.processEvents()
+
+    def test_resolved_bundle_files_skip_missing_ladder_exclusion(self) -> None:
+        from gui_qt.tabs.tab_ladder import TabLadder
+
+        with tempfile.TemporaryDirectory() as td:
+            adjusted_fsa = Path(td) / "adjusted.fsa"
+            excluded_fsa = Path(td) / "excluded.fsa"
+            adjusted_fsa.write_bytes(b"fsa")
+            excluded_fsa.write_bytes(b"fsa")
+            fake_tab = SimpleNamespace(
+                _review_bundle_cases=[
+                    {"full_path": str(adjusted_fsa), "label": "manual_adjusted"},
+                    {
+                        "full_path": str(excluded_fsa),
+                        "label": "excluded_missing_ladder_signal",
+                    },
+                ],
+                _recent_reviewed_files=set(),
+                _resolve_cache_key=resolve_cache_key,
+            )
+
+            files, missing, unresolved = TabLadder._resolved_review_bundle_files(
+                fake_tab
+            )
+
+            self.assertEqual(files, [adjusted_fsa.resolve()])
+            self.assertEqual(missing, [])
+            self.assertEqual(unresolved, 0)
 
 
 class TabLadderWorkersHelperTests(unittest.TestCase):
@@ -296,6 +855,12 @@ class ChipStateHelperTests(unittest.TestCase):
                 "ladder_qc_status": "ok",
             }
             self.assertEqual(chip_state(row), "reviewed")
+
+    def test_chip_state_treats_missing_ladder_exclusion_as_reviewed(self) -> None:
+        self.assertEqual(
+            chip_state({"label": "excluded_missing_ladder_signal"}),
+            "reviewed",
+        )
 
     def test_needs_review_when_label_empty_and_flag_set(self) -> None:
         row = {

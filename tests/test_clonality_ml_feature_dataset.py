@@ -59,6 +59,35 @@ def _entry(path, assay="FR1"):
     }
 
 
+def _dual_channel_entry(path):
+    entry = _entry(path, assay="IGK")
+    data1 = entry["fsa"].fsa["DATA1"]
+    data2 = (
+        80.0
+        + 500.0 * np.exp(
+            -0.5
+            * (
+                (
+                    entry["fsa"].sample_data_with_basepairs["basepairs"].to_numpy()
+                    - 205.0
+                )
+                / 1.2
+            )
+            ** 2
+        )
+    )
+    entry["fsa"].fsa["DATA2"] = data2
+    entry["trace_channels"] = ["DATA1", "DATA2"]
+    entry["peaks_by_channel"]["DATA2"] = pd.DataFrame(
+        {
+            "basepairs": [205.0],
+            "peaks": [580.0],
+            "keep": [True],
+        }
+    )
+    return entry
+
+
 def _audit_rows(tmp_path):
     first = tmp_path / "sample1.fsa"
     second = tmp_path / "sample2.fsa"
@@ -110,11 +139,11 @@ def test_build_feature_dataset_exports_flat_trace_features_without_raw_paths(tmp
     assert len(dataset.features) == 2
     assert dataset.errors.empty
     assert dataset.processed_count == 2
-    assert "trace_peak_count_raw_per_channel.DATA1" in dataset.features.columns
-    assert "trace_signal_to_noise_per_channel.DATA1" in dataset.features.columns
+    assert "trace_peak_count_raw_per_channel.SELECTED" in dataset.features.columns
+    assert "trace_signal_to_noise_per_channel.SELECTED" in dataset.features.columns
     assert dataset.features["FsaContentHash"].str.len().eq(64).all()
     assert dataset.features["FeatureDatasetVersion"].eq(
-        "clonality_ml_feature_dataset_v3"
+        "clonality_ml_feature_dataset_v4_channel"
     ).all()
     assert dataset.features["CohortFeatureSchemaVersion"].eq(
         "clonality_cohort_features_v1"
@@ -208,6 +237,51 @@ def test_feature_dataset_records_assay_mismatch_as_error(tmp_path):
     assert "assay mismatch" in dataset.errors.iloc[0]["Error"]
 
 
+def test_dual_channel_feature_dataset_is_long_form_and_channel_local(tmp_path):
+    path = tmp_path / "igk.fsa"
+    path.write_bytes(b"igk")
+    rows = pd.DataFrame(
+        [
+            {
+                "IdentityKey": "igk-id",
+                "FsaSourceHash": "source",
+                "DIT": "26IGK",
+                "Assay": "IGK",
+                "SourceRunDir": "run-a",
+                "RunDate": "2026-07-29",
+                "Well": "A01",
+                "File": path.name,
+                "ResolvedFsaPath": str(path),
+                "FsaStatus": "resolved",
+                "ClonalityChemistLabel": "irregulaer",
+                "ClonalityChemistLabel_DATA1": "polyklonal",
+                "ClonalityChemistLabel_DATA2": "monoklonal",
+            }
+        ]
+    )
+
+    dataset = build_clonality_trace_feature_dataset(
+        rows,
+        analyze_file=_dual_channel_entry,
+    )
+
+    assert dataset.processed_count == 1
+    assert len(dataset.features) == 2
+    assert set(dataset.features["InterpretationUnit"]) == {
+        "IGK_JK5",
+        "IGK_JK1_4",
+    }
+    assert set(dataset.features["ClonalityChemistLabel"]) == {
+        "polyklonal",
+        "monoklonal",
+    }
+    assert not any(
+        column.endswith(".DATA1") or column.endswith(".DATA2")
+        for column in dataset.features.columns
+    )
+    assert "trace_peak_count_raw_per_channel.SELECTED" in dataset.features
+
+
 def test_write_feature_artifact_has_provenance_and_no_raw_trace_claim(tmp_path):
     rows = _audit_rows(tmp_path)
     dataset = build_clonality_trace_feature_dataset(
@@ -278,10 +352,8 @@ def test_load_resumable_feature_artifact_migrates_v2_derived_fields(tmp_path):
     migrated = load_resumable_feature_artifact(output)
 
     assert migrated["FeatureDatasetVersion"].eq(
-        "clonality_ml_feature_dataset_v3"
+        "clonality_ml_feature_dataset_v4_channel"
     ).all()
-    assert migrated["in_reference_window"].eq(1).all()
-    assert migrated["ref_window_coverage_fraction"].gt(0).all()
     assert migrated["patient_assays_run_count"].eq(
         migrated["cohort_patient_assay_count"]
     ).all()

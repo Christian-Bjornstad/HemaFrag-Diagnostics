@@ -1,5 +1,9 @@
-"""Portable application resource and desktop-identity helpers."""
+"""Portable application resource and desktop-identity helpers.
 
+This module deliberately stays independent of Qt at import time.  Source
+launches, Python/wheel deployments, and frozen bundles all use the same
+resource lookup and Windows application identity.
+"""
 from __future__ import annotations
 
 import ctypes
@@ -40,7 +44,7 @@ def application_resource_roots(
     *,
     bundle_dir: str | os.PathLike[str] | None = None,
 ) -> tuple[Path, ...]:
-    """Return portable roots that may contain the bundled assets folder."""
+    """Return portable roots that may contain the bundled ``assets`` folder."""
     module_root = Path(__file__).resolve().parent
     frozen_root = getattr(sys, "_MEIPASS", None)
     executable_root = Path(sys.executable).resolve().parent
@@ -87,7 +91,7 @@ def load_application_icon(
     icon_factory=None,
     log_message: Callable[[str], None] | None = None,
 ):
-    """Load and validate the Qt application icon, returning None on error."""
+    """Load and validate the Qt application icon, returning ``None`` on error."""
     path = resolve_app_icon_path(
         platform_name=platform_name,
         bundle_dir=bundle_dir,
@@ -121,7 +125,11 @@ def set_windows_app_user_model_id(
     setter: Callable[[str], object] | None = None,
     log_message: Callable[[str], None] | None = None,
 ) -> bool:
-    """Set a stable Windows taskbar identity before QApplication is created."""
+    """Give source-launched HemaFrag windows a stable Windows taskbar identity.
+
+    This must run before ``QApplication`` is constructed.  It is a no-op on
+    non-Windows platforms and never prevents application startup.
+    """
     if (platform_name or sys.platform) != "win32":
         return False
     emit = log_message or _LOGGER.warning

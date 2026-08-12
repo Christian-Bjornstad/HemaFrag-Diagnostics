@@ -12,6 +12,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from core.analyses.clonality.interpretation_units import (
+    CHANNEL_CHEMIST_LABEL_COLUMNS,
+    interpretation_units_for_assay,
+)
 from core.analyses.clonality.ml_data_contract import (
     CHEMIST_LABEL_COLUMN,
     RULE_LABEL_COLUMN,
@@ -119,6 +123,12 @@ def audit_clonality_ml_data(
     for column in REQUIRED_TRAINING_COLUMNS:
         rows[column] = rows[column].map(_clean_text)
     rows[label_column] = rows[label_column].map(normalize_annotation_label)
+    for channel_column in CHANNEL_CHEMIST_LABEL_COLUMNS:
+        if channel_column not in rows.columns:
+            rows[channel_column] = ""
+        rows[channel_column] = rows[channel_column].map(
+            normalize_annotation_label
+        )
 
     if rows.empty:
         _add_issue(issues, "error", "no_training_rows", 0, "No patient rows were found.")
@@ -133,7 +143,16 @@ def audit_clonality_ml_data(
         if count:
             _add_issue(issues, "error", code, count, f"{count} row(s) have no {column}.")
 
-    labels = rows[label_column]
+    unit_labels = (
+        _interpretation_unit_label_table(rows)
+        if label_column == CHEMIST_LABEL_COLUMN
+        else pd.DataFrame()
+    )
+    labels = (
+        unit_labels["ChemistLabel"]
+        if not unit_labels.empty
+        else rows[label_column]
+    )
     valid_labels = set(ANNOTATION_CLASSES_ORDER)
     invalid_mask = labels.ne("") & ~labels.isin(valid_labels)
     unlabeled_count = int(labels.eq("").sum())
@@ -242,6 +261,9 @@ def audit_clonality_ml_data(
         "source_sheets": list(table.source_sheets),
         "available_sheets": list(table.available_sheets),
         "row_count": int(len(rows)),
+        "interpretation_unit_count": int(
+            len(unit_labels) if not unit_labels.empty else len(rows)
+        ),
         "labeled_row_count": int(labels.ne("").sum()),
         "unlabeled_row_count": unlabeled_count,
         "resolved_fsa_count": int(rows["FsaStatus"].isin({"resolved", "resolved_recursive"}).sum()),
@@ -249,7 +271,11 @@ def audit_clonality_ml_data(
         "zero_byte_fsa_count": zero_byte_count,
         "assay_counts": _value_counts(rows["Assay"]),
         "label_counts": _value_counts(labels),
-        "assay_label_counts": _assay_label_counts(rows, label_column),
+        "assay_label_counts": (
+            _unit_label_counts(unit_labels)
+            if not unit_labels.empty
+            else _assay_label_counts(rows, label_column)
+        ),
         "grouping": grouping,
         "feature_quality_summary": {
             "feature_count": int(len(feature_quality)),
@@ -433,6 +459,59 @@ def _grouping_summary(rows: pd.DataFrame) -> dict[str, Any]:
             .nunique()
         ),
     }
+
+
+def _interpretation_unit_label_table(rows: pd.DataFrame) -> pd.DataFrame:
+    records = []
+    for _, row in rows.iterrows():
+        units = interpretation_units_for_assay(row.get("Assay"))
+        legacy = normalize_annotation_label(row.get(CHEMIST_LABEL_COLUMN))
+        if not units:
+            records.append(
+                {
+                    "Assay": _clean_text(row.get("Assay")),
+                    "InterpretationUnit": "",
+                    "Channel": "",
+                    "ChemistLabel": legacy,
+                }
+            )
+            continue
+        for unit in units:
+            label = normalize_annotation_label(row.get(unit.label_column))
+            if not label and len(units) == 1:
+                label = legacy
+            records.append(
+                {
+                    "Assay": _clean_text(row.get("Assay")),
+                    "InterpretationUnit": unit.unit_id,
+                    "Channel": unit.channel,
+                    "ChemistLabel": label,
+                }
+            )
+    return pd.DataFrame(records)
+
+
+def _unit_label_counts(unit_labels: pd.DataFrame) -> list[dict[str, Any]]:
+    if unit_labels.empty:
+        return []
+    grouped = (
+        unit_labels.assign(
+            _Label=unit_labels["ChemistLabel"].replace("", "<unlabelled>")
+        )
+        .groupby(["Assay", "InterpretationUnit", "Channel", "_Label"])
+        .size()
+        .reset_index(name="count")
+    )
+    return [
+        {
+            "assay": str(row["Assay"]),
+            "interpretation_unit": str(row["InterpretationUnit"]),
+            "channel": str(row["Channel"]),
+            "label": str(row["_Label"]),
+            "count": int(row["count"]),
+        }
+        for _, row in grouped.iterrows()
+    ]
 
 
 def _assay_label_counts(rows: pd.DataFrame, label_column: str) -> list[dict[str, Any]]:

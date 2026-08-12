@@ -23,6 +23,13 @@ from typing import Any, Mapping
 
 from config import APP_SETTINGS
 
+from core.analyses.clonality.interpretation_units import (
+    CHANNEL_ML_COLUMNS,
+    CHANNEL_ML_METRICS,
+    channel_local_numeric_features,
+    channel_ml_column,
+    interpretation_units_for_assay,
+)
 from core.analyses.clonality.ml_model import ClonalityModelStore
 
 
@@ -130,7 +137,14 @@ def _quality_review_reasons(
         or features.get("ladder_qc_status")
         or ""
     ).strip().lower()
-    if ladder_status and ladder_status not in {"ok", "pass", "passed", "good", "valid"}:
+    if ladder_status and ladder_status not in {
+        "ok",
+        "pass",
+        "passed",
+        "good",
+        "valid",
+        "manual_adjustment",
+    }:
         reasons.append("ladder_qc")
     if bool(entry.get("ClonalityReviewNeeded", False)):
         reasons.append("rule_review")
@@ -180,7 +194,11 @@ def _do_attach(entry: dict[str, Any], store: ClonalityModelStore) -> dict[str, A
         # Still stamp empty columns so the tracking workbook is uniform.
         for col in MLCOLUMNS:
             entry.setdefault(col, "")
+        for col in CHANNEL_ML_COLUMNS:
+            entry.setdefault(col, "")
         return entry
+
+    _attach_channel_predictions(entry, store, assay, features)
 
     required_columns = store.required_feature_columns(assay)
     required_context_columns = [
@@ -253,6 +271,92 @@ def _do_attach(entry: dict[str, Any], store: ClonalityModelStore) -> dict[str, A
     entry["ClonalityMLEvidence"] = ";".join(reasons) if reasons else "rule_ml_agree"
     entry["ClonalityMLModelVersion"] = str(result.get("model_version") or "")
     return entry
+
+
+def _attach_channel_predictions(
+    entry: dict[str, Any],
+    store: ClonalityModelStore,
+    assay: str,
+    features: Mapping[str, Any],
+) -> None:
+    if not hasattr(store, "is_enabled"):
+        return
+    units = interpretation_units_for_assay(assay)
+    eligible_units = [
+        unit
+        for unit in units
+        if store.is_enabled(unit.unit_id)
+    ]
+    if not eligible_units:
+        return
+
+    full_features: Mapping[str, Any] = features
+    if any(
+        any(
+            str(column).startswith("trace_")
+            for column in store.required_feature_columns(unit.unit_id)
+        )
+        for unit in eligible_units
+    ):
+        from core.analyses.clonality.interpretation import features_from_entry
+
+        full_features = {**features_from_entry(entry), **dict(features)}
+
+    channel_results: list[dict[str, Any]] = []
+    for unit in eligible_units:
+        local_features = channel_local_numeric_features(
+            full_features,
+            unit.channel,
+        )
+        result = store.predict(unit.unit_id, local_features)
+        if result is None:
+            continue
+        label = str(result["label"])
+        confidence = float(result["confidence"])
+        threshold = float(result.get("threshold_tau") or 0.0)
+        reasons = _quality_review_reasons(entry, local_features)
+        if bool(result["review_needed"]):
+            reasons.append("low_confidence")
+        if label in {
+            "monoklonal_pa_poly",
+            "oligoklonal",
+            "irregulaer",
+            "lite_pcr_produkt",
+            "intet_pcr_produkt",
+            "qc_teknisk_fail",
+            "usikker_review",
+        }:
+            reasons.append("rare_label_prediction")
+        reasons = list(dict.fromkeys(reasons))
+        payload = {
+            "interpretation_unit": unit.unit_id,
+            "channel": unit.channel,
+            "target_name": unit.target_name,
+            "label": label,
+            "confidence": round(confidence, 3),
+            "threshold": round(threshold, 3),
+            "review_needed": bool(reasons),
+            "evidence": (
+                ";".join(reasons)
+                if reasons
+                else "channel_model_accepted"
+            ),
+            "model_version": str(result.get("model_version") or ""),
+        }
+        channel_results.append(payload)
+        values = {
+            "Suggestion": payload["label"],
+            "Confidence": payload["confidence"],
+            "Threshold": payload["threshold"],
+            "ReviewNeeded": payload["review_needed"],
+            "Evidence": payload["evidence"],
+            "ModelVersion": payload["model_version"],
+        }
+        for metric in CHANNEL_ML_METRICS:
+            entry[channel_ml_column(metric, unit.channel)] = values[metric]
+
+    if channel_results:
+        entry["ClonalityMLChannelResults"] = channel_results
 
 
 def _feature_is_present(features: Mapping[str, Any], column: str) -> bool:

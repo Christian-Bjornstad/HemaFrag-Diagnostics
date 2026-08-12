@@ -8,7 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
-from core.html_reports import REPORT_STYLE, _build_plotly_reflow_script
+from core.html_reports import REPORT_STYLE
+from core.html_reports._legacy import _build_plotly_reflow_script
 from core.plotly_offline import local_plotly_tag as _local_plotly_tag
 from core.plotting_plotly import build_interactive_peak_plot_for_entry
 
@@ -91,7 +92,9 @@ function printReport() { window.print(); }
 
 def _render_summary_table(entries: list[dict]) -> str:
     rows = [
-        "<table><tr><th>Filnavn</th><th>Ladder</th><th>Trace-kanaler</th><th>bp-område</th><th>Ladder QC</th><th>R²</th></tr>"
+        "<table><tr><th>Filnavn</th><th>Profil</th><th>Ladder</th>"
+        "<th>Trace-kanaler</th><th>bp-område</th><th>Ladder QC</th>"
+        "<th>R²</th></tr>"
     ]
     for entry in entries:
         r2 = entry.get("ladder_r2")
@@ -104,9 +107,18 @@ def _render_summary_table(entries: list[dict]) -> str:
             "ladder_qc_failed": "<span class='status-badge failed'>Failed</span>",
         }.get(status, "<span class='status-badge unknown'>Unknown</span>")
         channels = ", ".join(entry.get("trace_channels") or [])
+        profile = entry.get("general_profile") or {}
+        profile_label = (
+            f"{profile.get('profile_id', '')} v{profile.get('profile_version', '')} "
+            f"({profile.get('validation_status', '')})"
+        ).strip()
+        profile_fingerprint = str(
+            profile.get("profile_fingerprint") or ""
+        )
         rows.append(
             "<tr>"
             f"<td>{escape(entry['fsa'].file_name)}</td>"
+            f"<td>{escape(profile_label)}<br><code>{escape(profile_fingerprint)}</code></td>"
             f"<td>{escape(str(entry.get('ladder', '')))}</td>"
             f"<td>{escape(channels)}</td>"
             f"<td>{float(entry.get('bp_min', 0.0)):.0f}–{float(entry.get('bp_max', 0.0)):.0f} bp</td>"
@@ -177,8 +189,29 @@ def build_general_html_report(entries: list[dict], assay_outdir: Path, run_label
             f"Primærkanal: {escape(str(entry.get('primary_peak_channel', '')))}"
             "</p>"
         )
-        fragment = build_interactive_peak_plot_for_entry(entry)
-        html_lines.append(fragment if fragment else "<p class='small'><em>Ingen data å vise.</em></p>")
+        if entry.get("analysis_status") == "ladder_review_only":
+            reason = str(
+                entry.get("ladder_review_summary")
+                or entry.get("ladder_review_reason")
+                or entry.get("ladder_fit_note")
+                or "Automatic ladder fitting was rejected."
+            )
+            html_lines.append(
+                "<div class='status-badge warning' style='display:block;padding:12px;'>"
+                "<strong>Ladder review required.</strong> "
+                f"{escape(reason)} No sample peaks or result were reported. "
+                "Open the original FSA file in Ladder Editor, save the mapping, and rerun."
+                "</div>"
+            )
+        else:
+            try:
+                fragment = build_interactive_peak_plot_for_entry(entry)
+                html_lines.append(fragment if fragment else "<p class='small'><em>Ingen data å vise.</em></p>")
+            except Exception as exc:
+                html_lines.append(
+                    "<p class='small'><em>Kunne ikke lage plott: "
+                    f"{escape(str(exc))}</em></p>"
+                )
         html_lines.append(_comment_block(fsa.file_name))
         html_lines.append("</div>")
 

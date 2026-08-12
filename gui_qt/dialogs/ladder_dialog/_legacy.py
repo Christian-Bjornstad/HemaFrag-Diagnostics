@@ -2106,4 +2106,5 @@ class LadderAdjustmentDialog(QDialog):
             "linear_max": self.review_context.get("linear_max"),
             "linear_mean": self.review_context.get("linear_mean"),
             "linear_r2": self.review_context.get("linear_r2"),
+            "after_qc": dict(self._preview_metrics or {}),
         }

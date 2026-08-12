@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.series import SeriesLabel
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -19,8 +21,14 @@ CARD_GOLD = PatternFill("solid", fgColor="FFF2CC")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
 BOLD = Font(bold=True)
 THIN_GRAY = Side(style="thin", color="D9E2F2")
-BOX_BORDER = Border(left=THIN_GRAY, right=THIN_GRAY, top=THIN_GRAY, bottom=THIN_GRAY)
-DASHBOARD_SHEETS = [
+BOX_BORDER = Border(
+    left=THIN_GRAY,
+    right=THIN_GRAY,
+    top=THIN_GRAY,
+    bottom=THIN_GRAY,
+)
+ACCEPTED_LADDER_STATUSES = {"ok", "manual_adjustment"}
+GENERATED_SHEETS = {
     "Dashboard",
     "Dashboard_Data",
     "Assay_Summary",
@@ -28,7 +36,19 @@ DASHBOARD_SHEETS = [
     "Control_Summary",
     "PK_Sample_Delta",
     "PK_Ladder_Delta",
-]
+    "QC_Run_Trends",
+    "QC_Control_Signals",
+    "QC_Baseline_Config",
+}
+OBSOLETE_TRACKING_COLUMNS = {
+    "LadderEngine",
+    "LadderReasonCodes",
+    "SourceFsaSha256",
+    "ManualAdjustmentSha256",
+    "AnalysisVersion",
+    "PullUpCandidate",
+    "SaturationCandidate",
+}
 
 
 def refresh_clonality_tracking_dashboard(
@@ -40,250 +60,182 @@ def refresh_clonality_tracking_dashboard(
         return
 
     with pd.ExcelFile(excel_path, engine="openpyxl") as xls:
-        required = {"Patient_Runs", "Control_Runs", "PK_Peaks"}
+        required = {"Runs", "Patient_Runs", "Control_Runs", "PK_Peaks"}
         if not required.issubset(set(xls.sheet_names)):
             return
+        runs = pd.read_excel(excel_path, sheet_name="Runs", engine="openpyxl")
+        peaks = pd.read_excel(excel_path, sheet_name="PK_Peaks", engine="openpyxl")
+
+    work = _prepared_runs(runs)
+    assay_summary = _build_assay_summary(work)
+    pk_summary = _build_pk_summary(peaks)
 
     wb = load_workbook(excel_path)
     try:
-        _ensure_abs_delta_column(wb["PK_Peaks"])
-        for name in DASHBOARD_SHEETS:
-            if name in wb.sheetnames:
+        for name in list(wb.sheetnames):
+            if name in GENERATED_SHEETS:
                 del wb[name]
+        for sheet_name in ("Runs", "Patient_Runs", "Control_Runs", "PK_Peaks"):
+            ws = wb[sheet_name]
+            _remove_obsolete_columns(ws)
+            if sheet_name != "PK_Peaks":
+                _ensure_manual_adjustment_column(ws)
+            _ensure_abs_delta_column(ws)
+            _style_tracking_data_sheet(ws)
 
         dashboard = wb.create_sheet("Dashboard", 0)
-        data_ws = wb.create_sheet("Dashboard_Data")
-        data_ws.sheet_state = "hidden"
-        assay_ws = wb.create_sheet("Assay_Summary")
-        run_ws = wb.create_sheet("Run_Summary")
-        control_ws = wb.create_sheet("Control_Summary")
-        pk_sample_ws = wb.create_sheet("PK_Sample_Delta")
-        pk_ladder_ws = wb.create_sheet("PK_Ladder_Delta")
-
-        try:
-            wb.calculation.calcMode = "auto"
-            wb.calculation.fullCalcOnLoad = True
-            wb.calculation.forceFullCalc = True
-        except Exception:
-            pass
-
-        patient_cols = _col_map(wb["Patient_Runs"])
-        control_cols = _col_map(wb["Control_Runs"])
-        pk_cols = _col_map(wb["PK_Peaks"])
-
-        assays = _sorted_unique_values(wb["Patient_Runs"], patient_cols.get("Assay"), wb["Control_Runs"], control_cols.get("Assay"))
-        controls = _sorted_unique_values(wb["Control_Runs"], control_cols.get("Control"))
-        review_pairs = _control_assay_pairs(wb["Control_Runs"], control_cols)
-
-        _write_helper_lists(data_ws, assays, controls, review_pairs)
-        _build_assay_summary(assay_ws, assays, patient_cols, control_cols)
-        _build_run_summary(run_ws, assays, patient_cols)
-        _build_control_summary(control_ws, review_pairs, control_cols)
-        _build_pk_summary(pk_sample_ws, assays, pk_cols, kind="sample")
-        _build_pk_summary(pk_ladder_ws, assays, pk_cols, kind="ladder")
         _build_dashboard(
             dashboard,
             dashboard_title=dashboard_title,
-            assay_count=len(assays),
-            patient_cols=patient_cols,
-            control_cols=control_cols,
-            pk_cols=pk_cols,
+            runs=work,
+            assay_summary=assay_summary,
+            pk_summary=pk_summary,
         )
-        _add_dashboard_charts(dashboard, assay_ws, pk_sample_ws)
-
+        _add_dashboard_charts(
+            dashboard,
+            assay_count=min(len(assay_summary), 12),
+            pk_count=min(len(pk_summary), 12),
+        )
         wb.save(excel_path)
     finally:
         wb.close()
 
 
-def _ensure_abs_delta_column(ws) -> None:
-    headers = [str(cell.value).strip() if cell.value is not None else "" for cell in ws[1]]
-    if "AbsDeltaBP" in headers:
-        return
-
-    delta_idx = headers.index("DeltaBP") + 1 if "DeltaBP" in headers else None
-    next_col = ws.max_column + 1
-    ws.cell(1, next_col, "AbsDeltaBP")
-    for row_idx in range(2, ws.max_row + 1):
-        delta_value = ws.cell(row_idx, delta_idx).value if delta_idx else None
-        if delta_value in ("", None):
-            continue
-        try:
-            ws.cell(row_idx, next_col, abs(float(delta_value)))
-        except (TypeError, ValueError):
-            continue
+def _text(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series("", index=frame.index, dtype="object")
+    return frame[column].fillna("").astype(str).str.strip()
 
 
-def _col_map(ws) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for cell in ws[1]:
-        value = cell.value
-        if value is None:
-            continue
-        result[str(value)] = get_column_letter(cell.column)
-    return result
+def _numeric(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(np.nan, index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce")
 
 
-def _range_ref(sheet_name: str, col: str, *, start_row: int = 2, end_row: int = 1048576) -> str:
-    return f"{sheet_name}!${col}${start_row}:${col}${end_row}"
+def _prepared_runs(runs: pd.DataFrame) -> pd.DataFrame:
+    work = runs.copy()
+    work["_Assay"] = _text(work, "Assay").replace("", "Unknown")
+    work["_SampleKind"] = _text(work, "SampleKind").str.lower()
+    work["_Patient"] = work["_SampleKind"].eq("patient")
+    work["_Control"] = work["_SampleKind"].eq("control") | _text(
+        work,
+        "Control",
+    ).ne("")
+    work["_LadderStatus"] = _text(work, "LadderQC").str.lower()
+    work["_Manual"] = (
+        work["_LadderStatus"].eq("manual_adjustment")
+        | _text(work, "LadderFitStrategy").str.lower().eq("manual_adjustment")
+    )
+    work["_Review"] = work["_LadderStatus"].ne("") & ~work[
+        "_LadderStatus"
+    ].isin(ACCEPTED_LADDER_STATUSES)
+    linear_r2 = _numeric(work, "LadderLinearR2")
+    work["_R2"] = linear_r2.where(linear_r2.notna(), _numeric(work, "LadderR2"))
+    expected = _numeric(work, "LadderExpectedStepCount")
+    fitted = _numeric(work, "LadderFittedStepCount")
+    work["_Partial"] = expected.gt(0) & fitted.lt(expected)
+    return work
 
 
-def _style_table(ws, header_row: int, data_end_row: int, start_col: int, end_col: int) -> None:
-    for cell in ws[header_row]:
-        if start_col <= cell.column <= end_col:
-            cell.fill = HEADER_FILL
-            cell.font = HEADER_FONT
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border = BOX_BORDER
-    for row in ws.iter_rows(min_row=header_row + 1, max_row=max(data_end_row, header_row + 1), min_col=start_col, max_col=end_col):
-        for cell in row:
-            cell.border = BOX_BORDER
-            if cell.row % 2 == 0:
-                cell.fill = PatternFill("solid", fgColor="F8FBFF")
+def _build_assay_summary(work: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "Assay",
+        "Files",
+        "PatientFiles",
+        "ControlFiles",
+        "ReviewFiles",
+        "ManualAdjusted",
+        "AvgR2",
+        "PartialFits",
+        "ReviewRate",
+    ]
+    rows = []
+    for assay, group in work.groupby("_Assay", sort=True):
+        rows.append(
+            {
+                "Assay": assay,
+                "Files": len(group),
+                "PatientFiles": int(group["_Patient"].sum()),
+                "ControlFiles": int(group["_Control"].sum()),
+                "ReviewFiles": int(group["_Review"].sum()),
+                "ManualAdjusted": int(group["_Manual"].sum()),
+                "AvgR2": group["_R2"].mean(),
+                "PartialFits": int(group["_Partial"].sum()),
+                "ReviewRate": float(group["_Review"].mean()),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
 
 
-def _autofit(ws) -> None:
-    for column_cells in ws.columns:
-        length = 0
-        col_idx = column_cells[0].column
-        for cell in column_cells:
-            value = "" if cell.value is None else str(cell.value)
-            length = max(length, len(value))
-        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(length + 2, 10), 30)
+def _build_pk_summary(peaks: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "Assay",
+        "MarkerRows",
+        "MeanAbsDeltaBP",
+        "MaxAbsDeltaBP",
+        "Over2bp",
+        "AvgHeight",
+    ]
+    if peaks.empty:
+        return pd.DataFrame(columns=columns)
+    work = peaks.copy()
+    kind = _text(work, "Kind").str.lower()
+    assay = _text(work, "Assay")
+    work = work.loc[kind.eq("sample") & assay.ne("SL")].copy()
+    work["_Assay"] = _text(work, "Assay").replace("", "Unknown")
+    delta = _numeric(work, "AbsDeltaBP")
+    if delta.isna().all():
+        delta = _numeric(work, "DeltaBP").abs()
+    work["_AbsDelta"] = delta
+    work["_Height"] = _numeric(work, "Height")
+    rows = []
+    for assay_name, group in work.groupby("_Assay", sort=True):
+        rows.append(
+            {
+                "Assay": assay_name,
+                "MarkerRows": len(group),
+                "MeanAbsDeltaBP": group["_AbsDelta"].mean(),
+                "MaxAbsDeltaBP": group["_AbsDelta"].max(),
+                "Over2bp": int(group["_AbsDelta"].gt(2).sum()),
+                "AvgHeight": group["_Height"].mean(),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
 
 
-def _sorted_unique_values(*pairs) -> list[str]:
-    values: set[str] = set()
-    for idx in range(0, len(pairs), 2):
-        ws = pairs[idx]
-        col = pairs[idx + 1] if idx + 1 < len(pairs) else None
-        if ws is None or not col:
-            continue
-        for cell in ws[col][1:]:
-            value = str(cell.value or "").strip()
-            if value:
-                values.add(value)
-    return sorted(values)
+def _scope_row(label: str, frame: pd.DataFrame) -> dict:
+    return {
+        "Scope": label,
+        "Runs": len(frame),
+        "Accepted Fits": int(
+            frame["_LadderStatus"].isin(ACCEPTED_LADDER_STATUSES).sum()
+        ),
+        "Review Required": int(frame["_Review"].sum()),
+        "Manual Adjusted": int(frame["_Manual"].sum()),
+        "Accepted Rate": (
+            float(frame["_LadderStatus"].isin(ACCEPTED_LADDER_STATUSES).mean())
+            if not frame.empty
+            else 0.0
+        ),
+        "Avg R2": frame["_R2"].mean(),
+        "Partial Fits": int(frame["_Partial"].sum()),
+    }
 
 
-def _control_assay_pairs(ws, cols: dict[str, str]) -> list[tuple[str, str]]:
-    control_col = cols.get("Control")
-    assay_col = cols.get("Assay")
-    if not control_col or not assay_col:
-        return []
-    pairs: set[tuple[str, str]] = set()
-    for row_idx in range(2, ws.max_row + 1):
-        control = str(ws[f"{control_col}{row_idx}"].value or "").strip()
-        assay = str(ws[f"{assay_col}{row_idx}"].value or "").strip()
-        if control and assay:
-            pairs.add((control, assay))
-    return sorted(pairs, key=lambda item: (item[0], item[1]))
-
-
-def _write_helper_lists(ws, assays: list[str], controls: list[str], review_pairs: list[tuple[str, str]]) -> None:
-    ws["A1"] = "Assay"
-    ws["E1"] = "Control"
-    ws["F1"] = "Assay"
-    for row_idx, assay in enumerate(assays, start=2):
-        ws.cell(row_idx, 1, assay)
-    for row_idx, control in enumerate(controls, start=2):
-        ws.cell(row_idx, 5, control)
-    for row_idx, (control, assay) in enumerate(review_pairs, start=2):
-        ws.cell(row_idx, 5, control)
-        ws.cell(row_idx, 6, assay)
-
-
-def _build_assay_summary(ws, assays: list[str], patient_cols: dict[str, str], control_cols: dict[str, str]) -> None:
-    headers = ["Assay", "Files", "PatientFiles", "ControlFiles", "LadderReview", "AvgR2", "PartialFits", "ReviewRate"]
-    ws.append(headers)
-    p_assay = patient_cols["Assay"]
-    p_qc = patient_cols["LadderQC"]
-    p_r2 = patient_cols.get("LadderLinearR2") or patient_cols["LadderR2"]
-    p_expected = patient_cols["LadderExpectedStepCount"]
-    p_fitted = patient_cols["LadderFittedStepCount"]
-    c_assay = control_cols["Assay"]
-    c_qc = control_cols["LadderQC"]
-    c_r2 = control_cols.get("LadderLinearR2") or control_cols["LadderR2"]
-    c_expected = control_cols["LadderExpectedStepCount"]
-    c_fitted = control_cols["LadderFittedStepCount"]
-    for row_idx, assay in enumerate(assays, start=2):
-        ws.cell(row_idx, 1, assay)
-        ws.cell(row_idx, 2, f'=COUNTIF(Patient_Runs!${p_assay}:${p_assay},$A{row_idx})+COUNTIF(Control_Runs!${c_assay}:${c_assay},$A{row_idx})')
-        ws.cell(row_idx, 3, f'=COUNTIF(Patient_Runs!${p_assay}:${p_assay},$A{row_idx})')
-        ws.cell(row_idx, 4, f'=COUNTIF(Control_Runs!${c_assay}:${c_assay},$A{row_idx})')
-        ws.cell(row_idx, 5, f'=COUNTIFS(Patient_Runs!${p_assay}:${p_assay},$A{row_idx},Patient_Runs!${p_qc}:${p_qc},"<>",Patient_Runs!${p_qc}:${p_qc},"<>ok")+COUNTIFS(Control_Runs!${c_assay}:${c_assay},$A{row_idx},Control_Runs!${c_qc}:${c_qc},"<>",Control_Runs!${c_qc}:${c_qc},"<>ok")')
-        ws.cell(row_idx, 6, f'=IFERROR((SUMIF(Patient_Runs!${p_assay}:${p_assay},$A{row_idx},Patient_Runs!${p_r2}:${p_r2})+SUMIF(Control_Runs!${c_assay}:${c_assay},$A{row_idx},Control_Runs!${c_r2}:${c_r2}))/$B{row_idx},0)')
-        ws.cell(row_idx, 7, f'=SUMPRODUCT(--(Patient_Runs!${p_assay}$2:${p_assay}$1048576=$A{row_idx}),--(Patient_Runs!${p_fitted}$2:${p_fitted}$1048576<Patient_Runs!${p_expected}$2:${p_expected}$1048576))+SUMPRODUCT(--(Control_Runs!${c_assay}$2:${c_assay}$1048576=$A{row_idx}),--(Control_Runs!${c_fitted}$2:${c_fitted}$1048576<Control_Runs!${c_expected}$2:${c_expected}$1048576))')
-        ws.cell(row_idx, 8, f'=IFERROR(E{row_idx}/B{row_idx},0)')
-    _style_table(ws, 1, max(len(assays) + 1, 2), 1, len(headers))
-    ws.freeze_panes = "A2"
-    _autofit(ws)
-
-
-def _build_run_summary(ws, assays: list[str], patient_cols: dict[str, str]) -> None:
-    headers = ["Assay", "Files", "ReviewFiles", "AvgR2", "PartialFits"]
-    ws.append(headers)
-    p_assay = patient_cols["Assay"]
-    p_qc = patient_cols["LadderQC"]
-    p_r2 = patient_cols.get("LadderLinearR2") or patient_cols["LadderR2"]
-    p_expected = patient_cols["LadderExpectedStepCount"]
-    p_fitted = patient_cols["LadderFittedStepCount"]
-    for row_idx, assay in enumerate(assays, start=2):
-        ws.cell(row_idx, 1, assay)
-        ws.cell(row_idx, 2, f'=COUNTIF(Patient_Runs!${p_assay}:${p_assay},$A{row_idx})')
-        ws.cell(row_idx, 3, f'=COUNTIFS(Patient_Runs!${p_assay}:${p_assay},$A{row_idx},Patient_Runs!${p_qc}:${p_qc},"<>",Patient_Runs!${p_qc}:${p_qc},"<>ok")')
-        ws.cell(row_idx, 4, f'=IFERROR(SUMIF(Patient_Runs!${p_assay}:${p_assay},$A{row_idx},Patient_Runs!${p_r2}:${p_r2})/B{row_idx},0)')
-        ws.cell(row_idx, 5, f'=SUMPRODUCT(--(Patient_Runs!${p_assay}$2:${p_assay}$1048576=$A{row_idx}),--(Patient_Runs!${p_fitted}$2:${p_fitted}$1048576<Patient_Runs!${p_expected}$2:${p_expected}$1048576))')
-    _style_table(ws, 1, max(len(assays) + 1, 2), 1, len(headers))
-    ws.freeze_panes = "A2"
-    _autofit(ws)
-
-
-def _build_control_summary(ws, pairs: list[tuple[str, str]], control_cols: dict[str, str]) -> None:
-    headers = ["Control", "Assay", "Files", "ReviewFiles", "AvgR2", "PartialFits"]
-    ws.append(headers)
-    c_control = control_cols["Control"]
-    c_assay = control_cols["Assay"]
-    c_qc = control_cols["LadderQC"]
-    c_r2 = control_cols.get("LadderLinearR2") or control_cols["LadderR2"]
-    c_expected = control_cols["LadderExpectedStepCount"]
-    c_fitted = control_cols["LadderFittedStepCount"]
-    for row_idx, (control, assay) in enumerate(pairs, start=2):
-        ws.cell(row_idx, 1, control)
-        ws.cell(row_idx, 2, assay)
-        ws.cell(row_idx, 3, f'=COUNTIFS(Control_Runs!${c_control}:${c_control},$A{row_idx},Control_Runs!${c_assay}:${c_assay},$B{row_idx})')
-        ws.cell(row_idx, 4, f'=COUNTIFS(Control_Runs!${c_control}:${c_control},$A{row_idx},Control_Runs!${c_assay}:${c_assay},$B{row_idx},Control_Runs!${c_qc}:${c_qc},"<>",Control_Runs!${c_qc}:${c_qc},"<>ok")')
-        ws.cell(row_idx, 5, f'=IFERROR(SUMIFS(Control_Runs!${c_r2}:${c_r2},Control_Runs!${c_control}:${c_control},$A{row_idx},Control_Runs!${c_assay}:${c_assay},$B{row_idx})/C{row_idx},0)')
-        ws.cell(row_idx, 6, f'=SUMPRODUCT(--(Control_Runs!${c_control}$2:${c_control}$1048576=$A{row_idx}),--(Control_Runs!${c_assay}$2:${c_assay}$1048576=$B{row_idx}),--(Control_Runs!${c_fitted}$2:${c_fitted}$1048576<Control_Runs!${c_expected}$2:${c_expected}$1048576))')
-    _style_table(ws, 1, max(len(pairs) + 1, 2), 1, len(headers))
-    ws.freeze_panes = "A2"
-    _autofit(ws)
-
-
-def _build_pk_summary(ws, assays: list[str], pk_cols: dict[str, str], *, kind: str) -> None:
-    headers = ["Assay", "MarkerRows", "MeanAbsDeltaBP", "MaxAbsDeltaBP", "Over2bp", "Over5bp", "AvgHeight"]
-    ws.append(headers)
-    pk_assay = pk_cols["Assay"]
-    pk_kind = pk_cols["Kind"]
-    pk_abs = pk_cols["AbsDeltaBP"]
-    pk_height = pk_cols["Height"]
-    for row_idx, assay in enumerate(assays, start=2):
-        ws.cell(row_idx, 1, assay)
-        ws.cell(row_idx, 2, f'=COUNTIFS(PK_Peaks!${pk_assay}:${pk_assay},$A{row_idx},PK_Peaks!${pk_kind}:${pk_kind},"{kind}")')
-        ws.cell(row_idx, 3, f'=IFERROR(AVERAGEIFS(PK_Peaks!${pk_abs}:${pk_abs},PK_Peaks!${pk_assay}:${pk_assay},$A{row_idx},PK_Peaks!${pk_kind}:${pk_kind},"{kind}"),0)')
-        ws.cell(row_idx, 4, f'=IFERROR(MAXIFS(PK_Peaks!${pk_abs}:${pk_abs},PK_Peaks!${pk_assay}:${pk_assay},$A{row_idx},PK_Peaks!${pk_kind}:${pk_kind},"{kind}"),0)')
-        ws.cell(row_idx, 5, f'=SUMPRODUCT(--(PK_Peaks!${pk_assay}$2:${pk_assay}$1048576=$A{row_idx}),--(PK_Peaks!${pk_kind}$2:${pk_kind}$1048576="{kind}"),--(PK_Peaks!${pk_abs}$2:${pk_abs}$1048576>2))')
-        ws.cell(row_idx, 6, f'=SUMPRODUCT(--(PK_Peaks!${pk_assay}$2:${pk_assay}$1048576=$A{row_idx}),--(PK_Peaks!${pk_kind}$2:${pk_kind}$1048576="{kind}"),--(PK_Peaks!${pk_abs}$2:${pk_abs}$1048576>5))')
-        ws.cell(row_idx, 7, f'=IFERROR(AVERAGEIFS(PK_Peaks!${pk_height}:${pk_height},PK_Peaks!${pk_assay}:${pk_assay},$A{row_idx},PK_Peaks!${pk_kind}:${pk_kind},"{kind}"),0)')
-    _style_table(ws, 1, max(len(assays) + 1, 2), 1, len(headers))
-    ws.freeze_panes = "A2"
-    _autofit(ws)
-
-
-def _build_dashboard(ws, *, dashboard_title: str, assay_count: int, patient_cols: dict[str, str], control_cols: dict[str, str], pk_cols: dict[str, str]) -> None:
+def _build_dashboard(
+    ws,
+    *,
+    dashboard_title: str,
+    runs: pd.DataFrame,
+    assay_summary: pd.DataFrame,
+    pk_summary: pd.DataFrame,
+) -> None:
     ws.sheet_view.showGridLines = False
-    for col, width in {"A": 18, "B": 16, "C": 16, "D": 16, "E": 18, "F": 18, "G": 18, "H": 18, "I": 4, "J": 16, "K": 16, "L": 16, "M": 16, "N": 16, "O": 16, "P": 16, "Q": 16}.items():
-        ws.column_dimensions[col].width = width
+    for col_idx in range(1, 18):
+        ws.column_dimensions[get_column_letter(col_idx)].width = 16
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["I"].width = 14
 
     ws.merge_cells("A1:Q2")
     ws["A1"] = dashboard_title
@@ -291,126 +243,291 @@ def _build_dashboard(ws, *, dashboard_title: str, assay_count: int, patient_cols
     ws["A1"].fill = HEADER_FILL
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
 
-    labels = ["Tracked Runs", "Unique Assays", "Review Files", "Ladder OK Rate", "PK Marker Rows", "PK Sample Mean |delta|", "PK Sample >2 bp", "PK Ladder Mean |delta|"]
-    fills = [CARD_BLUE, CARD_TEAL, CARD_RED, CARD_GOLD, CARD_BLUE, CARD_ORANGE, CARD_RED, CARD_TEAL]
-    for idx, (label, fill) in enumerate(zip(labels, fills), start=1):
-        cell = ws.cell(4, idx, label)
-        cell.fill = fill
-        cell.font = BOLD
-        cell.alignment = Alignment(horizontal="center")
-        cell.border = BOX_BORDER
-    p_id = patient_cols["IdentityKey"]
-    p_qc = patient_cols["LadderQC"]
-    p_r2 = patient_cols["LadderR2"]
-    p_expected = patient_cols["LadderExpectedStepCount"]
-    p_fitted = patient_cols["LadderFittedStepCount"]
-    c_id = control_cols["IdentityKey"]
-    c_qc = control_cols["LadderQC"]
-    c_r2 = control_cols["LadderR2"]
-    c_expected = control_cols["LadderExpectedStepCount"]
-    c_fitted = control_cols["LadderFittedStepCount"]
-    pk_id = pk_cols["IdentityKey"]
-    pk_kind = pk_cols["Kind"]
-    pk_abs = pk_cols["AbsDeltaBP"]
-    pk_assay = pk_cols["Assay"]
-    ws["A5"] = f'=COUNTA(Patient_Runs!${p_id}:${p_id})+COUNTA(Control_Runs!${c_id}:${c_id})-2'
-    ws["B5"] = f"={assay_count}"
-    ws["C5"] = f'=COUNTIFS(Patient_Runs!${p_qc}:${p_qc},"<>",Patient_Runs!${p_qc}:${p_qc},"<>ok")+COUNTIFS(Control_Runs!${c_qc}:${c_qc},"<>",Control_Runs!${c_qc}:${c_qc},"<>ok")'
-    ws["D5"] = f'=IFERROR((COUNTIF(Patient_Runs!${p_qc}:${p_qc},"ok")+COUNTIF(Control_Runs!${c_qc}:${c_qc},"ok"))/(COUNTA(Patient_Runs!${p_id}:${p_id})+COUNTA(Control_Runs!${c_id}:${c_id})-2),0)'
-    ws["E5"] = f'=COUNTA(PK_Peaks!${pk_id}:${pk_id})-1'
-    ws["F5"] = f'=IFERROR(AVERAGEIFS(PK_Peaks!${pk_abs}:${pk_abs},PK_Peaks!${pk_kind}:${pk_kind},"sample",PK_Peaks!${pk_assay}:${pk_assay},"<>SL"),0)'
-    ws["G5"] = f'=COUNTIFS(PK_Peaks!${pk_kind}:${pk_kind},"sample",PK_Peaks!${pk_abs}:${pk_abs},">2",PK_Peaks!${pk_assay}:${pk_assay},"<>SL")'
-    ws["H5"] = f'=IFERROR(AVERAGEIFS(PK_Peaks!${pk_abs}:${pk_abs},PK_Peaks!${pk_kind}:${pk_kind},"ladder"),0)'
-    for col_idx in range(1, 9):
-        cell = ws.cell(5, col_idx)
-        cell.border = BOX_BORDER
-        cell.alignment = Alignment(horizontal="center")
+    latest_date = _text(runs, "RunDate").max() if not runs.empty else ""
+    metrics = [
+        ("Tracked files", len(runs), CARD_BLUE),
+        ("Unique assays", int(runs["_Assay"].nunique()), CARD_TEAL),
+        ("Review files", int(runs["_Review"].sum()), CARD_RED),
+        ("Manual adjusted", int(runs["_Manual"].sum()), CARD_GOLD),
+        (
+            "Accepted ladder rate",
+            float(runs["_LadderStatus"].isin(ACCEPTED_LADDER_STATUSES).mean())
+            if not runs.empty
+            else 0.0,
+            CARD_TEAL,
+        ),
+        ("PK marker rows", int(len(pk_summary)), CARD_BLUE),
+        ("Partial fits", int(runs["_Partial"].sum()), CARD_ORANGE),
+        ("Latest run", latest_date, CARD_GOLD),
+    ]
+    for index, (label, value, fill) in enumerate(metrics, start=1):
+        ws.cell(4, index, label)
+        ws.cell(5, index, value)
+        for row in (4, 5):
+            cell = ws.cell(row, index)
+            cell.fill = fill
+            cell.border = BOX_BORDER
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(4, index).font = BOLD
+    ws["E5"].number_format = "0.0%"
 
     ws["A7"] = "Ladder Overview"
     ws["A7"].font = Font(size=13, bold=True)
+    overview = pd.DataFrame(
+        [
+            _scope_row("All", runs),
+            _scope_row("Patient", runs.loc[runs["_Patient"]]),
+            _scope_row("Control", runs.loc[runs["_Control"]]),
+        ]
+    )
+    _write_dashboard_frame(ws, overview, start_row=8, start_col=1)
+
     ws["J7"] = "PK Sample Delta Focus"
     ws["J7"].font = Font(size=13, bold=True)
-    overview_headers = ["Scope", "Runs", "Ladder OK", "Review Required", "OK Rate", "Avg R2", "Partial Fits"]
-    for idx, header in enumerate(overview_headers, start=1):
-        ws.cell(8, idx, header)
-    ws["B9"] = f'=COUNTA(Patient_Runs!${p_id}:${p_id})+COUNTA(Control_Runs!${c_id}:${c_id})-2'
-    ws["C9"] = f'=COUNTIF(Patient_Runs!${p_qc}:${p_qc},"ok")+COUNTIF(Control_Runs!${c_qc}:${c_qc},"ok")'
-    ws["D9"] = f'=COUNTIFS(Patient_Runs!${p_qc}:${p_qc},"<>",Patient_Runs!${p_qc}:${p_qc},"<>ok")+COUNTIFS(Control_Runs!${c_qc}:${c_qc},"<>",Control_Runs!${c_qc}:${c_qc},"<>ok")'
-    ws["E9"] = '=IFERROR(C9/B9,0)'
-    ws["F9"] = f'=IFERROR((SUM(Patient_Runs!${p_r2}:${p_r2})+SUM(Control_Runs!${c_r2}:${c_r2}))/B9,0)'
-    ws["G9"] = f'=SUMPRODUCT(--(Patient_Runs!${p_fitted}$2:${p_fitted}$1048576<Patient_Runs!${p_expected}$2:${p_expected}$1048576))+SUMPRODUCT(--(Control_Runs!${c_fitted}$2:${c_fitted}$1048576<Control_Runs!${c_expected}$2:${c_expected}$1048576))'
-    ws["A9"] = "All"
-    ws["A10"] = "Patient"
-    ws["B10"] = f'=COUNTA(Patient_Runs!${p_id}:${p_id})-1'
-    ws["C10"] = f'=COUNTIF(Patient_Runs!${p_qc}:${p_qc},"ok")'
-    ws["D10"] = f'=COUNTIFS(Patient_Runs!${p_qc}:${p_qc},"<>",Patient_Runs!${p_qc}:${p_qc},"<>ok")'
-    ws["E10"] = '=IFERROR(C10/B10,0)'
-    ws["F10"] = f'=IFERROR(SUM(Patient_Runs!${p_r2}:${p_r2})/B10,0)'
-    ws["G10"] = f'=SUMPRODUCT(--(Patient_Runs!${p_fitted}$2:${p_fitted}$1048576<Patient_Runs!${p_expected}$2:${p_expected}$1048576))'
-    ws["A11"] = "Control"
-    ws["B11"] = f'=COUNTA(Control_Runs!${c_id}:${c_id})-1'
-    ws["C11"] = f'=COUNTIF(Control_Runs!${c_qc}:${c_qc},"ok")'
-    ws["D11"] = f'=COUNTIFS(Control_Runs!${c_qc}:${c_qc},"<>",Control_Runs!${c_qc}:${c_qc},"<>ok")'
-    ws["E11"] = '=IFERROR(C11/B11,0)'
-    ws["F11"] = f'=IFERROR(SUM(Control_Runs!${c_r2}:${c_r2})/B11,0)'
-    ws["G11"] = f'=SUMPRODUCT(--(Control_Runs!${c_fitted}$2:${c_fitted}$1048576<Control_Runs!${c_expected}$2:${c_expected}$1048576))'
-    _style_table(ws, 8, 11, 1, 7)
-
-    focus_headers = ["Assay", "MarkerRows", "MeanAbsDeltaBP", "MaxAbsDeltaBP", "Over2bp", "Over5bp", "AvgHeight"]
-    for idx, header in enumerate(focus_headers, start=10):
-        ws.cell(8, idx, header)
-    for offset in range(0, min(assay_count, 12)):
-        src = offset + 2
-        dst = offset + 9
-        for col_idx, col_letter in enumerate(("A", "B", "C", "D", "E", "F", "G"), start=10):
-            ws.cell(dst, col_idx, f"='PK_Sample_Delta'!{col_letter}{src}")
-    _style_table(ws, 8, 8 + max(min(assay_count, 12), 1), 10, 16)
+    _write_dashboard_frame(
+        ws,
+        pk_summary.head(12),
+        start_row=8,
+        start_col=10,
+    )
 
     ws["A15"] = "Assay Watchlist"
     ws["A15"].font = Font(size=13, bold=True)
-    watch_headers = ["Assay", "Files", "PatientFiles", "ControlFiles", "LadderReview", "AvgR2", "PartialFits", "ReviewRate"]
-    for idx, header in enumerate(watch_headers, start=1):
-        ws.cell(16, idx, header)
-    for offset in range(0, min(assay_count, 12)):
-        src = offset + 2
-        dst = offset + 16
-        for col_idx, col_letter in enumerate(("A", "B", "C", "D", "E", "F", "G", "H"), start=1):
-            ws.cell(dst, col_idx, f"='Assay_Summary'!{col_letter}{src}")
-    _style_table(ws, 16, 16 + max(min(assay_count, 12), 1), 1, 8)
-
-    ws.conditional_formatting.add(
-        f"E17:E{16 + max(min(assay_count, 12), 1)}",
-        ColorScaleRule(start_type="num", start_value=0, start_color="E2F0D9", mid_type="percentile", mid_value=50, mid_color="FFE699", end_type="max", end_color="F4CCCC"),
+    _write_dashboard_frame(
+        ws,
+        assay_summary.head(20),
+        start_row=16,
+        start_col=1,
     )
+    watch_end = 16 + max(min(len(assay_summary), 20), 1)
+    ws.conditional_formatting.add(
+        f"E17:E{watch_end}",
+        ColorScaleRule(
+            start_type="num",
+            start_value=0,
+            start_color="E2F0D9",
+            mid_type="percentile",
+            mid_value=50,
+            mid_color="FFE699",
+            end_type="max",
+            end_color="F4CCCC",
+        ),
+    )
+    ws["F9"].number_format = "0.0%"
+    ws["F10"].number_format = "0.0%"
+    ws["F11"].number_format = "0.0%"
+    for row_idx in range(17, watch_end + 1):
+        ws.cell(row_idx, 9).number_format = "0.0%"
     ws.freeze_panes = "A8"
 
 
-def _add_dashboard_charts(ws, assay_ws, pk_sample_ws) -> None:
-    status_chart = BarChart()
-    status_chart.title = "Ladder QC Status"
-    status_chart.y_axis.title = "Runs"
-    status_chart.height = 7
-    status_chart.width = 8
-    status_chart.add_data(Reference(ws, min_col=3, min_row=8, max_row=11), titles_from_data=True)
-    status_chart.set_categories(Reference(ws, min_col=1, min_row=9, max_row=11))
-    ws.add_chart(status_chart, "A30")
+def _write_dashboard_frame(
+    ws,
+    frame: pd.DataFrame,
+    *,
+    start_row: int,
+    start_col: int,
+) -> None:
+    for offset, header in enumerate(frame.columns):
+        ws.cell(start_row, start_col + offset, header)
+    for row_offset, row in enumerate(
+        frame.itertuples(index=False, name=None),
+        start=1,
+    ):
+        for col_offset, value in enumerate(row):
+            ws.cell(
+                start_row + row_offset,
+                start_col + col_offset,
+                None if pd.isna(value) else value,
+            )
+    _style_table(
+        ws,
+        start_row,
+        start_row + max(len(frame), 1),
+        start_col,
+        start_col + max(len(frame.columns), 1) - 1,
+    )
 
-    assay_chart = BarChart()
-    assay_chart.title = "Files by Assay"
-    assay_chart.y_axis.title = "Files"
-    assay_chart.height = 7
-    assay_chart.width = 8
-    max_row = max(assay_ws.max_row, 2)
-    assay_chart.add_data(Reference(assay_ws, min_col=2, min_row=1, max_row=max_row), titles_from_data=True)
-    assay_chart.set_categories(Reference(assay_ws, min_col=1, min_row=2, max_row=max_row))
-    ws.add_chart(assay_chart, "E30")
 
-    pk_chart = BarChart()
-    pk_chart.title = "PK Sample Mean |delta bp| by Assay"
-    pk_chart.y_axis.title = "|delta bp|"
-    pk_chart.height = 7
-    pk_chart.width = 8
-    max_row = max(pk_sample_ws.max_row, 2)
-    pk_chart.add_data(Reference(pk_sample_ws, min_col=3, min_row=1, max_row=max_row), titles_from_data=True)
-    pk_chart.set_categories(Reference(pk_sample_ws, min_col=1, min_row=2, max_row=max_row))
-    ws.add_chart(pk_chart, "J30")
+def _add_dashboard_charts(ws, *, assay_count: int, pk_count: int) -> None:
+    if assay_count:
+        assay_chart = BarChart()
+        assay_chart.title = "Files by Assay"
+        assay_chart.y_axis.title = "Files"
+        assay_chart.height = 7
+        assay_chart.width = 11
+        assay_chart.add_data(
+            Reference(
+                ws,
+                min_col=2,
+                min_row=16,
+                max_row=16 + assay_count,
+            ),
+            titles_from_data=True,
+        )
+        assay_chart.set_categories(
+            Reference(ws, min_col=1, min_row=17, max_row=16 + assay_count)
+        )
+        assay_chart.legend = None
+        assay_chart.series[0].tx = SeriesLabel(v="Files")
+        ws.add_chart(assay_chart, "A35")
+
+    if pk_count:
+        pk_chart = BarChart()
+        pk_chart.title = "PK sample mean |delta bp|"
+        pk_chart.y_axis.title = "|delta bp|"
+        pk_chart.height = 7
+        pk_chart.width = 11
+        pk_chart.add_data(
+            Reference(
+                ws,
+                min_col=12,
+                min_row=8,
+                max_row=8 + pk_count,
+            ),
+            titles_from_data=True,
+        )
+        pk_chart.set_categories(
+            Reference(ws, min_col=10, min_row=9, max_row=8 + pk_count)
+        )
+        pk_chart.legend = None
+        pk_chart.series[0].tx = SeriesLabel(v="Mean |delta bp|")
+        ws.add_chart(pk_chart, "J35")
+
+
+def _remove_obsolete_columns(ws) -> None:
+    for column_index in range(ws.max_column, 0, -1):
+        header = str(ws.cell(1, column_index).value or "").strip()
+        if header in OBSOLETE_TRACKING_COLUMNS:
+            ws.delete_cols(column_index)
+
+
+def _ensure_manual_adjustment_column(ws) -> None:
+    headers = {
+        str(cell.value or "").strip(): cell.column
+        for cell in ws[1]
+        if str(cell.value or "").strip()
+    }
+    if "ManualAdjustmentUsed" in headers:
+        return
+    strategy_col = headers.get("LadderFitStrategy")
+    if not strategy_col:
+        return
+    target_col = strategy_col + 1
+    ws.insert_cols(target_col)
+    ws.cell(1, target_col, "ManualAdjustmentUsed")
+    for row_idx in range(2, ws.max_row + 1):
+        ws.cell(
+            row_idx,
+            target_col,
+            str(ws.cell(row_idx, strategy_col).value or "").strip().lower()
+            == "manual_adjustment",
+        )
+
+
+def _ensure_abs_delta_column(ws) -> None:
+    if ws.title != "PK_Peaks":
+        return
+    headers = {
+        str(cell.value or "").strip(): cell.column
+        for cell in ws[1]
+        if str(cell.value or "").strip()
+    }
+    if "AbsDeltaBP" in headers:
+        return
+    delta_col = headers.get("DeltaBP")
+    if not delta_col:
+        return
+    target_col = ws.max_column + 1
+    ws.cell(1, target_col, "AbsDeltaBP")
+    for row_idx in range(2, ws.max_row + 1):
+        value = ws.cell(row_idx, delta_col).value
+        try:
+            ws.cell(row_idx, target_col, abs(float(value)))
+        except (TypeError, ValueError):
+            ws.cell(row_idx, target_col, None)
+
+
+def _style_table(
+    ws,
+    header_row: int,
+    data_end_row: int,
+    start_col: int,
+    end_col: int,
+) -> None:
+    for col_idx in range(start_col, end_col + 1):
+        cell = ws.cell(header_row, col_idx)
+        cell.fill = HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = BOX_BORDER
+    for row in ws.iter_rows(
+        min_row=header_row + 1,
+        max_row=max(data_end_row, header_row + 1),
+        min_col=start_col,
+        max_col=end_col,
+    ):
+        for cell in row:
+            cell.border = BOX_BORDER
+            if cell.row % 2 == 0:
+                cell.fill = PatternFill("solid", fgColor="F7FAFB")
+            if isinstance(cell.value, float):
+                cell.number_format = "0.0000"
+
+
+def _style_tracking_data_sheet(ws) -> None:
+    if ws.max_column < 1:
+        return
+    headers = {
+        str(cell.value or "").strip(): cell.column
+        for cell in ws[1]
+        if str(cell.value or "").strip()
+    }
+    for cell in ws[1]:
+        cell.fill = HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+            wrap_text=True,
+        )
+        cell.border = BOX_BORDER
+    ws.row_dimensions[1].height = 30
+    ws.freeze_panes = "G2" if ws.title != "PK_Peaks" else "F2"
+    ws.auto_filter.ref = ws.dimensions
+
+    identity_col = headers.get("IdentityKey")
+    if identity_col:
+        ws.column_dimensions[get_column_letter(identity_col)].hidden = True
+
+    sample_end = min(ws.max_row, 200)
+    for col_idx in range(1, ws.max_column + 1):
+        header = str(ws.cell(1, col_idx).value or "")
+        width = len(header) + 2
+        for row_idx in range(2, sample_end + 1):
+            width = max(width, len(str(ws.cell(row_idx, col_idx).value or "")) + 1)
+        cap = 42 if header in {"File", "SourceRunDir", "Reason"} else 24
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(
+            max(width, 10),
+            cap,
+        )
+        normalized = header.lower()
+        if "r2" in normalized:
+            number_format = "0.000000"
+        elif "bp" in normalized or "area" in normalized or "height" in normalized:
+            number_format = "0.00"
+        else:
+            number_format = None
+        if number_format:
+            for row_idx in range(2, ws.max_row + 1):
+                ws.cell(row_idx, col_idx).number_format = number_format
+
+    status_col = headers.get("LadderQC")
+    if status_col:
+        for row_idx in range(2, ws.max_row + 1):
+            cell = ws.cell(row_idx, status_col)
+            status = str(cell.value or "").strip().lower()
+            if status in ACCEPTED_LADDER_STATUSES:
+                cell.fill = CARD_TEAL
+            elif status:
+                cell.fill = CARD_RED

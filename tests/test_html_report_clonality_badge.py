@@ -7,6 +7,7 @@ from core.html_reports._legacy import (
     _clonality_ml_confidence_for_entry,
     _clonality_ml_label_for_entry,
     _clonality_ml_threshold_for_entry,
+    _render_clonality_channel_ml_results,
     _render_clonality_ml_badge,
 )
 
@@ -89,6 +90,36 @@ def test_render_badge_emits_warning_when_review_needed():
     _render_clonality_ml_badge(entry, out)
     html = "\n".join(out)
     assert "ml-review-flagged" in html
+
+
+def test_channel_results_render_both_mixed_technical_labels():
+    out = []
+    entry = _entry(assay="IGK")
+    entry["ClonalityMLChannelResults"] = [
+        {
+            "channel": "DATA1",
+            "target_name": "Jk5",
+            "label": "polyklonal",
+            "confidence": 0.91,
+            "review_needed": False,
+        },
+        {
+            "channel": "DATA2",
+            "target_name": "Jk1-4",
+            "label": "monoklonal",
+            "confidence": 0.94,
+            "review_needed": False,
+        },
+    ]
+
+    _render_clonality_channel_ml_results(entry, out)
+    html = "".join(out)
+
+    assert "DATA1" in html
+    assert "DATA2" in html
+    assert "polyklonal" in html
+    assert "monoklonal" in html
+    assert "Vurder" not in html
 
 
 def test_render_badge_shows_threshold_and_review_reason():

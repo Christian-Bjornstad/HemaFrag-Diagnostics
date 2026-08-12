@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QStackedWidget, QPushButton, QLabel, QFrame, QComboBox, QScrollArea, QApplication
+    QStackedWidget, QPushButton, QLabel, QFrame, QComboBox, QScrollArea,
+    QApplication,
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QShortcut, QKeySequence
@@ -10,7 +13,6 @@ from gui_qt.styles import VIBRANT_PRO_QSS
 from gui_qt.tabs.tab_batch import TabBatch
 from gui_qt.tabs.tab_archive_runner import TabArchiveRunner
 from gui_qt.tabs.tab_labeling import TabLabeling
-from gui_qt.tabs.tab_flt3_validation import TabFlt3Validation
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_log import TabLog
 from gui_qt.tabs.tab_about import TabAbout
@@ -178,7 +180,6 @@ class MainWindow(QMainWindow):
         self.tab_run = TabBatch()
         self.tab_ladder = TabLadder()
         self.tab_archive_runner = TabArchiveRunner()
-        self.tab_flt3_validation = TabFlt3Validation()
         self.tab_labeling = TabLabeling()
         self.tab_log = TabLog()
         self.tab_about = TabAbout()
@@ -190,6 +191,12 @@ class MainWindow(QMainWindow):
         self.tab_settings_clonality.settings_saved.connect(self._on_settings_saved)
         self.tab_settings_flt3.settings_saved.connect(self._on_settings_saved)
         self.tab_settings_general.settings_saved.connect(self._on_settings_saved)
+        self.tab_archive_runner.ladderReviewRequested.connect(
+            self._open_archive_ladder_review
+        )
+        self.tab_ladder.reportsRefreshed.connect(
+            self.tab_archive_runner.refresh_after_ladder_rerun
+        )
         
         # Connect global core logging to this tab
         from gui_qt.log_handler import qt_log_handler
@@ -201,7 +208,6 @@ class MainWindow(QMainWindow):
         self.tab_run_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_run))
         self.tab_ladder_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ladder))
         self.tab_archive_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))
-        self.tab_flt3_validation_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_flt3_validation))
         self.tab_labeling_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_labeling))
         self.tab_log_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
         self.tab_about_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))
@@ -269,31 +275,32 @@ class MainWindow(QMainWindow):
     def _setup_shortcuts(self) -> None:
         """Alt+1..N activates each analysis group's Run tab.
         Ctrl+, opens Settings for the current analysis.
-        Alt+letter jumps to a semantic sub-tab in the current group."""
+        Alt+letter jumps to named sub-tabs of the current group."""
         for i in range(min(len(self.groups), 9)):
             sc = QShortcut(QKeySequence(f"Alt+{i + 1}"), self)
             sc.activated.connect(lambda idx=i: self._activate_group(idx))
         sc_settings = QShortcut(QKeySequence("Ctrl+,"), self)
         sc_settings.activated.connect(self._activate_settings)
-        shortcut_labels = {
-            "R": "Run",
-            "L": "Ladder",
-            "A": "Archive Runner",
-            "G": "Log",
-            "B": "Labeling",
-            "S": "Settings",
-        }
-        for letter, label in shortcut_labels.items():
+        for letter, label in (
+            ("R", "Run"),
+            ("L", "Ladder"),
+            ("A", "Archive Runner"),
+            ("G", "Log"),
+            ("B", "Labeling"),
+            ("S", "Settings"),
+        ):
             sc = QShortcut(QKeySequence(f"Alt+{letter}"), self)
-            sc.activated.connect(lambda selected_label=label: self._activate_sub_label(selected_label))
+            sc.activated.connect(
+                lambda target=label: self._activate_sub_label(target)
+            )
 
     def _activate_group(self, idx: int) -> None:
         """Keyboard-driven group activation — same path as clicking a sidebar header."""
         if 0 <= idx < len(self.groups):
             self.on_group_clicked(self.groups[idx])
 
-    def _activate_sub_label(self, label: str) -> None:
-        """Jump to a named sub-tab without relying on per-analysis positions."""
+    def _activate_sub(self, sub_idx: int) -> None:
+        """Jump to a sub-tab by its current position."""
         active = APP_SETTINGS.get("active_analysis", "clonality")
         group_map = {
             "clonality": self.group_clonality,
@@ -301,15 +308,28 @@ class MainWindow(QMainWindow):
             "general": self.group_general,
         }
         group = group_map.get(active, self.group_clonality)
-        button = group.button_for_label(label)
-        if button is None:
+        if 0 <= sub_idx < len(group.sub_buttons):
+            # Clear all other sub-buttons and about-button so the highlight
+            # only follows the just-activated one (mirrors _handle_sub_click).
+            self.btn_about.setChecked(False)
+            for other_group in self.groups:
+                for button in other_group.sub_buttons:
+                    button.setChecked(button is group.sub_buttons[sub_idx])
+            self.on_sub_tab_clicked(group.internal_id, sub_idx)
+
+    def _activate_sub_label(self, label: str) -> None:
+        """Jump to a named sub-tab without relying on per-analysis positions."""
+        active = APP_SETTINGS.get("active_analysis", "clonality")
+        group = {
+            "clonality": self.group_clonality,
+            "flt3": self.group_flt3,
+            "general": self.group_general,
+        }.get(active, self.group_clonality)
+        try:
+            index = group.sub_button_labels.index(label)
+        except ValueError:
             return
-        sub_idx = group.sub_button_labels.index(label)
-        self.btn_about.setChecked(False)
-        for other_group in self.groups:
-            for other_button in other_group.sub_buttons:
-                other_button.setChecked(other_button is button)
-        self.on_sub_tab_clicked(group.internal_id, sub_idx)
+        self._activate_sub(index)
 
     def _activate_settings(self) -> None:
         """Jump to the Settings page for the current analysis."""
@@ -340,6 +360,29 @@ class MainWindow(QMainWindow):
         self._clear_sidebar_selection()
         self.btn_about.setChecked(True)
         self.stacked_widget.setCurrentIndex(self.tab_about_idx)
+
+    def _open_archive_ladder_review(
+        self,
+        analysis_id: str,
+        bundle_path: str,
+    ) -> None:
+        self._activate_analysis(analysis_id)
+        self.tab_run.set_analysis(analysis_id)
+        self.tab_ladder.set_analysis(analysis_id)
+        self.tab_archive_runner.set_analysis(analysis_id)
+        group = (
+            self.group_flt3
+            if analysis_id == "flt3"
+            else self.group_clonality
+        )
+        for button in group.sub_buttons:
+            button.setChecked(False)
+        group.btn_ladder.setChecked(True)
+        self.stacked_widget.setCurrentIndex(self.tab_ladder_idx)
+        self.tab_ladder.load_review_bundle_from_path(
+            Path(bundle_path),
+            auto_open_first=True,
+        )
 
     def _wrap_scroll_page(self, page: QWidget) -> QScrollArea:
         scroll = QScrollArea()
@@ -373,7 +416,6 @@ class MainWindow(QMainWindow):
             self.tab_run.set_analysis(new_ana)
             self.tab_ladder.set_analysis(new_ana)
             self.tab_archive_runner.set_analysis(new_ana)
-            self.tab_flt3_validation.set_analysis(new_ana)
 
         # Update Sidebar expansion
         for g in self.groups:
@@ -393,8 +435,6 @@ class MainWindow(QMainWindow):
             self.tab_ladder.set_analysis(analysis_id)
         if changed or getattr(self.tab_archive_runner, "_current_analysis_id", None) != analysis_id:
             self.tab_archive_runner.set_analysis(analysis_id)
-        if changed or getattr(self.tab_flt3_validation, "_current_analysis_id", None) != analysis_id:
-            self.tab_flt3_validation.set_analysis(analysis_id)
 
         analysis_sub_map = self._sub_button_map.get(analysis_id, {})
         group_lookup = {
@@ -417,4 +457,3 @@ class MainWindow(QMainWindow):
             self.tab_run.set_analysis(analysis_id)
             self.tab_ladder.set_analysis(analysis_id)
             self.tab_archive_runner.set_analysis(analysis_id)
-            self.tab_flt3_validation.set_analysis(analysis_id)
