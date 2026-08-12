@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Deliver the approved Clinical Workbench UI polish with a legible small-size HemaFrag identity, correct Clonality/FLT3/General navigation, a compact Ladder Editor, and a readable About page.
+**Goal:** Deliver the approved Clinical Workbench UI polish with reliable loading of the original HemaFrag identity, correct Clonality/FLT3/General navigation, a compact Ladder Editor, and a readable About page.
+
+**Decision update (2026-08-12):** The user chose to retain the original neon DNA/electropherogram icon. Task 1's replacement-asset steps are superseded; the original PNG, ICO, and ICNS files were restored exactly from `origin/main`. Runtime identity hardening and the sidebar lockup remain in scope.
 
 **Architecture:** Keep the existing PyQt6 application structure and introduce only two focused boundaries: a Qt-independent `app_resources.py` for portable desktop identity and a reusable `BrandLockup` widget for app branding. Main-window routing remains label-based, the Ladder Editor keeps all fitting behavior inside its existing dialog, and About keeps legal content in the existing content module while changing only its presentation.
 
@@ -21,6 +23,7 @@
 - The 35 bp ladder peak receives no special reporting or visual treatment.
 - Use the existing palette values from the approved spec; add no animation or UI framework dependency.
 - No Rust source, Rust wheel, patient data, controls, classifier, or report output may change.
+- Preserve the original `assets/app_icon.png`, `assets/app_icon.ico`, and `assets/app_icon.icns` artwork unchanged.
 
 ---
 
@@ -29,9 +32,7 @@
 ### New files
 
 - `app_resources.py` — resolves packaged/source icon paths, validates `QIcon` creation, and sets the Windows AppUserModelID without importing Qt at module import time.
-- `scripts/build_app_icons.py` — deterministic Pillow generator for PNG, ICO, and ICNS assets.
 - `gui_qt/widgets/brand_lockup.py` — reusable icon, wordmark, and descriptor widget.
-- `tests/test_app_icon_assets.py` — generated-asset size and contrast checks.
 - `tests/test_app_resources.py` — resource resolution, icon validation, and Windows identity checks.
 - `tests/test_main_window_navigation.py` — three-workspace routing, Labeling, semantic shortcuts, and brand-lockup checks.
 - `tests/test_tab_about.py` — About structure, legal content, and readable browser hooks.
@@ -39,9 +40,6 @@
 
 ### Modified files
 
-- `assets/app_icon.png` — generated 1024 px master raster.
-- `assets/app_icon.ico` — generated multi-resolution Windows asset.
-- `assets/app_icon.icns` — generated macOS asset.
 - `app_meta.py` — adds the shared application bundle identifier.
 - `qt_app.py` — uses the portable resource helper and sets Windows identity before `QApplication` construction.
 - `build_qt.py` — imports the shared bundle identifier rather than duplicating it.
@@ -53,7 +51,9 @@
 
 ---
 
-### Task 1: Generate the Adaptive HemaFrag Icon Set
+### Task 1: Generate the Adaptive HemaFrag Icon Set — Superseded
+
+The steps in this task record the initially approved direction but are no longer part of the implementation. The user explicitly selected the original artwork after seeing the replacement. Commit `76962be` restores the three icon files and removes the generator and its tests.
 
 **Files:**
 - Create: `scripts/build_app_icons.py`
@@ -200,7 +200,7 @@ git commit -m "feat: add adaptive HemaFrag application icons"
 - Produces: `resolve_app_icon_path(platform_name=None, bundle_dir=None, search_roots=None) -> Path | None`
 - Produces: `load_application_icon(platform_name=None, bundle_dir=None, search_roots=None, icon_factory=None, log_message=None)`
 - Produces: `set_windows_app_user_model_id(platform_name=None, app_id=APP_BUNDLE_ID, setter=None, log_message=None) -> bool`
-- Consumes: icon files generated in Task 1
+- Consumes: original icon files preserved from `origin/main`
 
 - [ ] **Step 1: Write failing tests for resource lookup and Windows identity**
 
@@ -319,7 +319,7 @@ Keep the existing platform icon contract: ICNS on macOS and ICO on Windows.
 
 - [ ] **Step 6: Run focused identity tests**
 
-Run: `python -m pytest tests/test_app_resources.py tests/test_app_icon_assets.py -q`
+Run: `python -m pytest tests/test_app_resources.py -q`
 
 Expected: all tests pass.
 
@@ -736,7 +736,7 @@ Expected: no whitespace errors.
 Run:
 
 ```powershell
-python -m pytest tests/test_app_icon_assets.py tests/test_app_resources.py tests/test_main_window_navigation.py tests/test_tab_about.py tests/test_ladder_editor_layout.py tests/test_clonality_interp_integration.py -q
+python -m pytest tests/test_app_resources.py tests/test_main_window_navigation.py tests/test_tab_about.py tests/test_ladder_editor_layout.py tests/test_clonality_interp_integration.py -q
 ```
 
 Expected: all focused tests pass in one process.

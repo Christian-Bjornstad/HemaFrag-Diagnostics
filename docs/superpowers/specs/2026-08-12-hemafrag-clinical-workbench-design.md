@@ -24,7 +24,7 @@ Shared screens must show the active analysis context where that context helps pr
 
 ### Included
 
-- Replace the current small-size icon treatment with an adaptive HemaFrag identity that remains recognizable at 16, 20, 24, and 32 pixels.
+- Retain the existing HemaFrag icon artwork while making its Windows title-bar/taskbar loading reliable.
 - Add an icon-and-`HEMAFRAG` lockup to the sidebar.
 - Make source launches and packaged Windows builds use the same stable application icon and Windows taskbar identity.
 - Remove **ML Training** from the Clonality sidebar and application page stack.
@@ -46,9 +46,7 @@ Shared screens must show the active analysis context where that context helps pr
 
 ### Icon system
 
-The icon will use a simple clinical mark: a strong blue rounded field containing a white HemaFrag `H` combined with a short electropherogram trace. The silhouette, not fine detail, must carry the identity. The current neon DNA artwork is too intricate at title-bar and taskbar sizes and will not be used as the small application icon.
-
-A deterministic asset script will generate the required PNG, multi-resolution ICO, and ICNS files from one design definition. The generated files remain committed so packaging does not depend on running the generator. Visual checks will inspect the 16, 20, 24, 32, 48, 128, and 256 pixel outputs.
+The existing neon DNA/electropherogram PNG, ICO, and ICNS artwork remains the canonical identity. The work changes how those committed assets are resolved and assigned; it does not redraw or regenerate them.
 
 ### Runtime identity
 
@@ -58,7 +56,7 @@ On Windows, `no.ous.hemafrag` will be set as the AppUserModelID before `QApplica
 
 ### Sidebar lockup
 
-The existing text-only `HEMAFRAG` header will become a compact lockup with the new icon, the `HEMAFRAG` wordmark, and a subtle `Diagnostics` descriptor. The lockup must fit the current desktop sidebar without forcing the analysis names or sub-navigation to truncate.
+The existing text-only `HEMAFRAG` header will become a compact lockup with the original icon, the `HEMAFRAG` wordmark, and a subtle `Diagnostics` descriptor. The lockup must fit the current desktop sidebar without forcing the analysis names or sub-navigation to truncate.
 
 ## Navigation and Analysis Workspaces
 
