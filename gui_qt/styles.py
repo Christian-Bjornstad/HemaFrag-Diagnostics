@@ -184,6 +184,97 @@ QScrollArea#TabScrollArea > QWidget > QWidget {
     padding: 18px 18px 6px 18px;
 }
 
+/* About */
+#AboutHero {
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 #ffffff,
+        stop: 1 #edf5fb
+    );
+    border: 1px solid #cfe0eb;
+    border-radius: 18px;
+}
+
+#AboutAppIcon {
+    background: #12395b;
+    color: #ffffff;
+    border: 1px solid #2563eb;
+    border-radius: 14px;
+    font-size: 15px;
+    font-weight: 900;
+}
+
+#AboutTitle {
+    color: #0f172a;
+    font-size: 22px;
+    font-weight: 850;
+}
+
+#AboutVersion {
+    color: #2563eb;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+#AboutSubtitle {
+    color: #526b81;
+    font-size: 13px;
+}
+
+#AboutSummaryCard,
+#AboutLegalCard {
+    background: #ffffff;
+    border: 1px solid #d8e5ef;
+    border-radius: 16px;
+}
+
+#AboutSummaryLabel,
+#AboutSectionLabel {
+    color: #486177;
+    font-size: 11px;
+    font-weight: 850;
+    letter-spacing: 1px;
+}
+
+#AboutSummaryValue {
+    color: #102235;
+    font-size: 13px;
+}
+
+QTabWidget#AboutLegalTabs::pane {
+    background: #ffffff;
+    border: 1px solid #d8e5ef;
+    border-radius: 10px;
+    top: -1px;
+}
+
+QTabWidget#AboutLegalTabs QTabBar::tab {
+    background: #edf3f8;
+    color: #526b81;
+    border: 1px solid #d8e5ef;
+    border-bottom: none;
+    padding: 8px 14px;
+    font-weight: 750;
+}
+
+QTabWidget#AboutLegalTabs QTabBar::tab:selected {
+    background: #ffffff;
+    color: #0f172a;
+}
+
+QTabWidget#AboutLegalTabs QTabBar::tab:focus {
+    border: 1px solid #2563eb;
+}
+
+QTextBrowser#AboutTextBrowser {
+    background: #ffffff;
+    color: #102235;
+    border: none;
+    padding: 10px;
+    selection-background-color: #dbeafe;
+    selection-color: #0f172a;
+}
+
 #DashboardCard {
     background: qlineargradient(
         x1: 0, y1: 0, x2: 1, y2: 1,
