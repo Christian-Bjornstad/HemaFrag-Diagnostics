@@ -278,6 +278,48 @@ pub fn liz_core_rescue_candidates(
     Some(outcome)
 }
 
+pub fn liz_core_first_rescue_candidates(
+    input: &LadderRescueInput,
+    budget: SearchBudget,
+    beam_width: usize,
+) -> Option<SearchOutcome> {
+    let attachment_reserve = input.peaks.len().min(budget.expansion_limit);
+    let core_budget = SearchBudget::new(
+        budget.fit_tier,
+        budget.expansion_limit.saturating_sub(attachment_reserve),
+        budget.watchdog_ms,
+    );
+    let mut core = liz_core_rescue_candidates(input, core_budget, beam_width)?;
+    let attachment_input = LadderRescueInput::new(
+        input.expected_basepairs.clone(),
+        core.candidate.scan_indices.clone(),
+        input.peaks.clone(),
+    );
+    let remaining = budget
+        .expansion_limit
+        .saturating_sub(core.diagnostics.expansions_used);
+    if remaining == 0 {
+        return Some(core);
+    }
+    let attachment_budget = SearchBudget::new(budget.fit_tier, remaining, budget.watchdog_ms);
+    let attachment = liz_local_rescue_candidates(&attachment_input, attachment_budget)?;
+    core.candidate = attachment.candidate;
+    core.diagnostics.expansions_used = core
+        .diagnostics
+        .expansions_used
+        .saturating_add(attachment.diagnostics.expansions_used);
+    core.diagnostics.expansion_limit = budget.expansion_limit;
+    core.diagnostics.elapsed_us = core
+        .diagnostics
+        .elapsed_us
+        .saturating_add(attachment.diagnostics.elapsed_us);
+    core.diagnostics.watchdog_reached |= attachment.diagnostics.watchdog_reached;
+    core.diagnostics
+        .rescue_triggers
+        .push("liz_35_attached_after_core".to_owned());
+    Some(core)
+}
+
 pub fn rox_local_rescue_candidates(
     input: &LadderRescueInput,
     budget: SearchBudget,
@@ -588,6 +630,29 @@ mod tests {
         let outcome = liz_core_rescue_candidates(&input, SearchBudget::tier_one(), 64).unwrap();
 
         assert_eq!(outcome.candidate.scan_indices, current);
+    }
+
+    #[test]
+    fn liz_core_first_rescue_repairs_core_then_attaches_35() {
+        let expected_bp = vec![35.0, 50.0, 75.0, 100.0, 139.0, 150.0];
+        let current = vec![1505, 1640, 1790, 1940, 2200, 2240];
+        let expected = vec![1544, 1640, 1790, 1940, 2174, 2240];
+        let peaks = vec![
+            evidence(1505, 250.0, 80.0),
+            evidence(1544, 900.0, 850.0),
+            evidence(1640, 1000.0, 950.0),
+            evidence(1790, 1100.0, 1050.0),
+            evidence(1940, 1000.0, 950.0),
+            evidence(2174, 950.0, 900.0),
+            evidence(2200, 200.0, 40.0),
+            evidence(2240, 900.0, 850.0),
+        ];
+        let input = LadderRescueInput::new(expected_bp, current, peaks);
+
+        let outcome =
+            liz_core_first_rescue_candidates(&input, SearchBudget::tier_one(), 64).unwrap();
+
+        assert_eq!(outcome.candidate.scan_indices, expected);
     }
 
     #[test]

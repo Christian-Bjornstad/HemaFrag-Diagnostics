@@ -9,7 +9,7 @@ use crate::contract::AnalysisKind;
 use crate::engine::EngineError;
 use crate::ladder_search::{
     LadderRescueInput, PeakEvidence, SearchBudget, deep_rescue_candidates,
-    liz_core_rescue_candidates, score_candidate_sequence,
+    liz_core_first_rescue_candidates, score_candidate_sequence,
 };
 use crate::ladders::LadderKind;
 use crate::signal::{
@@ -3489,7 +3489,8 @@ fn apply_liz_tier_one_rescue(
             })
             .collect(),
     );
-    let Some(outcome) = liz_core_rescue_candidates(&input, SearchBudget::tier_one(), 128) else {
+    let Some(outcome) = liz_core_first_rescue_candidates(&input, SearchBudget::tier_one(), 128)
+    else {
         return preview;
     };
     preview.search_diagnostics = Some(outcome.diagnostics);
