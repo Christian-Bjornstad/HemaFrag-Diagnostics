@@ -970,6 +970,79 @@ def _render_wave_comparison(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _assert_core_first_freeze(experiment: Path) -> None:
+    manifest_path = experiment / "core_first_candidate_freeze_manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid core-first candidate freeze manifest")
+    binary = Path(str(payload.get("binary_path") or "")).resolve()
+    if not binary.is_file() or _sha256_file(binary) != _normalized_hash(
+        payload.get("binary_sha256")
+    ):
+        raise ValueError("Core-first candidate binary SHA-256 does not match")
+    configuration = payload.get("configuration")
+    if not isinstance(configuration, dict) or _stable_digest(
+        _canonical(configuration)
+    ) != _normalized_hash(payload.get("configuration_fingerprint")):
+        raise ValueError("Core-first candidate configuration fingerprint does not match")
+    if not str(payload.get("git_revision") or "").strip():
+        raise ValueError("Core-first candidate freeze requires a git revision")
+
+
+def _validate_core_first_manifest_cases(
+    cases: list[dict[str, Any]], *, expected_count: int
+) -> None:
+    if len(cases) != expected_count:
+        raise ValueError("Core-first holdout count does not match the lock")
+    hashes = [_normalized_hash(case.get("content_sha256")) for case in cases]
+    runs = [_normalized_run(case.get("physical_run_key")) for case in cases]
+    copied = [_path_key(case.get("copied_path")) for case in cases]
+    if any(len(value) != 64 for value in hashes) or len(set(hashes)) != expected_count:
+        raise ValueError("Core-first holdout requires unique valid content hashes")
+    if not all(runs) or len(set(runs)) != expected_count:
+        raise ValueError("Core-first holdout requires unique physical runs")
+    if not all(copied) or len(set(copied)) != expected_count:
+        raise ValueError("Core-first holdout requires unique copied paths")
+    if any(
+        str(case.get("sample_kind") or "").strip().casefold() != "patient"
+        or _normalized_ladder(case.get("ladder")) != "LIZ"
+        for case in cases
+    ):
+        raise ValueError("Core-first holdout must contain patient LIZ cases only")
+
+
+def _overlay_review_annotations(
+    rows: list[dict[str, str]], bundle: Path
+) -> list[dict[str, str]]:
+    annotations_path = bundle / "ladder_review_annotations.json"
+    if not annotations_path.is_file():
+        return rows
+    payload = json.loads(annotations_path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid ladder review annotations")
+    row_paths = {_path_key(row.get("full_path")) for row in rows}
+    annotations = {
+        _path_key(path): value for path, value in payload.items() if isinstance(value, dict)
+    }
+    if not set(annotations).issubset(row_paths):
+        raise ValueError("Ladder review annotations contain an unknown case")
+    for row in rows:
+        annotation = annotations.get(_path_key(row.get("full_path")))
+        if annotation is not None:
+            row.update(
+                {
+                    field: str(annotation.get(field) or "")
+                    for field in (
+                        "label",
+                        "label_note",
+                        "reviewed_at_utc",
+                        "adjustment_path",
+                    )
+                }
+            )
+    return rows
+
+
 def finalize_fit_improvement_wave(
     workspace: Path,
     wave: str,
@@ -979,17 +1052,24 @@ def finalize_fit_improvement_wave(
     """Finalize one fully resolved wave using only contained, hash-locked evidence."""
 
     normalized_wave = str(wave).strip().casefold()
-    if normalized_wave not in {"development", "validation"}:
-        raise ValueError("Fit-improvement wave must be development or validation")
+    if normalized_wave not in {"development", "validation", "core_first_holdout"}:
+        raise ValueError(
+            "Fit-improvement wave must be development, validation, or core_first_holdout"
+        )
     target = Path(workspace).resolve()
     _round_two_roots(target, roots)
     if normalized_wave == "validation":
         assert_validation_unlocked(target)
-    expected_count = 40 if normalized_wave == "development" else 60
+    expected_count = 60 if normalized_wave == "validation" else 40
     experiment = target / "rust_fit_improvement"
-    bundle = experiment / (
-        "development_40" if normalized_wave == "development" else "validation_60"
-    )
+    bundle_names = {
+        "development": "development_40",
+        "validation": "validation_60",
+        "core_first_holdout": "core_first_holdout_40",
+    }
+    bundle = experiment / bundle_names[normalized_wave]
+    if normalized_wave == "core_first_holdout":
+        _assert_core_first_freeze(experiment)
     withheld_path = experiment / f"{normalized_wave}_selection_withheld.json"
     payload = json.loads(withheld_path.read_text(encoding="utf-8"))
     cases_value = payload.get("cases") if isinstance(payload, dict) else None
@@ -1001,10 +1081,15 @@ def finalize_fit_improvement_wave(
     ):
         raise ValueError(f"Invalid {normalized_wave} withheld manifest")
     cases = [dict(case) for case in cases_value]
-    _validate_wave_manifest_cases(
-        cases, wave=normalized_wave, expected_count=expected_count
+    if normalized_wave == "core_first_holdout":
+        _validate_core_first_manifest_cases(cases, expected_count=expected_count)
+    else:
+        _validate_wave_manifest_cases(
+            cases, wave=normalized_wave, expected_count=expected_count
+        )
+    rows = _overlay_review_annotations(
+        _read_csv(bundle / "ladder_review_cases.csv"), bundle
     )
-    rows = _read_csv(bundle / "ladder_review_cases.csv")
     if len(rows) != expected_count:
         raise ValueError(f"Fit-improvement {normalized_wave} CSV count does not match")
     rows_by_id = {str(row.get("source_run_dir") or "").strip(): row for row in rows}
@@ -1169,6 +1254,16 @@ def finalize_fit_improvement_wave(
         excluded_count=excluded_count,
         fitting_evaluation_count=fitting_count,
         ml_eligible_count=ml_count,
+    )
+
+
+def finalize_core_first_holdout(
+    workspace: Path, *, roots: ResearchRoots | None = None
+) -> FitImprovementOutcomeResult:
+    """Finalize the hash-locked blind LIZ core-first holdout review."""
+
+    return finalize_fit_improvement_wave(
+        workspace, "core_first_holdout", roots=roots
     )
 
 

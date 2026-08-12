@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import ast
 import csv
 import hashlib
 import json
@@ -17,6 +18,7 @@ from core.research.ladder.fit_improvement import (
     assert_validation_unlocked,
     build_approved_fit_gold,
     finalize_fit_improvement_wave,
+    finalize_core_first_holdout,
     freeze_fit_candidate,
     prepare_fit_improvement_experiment,
     prepare_core_first_holdout,
@@ -580,6 +582,49 @@ def test_finalize_validation_refuses_even_resolved_rows_before_freeze(tmp_path):
         finalize_fit_improvement_wave(workspace, "validation", roots=roots)
 
 
+def test_finalize_core_first_holdout_uses_annotations_and_verifies_freeze(tmp_path):
+    workspace, roots = _published_workspace(tmp_path, extras_per_stratum=45)
+    prepare_fit_improvement_experiment(workspace, seed=7, roots=roots)
+    binary = tmp_path / "fraggler-cli.exe"
+    binary.write_bytes(b"core-first-candidate")
+    holdout = prepare_core_first_holdout(
+        workspace,
+        cli=binary,
+        configuration={"tier_1_expansions": 1000},
+        git_revision="abc123",
+        seed=7,
+        roots=roots,
+    )
+    cases_path = holdout.bundle.bundle_dir / "ladder_review_cases.csv"
+    with cases_path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    annotations = {
+        row["full_path"]: {
+            "label": "reviewed_no_change",
+            "label_note": "",
+            "reviewed_at_utc": "2026-08-12T12:00:00+00:00",
+            "adjustment_path": "",
+        }
+        for row in rows
+    }
+    (holdout.bundle.bundle_dir / "ladder_review_annotations.json").write_text(
+        json.dumps(annotations), encoding="utf-8"
+    )
+
+    result = finalize_core_first_holdout(workspace, roots=roots)
+
+    assert result.wave == "core_first_holdout"
+    assert result.total_count == 40
+    assert result.fitting_evaluation_count == 40
+    assert result.outcomes_path.name == "core_first_holdout_outcomes.json"
+    payload = json.loads(result.outcomes_path.read_text(encoding="utf-8"))
+    assert all(case["label"] == "reviewed_no_change" for case in payload["cases"])
+
+    binary.write_bytes(b"mutated-candidate")
+    with pytest.raises(ValueError, match="binary SHA-256"):
+        finalize_core_first_holdout(workspace, roots=roots)
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -588,6 +633,8 @@ def test_finalize_validation_refuses_even_resolved_rows_before_freeze(tmp_path):
         "freeze-fit-candidate",
         "finalize-fit-validation",
         "prepare-core-first-holdout",
+        "finalize-core-first-holdout",
+        "export-core-first-holdout-gold",
     ],
 )
 def test_fit_improvement_cli_routes_have_help(command):
@@ -600,3 +647,27 @@ def test_fit_improvement_cli_routes_have_help(command):
     )
     assert completed.returncode == 0, completed.stderr
     assert "usage:" in completed.stdout
+
+
+def test_core_first_cli_handlers_do_not_cross_call_prepare_and_finalize():
+    script = Path(__file__).parents[1] / "scripts" / "build_ladder_research_corpus.py"
+    tree = ast.parse(script.read_text(encoding="utf-8"))
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    def calls(function_name: str) -> set[str]:
+        return {
+            node.func.id
+            for node in ast.walk(functions[function_name])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+    assert "prepare_core_first_holdout" in calls(
+        "_prepare_core_first_holdout_command"
+    )
+    assert "prepare_core_first_holdout" not in calls(
+        "_finalize_core_first_holdout_command"
+    )

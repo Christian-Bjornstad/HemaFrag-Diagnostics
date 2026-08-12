@@ -39,6 +39,7 @@ from core.research.ladder.diagnostics import DiagnosticRecord, run_rust_diagnost
 from core.research.ladder.fit_improvement import (
     assert_validation_unlocked,
     build_approved_fit_gold,
+    finalize_core_first_holdout,
     finalize_fit_improvement_wave,
     freeze_fit_candidate,
     prepare_core_first_holdout,
@@ -851,6 +852,23 @@ def _prepare_core_first_holdout_command(args: argparse.Namespace) -> None:
     )
 
 
+def _finalize_core_first_holdout_command(args: argparse.Namespace) -> None:
+    result = finalize_core_first_holdout(args.workspace.resolve())
+    print(
+        json.dumps(
+            {
+                "wave": result.wave,
+                "outcomes_path": str(result.outcomes_path),
+                "comparison_path": str(result.comparison_path),
+                "total_count": result.total_count,
+                "excluded_count": result.excluded_count,
+                "fitting_evaluation_count": result.fitting_evaluation_count,
+            },
+            indent=2,
+        )
+    )
+
+
 def _export_fit_gold_command(args: argparse.Namespace) -> None:
     workspace = args.workspace.resolve()
     assert_canonical_production_workspace(workspace)
@@ -960,6 +978,57 @@ def _export_fit_validation_gold_command(args: argparse.Namespace) -> None:
     print(json.dumps({"output": str(output), "record_count": manifest["record_count"]}, indent=2))
 
 
+def _export_core_first_holdout_gold_command(args: argparse.Namespace) -> None:
+    workspace = args.workspace.resolve()
+    assert_canonical_production_workspace(workspace)
+    experiment = workspace / "rust_fit_improvement"
+    outcomes = json.loads(
+        (experiment / "core_first_holdout_outcomes.json").read_text(encoding="utf-8")
+    )
+    selection = json.loads(
+        (experiment / "core_first_holdout_selection_withheld.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    selected_cases = {
+        str(case.get("content_sha256") or "").casefold(): dict(case)
+        for case in selection.get("cases") or []
+    }
+    approvals: dict[str, dict[str, Any]] = {}
+    for outcome in outcomes.get("cases") or []:
+        if not bool(outcome.get("fitting_evaluation_eligible")):
+            continue
+        content_hash = str(outcome.get("content_sha256") or "").casefold()
+        selected = selected_cases.get(content_hash)
+        if selected is None:
+            raise ValueError("Core-first gold case is missing its hash-bound selection")
+        physical_run = str(outcome.get("physical_run_key") or "")
+        approvals[content_hash] = {
+            "path": str(selected.get("copied_path") or ""),
+            "content_sha256": content_hash,
+            "physical_run_key": physical_run,
+            "identity_key": f"patient:{physical_run}",
+            "sample_kind": str(selected.get("sample_kind") or "patient"),
+            "reviewed_by": args.reviewed_by,
+            "approved_for_fit_gold": True,
+        }
+    manifest = build_approved_fit_gold(
+        {"cases": []},
+        outcomes,
+        approvals,
+        development_truth_source="core_first_holdout_review",
+        partition="blind_core_first_holdout_fit_gold",
+    )
+    output = experiment / "core_first_holdout_gold_manifest.json"
+    _write_json(output, manifest)
+    print(
+        json.dumps(
+            {"output": str(output), "record_count": manifest["record_count"]},
+            indent=2,
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1029,6 +1098,10 @@ def main() -> None:
     prepare_core_holdout.add_argument("--configuration-json", default="{}")
     prepare_core_holdout.set_defaults(handler=_prepare_core_first_holdout_command)
 
+    finalize_core_holdout = commands.add_parser("finalize-core-first-holdout")
+    finalize_core_holdout.add_argument("--workspace", required=True, type=Path)
+    finalize_core_holdout.set_defaults(handler=_finalize_core_first_holdout_command)
+
     finalize_fit_development = commands.add_parser("finalize-fit-development")
     finalize_fit_development.add_argument("--workspace", required=True, type=Path)
     finalize_fit_development.set_defaults(
@@ -1050,6 +1123,15 @@ def main() -> None:
     export_validation_gold.add_argument("--workspace", required=True, type=Path)
     export_validation_gold.add_argument("--reviewed-by", default="chemist")
     export_validation_gold.set_defaults(handler=_export_fit_validation_gold_command)
+
+    export_core_holdout_gold = commands.add_parser(
+        "export-core-first-holdout-gold"
+    )
+    export_core_holdout_gold.add_argument("--workspace", required=True, type=Path)
+    export_core_holdout_gold.add_argument("--reviewed-by", default="chemist")
+    export_core_holdout_gold.set_defaults(
+        handler=_export_core_first_holdout_gold_command
+    )
 
     finalize_fit_validation = commands.add_parser("finalize-fit-validation")
     finalize_fit_validation.add_argument("--workspace", required=True, type=Path)
