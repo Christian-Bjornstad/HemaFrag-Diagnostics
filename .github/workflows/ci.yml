@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -29,7 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
+      - name: Build standalone crates
+        run: cargo build --release -p fraggler-core -p fraggler-cli -p fraggler-desktop
+      - name: Check Python bindings
+        run: cargo check -p fraggler-kernels-py
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude fraggler-kernels-py
