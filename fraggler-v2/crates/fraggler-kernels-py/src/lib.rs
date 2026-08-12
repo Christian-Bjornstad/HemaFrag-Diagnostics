@@ -4,12 +4,12 @@
 //! maturin-built wheel installs it under `fraggler_native`).
 use std::path::PathBuf;
 
+use pyo3::exceptions::{PyFileNotFoundError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList};
-use pyo3::exceptions::{PyFileNotFoundError, PyRuntimeError, PyValueError};
 use serde_json::Value;
 
-use fraggler_core::{analyze_fsa_primitives, AnalysisKind, EngineError};
+use fraggler_core::{AnalysisKind, EngineError, analyze_fsa_primitives};
 
 fn engine_error_to_py(err: EngineError) -> PyErr {
     PyRuntimeError::new_err(format!("fraggler-core error: {}", err))
@@ -26,7 +26,7 @@ fn parse_analysis_kind(s: Option<&str>) -> PyResult<Option<AnalysisKind>> {
             return Err(PyValueError::new_err(format!(
                 "Unknown analysis_kind '{}' (expected clonality|flt3|general)",
                 other
-            )))
+            )));
         }
     };
     Ok(Some(kind))
@@ -53,9 +53,8 @@ fn analyze_fsa<'py>(
 
     let result = analyze_fsa_primitives(utf8_path, kind.as_ref()).map_err(engine_error_to_py)?;
 
-    let value = serde_json::to_value(&result).map_err(|e| {
-        PyRuntimeError::new_err(format!("convert PrimitiveAnalysisResult: {}", e))
-    })?;
+    let value = serde_json::to_value(&result)
+        .map_err(|e| PyRuntimeError::new_err(format!("convert PrimitiveAnalysisResult: {}", e)))?;
 
     let dict = PyDict::new(py);
     if let Value::Object(map) = value {
@@ -132,9 +131,15 @@ fn fraggler_cli_path() -> Option<String> {
     }
 
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = here.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+    let workspace_root = here
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf());
     if let Some(root) = workspace_root {
-        for dir in [root.join("target").join("release"), root.join("target").join("debug")] {
+        for dir in [
+            root.join("target").join("release"),
+            root.join("target").join("debug"),
+        ] {
             for c in candidates {
                 let p = dir.join(c);
                 if p.exists() {

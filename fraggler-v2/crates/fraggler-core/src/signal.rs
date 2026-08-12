@@ -676,9 +676,11 @@ mod tests {
         assert!(values.iter().copied().fold(f64::NEG_INFINITY, f64::max) < 0.0);
 
         let corrected = baseline_correct_quantile_nonnegative(&values, 200, 0.10);
-        assert!(corrected
-            .iter()
-            .all(|value| value.is_finite() && *value >= 0.0));
+        assert!(
+            corrected
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0)
+        );
         for index in peak_indices {
             assert!(
                 corrected[index] >= 590.0,
