@@ -8,9 +8,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-import PyInstaller.__main__
-
-from app_meta import APP_VERSION
+from app_meta import APP_BUNDLE_ID, APP_VERSION
 
 # Monkey-patch dis._get_const_info to swallow known Python 3.10 bytecode IndexErrors
 _orig_get_const_info = getattr(dis, '_get_const_info', None)
@@ -23,7 +21,6 @@ if _orig_get_const_info:
     dis._get_const_info = _patched_get_const_info
 
 APP_NAME = "HemaFrag"
-BUNDLE_ID = "no.ous.hemafrag"
 PROJECT_ROOT = Path(__file__).resolve().parent
 DIST_DIR = PROJECT_ROOT / "dist"
 RELEASE_DIR = DIST_DIR / "releases"
@@ -137,7 +134,7 @@ def _build_pyinstaller_args() -> list[str]:
 
     if sys.platform == "darwin":
         args.append("--icon=assets/app_icon.icns")
-        args.append(f"--osx-bundle-identifier={BUNDLE_ID}")
+        args.append(f"--osx-bundle-identifier={APP_BUNDLE_ID}")
     elif sys.platform == "win32":
         args.append("--icon=assets/app_icon.ico")
     elif sys.platform == "linux":
@@ -284,6 +281,8 @@ def _post_build_generic_desktop() -> None:
 
 
 def build_app() -> None:
+    import PyInstaller.__main__
+
     print(f"Building HemaFrag Diagnostics desktop app for {sys.platform}...")
     _prepare_build_dirs()
     PyInstaller.__main__.run(_build_pyinstaller_args())

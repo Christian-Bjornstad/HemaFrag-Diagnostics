@@ -184,36 +184,20 @@ def test_audit_md_documents_per_entry_features():
         # We tolerate the docs being summarized; not strict here.
 
 
-def test_clonality_sidebar_has_interpretation_button(qapp):
-    """Regression: sidebar must surface the Interpretation sub-button
-    inside the Klonalitet (clonality) analysis group.
-
-    Bug history: 2026-06-29 morning session - tab widget was registered
-    in the stacked widget but no sidebar button was added, so the
-    tab was invisible.
-    """
+def test_clonality_sidebar_exposes_labeling_not_ml_training(qapp):
+    """The manual Labeling workspace replaces the old training page."""
     from gui_qt.main_window import MainWindow
 
     w = MainWindow()
-    # Find clonality group's sub_buttons
     clonality_group = w.group_clonality
     sub_labels = list(clonality_group.sub_button_labels)
-    # 2026-07-13: the in-app interpretation was replaced by the ML Training tab,
-    # so the sidebar now exposes Run / Ladder / Archive Runner / ML Training /
-    # Log / Settings — the TabClonalityInterpretation widget still exists
-    # but is no longer in the sidebar.
-    assert "ML Training" in sub_labels, (
-        "Klonalitet sidebar must include 'ML Training' (in-app interpreter). "
-        "sub_labels=%r" % sub_labels
-    )
-    assert "Interpretation" not in sub_labels, (
-        "Single Interpretation sidebar tab was removed in v0.2.0; got sub_labels=%r"
-        % sub_labels
-    )
-    # Verify ML Training routes to the TabMlTraining widget
-    training_idx = sub_labels.index("ML Training")
+    assert "ML Training" not in sub_labels
+    assert "Labeling" in sub_labels
+
+    labeling_idx = sub_labels.index("Labeling")
     w._activate_analysis("clonality")
-    w.on_sub_tab_clicked("clonality", training_idx)
+    w.on_sub_tab_clicked("clonality", labeling_idx)
     page = w.stacked_widget.currentWidget().widget()
-    from gui_qt.tabs.tab_ml_training import TabMlTraining
-    assert isinstance(page, TabMlTraining)
+    from gui_qt.tabs.tab_labeling import TabLabeling
+
+    assert isinstance(page, TabLabeling)

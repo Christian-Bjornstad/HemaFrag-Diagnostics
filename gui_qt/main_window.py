@@ -1,22 +1,21 @@
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QStackedWidget, QPushButton, QLabel, QFrame, QComboBox, QScrollArea
+    QStackedWidget, QPushButton, QLabel, QFrame, QComboBox, QScrollArea, QApplication
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
+from PyQt6.QtGui import QShortcut, QKeySequence
 
 from app_meta import APP_VERSION
 from gui_qt.styles import VIBRANT_PRO_QSS
 from gui_qt.tabs.tab_batch import TabBatch
 from gui_qt.tabs.tab_archive_runner import TabArchiveRunner
-from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
-from gui_qt.tabs.tab_ml_training import TabMlTraining
 from gui_qt.tabs.tab_labeling import TabLabeling
 from gui_qt.tabs.tab_flt3_validation import TabFlt3Validation
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_log import TabLog
 from gui_qt.tabs.tab_about import TabAbout
 from gui_qt.tabs.tab_settings import TabAnalysisSettings
+from gui_qt.widgets.brand_lockup import BrandLockup
 from config import APP_SETTINGS, get_analysis_settings, save_settings
 
 class SidebarButton(QPushButton):
@@ -66,11 +65,11 @@ class AnalysisGroup(QWidget):
         for label in self.sub_button_labels:
             button = AnalysisSubButton(f"•  {label}")
             self.sub_buttons.append(button)
-        self.btn_run = self.sub_buttons[0]
-        self.btn_ladder = self.sub_buttons[1] if len(self.sub_buttons) > 1 else self.btn_run
-        self.btn_archive = self.sub_buttons[2] if len(self.sub_buttons) > 4 else None
-        self.btn_log = self.sub_buttons[2] if len(self.sub_buttons) == 4 else self.sub_buttons[3]
-        self.btn_settings = self.sub_buttons[-1]
+        self.btn_run = self.button_for_label("Run")
+        self.btn_ladder = self.button_for_label("Ladder")
+        self.btn_archive = self.button_for_label("Archive Runner")
+        self.btn_log = self.button_for_label("Log")
+        self.btn_settings = self.button_for_label("Settings")
         for i, btn in enumerate(self.sub_buttons):
             self.sub_layout.addWidget(btn)
             btn.clicked.connect(lambda _, b=btn, idx=i: self._handle_sub_click(b, idx))
@@ -79,6 +78,12 @@ class AnalysisGroup(QWidget):
         self.sub_container.setVisible(False)
         
         self.header.clicked.connect(self.toggle_expansion)
+
+    def button_for_label(self, label: str) -> AnalysisSubButton | None:
+        try:
+            return self.sub_buttons[self.sub_button_labels.index(label)]
+        except ValueError:
+            return None
         
     def _handle_sub_click(self, clicked_btn, tab_idx):
         for btn in self.sub_buttons:
@@ -119,8 +124,8 @@ class MainWindow(QMainWindow):
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(4)
         
-        brand = QLabel("HEMAFRAG")
-        brand.setObjectName("SidebarBrand")
+        app = QApplication.instance()
+        brand = BrandLockup(app.windowIcon() if app is not None else None)
         sidebar_layout.addWidget(brand)
         
         sidebar_layout.addSpacing(10)
@@ -136,7 +141,6 @@ class MainWindow(QMainWindow):
                 "Run",
                 "Ladder",
                 "Archive Runner",
-                "ML Training",
                 "Log",
                 "Labeling",
                 "Settings",
@@ -175,9 +179,6 @@ class MainWindow(QMainWindow):
         self.tab_ladder = TabLadder()
         self.tab_archive_runner = TabArchiveRunner()
         self.tab_flt3_validation = TabFlt3Validation()
-        # ML Training replaces the standalone Interpretation tab —
-        # the chemist trains straight from the sidebar now.
-        self.tab_ml_training = TabMlTraining()
         self.tab_labeling = TabLabeling()
         self.tab_log = TabLog()
         self.tab_about = TabAbout()
@@ -201,7 +202,6 @@ class MainWindow(QMainWindow):
         self.tab_ladder_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ladder))
         self.tab_archive_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))
         self.tab_flt3_validation_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_flt3_validation))
-        self.tab_ml_training_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ml_training))
         self.tab_labeling_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_labeling))
         self.tab_log_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
         self.tab_about_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))
@@ -218,7 +218,6 @@ class MainWindow(QMainWindow):
                 "Run": self.tab_run_idx,
                 "Ladder": self.tab_ladder_idx,
                 "Archive Runner": self.tab_archive_idx,
-                "ML Training": self.tab_ml_training_idx,
                 "Log": self.tab_log_idx,
                 "Labeling": self.tab_labeling_idx,
                 "Settings": self.tab_settings_clonality_idx,
@@ -270,27 +269,31 @@ class MainWindow(QMainWindow):
     def _setup_shortcuts(self) -> None:
         """Alt+1..N activates each analysis group's Run tab.
         Ctrl+, opens Settings for the current analysis.
-        Alt+letter jumps to sub-tabs of the current group:
-          R = Run, L = Ladder, A = Archive Runner, I = Interpretation,
-          G = loG, S = Settings."""
+        Alt+letter jumps to a semantic sub-tab in the current group."""
         for i in range(min(len(self.groups), 9)):
             sc = QShortcut(QKeySequence(f"Alt+{i + 1}"), self)
             sc.activated.connect(lambda idx=i: self._activate_group(idx))
         sc_settings = QShortcut(QKeySequence("Ctrl+,"), self)
         sc_settings.activated.connect(self._activate_settings)
-        # Letter shortcuts — sub-tab navigation within the current group
-        for letter, sub_idx in [("R", 0), ("L", 1), ("A", 2), ("I", 3), ("G", 4), ("S", 5)]:
+        shortcut_labels = {
+            "R": "Run",
+            "L": "Ladder",
+            "A": "Archive Runner",
+            "G": "Log",
+            "B": "Labeling",
+            "S": "Settings",
+        }
+        for letter, label in shortcut_labels.items():
             sc = QShortcut(QKeySequence(f"Alt+{letter}"), self)
-            sc.activated.connect(lambda idx=sub_idx: self._activate_sub(idx))
+            sc.activated.connect(lambda selected_label=label: self._activate_sub_label(selected_label))
 
     def _activate_group(self, idx: int) -> None:
         """Keyboard-driven group activation — same path as clicking a sidebar header."""
         if 0 <= idx < len(self.groups):
             self.on_group_clicked(self.groups[idx])
 
-    def _activate_sub(self, sub_idx: int) -> None:
-        """Jump to a sub-tab within the currently active analysis group.
-        Sub_idx maps to: 0=Run, 1=Ladder, 2=Archive Runner, 3=Interpretation, 4=Log, 5=Settings."""
+    def _activate_sub_label(self, label: str) -> None:
+        """Jump to a named sub-tab without relying on per-analysis positions."""
         active = APP_SETTINGS.get("active_analysis", "clonality")
         group_map = {
             "clonality": self.group_clonality,
@@ -298,14 +301,15 @@ class MainWindow(QMainWindow):
             "general": self.group_general,
         }
         group = group_map.get(active, self.group_clonality)
-        if 0 <= sub_idx < len(group.sub_buttons):
-            # Clear all other sub-buttons and about-button so the highlight
-            # only follows the just-activated one (mirrors _handle_sub_click).
-            self.btn_about.setChecked(False)
-            for other_group in self.groups:
-                for button in other_group.sub_buttons:
-                    button.setChecked(button is group.sub_buttons[sub_idx])
-            self.on_sub_tab_clicked(group.internal_id, sub_idx)
+        button = group.button_for_label(label)
+        if button is None:
+            return
+        sub_idx = group.sub_button_labels.index(label)
+        self.btn_about.setChecked(False)
+        for other_group in self.groups:
+            for other_button in other_group.sub_buttons:
+                other_button.setChecked(other_button is button)
+        self.on_sub_tab_clicked(group.internal_id, sub_idx)
 
     def _activate_settings(self) -> None:
         """Jump to the Settings page for the current analysis."""

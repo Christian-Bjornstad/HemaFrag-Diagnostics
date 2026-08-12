@@ -55,12 +55,32 @@ QScrollArea#TabScrollArea > QWidget > QWidget {
     border-right: 1px solid #17324a;
 }
 
-#SidebarBrand {
+#SidebarBrandLockup {
+    background: transparent;
+    border-bottom: 1px solid #17324a;
+}
+
+#SidebarBrandMark {
+    background: #12395b;
+    color: #ffffff;
+    border: 1px solid #2563eb;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 900;
+}
+
+#SidebarBrandText {
     color: #f8fbff;
-    font-size: 17px;
-    font-weight: 800;
-    padding: 26px 20px 18px 20px;
-    letter-spacing: 1.4px;
+    font-size: 15px;
+    font-weight: 900;
+    letter-spacing: 1.2px;
+}
+
+#SidebarBrandDescriptor {
+    color: #8ba6bd;
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.7px;
 }
 
 #SidebarButton {
@@ -97,7 +117,7 @@ QScrollArea#TabScrollArea > QWidget > QWidget {
     background: transparent;
     color: #eff6ff;
     text-align: left;
-    padding: 12px 20px;
+    padding: 10px 20px;
     border: none;
     font-weight: 700;
     font-size: 14px;
@@ -122,7 +142,7 @@ QScrollArea#TabScrollArea > QWidget > QWidget {
     background: transparent;
     color: #94a3b8;
     text-align: left;
-    padding: 10px 20px 10px 40px;
+    padding: 8px 20px 8px 40px;
     border: none;
     font-weight: 500;
     font-size: 13px;
@@ -162,6 +182,97 @@ QScrollArea#TabScrollArea > QWidget > QWidget {
     text-transform: uppercase;
     letter-spacing: 1.2px;
     padding: 18px 18px 6px 18px;
+}
+
+/* About */
+#AboutHero {
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 #ffffff,
+        stop: 1 #edf5fb
+    );
+    border: 1px solid #cfe0eb;
+    border-radius: 18px;
+}
+
+#AboutAppIcon {
+    background: #12395b;
+    color: #ffffff;
+    border: 1px solid #2563eb;
+    border-radius: 14px;
+    font-size: 15px;
+    font-weight: 900;
+}
+
+#AboutTitle {
+    color: #0f172a;
+    font-size: 22px;
+    font-weight: 850;
+}
+
+#AboutVersion {
+    color: #2563eb;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+#AboutSubtitle {
+    color: #526b81;
+    font-size: 13px;
+}
+
+#AboutSummaryCard,
+#AboutLegalCard {
+    background: #ffffff;
+    border: 1px solid #d8e5ef;
+    border-radius: 16px;
+}
+
+#AboutSummaryLabel,
+#AboutSectionLabel {
+    color: #486177;
+    font-size: 11px;
+    font-weight: 850;
+    letter-spacing: 1px;
+}
+
+#AboutSummaryValue {
+    color: #102235;
+    font-size: 13px;
+}
+
+QTabWidget#AboutLegalTabs::pane {
+    background: #ffffff;
+    border: 1px solid #d8e5ef;
+    border-radius: 10px;
+    top: -1px;
+}
+
+QTabWidget#AboutLegalTabs QTabBar::tab {
+    background: #edf3f8;
+    color: #526b81;
+    border: 1px solid #d8e5ef;
+    border-bottom: none;
+    padding: 8px 14px;
+    font-weight: 750;
+}
+
+QTabWidget#AboutLegalTabs QTabBar::tab:selected {
+    background: #ffffff;
+    color: #0f172a;
+}
+
+QTabWidget#AboutLegalTabs QTabBar::tab:focus {
+    border: 1px solid #2563eb;
+}
+
+QTextBrowser#AboutTextBrowser {
+    background: #ffffff;
+    color: #102235;
+    border: none;
+    padding: 10px;
+    selection-background-color: #dbeafe;
+    selection-color: #0f172a;
 }
 
 #DashboardCard {

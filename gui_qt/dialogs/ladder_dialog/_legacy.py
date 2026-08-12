@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QDialog,
+    QFrame,
     QGridLayout,
     QHeaderView,
     QHBoxLayout,
@@ -17,6 +18,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QTabWidget,
@@ -63,11 +65,11 @@ class LadderAdjustmentDialog(QDialog):
         if available is not None:
             target_w = min(available.width() - 64, 1700)
             target_h = min(available.height() - 64, 1040)
-            self.resize(max(target_w, 1180), max(target_h, 780))
-            self.setMinimumSize(min(1180, available.width()), min(780, available.height()))
+            self.resize(max(target_w, 980), max(target_h, 680))
+            self.setMinimumSize(min(980, available.width()), min(680, available.height()))
         else:
             self.resize(1660, 980)
-            self.setMinimumSize(1180, 780)
+            self.setMinimumSize(980, 680)
 
         self.fitted_ladder_steps = np.asarray(fsa.ladder_steps, dtype=float)
         self.ladder_steps = np.asarray(
@@ -161,12 +163,13 @@ class LadderAdjustmentDialog(QDialog):
                 border: 1px solid #d9e4ef;
                 border-radius: 16px;
             }
-            QWidget#PanelSection {
+            QWidget#PanelSection,
+            QWidget#SizingQcPanel {
                 background: #ffffff;
                 border: 1px solid #e7eef7;
                 border-radius: 12px;
             }
-            QWidget#ActionBar {
+            QWidget#LadderActionBar {
                 background: #ffffff;
                 border: 1px solid #d9e4ef;
                 border-radius: 14px;
@@ -175,6 +178,20 @@ class LadderAdjustmentDialog(QDialog):
                 background: #f4f9ff;
                 border: 1px solid #deebf7;
                 border-radius: 10px;
+            }
+            QWidget#TraceViewControls,
+            QWidget#TraceAssignControls {
+                background: transparent;
+            }
+            QLabel#TraceControlGroupLabel {
+                color: #64748b;
+                font-size: 9px;
+                font-weight: 800;
+                letter-spacing: 1px;
+            }
+            QScrollArea#SizingQcScroll {
+                background: transparent;
+                border: none;
             }
             QLabel#WorkspaceTitle {
                 font-size: 16px;
@@ -318,6 +335,23 @@ class LadderAdjustmentDialog(QDialog):
                 color: #14532d;
                 border-color: #86efac;
             }
+            QPushButton#SecondaryButton {
+                background: #ffffff;
+                color: #334155;
+                border-color: #cbd5e1;
+            }
+            QPushButton#DangerButton {
+                background: #ffffff;
+                color: #dc2626;
+                border-color: #fca5a5;
+            }
+            QPushButton#DangerButton:hover {
+                background: #fef2f2;
+                border-color: #dc2626;
+            }
+            QPushButton:focus {
+                border: 2px solid #2563eb;
+            }
             QMessageBox {
                 background: #f8fbff;
                 border: 1px solid #d9e6f2;
@@ -441,9 +475,29 @@ class LadderAdjustmentDialog(QDialog):
 
         trace_toolbar = QWidget()
         trace_toolbar.setObjectName("TraceToolbar")
-        plot_controls = QHBoxLayout(trace_toolbar)
-        plot_controls.setContentsMargins(6, 4, 6, 4)
-        plot_controls.setSpacing(5)
+        toolbar_layout = QVBoxLayout(trace_toolbar)
+        toolbar_layout.setContentsMargins(6, 4, 6, 4)
+        toolbar_layout.setSpacing(2)
+
+        view_controls_widget = QWidget()
+        view_controls_widget.setObjectName("TraceViewControls")
+        view_controls = QHBoxLayout(view_controls_widget)
+        view_controls.setContentsMargins(0, 0, 0, 0)
+        view_controls.setSpacing(5)
+        view_label = QLabel("VIEW")
+        view_label.setObjectName("TraceControlGroupLabel")
+        view_label.setFixedWidth(48)
+        view_controls.addWidget(view_label)
+
+        assign_controls_widget = QWidget()
+        assign_controls_widget.setObjectName("TraceAssignControls")
+        assign_controls = QHBoxLayout(assign_controls_widget)
+        assign_controls.setContentsMargins(0, 0, 0, 0)
+        assign_controls.setSpacing(5)
+        assign_label = QLabel("ASSIGN")
+        assign_label.setObjectName("TraceControlGroupLabel")
+        assign_label.setFixedWidth(48)
+        assign_controls.addWidget(assign_label)
         self.btn_zoom_full = QPushButton("Full Trace")
         self.btn_zoom_full.clicked.connect(self._zoom_full_trace)
         self.btn_zoom_ladder = QPushButton("Ladder Region")
@@ -477,8 +531,8 @@ class LadderAdjustmentDialog(QDialog):
             btn.setObjectName("TraceButton")
             btn.setMinimumHeight(24)
             btn.setMaximumHeight(28)
-            plot_controls.addWidget(btn)
-        plot_controls.addSpacing(10)
+            view_controls.addWidget(btn)
+        view_controls.addStretch()
         for btn in (
             self.btn_trace_add_peak,
             self.btn_trace_next_missing,
@@ -486,8 +540,10 @@ class LadderAdjustmentDialog(QDialog):
         ):
             btn.setMinimumHeight(24)
             btn.setMaximumHeight(28)
-            plot_controls.addWidget(btn)
-        plot_controls.addStretch()
+            assign_controls.addWidget(btn)
+        assign_controls.addStretch()
+        toolbar_layout.addWidget(view_controls_widget)
+        toolbar_layout.addWidget(assign_controls_widget)
         plot_layout.addWidget(trace_toolbar)
 
         if self._trace_backend == "pyqtgraph":
@@ -627,8 +683,7 @@ class LadderAdjustmentDialog(QDialog):
         splitter.setSizes([1120, 460])
 
         qc_card = QWidget()
-        qc_card.setObjectName("PanelSection")
-        qc_card.setMaximumHeight(190)
+        qc_card.setObjectName("SizingQcPanel")
         qc_layout = QVBoxLayout(qc_card)
         qc_layout.setContentsMargins(12, 10, 12, 10)
         qc_layout.setSpacing(8)
@@ -731,32 +786,44 @@ class LadderAdjustmentDialog(QDialog):
         self.residual_canvas.setMaximumHeight(105)
         self.residual_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         qc_layout.addWidget(self.residual_canvas)
+        qc_scroll = QScrollArea()
+        qc_scroll.setObjectName("SizingQcScroll")
+        qc_scroll.setWidgetResizable(True)
+        qc_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        qc_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        qc_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        qc_scroll.setWidget(qc_card)
+        qc_scroll.setMinimumHeight(130)
+
         main_splitter.addWidget(splitter)
-        main_splitter.addWidget(qc_card)
+        main_splitter.addWidget(qc_scroll)
         main_splitter.setStretchFactor(0, 5)
         main_splitter.setStretchFactor(1, 1)
         main_splitter.setSizes([820, 150])
         layout.addWidget(main_splitter, stretch=1)
 
         action_bar = QWidget()
-        action_bar.setObjectName("ActionBar")
+        action_bar.setObjectName("LadderActionBar")
         bottom_layout = QHBoxLayout(action_bar)
         bottom_layout.setContentsMargins(12, 8, 12, 8)
         bottom_layout.setSpacing(8)
         self.stats_label = QLabel("Preview: not run")
         self.stats_label.setStyleSheet("color: #64748b; font-weight: 600;")
-        bottom_layout.addWidget(self.stats_label)
-        bottom_layout.addStretch()
+        self.stats_label.setWordWrap(True)
+        self.stats_label.setMinimumWidth(0)
+        bottom_layout.addWidget(self.stats_label, stretch=1)
 
         btn_auto = QPushButton("Suggest Auto")
         btn_auto.clicked.connect(lambda: self._suggest_auto(store_initial=False))
         bottom_layout.addWidget(btn_auto)
 
         btn_reset = QPushButton("Reset To Initial")
+        btn_reset.setObjectName("SecondaryButton")
         btn_reset.clicked.connect(self._reset_to_initial)
         bottom_layout.addWidget(btn_reset)
 
         btn_clear_all = QPushButton("Clear All")
+        btn_clear_all.setObjectName("DangerButton")
         btn_clear_all.clicked.connect(self._clear_all)
         bottom_layout.addWidget(btn_clear_all)
 
@@ -765,11 +832,13 @@ class LadderAdjustmentDialog(QDialog):
         bottom_layout.addWidget(btn_preview)
 
         btn_cancel = QPushButton("Cancel")
+        btn_cancel.setObjectName("SecondaryButton")
         btn_cancel.clicked.connect(self.reject)
         bottom_layout.addWidget(btn_cancel)
 
         if self.review_context:
             btn_save_note = QPushButton("Save Note Only")
+            btn_save_note.setObjectName("SecondaryButton")
             btn_save_note.clicked.connect(self._on_save_note_only)
             bottom_layout.addWidget(btn_save_note)
 
