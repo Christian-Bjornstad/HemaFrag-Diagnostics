@@ -173,7 +173,26 @@ def test_save_round_trip(tmp_path):
     assert session2.samples[0].current_label == "polyklonal"
     assert session2.samples[1].current_label == "oligoklonal"
     assert session2.samples[2].current_label == "monoklonal"  # preserved
-    assert session2.labeled_count == 3
+    assert session2.labeled_count == 2
+    assert session2.labeled_unit_count == 3
+    assert session2.total_unit_count == 4
+
+
+def test_dual_channel_labels_round_trip_independently(tmp_path):
+    path = _make_test_excel(tmp_path)
+    session = LabelingSession(excel_path=path)
+    session.load()
+
+    session.label_sample(1, "polyklonal", channel="DATA1")
+    session.label_sample(1, "monoklonal", channel="DATA2")
+    assert session.save_to_excel() == 2
+
+    reloaded = LabelingSession(excel_path=path)
+    reloaded.load()
+    sample = reloaded.samples[1]
+    assert sample.label_for_channel("DATA1") == "polyklonal"
+    assert sample.label_for_channel("DATA2") == "monoklonal"
+    assert sample.is_labeled
 
 
 def test_legacy_label_aliases_normalize_on_load_and_save(tmp_path):

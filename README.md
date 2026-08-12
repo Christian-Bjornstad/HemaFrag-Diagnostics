@@ -101,7 +101,7 @@ HemaFrag treats quality and completeness as part of the analysis contract:
 - finalization checks expected patient and QC counts;
 - writes to reports and tracking artifacts use guarded or atomic publication paths where supported.
 
-The current desktop design and navigation contract are documented in the [Clinical Workbench design](docs/superpowers/specs/2026-08-12-hemafrag-clinical-workbench-design.md).
+The architecture and current engineering validation boundaries are documented in [Plan 15 — Architecture, Risk, Performance, and Stability Review](docs/plan15_architecture_risk_and_results.md).
 
 ## Quick start
 
@@ -117,7 +117,7 @@ py -3.14 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -m pip install .\wheels\fraggler_kernels-0.1.0-cp312-abi3-win_amd64.whl
+python -m pip install .\wheels\fraggler_kernels-0.1.2-cp310-abi3-win_amd64.whl
 python .\qt_app.py
 ```
 
@@ -183,6 +183,17 @@ cargo test --workspace --all-targets
 cargo check -p fraggler-kernels-py
 ```
 
+Run the repeatable non-clinical startup/baseline benchmark:
+
+```bash
+python scripts/benchmark_plan15_runtime.py \
+  --startup-repeats 5 \
+  --arpls-repeats 10 \
+  --output validation_outputs/plan15_runtime.json
+```
+
+Synthetic benchmarks do not replace review against the private real-FSA validation corpus.
+
 ## Desktop packaging
 
 All desktop builds use `qt_app.py` as the canonical entry point and `build_qt.py` as the shared PyInstaller contract.
@@ -227,11 +238,11 @@ The following stay outside version control:
 
 ## Further documentation
 
+- [Architecture, risk, performance, and stability review](docs/plan15_architecture_risk_and_results.md)
 - [Clinical Workbench design](docs/superpowers/specs/2026-08-12-hemafrag-clinical-workbench-design.md)
 - [Clinical Workbench implementation plan](docs/superpowers/plans/2026-08-12-hemafrag-clinical-workbench.md)
 - [Clonality ML interpretation design](docs/ml-clonality-interpretation.md)
-- [Ladder review gate](ObsidianVault/04_Phase5_Ladder_Review_Gate.md)
-- [Ladder Editor redesign](ObsidianVault/05_Ladder_Editor_Redesign.md)
+- [Rust ladder-fitting plan](docs/ladder-fitting-rust-plan.md)
 - [Desktop packaging guide](packaging/README.md)
 - [Windows source-transfer guide](packaging/WINDOWS_TRANSFER_README.md)
 - [Project memory and working agreements](ObsidianVault/00_Start_Here.md)

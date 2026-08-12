@@ -66,6 +66,57 @@ def test_tab_loads_session_from_excel(qapp, tmp_path):
     assert tab._session.labeled_count == 0
 
 
+def test_labeling_header_keeps_save_visible_without_horizontal_overflow(qapp):
+    """Primary actions remain reachable on a constrained content viewport."""
+    from gui_qt.tabs.tab_labeling import TabLabeling
+
+    tab = TabLabeling()
+    tab.resize(520, 700)
+    tab.show()
+    qapp.processEvents()
+
+    assert tab.width() == 520
+    assert tab.minimumSizeHint().width() <= 520
+    assert tab.btn_save.isVisible()
+    assert tab.btn_save.objectName() == "PrimaryButton"
+    assert tab.btn_save.height() >= 44
+    save_right = tab.btn_save.mapTo(tab, tab.btn_save.rect().topRight()).x()
+    wide_right = tab.btn_wide.mapTo(tab, tab.btn_wide.rect().topRight()).x()
+    assert save_right <= tab.rect().right()
+    assert wide_right <= tab.rect().right()
+    assert tab.lbl_hint.wordWrap()
+    assert tab._main_splitter.orientation() == Qt.Orientation.Vertical
+
+    tab.resize(900, 700)
+    qapp.processEvents()
+    assert tab._main_splitter.orientation() == Qt.Orientation.Horizontal
+    save_right = tab.btn_save.mapTo(tab, tab.btn_save.rect().topRight()).x()
+    assert save_right <= tab.rect().right()
+
+    tab.close()
+
+
+def test_labeling_save_status_reports_unsaved_and_saved_states(qapp, tmp_path):
+    from core.labeling.labeling_session import LabelingSession
+    from gui_qt.tabs.tab_labeling import TabLabeling
+
+    path = _make_test_excel(tmp_path)
+    tab = TabLabeling()
+    tab._session = LabelingSession(excel_path=path)
+    tab._session.load()
+    tab.btn_save.setEnabled(True)
+    tab._refresh_sample_list()
+    tab.sample_list.setCurrentRow(0)
+
+    tab._on_label_key("monoklonal")
+    assert tab.lbl_save_status.property("state") == "warning"
+    assert "Unsaved" in tab.lbl_save_status.text()
+
+    tab._on_save()
+    assert tab.lbl_save_status.property("state") == "success"
+    assert "Saved" in tab.lbl_save_status.text()
+
+
 def test_tab_label_key_assigns_label(qapp, tmp_path):
     """Shortcut handler routes through _on_label_key to label_sample."""
     from gui_qt.tabs.tab_labeling import TabLabeling
@@ -119,6 +170,29 @@ def test_tab_label_key_labels_only_selected_parallel(qapp, tmp_path):
     assert tab._session.samples[3].current_label == ""
 
 
+def test_tab_labels_dual_channels_separately_before_advancing(qapp, tmp_path):
+    from gui_qt.tabs.tab_labeling import TabLabeling
+    from core.labeling.labeling_session import LabelingSession
+
+    path = _make_test_excel(tmp_path)
+    tab = TabLabeling()
+    tab._session = LabelingSession(excel_path=path)
+    tab._session.load()
+    tab._refresh_sample_list()
+    tab.sample_list.setCurrentRow(1)
+
+    assert tab.channel_selector.count() == 2
+    assert tab.channel_selector.currentData() == "DATA1"
+
+    tab._on_label_key("polyklonal")
+    assert tab._session.samples[1].label_for_channel("DATA1") == "polyklonal"
+    assert tab.channel_selector.currentData() == "DATA2"
+
+    tab._on_label_key("monoklonal")
+    assert tab._session.samples[1].label_for_channel("DATA2") == "monoklonal"
+    assert tab._session.samples[1].is_labeled
+
+
 def test_tab_navigation_next_prev(qapp, tmp_path):
     from gui_qt.tabs.tab_labeling import TabLabeling
     from core.labeling.labeling_session import LabelingSession
@@ -160,7 +234,7 @@ def test_tab_filter_shows_unlabeled_only(qapp, tmp_path):
 
     tab._on_toggle_filter()
     assert tab._show_unlabeled_only is True
-    assert tab.sample_list.count() == 3  # only unlabeled
+    assert tab.sample_list.count() == 4  # IGK still has one unlabeled channel
 
     tab._on_toggle_filter()
     assert tab._show_unlabeled_only is False
@@ -198,12 +272,12 @@ def test_progress_bar_updates(qapp, tmp_path):
     tab._refresh_sample_list()
 
     tab._update_progress()
-    assert "0 / 5" in tab.progress.format()
+    assert "0 / 7" in tab.progress.format()
 
     tab._session.label_sample(0, "monoklonal")
     tab._session.label_sample(1, "polyklonal")
     tab._update_progress()
-    assert "2 / 5" in tab.progress.format()
+    assert "2 / 7" in tab.progress.format()
 
 
 def test_save_round_trip(qapp, tmp_path):

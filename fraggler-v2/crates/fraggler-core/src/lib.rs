@@ -1,6 +1,7 @@
 pub mod abif;
 pub mod contract;
 pub mod engine;
+pub mod ladder_search;
 pub mod ladders;
 pub mod primitives;
 pub mod report;

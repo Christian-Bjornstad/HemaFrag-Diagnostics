@@ -170,6 +170,11 @@ def test_trainer_writes_candidate_and_local_review_artifacts(tmp_path, monkeypat
     assert metadata["deployment_status"] == "candidate"
     assert metadata["runtime_eligible"] is False
     assert metadata["training_rows"] == 36
+    assert metadata["interpretation_unit_schema_version"] == ""
+    assert metadata["interpretation_unit"] == ""
+    assert metadata["source_assay"] == "FR1"
+    assert metadata["channel"] == ""
+    assert metadata["target_name"] == ""
     assert metadata["training_data_provenance"]["raw_row_count"] == 36
     assert metadata["training_data_provenance"][
         "duplicate_rows_removed"

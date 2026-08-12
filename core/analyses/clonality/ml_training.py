@@ -96,6 +96,10 @@ DEFAULT_NON_FEATURE_COLUMNS = {
     "FeatureDatasetVersion",
     "TraceFeatureSchemaVersion",
     "CohortFeatureSchemaVersion",
+    "InterpretationUnitSchemaVersion",
+    "InterpretationUnit",
+    "Channel",
+    "TargetName",
     "FsaSourceHash",
     "FsaContentHash",
     CHEMIST_LABEL_COLUMN,
@@ -376,24 +380,39 @@ def build_per_assay_datasets(
         )
 
     out: dict[str, PerAssayDataset] = {}
+    target_col = (
+        "InterpretationUnit"
+        if "InterpretationUnit" in combined_df.columns
+        and combined_df["InterpretationUnit"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .ne("")
+        .any()
+        else assay_col
+    )
     include_assay_keys = (
         {_assay_key(value) for value in include_assays}
         if include_assays is not None
         else None
     )
-    for assay_name, group in combined_df.groupby(assay_col, sort=True):
-        if pd.isna(assay_name):
+    for model_target, group in combined_df.groupby(target_col, sort=True):
+        if pd.isna(model_target):
             continue
         if (
             include_assay_keys is not None
-            and _assay_key(assay_name) not in include_assay_keys
+            and _assay_key(model_target) not in include_assay_keys
+            and not group[assay_col]
+            .map(_assay_key)
+            .isin(include_assay_keys)
+            .any()
         ):
             continue
         group, data_provenance = _deduplicate_content_rows(
             group,
             label_col=label_col,
             dit_col=dit_col,
-            assay_name=str(assay_name),
+            assay_name=str(model_target),
         )
         if len(group) < min_samples_per_assay:
             continue
@@ -402,11 +421,11 @@ def build_per_assay_datasets(
         dit_series = group[dit_col].astype(str).reset_index(drop=True)
         counts = group[label_col].value_counts().to_dict()
         reset_group = group.reset_index(drop=True)
-        out[str(assay_name)] = PerAssayDataset(
+        out[str(model_target)] = PerAssayDataset(
             X=X_num,
             y=y_series,
             dit=dit_series,
-            assay=str(assay_name),
+            assay=str(model_target),
             n_samples=len(group),
             rare_class_counts={str(k): int(v) for k, v in counts.items()},
             data_provenance=data_provenance,

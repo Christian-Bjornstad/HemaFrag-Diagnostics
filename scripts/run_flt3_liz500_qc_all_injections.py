@@ -13,7 +13,9 @@ import fnmatch
 import io
 import json
 import os
+import shutil
 import sys
+import tempfile
 import time
 import warnings
 from collections import Counter
@@ -50,6 +52,7 @@ from core.analyses.flt3.rox500_exclusions import (
     FLT3_ROX500_USER_GOOD_OVERRIDES,
     FLT3_ROX500_USER_REVIEW_OVERRIDES,
 )
+from core.concurrency import initialize_worker_concurrency, resolve_concurrency_plan
 from core.utils import is_water_file
 
 
@@ -778,16 +781,44 @@ def _update_global_rox500_workbook(
         else pd.DataFrame()
     )
 
-    writer_kwargs: dict[str, Any] = {"engine": "openpyxl"}
-    if global_path.exists():
-        writer_kwargs.update({"mode": "a", "if_sheet_exists": "replace"})
-    with pd.ExcelWriter(global_path, **writer_kwargs) as writer:
-        all_qc.to_excel(writer, sheet_name="All_Analyzed_QC", index=False)
-        all_review.to_excel(writer, sheet_name="Review_Rows", index=False)
-        all_summary.to_excel(writer, sheet_name="Summary_By_Injection", index=False)
-        all_raw.to_excel(writer, sheet_name="Raw_Metadata_All_FSA", index=False)
-        if not all_skipped.empty:
-            all_skipped.to_excel(writer, sheet_name="Skipped", index=False)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=global_path.parent,
+            prefix=f".{global_path.stem}.",
+            suffix=".tmp.xlsx",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+        if global_path.exists():
+            shutil.copy2(global_path, temporary_path)
+            writer_kwargs: dict[str, Any] = {
+                "engine": "openpyxl",
+                "mode": "a",
+                "if_sheet_exists": "replace",
+            }
+        else:
+            temporary_path.unlink(missing_ok=True)
+            writer_kwargs = {"engine": "openpyxl"}
+
+        with pd.ExcelWriter(temporary_path, **writer_kwargs) as writer:
+            all_qc.to_excel(writer, sheet_name="All_Analyzed_QC", index=False)
+            all_review.to_excel(writer, sheet_name="Review_Rows", index=False)
+            all_summary.to_excel(writer, sheet_name="Summary_By_Injection", index=False)
+            all_raw.to_excel(writer, sheet_name="Raw_Metadata_All_FSA", index=False)
+            if not all_skipped.empty:
+                all_skipped.to_excel(writer, sheet_name="Skipped", index=False)
+
+        from core.analyses.flt3.tracking_dashboard import (
+            refresh_flt3_tracking_dashboard,
+        )
+
+        refresh_flt3_tracking_dashboard(temporary_path)
+        os.replace(temporary_path, global_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _analyze_qc_file_worker(payload: tuple[int, int, str, dict[str, Any], bool]) -> dict[str, Any]:
@@ -949,7 +980,11 @@ def _run_qc_impl(
     total = len(classified)
     if progress_max_callback is not None:
         progress_max_callback(total)
-    worker_count = max(1, min(int(workers or 1), total or 1))
+    concurrency_plan = resolve_concurrency_plan(
+        requested_outer_workers=int(workers or 1),
+        task_count=total,
+    )
+    worker_count = concurrency_plan.outer_workers
     parallel = worker_count > 1
     payloads = [
         (idx, total, str(path), meta, parallel)
@@ -959,7 +994,14 @@ def _run_qc_impl(
     if parallel:
         print(f"[INFO] FLT3 ROX500 QC running with {worker_count} parallel workers.", flush=True)
         try:
-            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            with ProcessPoolExecutor(
+                max_workers=worker_count,
+                initializer=initialize_worker_concurrency,
+                initargs=(
+                    concurrency_plan.rust_threads_per_worker,
+                    concurrency_plan.numeric_threads_per_worker,
+                ),
+            ) as executor:
                 future_to_job = {}
                 for payload, (path, meta) in zip(payloads, classified, strict=False):
                     idx = payload[0]
@@ -1123,6 +1165,7 @@ def _run_qc_impl(
         "ladder_qc_counts": dict(Counter(qc_df["LadderQC"].astype(str))) if "LadderQC" in qc_df.columns else {},
         "peak_qc_counts": dict(Counter(qc_df["PeakQC"].astype(str))) if "PeakQC" in qc_df.columns else {},
         "rust_engine_stats": dict(rust_engine_stats),
+        "concurrency_plan": concurrency_plan.to_dict(),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
     print(f"[RUST] Engine usage: {_format_rust_engine_stats(rust_engine_stats)}", flush=True)

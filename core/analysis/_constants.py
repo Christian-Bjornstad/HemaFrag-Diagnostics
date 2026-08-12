@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 from Bio import SeqIO
 
+from core.fsa_artifact import load_fsa_artifact
+
 
 # --------------------------------------------------------------
 # Analysis Constants (extracted magic numbers)
@@ -49,7 +51,10 @@ GS500_FAMILY_STEPS = np.array(
 
 def _abi_data_channels(fsa_path: Path) -> set[str]:
     try:
-        tags = SeqIO.read(str(fsa_path), "abi").annotations.get("abif_raw", {})
+        if fsa_path.is_file():
+            tags = load_fsa_artifact(fsa_path).abif_raw
+        else:
+            tags = SeqIO.read(str(fsa_path), "abi").annotations.get("abif_raw", {})
     except Exception:
         return set()
     return {str(key) for key in tags.keys() if str(key).startswith("DATA")}

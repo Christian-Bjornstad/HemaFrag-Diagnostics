@@ -17,7 +17,10 @@ from typing import Any
 from gui_qt.ladder_utils import detect_fsa_for_ladder, load_adjustable_fsa
 from core.html_reports import extract_dit_from_name
 
-from gui_qt.tabs.tab_ladder._summary import entry_cache_key
+from gui_qt.tabs.tab_ladder._summary import (
+    entry_cache_key,
+    manual_adjustment_consumption,
+)
 
 
 def scan_fsa_files_worker(source: Path) -> list[Path]:
@@ -29,11 +32,30 @@ def load_metadata_worker(file_path: Path, analysis_id: str | None) -> dict:
     """Detect + load an FSA + return a dict for the GUI to apply."""
     meta = detect_fsa_for_ladder(file_path, preferred_analysis=analysis_id)
     if not meta:
-        return {"file_path": file_path, "meta": None, "fsa": None}
+        return {
+            "file_path": file_path,
+            "meta": None,
+            "fsa": None,
+            "confidence_shadow": None,
+        }
     fsa, refreshed_meta = load_adjustable_fsa(
         file_path, preferred_analysis=analysis_id, metadata=meta
     )
-    return {"file_path": file_path, "meta": refreshed_meta, "fsa": fsa}
+    confidence_shadow = None
+    try:
+        from core.precision.ladder_confidence_shadow import (
+            evaluate_ladder_confidence_shadow,
+        )
+
+        confidence_shadow = evaluate_ladder_confidence_shadow(fsa, top_k=5)
+    except Exception:
+        pass
+    return {
+        "file_path": file_path,
+        "meta": refreshed_meta,
+        "fsa": fsa,
+        "confidence_shadow": confidence_shadow,
+    }
 
 
 def find_report_matches_worker(file_path: Path, root_text: str) -> dict:
@@ -71,6 +93,7 @@ def review_bundle_rerun_worker(
     aggregate_by_patient: bool,
     patient_regex: str,
     aggregate_outdir_name: str | None,
+    run_manifest_path: Path | None = None,
 ) -> dict:
     """Run batch_jobs() over the bundle's resolved files only.
 
@@ -101,6 +124,39 @@ def review_bundle_rerun_worker(
         and aggregate_dit_reports
         and analysis_id == "clonality"
     )
+    recovered_from_manifest = False
+    if not has_session_cache and run_manifest_path is not None:
+        from core.run_manifest import jobs_from_run_manifest
+
+        recovered_jobs = jobs_from_run_manifest(run_manifest_path)
+        relocated_by_name = {path.name.lower(): path for path in file_paths}
+        missing: list[Path] = []
+        for recovered_job in recovered_jobs:
+            resolved_files: list[Path] = []
+            for original_path in recovered_job.get("files") or []:
+                original_path = Path(original_path)
+                replacement = relocated_by_name.get(original_path.name.lower())
+                resolved_path = (
+                    replacement
+                    if not original_path.is_file() and replacement is not None
+                    else original_path
+                )
+                resolved_files.append(resolved_path)
+                if not resolved_path.is_file():
+                    missing.append(resolved_path)
+            recovered_job["files"] = resolved_files
+        if missing:
+            names = ", ".join(path.name for path in missing[:8])
+            if len(missing) > 8:
+                names += ", ..."
+            raise FileNotFoundError(
+                "The original run manifest references missing FSA files: " + names
+            )
+        if not recovered_jobs:
+            raise RuntimeError("The linked run manifest contains no recoverable jobs.")
+        jobs = recovered_jobs
+        recovered_from_manifest = True
+
     result = run_batch_jobs(
         jobs=jobs,
         output_base=output_root,
@@ -116,7 +172,9 @@ def review_bundle_rerun_worker(
         defer_tracking_workbook_refresh=has_session_cache,
         defer_dit_html_reports=has_session_cache,
         preserve_deferred_entries=has_session_cache,
+        parent_run_manifest_path=run_manifest_path if recovered_from_manifest else None,
     )
+    result["recovered_from_run_manifest"] = recovered_from_manifest
 
     final_session_reports_built = False
     final_session_entry_count = 0
@@ -185,9 +243,14 @@ def review_bundle_rerun_worker(
         "output_root": output_root,
         "jobs": jobs,
         "result": result,
+        "consumption_by_file": {
+            str(file_path): manual_adjustment_consumption(result, file_path)
+            for file_path in file_paths
+        },
         "matches_by_file": matches_by_file,
         "final_session_reports_built": final_session_reports_built,
         "final_session_entry_count": final_session_entry_count,
+        "recovered_from_run_manifest": recovered_from_manifest,
     }
 
 
@@ -201,6 +264,7 @@ def single_file_rerun_worker(
     aggregate_by_patient: bool,
     patient_regex: str,
     aggregate_outdir_name: str | None,
+    run_manifest_path: Path | None = None,
 ) -> dict:
     """Run a single-file batch_jobs() invocation and return its result."""
     # Lazy imports keep the rest of `tab_ladder` importable without
@@ -214,6 +278,26 @@ def single_file_rerun_worker(
         aggregate_patients=aggregate_by_patient,
         patient_regex=patient_regex,
     )
+    recovered_from_manifest = False
+    if run_manifest_path is not None:
+        from core.run_manifest import jobs_from_run_manifest
+
+        recovered_jobs = jobs_from_run_manifest(run_manifest_path)
+        if recovered_jobs:
+            missing = [
+                Path(path)
+                for job in recovered_jobs
+                for path in (job.get("files") or [])
+                if not Path(path).is_file()
+            ]
+            if missing:
+                names = ", ".join(path.name for path in missing[:8])
+                raise FileNotFoundError(
+                    "The linked archive manifest references missing FSA files: "
+                    + names
+                )
+            jobs = recovered_jobs
+            recovered_from_manifest = True
     if not jobs:
         raise RuntimeError(f"No runnable job could be generated for {file_path.name}.")
 
@@ -229,6 +313,9 @@ def single_file_rerun_worker(
         continue_on_error=True,
         update_callback=None,
         aggregate_outdir_name=aggregate_outdir_name,
+        parent_run_manifest_path=(
+            run_manifest_path if recovered_from_manifest else None
+        ),
     )
     try:
         report_result = find_report_matches_worker(file_path, str(output_root))
@@ -240,5 +327,10 @@ def single_file_rerun_worker(
         "output_root": output_root,
         "jobs": jobs,
         "result": result,
+        "manual_adjustment_consumption": manual_adjustment_consumption(
+            result,
+            file_path,
+        ),
         "matches": matches,
+        "recovered_from_run_manifest": recovered_from_manifest,
     }

@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import os
 import secrets
+import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -14,8 +16,12 @@ from core.analyses.clonality.interpretation import (
     TRACKING_COLUMNS as CLONALITY_INTERPRETATION_COLUMNS,
     interpretation_enabled,
 )
+from core.analyses.clonality.interpretation_units import (
+    CHANNEL_CHEMIST_LABEL_COLUMNS,
+    CHANNEL_ML_COLUMNS,
+)
 from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
-from fraggler.fraggler import print_green
+from fraggler.fraggler import print_green, print_warning
 from core.analyses.clonality.tracking_dashboard import refresh_clonality_tracking_dashboard
 from core.html_reports import extract_dit_from_name
 from core.qc.qc_markers import (
@@ -29,13 +35,16 @@ from core.qc.qc_markers import (
     parse_run_code_from_filename,
     parse_well_from_filename,
 )
+from core.tracking_workbook_io import (
+    publish_workbook_contents,
+    write_tracking_frames,
+)
 from core.qc.qc_rules import QCRules
 from core.utils import strip_stage_prefix
 
 import threading
 
 CLONALITY_TRACKING_FILENAME = "Clonality_Tracking.xlsx"
-GLOBAL_CLONALITY_TRACKING_PATH = Path("/Volumes/T7 Shield/HemaFrag_Clonality_All_Runs.xlsx")
 _clonality_excel_lock = threading.Lock()
 CONTROL_IDS = {"PK", "PK1", "PK2", "NK", "RK"}
 TRACKING_IDENTITY_SALT_ENV = "FRAGGLER_TRACKING_IDENTITY_SALT"
@@ -58,6 +67,7 @@ RUN_SHEET_COLUMNS = [
     "Ladder",
     "LadderQC",
     "LadderFitStrategy",
+    "ManualAdjustmentUsed",
     "LadderExpectedStepCount",
     "LadderFittedStepCount",
     "LadderR2",
@@ -65,7 +75,9 @@ RUN_SHEET_COLUMNS = [
     "LadderLinearMeanResidualBp",
     "LadderLinearMaxResidualBp",
     "LadderCurvature",
+    "LadderMedianAnchorIntensity",
     CHEMIST_LABEL_COLUMN,
+    *CHANNEL_CHEMIST_LABEL_COLUMNS,
 ]
 RUN_SHEET_COLUMNS_WITH_INTERPRETATION = RUN_SHEET_COLUMNS + CLONALITY_INTERPRETATION_COLUMNS
 RUN_SHEET_COLUMNS_WITH_ML = RUN_SHEET_COLUMNS_WITH_INTERPRETATION + [
@@ -75,6 +87,7 @@ RUN_SHEET_COLUMNS_WITH_ML = RUN_SHEET_COLUMNS_WITH_INTERPRETATION + [
     "ClonalityMLReviewNeeded",
     "ClonalityMLEvidence",
     "ClonalityMLModelVersion",
+    *CHANNEL_ML_COLUMNS,
 ]
 PEAK_SHEET_COLUMNS = [
     "Month",
@@ -220,20 +233,40 @@ def update_clonality_tracking_workbook(
         all_runs = _normalize_run_frame(all_runs, run_columns=run_columns)
         all_peaks = _reindex_columns(all_peaks, PEAK_SHEET_COLUMNS)
 
-        writer_kwargs = {"engine": "openpyxl"}
-        if excel_path.exists():
-            writer_kwargs.update({"mode": "a", "if_sheet_exists": "replace"})
-
         patient_runs, control_runs = _split_run_frames(all_runs, run_columns=run_columns)
-
-        with pd.ExcelWriter(excel_path, **writer_kwargs) as writer:
-            all_runs.to_excel(writer, sheet_name="Runs", index=False)
-            patient_runs.to_excel(writer, sheet_name="Patient_Runs", index=False)
-            control_runs.to_excel(writer, sheet_name="Control_Runs", index=False)
-            all_peaks.to_excel(writer, sheet_name="PK_Peaks", index=False)
-        _apply_reference_tracking_headers(excel_path, run_columns=run_columns)
-        if refresh_dashboard:
-            refresh_clonality_tracking_dashboard(excel_path)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=excel_path.parent,
+                prefix=f".{excel_path.stem}.",
+                suffix=".tmp.xlsx",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+            if excel_path.exists():
+                shutil.copy2(excel_path, temporary_path)
+            else:
+                temporary_path.unlink(missing_ok=True)
+            write_tracking_frames(
+                temporary_path,
+                (
+                    ("Runs", all_runs, ("IdentityKey",)),
+                    ("Patient_Runs", patient_runs, ("IdentityKey",), True),
+                    ("Control_Runs", control_runs, ("IdentityKey",), True),
+                    ("PK_Peaks", all_peaks, ("IdentityKey", "MarkerName")),
+                ),
+            )
+            _apply_reference_tracking_headers(
+                temporary_path,
+                run_columns=run_columns,
+            )
+            if refresh_dashboard:
+                refresh_clonality_tracking_dashboard(temporary_path)
+            publish_workbook_contents(temporary_path, excel_path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
         print_green(f"Clonality tracking workbook updated in {excel_path}")
 
 
@@ -341,6 +374,8 @@ def build_tracking_row_key(*, artifact_kind: str, identity_key: str, marker_name
 
 
 def _build_run_row(entry: dict) -> dict:
+    from core.qc.trend_monitor import build_entry_qc_trend_evidence
+
     join_fields = build_tracking_join_fields(entry)
     if not join_fields:
         return {}
@@ -380,6 +415,7 @@ def _build_run_row(entry: dict) -> dict:
     rust_preview_top_dominant_ratio = entry.get("rust_preview_top_dominant_ratio")
     if rust_preview_top_dominant_ratio is None or not np.isfinite(rust_preview_top_dominant_ratio):
         rust_preview_top_dominant_ratio = ""
+    trend_evidence = build_entry_qc_trend_evidence(entry)
 
     return {
         "Month": _month_bucket(join_fields["run_date"]),
@@ -398,6 +434,9 @@ def _build_run_row(entry: dict) -> dict:
         "Ladder": join_fields["ladder"],
         "LadderQC": entry.get("ladder_qc_status") or "",
         "LadderFitStrategy": entry.get("ladder_fit_strategy") or "",
+        "ManualAdjustmentUsed": (
+            str(entry.get("ladder_fit_strategy") or "") == "manual_adjustment"
+        ),
         "LadderExpectedStepCount": int(entry.get("ladder_expected_step_count", 0) or 0),
         "LadderFittedStepCount": int(entry.get("ladder_fitted_step_count", 0) or 0),
         "LadderR2": ladder_r2,
@@ -405,6 +444,7 @@ def _build_run_row(entry: dict) -> dict:
         "LadderLinearMeanResidualBp": ladder_linear_mean_residual_bp,
         "LadderLinearMaxResidualBp": ladder_linear_max_residual_bp,
         "LadderCurvature": ladder_curvature,
+        **trend_evidence,
         "ClonalityInterpretationEnabled": entry.get("ClonalityInterpretationEnabled", ""),
         "ClonalitySuggestion": entry.get("ClonalitySuggestion", ""),
         "ClonalityConfidence": entry.get("ClonalityConfidence", ""),
@@ -420,6 +460,10 @@ def _build_run_row(entry: dict) -> dict:
         "ClonalityMLReviewNeeded": entry.get("ClonalityMLReviewNeeded", ""),
         "ClonalityMLEvidence": entry.get("ClonalityMLEvidence", ""),
         "ClonalityMLModelVersion": entry.get("ClonalityMLModelVersion", ""),
+        **{
+            column: entry.get(column, "")
+            for column in (*CHANNEL_CHEMIST_LABEL_COLUMNS, *CHANNEL_ML_COLUMNS)
+        },
     }
 
 
@@ -616,31 +660,40 @@ def _carry_forward_chemist_labels(
         or new_runs.empty
         or "IdentityKey" not in old_runs.columns
         or "IdentityKey" not in new_runs.columns
-        or CHEMIST_LABEL_COLUMN not in old_runs.columns
     ):
         return new_runs
 
-    old_labels = old_runs[["IdentityKey", CHEMIST_LABEL_COLUMN]].copy()
-    old_labels["IdentityKey"] = old_labels["IdentityKey"].fillna("").astype(str)
-    old_labels[CHEMIST_LABEL_COLUMN] = (
-        old_labels[CHEMIST_LABEL_COLUMN].fillna("").astype(str).str.strip()
-    )
-    old_labels = old_labels.loc[
-        old_labels["IdentityKey"].str.strip().ne("")
-        & old_labels[CHEMIST_LABEL_COLUMN].ne("")
-    ].drop_duplicates(subset=["IdentityKey"], keep="last")
-    if old_labels.empty:
-        return new_runs
-
-    label_by_identity = old_labels.set_index("IdentityKey")[CHEMIST_LABEL_COLUMN]
     carried = new_runs.copy()
-    if CHEMIST_LABEL_COLUMN not in carried.columns:
-        carried[CHEMIST_LABEL_COLUMN] = ""
-    current = carried[CHEMIST_LABEL_COLUMN].fillna("").astype(str).str.strip()
-    inherited = (
-        carried["IdentityKey"].fillna("").astype(str).map(label_by_identity).fillna("")
+    label_columns = (
+        CHEMIST_LABEL_COLUMN,
+        *CHANNEL_CHEMIST_LABEL_COLUMNS,
     )
-    carried[CHEMIST_LABEL_COLUMN] = current.where(current.ne(""), inherited)
+    for label_column in label_columns:
+        if label_column not in old_runs.columns:
+            continue
+        old_labels = old_runs[["IdentityKey", label_column]].copy()
+        old_labels["IdentityKey"] = old_labels["IdentityKey"].fillna("").astype(str)
+        old_labels[label_column] = (
+            old_labels[label_column].fillna("").astype(str).str.strip()
+        )
+        old_labels = old_labels.loc[
+            old_labels["IdentityKey"].str.strip().ne("")
+            & old_labels[label_column].ne("")
+        ].drop_duplicates(subset=["IdentityKey"], keep="last")
+        if old_labels.empty:
+            continue
+        label_by_identity = old_labels.set_index("IdentityKey")[label_column]
+        if label_column not in carried.columns:
+            carried[label_column] = ""
+        current = carried[label_column].fillna("").astype(str).str.strip()
+        inherited = (
+            carried["IdentityKey"]
+            .fillna("")
+            .astype(str)
+            .map(label_by_identity)
+            .fillna("")
+        )
+        carried[label_column] = current.where(current.ne(""), inherited)
     return carried
 
 
@@ -662,19 +715,31 @@ def _split_run_frames(runs: pd.DataFrame, *, run_columns: list[str] | None = Non
     return patient_runs, control_runs
 
 
-def resolve_global_clonality_tracking_path() -> Path:
+def resolve_global_clonality_tracking_path() -> Path | None:
     batch_settings = APP_SETTINGS.get("analyses", {}).get("clonality", {}).get("batch", {})
     configured = str(batch_settings.get("global_tracking_excel_path") or "").strip()
     if configured:
         return Path(configured).expanduser()
-    return GLOBAL_CLONALITY_TRACKING_PATH
+    return None
 
 
 def update_global_clonality_tracking_workbook(entries: list[dict]) -> Path | None:
     if not entries:
         return None
     path = resolve_global_clonality_tracking_path()
-    update_clonality_tracking_workbook(path, entries)
+    if path is None:
+        print_warning(
+            "[TRACKING] Clonality master workbook is disabled. Set 'Master Tracking Excel File' in Clonality Settings to enable it."
+        )
+        return None
+    try:
+        update_clonality_tracking_workbook(path, entries)
+    except Exception as exc:
+        print_warning(
+            f"[TRACKING] Could not update optional clonality master workbook {path}: {exc}. "
+            "The local run workbook and reports were kept."
+        )
+        return None
     return path
 
 
@@ -744,6 +809,7 @@ _ML_INTERPRETATION_COLUMNS = (
     "ClonalityMLReviewNeeded",
     "ClonalityMLEvidence",
     "ClonalityMLModelVersion",
+    *CHANNEL_ML_COLUMNS,
 )
 
 

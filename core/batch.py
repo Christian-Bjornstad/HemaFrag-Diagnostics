@@ -309,8 +309,29 @@ def generate_jobs(
         log(f"[WARN] No folders with .fsa data found.")
         return []
 
-        
     jobs = []
+
+    # General analysis is intentionally identifier-free.  Treat every selected
+    # FSA as one report job instead of applying patient/control filename rules;
+    # otherwise alias-only files become separate concurrent jobs that overwrite
+    # the same General HTML output (and PK/RK/NK-like aliases can be misrouted
+    # through the clonality QC path).
+    if active_analysis == "general":
+        all_fsa = sorted(set(find_all_fsa_files(folders_to_scan, folder_files)))
+        if not all_fsa:
+            log("[WARN] No usable .fsa files found for General analysis.")
+            return []
+        jobs.append(
+            {
+                "name": "GENERAL",
+                "type": "pipeline",
+                "path": None,
+                "files": all_fsa,
+                "_scan_summary": scan_summary,
+            }
+        )
+        log(f"[INFO] General analysis grouped {len(all_fsa)} files into one report job.")
+        return jobs
     
     if aggregate_patients:
         all_fsa = find_all_fsa_files(folders_to_scan, folder_files)
@@ -427,6 +448,7 @@ def run_batch_jobs(
     defer_dit_html_reports: bool | None = None,
     skip_html_reports: bool = False,
     preserve_deferred_entries: bool = False,
+    parent_run_manifest_path: Path | None = None,
 ) -> dict[str, Any]:
     """
     Run all generated jobs.
@@ -449,7 +471,7 @@ def run_batch_jobs(
     stream_aggregated_dit = (
         aggregate_dit_reports
         and not has_qc_report_jobs
-        and not (active_analysis == "clonality" and ladder_review_gate_enabled)
+        and not (active_analysis in {"clonality", "flt3"} and ladder_review_gate_enabled)
         and _can_stream_aggregated_dit_reports(jobs, patient_regex)
     )
     defer_dit_html_reports = defer_tracking_workbook_refresh if defer_dit_html_reports is None else bool(defer_dit_html_reports)
@@ -471,6 +493,33 @@ def run_batch_jobs(
     agg_outdir = output_base / (aggregate_outdir_name or OUTDIR_NAME) if aggregate_dit_reports else None
     if agg_outdir is not None:
         agg_outdir.mkdir(exist_ok=True, parents=True)
+
+    run_manifest = None
+    try:
+        from core.run_manifest import BatchRunManifest
+
+        run_manifest = BatchRunManifest.create(
+            output_dir=agg_outdir or output_base,
+            jobs=jobs,
+            analysis=active_analysis,
+            settings=APP_SETTINGS,
+            execution={
+                "output_base": str(output_base),
+                "aggregate_output_dir": str(agg_outdir) if agg_outdir else None,
+                "pipeline_scope": pipeline_scope,
+                "assay_filter": assay_filter,
+                "aggregate_dit_reports": aggregate_dit_reports,
+                "continue_on_error": continue_on_error,
+                "max_workers": max_workers,
+                "defer_tracking_workbook_refresh": defer_tracking_workbook_refresh,
+                "defer_dit_html_reports": defer_dit_html_reports,
+                "skip_html_reports": skip_html_reports,
+            },
+            parent_manifest_path=parent_run_manifest_path,
+        )
+        log(f"[BATCH] Run manifest: {run_manifest.path}")
+    except Exception as exc:
+        log(f"[WARN] Could not create batch run manifest: {exc}")
 
     def _clonality_tracking_path(default_dir: Path) -> Path:
         from core.analyses.clonality.tracking_excel import CLONALITY_TRACKING_FILENAME
@@ -545,8 +594,6 @@ def run_batch_jobs(
         note: str = "",
         folder_name: str = "",
     ) -> None:
-        if progress_callback is None:
-            return
         if jobs_done is None:
             with data_lock:
                 jobs_done = len(completed_jobs) + len(failed_jobs)
@@ -562,6 +609,13 @@ def run_batch_jobs(
             "heartbeat_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "note": note,
         }
+        if run_manifest is not None:
+            try:
+                run_manifest.record_progress(payload)
+            except Exception as exc:
+                log(f"[WARN] Could not update batch run manifest: {exc}")
+        if progress_callback is None:
+            return
         with callback_lock:
             progress_callback(payload)
 
@@ -939,23 +993,29 @@ def run_batch_jobs(
 
     # Perform multi-threaded patient processing
     # Max workers = 3 (modest to prevent over-subscription of child Pool processes)
-    max_patient_workers = int(max_workers) if max_workers is not None else min(3, max(1, os.cpu_count() // 2 or 1))
-    max_patient_workers = max(1, max_patient_workers)
+    from core.concurrency import concurrency_environment, resolve_concurrency_plan
+
+    concurrency_plan = resolve_concurrency_plan(
+        requested_outer_workers=max_workers,
+        task_count=len(jobs),
+    )
+    max_patient_workers = concurrency_plan.outer_workers
     
     try:
-        with ThreadPoolExecutor(max_workers=max_patient_workers) as executor:
-            futures = [
-                executor.submit(process_job, i, job)
-                for i, job in enumerate(jobs)
-            ]
-            from concurrent.futures import as_completed
-            for future in as_completed(futures):
-                try:
-                    future.result()
-                except Exception as ex:
-                    if not continue_on_error:
-                        raise
-                    log(f"[BATCH] Worker future failed: {ex}")
+        with concurrency_environment(concurrency_plan):
+            with ThreadPoolExecutor(max_workers=max_patient_workers) as executor:
+                futures = [
+                    executor.submit(process_job, i, job)
+                    for i, job in enumerate(jobs)
+                ]
+                from concurrent.futures import as_completed
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as ex:
+                        if not continue_on_error:
+                            raise
+                        log(f"[BATCH] Worker future failed: {ex}")
     except Exception as ex:
         if not continue_on_error:
             log(f"[BATCH] Batch execution halted after error: {ex}")
@@ -971,7 +1031,7 @@ def run_batch_jobs(
     block_dit_for_ladder_review = False
 
     if (
-        active_analysis == "clonality"
+        active_analysis in {"clonality", "flt3"}
         and ladder_review_gate_enabled
         and dit_report_entries
         and agg_outdir is not None
@@ -984,6 +1044,22 @@ def run_batch_jobs(
                 agg_outdir / "ladder_review_gate",
                 source="batch",
             )
+            if run_manifest is not None:
+                ladder_review_gate["run_manifest_path"] = str(run_manifest.path)
+                summary_path = ladder_review_gate.get("summary_path")
+                if summary_path:
+                    Path(str(summary_path)).write_text(
+                        json.dumps(
+                            {
+                                k: v
+                                for k, v in ladder_review_gate.items()
+                                if k != "summary_path"
+                            },
+                            indent=2,
+                            ensure_ascii=True,
+                        ),
+                        encoding="utf-8",
+                    )
             review_count = int(ladder_review_gate.get("review_case_count") or 0)
             if review_count:
                 block_dit_for_ladder_review = ladder_review_gate_blocks_dit
@@ -1109,7 +1185,7 @@ def run_batch_jobs(
         log("[BATCH] Batch run complete.")
     if update_callback:
         update_callback(total, total, "Done", "done")
-    return {
+    result_payload = {
         "total_jobs": total,
         "completed_jobs": completed_jobs,
         "failed_jobs": failed_jobs,
@@ -1120,3 +1196,14 @@ def run_batch_jobs(
         "dit_reports_blocked": block_dit_for_ladder_review,
         "learning_annotation_seed": learning_annotation_seed,
     }
+    if run_manifest is not None:
+        try:
+            run_manifest.finalize(
+                result=result_payload,
+                aggregate_output_dir=agg_outdir,
+                review_gate=ladder_review_gate,
+            )
+            result_payload["run_manifest_path"] = run_manifest.path
+        except Exception as exc:
+            log(f"[WARN] Could not finalize batch run manifest: {exc}")
+    return result_payload

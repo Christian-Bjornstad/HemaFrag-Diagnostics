@@ -7,9 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from core.analyses.clonality.ladder_review_labels import (
+    RESOLVED_LABELS,
+    is_review_resolved,
+)
 
 REVIEW_STATUSES = {"review_required", "missing_ladder", "ladder_qc_failed"}
-RESOLVED_LABELS = {"manual_adjusted", "reviewed_no_change"}
 
 
 def _entry_file_path(entry: dict[str, Any]) -> str:
@@ -83,6 +86,10 @@ def collect_ladder_review_cases(entries: list[dict[str, Any]]) -> list[dict[str,
         else:
             reason_codes_text = str(reason_codes or "")
 
+        fitted_count = entry.get("ladder_fitted_step_count")
+        if fitted_count is None:
+            fitted_count = entry.get("n_ladder_steps")
+
         rows.append(
             {
                 "full_path": _entry_file_path(entry),
@@ -99,7 +106,7 @@ def collect_ladder_review_cases(entries: list[dict[str, Any]]) -> list[dict[str,
                 "linear_mean": _as_float_text(entry.get("ladder_linear_mean_residual_bp")),
                 "linear_r2": _as_float_text(entry.get("ladder_linear_r2")),
                 "expected_count": str(entry.get("ladder_expected_step_count") or ""),
-                "fitted_count": str(entry.get("ladder_fitted_step_count") or entry.get("n_ladder_steps") or ""),
+                "fitted_count": "" if fitted_count is None else str(fitted_count),
                 "fit_strategy": str(entry.get("ladder_fit_strategy") or ""),
                 "suggested_action": "open_ladder_review",
                 "label": "",
@@ -172,8 +179,7 @@ def count_unresolved_review_cases(cases_path: Path) -> int:
     with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
-            label = str(row.get("label", "") or "").strip()
-            if label not in RESOLVED_LABELS:
+            if not is_review_resolved(row.get("label")):
                 unresolved += 1
     return unresolved
 

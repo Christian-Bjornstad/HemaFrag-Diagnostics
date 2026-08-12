@@ -5,6 +5,7 @@ import multiprocessing
 import sys
 import os
 import locale
+from dataclasses import dataclass
 from pathlib import Path
 
 from app_meta import APP_NAME, APP_VERSION
@@ -39,8 +40,8 @@ if sys.platform == "linux":
     os.environ.setdefault("LC_ALL", "C.UTF-8")
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
-
 from core.log import log
 
 LEGACY_PANEL_HOST = "localhost"
@@ -49,6 +50,53 @@ LEGACY_PANEL_ENABLED = (
     os.environ.get("HEMAFRAG_ENABLE_LEGACY_PANEL", os.environ.get("FRAGGLER_ENABLE_LEGACY_PANEL", "")).lower()
     in {"1", "true", "yes"}
 )
+
+
+@dataclass(frozen=True)
+class StartupOptions:
+    qt_argv: tuple[str, ...]
+    review_bundle: Path | None = None
+
+
+def parse_startup_options(argv: list[str]) -> StartupOptions:
+    """Remove HemaFrag startup options while preserving Qt's arguments."""
+
+    qt_argv: list[str] = []
+    review_bundle: Path | None = None
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument != "--ladder-review-bundle":
+            qt_argv.append(argument)
+            index += 1
+            continue
+        if review_bundle is not None:
+            raise ValueError("--ladder-review-bundle may only be supplied once.")
+        if index + 1 >= len(argv):
+            raise ValueError("--ladder-review-bundle requires a directory.")
+        review_bundle = Path(argv[index + 1]).expanduser().resolve()
+        cases_path = review_bundle / "ladder_review_cases.csv"
+        if not cases_path.is_file():
+            raise FileNotFoundError(f"Missing review bundle file: {cases_path}")
+        index += 2
+    return StartupOptions(qt_argv=tuple(qt_argv), review_bundle=review_bundle)
+
+
+def configure_review_bundle_adjustment_store(
+    options: StartupOptions,
+) -> Path | None:
+    """Bind an explicit review launch to its bundle-local adjustment store."""
+
+    if options.review_bundle is None:
+        return None
+    from gui_qt.tabs.tab_ladder._io import assert_review_bundle_open_allowed
+
+    assert_review_bundle_open_allowed(options.review_bundle)
+    database_path = (
+        options.review_bundle / "ladder_adjustments.sqlite3"
+    ).resolve()
+    os.environ["HEMAFRAG_LADDER_ADJUSTMENT_DB"] = str(database_path)
+    return database_path
 
 
 def _remove_macos_metadata_files(bundle_dir: Path) -> None:
@@ -131,6 +179,8 @@ def exception_hook(exctype, value, tb):
 sys.excepthook = exception_hook
 
 def main():
+    startup = parse_startup_options(list(sys.argv))
+    configure_review_bundle_adjustment_store(startup)
     if sys.platform == "linux":
         try:
             locale.setlocale(locale.LC_ALL, "")
@@ -140,8 +190,11 @@ def main():
             except locale.Error:
                 pass
 
+    # Windows otherwise groups a source-launched Qt window under the generic
+    # Python interpreter icon.  This identity must be set before QApplication.
     set_windows_app_user_model_id(log_message=log)
-    app = QApplication(sys.argv)
+
+    app = QApplication(list(startup.qt_argv))
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("OUS")
     app.setApplicationVersion(APP_VERSION)
@@ -160,6 +213,13 @@ def main():
     if app_icon is not None:
         window.setWindowIcon(app_icon)
     window.show()
+    if startup.review_bundle is not None:
+        QTimer.singleShot(
+            0,
+            lambda bundle=startup.review_bundle: window._open_archive_ladder_review(
+                "clonality", bundle
+            ),
+        )
     
     sys.exit(app.exec())
 

@@ -245,3 +245,33 @@ def test_merge_labeling_batch_adds_missing_target_label_column(tmp_path):
     assert report["labels_written"] == 1
     updated = pd.read_excel(target_path, sheet_name="Runs", engine="openpyxl")
     assert updated.loc[0, CHEMIST_LABEL_COLUMN] == "monoklonal"
+
+
+def test_merge_labeling_batch_writes_dual_channel_labels_independently(
+    tmp_path,
+):
+    target = _tracking_rows().head(1).copy()
+    target["Assay"] = "IGK"
+    target[CHEMIST_LABEL_COLUMN] = ""
+    target["ClonalityChemistLabel_DATA1"] = ""
+    target["ClonalityChemistLabel_DATA2"] = ""
+    target_path = tmp_path / "target.xlsx"
+    _write_tracking(target_path, target)
+
+    batch = target.copy()
+    batch["ClonalityChemistLabel_DATA1"] = "polyklonal"
+    batch["ClonalityChemistLabel_DATA2"] = "monoklonal"
+    batch_path = tmp_path / "batch.xlsx"
+    _write_tracking(batch_path, batch)
+
+    report = merge_clonality_labeling_batch(batch_path, target_path)
+
+    assert report["labels_written"] == 2
+    updated = pd.read_excel(
+        target_path,
+        sheet_name="Runs",
+        engine="openpyxl",
+    )
+    assert updated.loc[0, "ClonalityChemistLabel_DATA1"] == "polyklonal"
+    assert updated.loc[0, "ClonalityChemistLabel_DATA2"] == "monoklonal"
+    assert updated[CHEMIST_LABEL_COLUMN].fillna("").eq("").all()

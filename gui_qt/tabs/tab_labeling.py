@@ -26,16 +26,18 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QSize, QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -111,6 +113,48 @@ def _import_pyqtgraph():
     return pg
 
 
+class _ElidedPathLabel(QLabel):
+    """Show a useful path summary without forcing the page wider."""
+
+    def __init__(self, text: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setObjectName("MutedText")
+        self.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.setMinimumWidth(0)
+        self.set_full_text(text)
+
+    def set_full_text(self, text: str, *, tooltip: str | None = None) -> None:
+        self._full_text = str(text)
+        self.setToolTip(str(tooltip if tooltip is not None else text))
+        self._refresh_text()
+
+    def full_text(self) -> str:
+        return self._full_text
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
+
+    def sizeHint(self) -> QSize:
+        return QSize(0, super().sizeHint().height())
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._refresh_text()
+
+    def _refresh_text(self) -> None:
+        available = max(24, self.contentsRect().width() - 4)
+        visible = self.fontMetrics().elidedText(
+            self._full_text,
+            Qt.TextElideMode.ElideMiddle,
+            available,
+        )
+        QLabel.setText(self, visible)
+
+
 class TabLabeling(QWidget):
     """In-app labeling tab — view plots, assign labels with keyboard."""
 
@@ -131,6 +175,7 @@ class TabLabeling(QWidget):
         self._plot_page_index = 0
         self._plot_page_size = 2
         self._pending_plot_order = []
+        self._selected_channel = ""
         self._wide_mode = False
         self._sidebar_widget = None
         self._build_ui()
@@ -139,37 +184,79 @@ class TabLabeling(QWidget):
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(4)
+        layout.setSpacing(8)
 
-        # --- Top bar: file pickers + progress ---
-        top = QHBoxLayout()
+        # --- Responsive action and source card ---
+        # The old single horizontal row made this page more than 2,000 px
+        # wide.  Keep the primary action in the first visible row and put
+        # each potentially long path on its own flexible row.
+        header_card = QWidget()
+        header_card.setObjectName("Card")
+        header = QGridLayout(header_card)
+        header.setContentsMargins(16, 12, 16, 12)
+        header.setHorizontalSpacing(8)
+        header.setVerticalSpacing(8)
+        header.setColumnStretch(2, 1)
 
-        self.btn_browse_xlsx = QPushButton("Browse Excel …")
-        self.btn_browse_xlsx.clicked.connect(self._on_browse_xlsx)
-        top.addWidget(self.btn_browse_xlsx)
+        page_title = QLabel("ML Labeling")
+        page_title.setObjectName("PageTitle")
+        header.addWidget(page_title, 0, 0, 1, 4)
 
-        self.lbl_xlsx = QLabel("No Excel loaded")
-        self.lbl_xlsx.setStyleSheet("color: #888;")
-        top.addWidget(self.lbl_xlsx, stretch=1)
-
-        self.btn_browse_fsa = QPushButton("Browse FSA root …")
-        self.btn_browse_fsa.clicked.connect(self._on_browse_fsa)
-        top.addWidget(self.btn_browse_fsa)
-
-        self.lbl_fsa = QLabel("No FSA root")
-        self.lbl_fsa.setStyleSheet("color: #888;")
-        top.addWidget(self.lbl_fsa, stretch=1)
-
-        self.btn_save = QPushButton("Save to Excel (Ctrl+S)")
+        self.btn_save = QPushButton("Save changes")
+        self.btn_save.setObjectName("PrimaryButton")
+        self.btn_save.setMinimumHeight(44)
+        self.btn_save.setEnabled(False)
+        self.btn_save.setToolTip(
+            "Save changed labels to the loaded Excel workbook (Ctrl+S)"
+        )
+        self.btn_save.setAccessibleName("Save labeling changes to Excel")
         self.btn_save.clicked.connect(self._on_save)
-        top.addWidget(self.btn_save)
+        header.addWidget(self.btn_save, 1, 0)
 
         self.btn_wide = QPushButton("Wide view")
+        self.btn_wide.setMinimumHeight(44)
         self.btn_wide.setCheckable(True)
+        self.btn_wide.setToolTip(
+            "Hide the navigation sidebar to give plots more room (Ctrl+B)"
+        )
         self.btn_wide.clicked.connect(self._on_toggle_wide_view)
-        top.addWidget(self.btn_wide)
+        header.addWidget(self.btn_wide, 1, 1)
 
-        layout.addLayout(top)
+        self.btn_browse_xlsx = QPushButton("Browse Excel …")
+        self.btn_browse_xlsx.setToolTip(
+            "Select the clonality tracking workbook to label"
+        )
+        self.btn_browse_xlsx.clicked.connect(self._on_browse_xlsx)
+        header.addWidget(self.btn_browse_xlsx, 3, 0)
+
+        self.lbl_xlsx = _ElidedPathLabel("No Excel workbook loaded")
+        self.lbl_xlsx.setAccessibleName("Selected Excel workbook")
+        header.addWidget(self.lbl_xlsx, 3, 1, 1, 3)
+
+        self.btn_browse_fsa = QPushButton("Browse FSA root …")
+        self.btn_browse_fsa.setToolTip(
+            "Select the folder containing the source FSA files"
+        )
+        self.btn_browse_fsa.clicked.connect(self._on_browse_fsa)
+        header.addWidget(self.btn_browse_fsa, 4, 0)
+
+        self.lbl_fsa = _ElidedPathLabel("No FSA root selected")
+        self.lbl_fsa.setAccessibleName("Selected FSA root")
+        header.addWidget(self.lbl_fsa, 4, 1, 1, 3)
+
+        self.lbl_save_status = QLabel("Load an Excel workbook to begin labeling.")
+        self.lbl_save_status.setObjectName("WorkflowStatusText")
+        self.lbl_save_status.setWordWrap(True)
+        self.lbl_save_status.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.lbl_save_status.setMinimumWidth(0)
+        self.lbl_save_status.setAccessibleName("Labeling save status")
+        header.addWidget(self.lbl_save_status, 2, 0, 1, 4)
+        self._set_save_status(self.lbl_save_status.text(), "ready")
+
+        layout.addWidget(header_card)
 
         # --- Progress ---
         self.progress = QProgressBar()
@@ -177,7 +264,10 @@ class TabLabeling(QWidget):
         layout.addWidget(self.progress)
 
         # --- Main splitter: sample list | plot + metadata ---
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Start stacked so the page can negotiate a genuinely narrow minimum
+        # size. ``resizeEvent`` switches to the wider desktop arrangement as
+        # soon as enough content width is available.
+        self._main_splitter = QSplitter(Qt.Orientation.Vertical)
 
         # Left: sample list
         list_panel = QWidget()
@@ -190,6 +280,10 @@ class TabLabeling(QWidget):
 
         filter_row = QHBoxLayout()
         self.queue_filter = QComboBox()
+        self.queue_filter.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Fixed,
+        )
         self.queue_filter.addItem("All", "all")
         self.queue_filter.addItem("Unlabeled", "unlabeled")
         self.queue_filter.addItem("Rule review", "review")
@@ -197,6 +291,10 @@ class TabLabeling(QWidget):
         filter_row.addWidget(self.queue_filter)
 
         self.assay_filter = QComboBox()
+        self.assay_filter.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Fixed,
+        )
         self.assay_filter.addItem("All assays", "")
         self.assay_filter.currentIndexChanged.connect(self._on_assay_filter_changed)
         filter_row.addWidget(self.assay_filter)
@@ -206,7 +304,7 @@ class TabLabeling(QWidget):
         self.sample_list.currentRowChanged.connect(self._on_sample_selected)
         list_layout.addWidget(self.sample_list)
 
-        splitter.addWidget(list_panel)
+        self._main_splitter.addWidget(list_panel)
 
         # Right: metadata + plot
         detail_panel = QWidget()
@@ -222,6 +320,35 @@ class TabLabeling(QWidget):
         self.lbl_metadata.setWordWrap(True)
         detail_layout.addWidget(self.lbl_metadata)
 
+        channel_row = QHBoxLayout()
+        self.channel_selector = QComboBox()
+        self.channel_selector.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.channel_selector.setToolTip("Trace channel and biological target")
+        self.channel_selector.currentIndexChanged.connect(
+            self._on_channel_changed
+        )
+        channel_row.addWidget(self.channel_selector, stretch=1)
+        self.btn_overlay_channels = QPushButton("Overlay")
+        self.btn_overlay_channels.setCheckable(True)
+        self.btn_overlay_channels.setChecked(True)
+        self.btn_overlay_channels.setToolTip(
+            "Show other assay channels faintly for context"
+        )
+        self.btn_overlay_channels.clicked.connect(self._render_current_plot)
+        channel_row.addWidget(self.btn_overlay_channels)
+        self.btn_apply_all_channels = QPushButton("Apply all")
+        self.btn_apply_all_channels.setToolTip(
+            "Apply the selected channel's current label to every assay channel"
+        )
+        self.btn_apply_all_channels.clicked.connect(
+            self._on_apply_label_to_all_channels
+        )
+        channel_row.addWidget(self.btn_apply_all_channels)
+        detail_layout.addLayout(channel_row)
+
         # Label hint
         self.lbl_hint = QLabel(
             "Keys: <b>1</b>=monoklonal &nbsp; <b>2</b>=monoklonal på poly &nbsp; "
@@ -232,6 +359,12 @@ class TabLabeling(QWidget):
             "<b>↑/↓</b>=navigate &nbsp; <b>Backspace</b>=clear &nbsp; <b>Ctrl+S</b>=save"
         )
         self.lbl_hint.setStyleSheet("font-size: 11px; color: #666; padding: 1px 4px;")
+        self.lbl_hint.setWordWrap(True)
+        self.lbl_hint.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.lbl_hint.setMinimumWidth(0)
         detail_layout.addWidget(self.lbl_hint)
 
         self.lbl_plot_status = QLabel("Select an FSA root to load calibrated traces")
@@ -276,10 +409,32 @@ class TabLabeling(QWidget):
             self.plot_widget = QLabel("pyqtgraph not available — plots disabled")
             detail_layout.addWidget(self.plot_widget, stretch=1)
 
-        splitter.addWidget(detail_panel)
-        splitter.setSizes([220, 900])
+        self._main_splitter.addWidget(detail_panel)
+        self._main_splitter.setSizes([180, 620])
 
-        layout.addWidget(splitter, stretch=1)
+        layout.addWidget(self._main_splitter, stretch=1)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if not hasattr(self, "_main_splitter"):
+            return
+        compact = event.size().width() < 760
+        orientation = (
+            Qt.Orientation.Vertical
+            if compact
+            else Qt.Orientation.Horizontal
+        )
+        if self._main_splitter.orientation() == orientation:
+            return
+        self._main_splitter.setOrientation(orientation)
+        if compact:
+            self._main_splitter.setSizes(
+                [180, max(360, event.size().height() - 300)]
+            )
+        else:
+            self._main_splitter.setSizes(
+                [220, max(540, event.size().width() - 220)]
+            )
 
     def _setup_shortcuts(self):
         # Label shortcuts
@@ -295,6 +450,7 @@ class TabLabeling(QWidget):
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self._on_save)
         QShortcut(QKeySequence("F"), self, activated=self._on_toggle_filter)
         QShortcut(QKeySequence("Ctrl+B"), self, activated=self._on_toggle_wide_view)
+        QShortcut(QKeySequence("Tab"), self, activated=self._on_next_channel)
 
     def _on_browse_xlsx(self):
         from core.labeling.labeling_session import LabelingSession
@@ -306,20 +462,22 @@ class TabLabeling(QWidget):
         try:
             self._session = LabelingSession(excel_path=path)
             self._session.load()
-            self.lbl_xlsx.setText(path)
-            self.lbl_xlsx.setStyleSheet("color: #333;")
+            self.lbl_xlsx.set_full_text(path)
+            self.btn_save.setEnabled(True)
+            self._set_save_status("Workbook loaded — no unsaved changes.", "ready")
             self._populate_assay_filter()
             self._refresh_sample_list()
         except Exception as exc:
-            self.lbl_xlsx.setText(f"Error: {exc}")
-            self.lbl_xlsx.setStyleSheet("color: red;")
+            self._session = None
+            self.btn_save.setEnabled(False)
+            self.lbl_xlsx.set_full_text(path)
+            self._set_save_status(f"Could not load the workbook: {exc}", "error")
 
     def _on_browse_fsa(self):
         path = QFileDialog.getExistingDirectory(self, "Select FSA root directory")
         if path:
             self._fsa_root = path
-            self.lbl_fsa.setText(path)
-            self.lbl_fsa.setStyleSheet("color: #333;")
+            self.lbl_fsa.set_full_text(path)
             self._render_current_plot()
 
     def _refresh_sample_list(self):
@@ -336,10 +494,24 @@ class TabLabeling(QWidget):
             if self._assay_filter and sample.assay != self._assay_filter:
                 continue
             self._visible_sample_indices.append(index)
-            key = LABEL_TO_KEY.get(sample.current_label, "")
-            prefix = f"[{key}] " if key else "  "
-            short_label = sample.current_label if sample.is_labeled else "—"
-            text = f"{prefix}{sample.dit} {sample.assay} {sample.well}  →  {short_label}"
+            labels = [
+                (
+                    unit.channel.replace("DATA", "D"),
+                    sample.label_for_channel(unit.channel),
+                )
+                for unit in sample.interpretation_units
+            ]
+            if labels:
+                label_text = " | ".join(
+                    f"{channel}:{label or '-'}" for channel, label in labels
+                )
+            else:
+                key = LABEL_TO_KEY.get(sample.current_label, "")
+                label_text = f"{key}:{sample.current_label}" if key else "-"
+            text = (
+                f"{sample.dit} {sample.assay} {sample.well}"
+                f"  ->  {label_text}"
+            )
             item = QListWidgetItem(text)
             self.sample_list.addItem(item)
         self._update_progress()
@@ -348,8 +520,8 @@ class TabLabeling(QWidget):
         if not self._session:
             self.progress.setFormat("0 / 0 labeled")
             return
-        total = self._session.total_count
-        labeled = self._session.labeled_count
+        total = self._session.total_unit_count
+        labeled = self._session.labeled_unit_count
         pct = int(100 * labeled / total) if total else 0
         self.progress.setValue(pct)
         self.progress.setFormat(f"{labeled} / {total} labeled")
@@ -371,16 +543,59 @@ class TabLabeling(QWidget):
                 self.plot_widget.clear()
             return
         sample = self._session.samples[idx]
-        from core.labeling.labeling_session import LABEL_TO_KEY
-        key = LABEL_TO_KEY.get(sample.current_label, "")
+        self._populate_channel_selector(sample)
+        channel = self._selected_channel
+        channel_label = sample.label_for_channel(channel)
+        unit = next(
+            (
+                candidate
+                for candidate in sample.interpretation_units
+                if candidate.channel == channel
+            ),
+            None,
+        )
+        target = unit.target_name if unit is not None else channel
         parallel_indices = self._session.parallel_indices_for(idx)
         self.lbl_metadata.setText(
             f"<b>{sample.dit}</b> &nbsp; {sample.assay} &nbsp; {sample.well} &nbsp; "
-            f"<span style='background: {'#e8f5e9' if key else '#fff3e0'}; "
+            f"<span style='background: {'#e8f5e9' if channel_label else '#fff3e0'}; "
             f"padding: 2px 6px; border-radius: 3px;'>"
-            f"{key}: {sample.current_label or 'unlabeled'}</span>"
+            f"{target} / {channel}: {channel_label or 'unlabeled'}</span>"
         )
         self._render_plot_group(parallel_indices)
+
+    def _populate_channel_selector(self, sample) -> None:
+        previous = self._selected_channel
+        self.channel_selector.blockSignals(True)
+        self.channel_selector.clear()
+        for unit in sample.interpretation_units:
+            label = sample.label_for_channel(unit.channel) or "unlabeled"
+            self.channel_selector.addItem(
+                f"{unit.channel} | {unit.target_name} | {label}",
+                unit.channel,
+            )
+        self.channel_selector.blockSignals(False)
+        index = self.channel_selector.findData(previous)
+        if index < 0 and self.channel_selector.count():
+            index = 0
+        if index >= 0:
+            self.channel_selector.setCurrentIndex(index)
+            self._selected_channel = str(
+                self.channel_selector.itemData(index) or ""
+            )
+        else:
+            self._selected_channel = ""
+        self.btn_apply_all_channels.setVisible(
+            len(sample.interpretation_units) > 1
+        )
+
+    def _on_channel_changed(self) -> None:
+        self._selected_channel = str(
+            self.channel_selector.currentData() or ""
+        )
+        idx = self._current_sample_index()
+        if idx >= 0:
+            self._on_sample_selected(self.sample_list.currentRow())
 
     def _render_current_plot(self):
         idx = self._current_sample_index()
@@ -611,15 +826,31 @@ class TabLabeling(QWidget):
             line.setZValue(-5)
             widget.addItem(line)
 
+        selected_channel = self._selected_channel
+        overlay = self.btn_overlay_channels.isChecked()
         for trace in plot_data.traces:
+            is_selected = not selected_channel or trace.channel == selected_channel
+            if not is_selected and not overlay:
+                continue
             widget.plot(
                 trace.basepairs,
                 trace.rfu,
-                pen=pg.mkPen(colors.get(trace.channel, "#475569"), width=1.1),
-                name=trace.channel,
+                pen=pg.mkPen(
+                    colors.get(trace.channel, "#475569")
+                    if is_selected
+                    else "#cbd5e1",
+                    width=1.4 if is_selected else 0.8,
+                ),
+                name=(
+                    trace.channel
+                    if is_selected
+                    else f"{trace.channel} context"
+                ),
             )
 
         for channel in sorted({peak.channel for peak in plot_data.peaks}):
+            if selected_channel and channel != selected_channel:
+                continue
             peaks = [peak for peak in plot_data.peaks if peak.channel == channel]
             widget.plot(
                 [peak.basepair for peak in peaks],
@@ -633,7 +864,15 @@ class TabLabeling(QWidget):
             )
 
         labeled_peaks = sorted(
-            (peak for peak in plot_data.peaks if peak.kept),
+            (
+                peak
+                for peak in plot_data.peaks
+                if peak.kept
+                and (
+                    not selected_channel
+                    or peak.channel == selected_channel
+                )
+            ),
             key=lambda peak: peak.rfu,
             reverse=True,
         )[:12]
@@ -689,21 +928,78 @@ class TabLabeling(QWidget):
         idx = self._current_sample_index()
         if idx < 0 or not self._session:
             return
-        self._session.label_sample(idx, label)
+        self._session.label_sample(
+            idx,
+            label,
+            channel=self._selected_channel or None,
+        )
+        self._mark_unsaved()
+        sample = self._session.samples[idx]
+        next_channel = next(
+            (
+                unit.channel
+                for unit in sample.interpretation_units
+                if not sample.label_for_channel(unit.channel)
+            ),
+            "",
+        )
         self._refresh_sample_list()
         if self.sample_list.count() == 0:
             return
-        target_row = visible_row if self._filter_mode == "unlabeled" else visible_row + 1
+        if next_channel and self._filter_mode != "unlabeled":
+            target_row = visible_row
+        else:
+            target_row = (
+                visible_row
+                if self._filter_mode == "unlabeled"
+                else visible_row + 1
+            )
         self.sample_list.setCurrentRow(
             min(max(target_row, 0), self.sample_list.count() - 1)
         )
+        if next_channel and self._filter_mode != "unlabeled":
+            index = self.channel_selector.findData(next_channel)
+            if index >= 0:
+                self.channel_selector.setCurrentIndex(index)
 
     def _on_clear_label(self):
         idx = self._current_sample_index()
         if idx < 0 or not self._session:
             return
-        self._session.clear_label(idx)
+        self._session.clear_label(
+            idx,
+            channel=self._selected_channel or None,
+        )
+        self._mark_unsaved()
         self._refresh_sample_list()
+
+    def _on_apply_label_to_all_channels(self):
+        idx = self._current_sample_index()
+        if idx < 0 or not self._session:
+            return
+        sample = self._session.samples[idx]
+        label = sample.label_for_channel(self._selected_channel)
+        if not label:
+            return
+        self._session.label_all_channels(idx, label)
+        self._mark_unsaved()
+        current_row = self.sample_list.currentRow()
+        self._refresh_sample_list()
+        if self.sample_list.count():
+            self.sample_list.setCurrentRow(
+                min(max(current_row, 0), self.sample_list.count() - 1)
+            )
+
+    def _on_next_channel(self):
+        if self.channel_selector.count() <= 1:
+            self._on_next_sample()
+            return
+        current = self.channel_selector.currentIndex()
+        if current + 1 < self.channel_selector.count():
+            self.channel_selector.setCurrentIndex(current + 1)
+        else:
+            self.channel_selector.setCurrentIndex(0)
+            self._on_next_sample()
 
     def _on_next_sample(self):
         row = self.sample_list.currentRow()
@@ -717,13 +1013,32 @@ class TabLabeling(QWidget):
 
     def _on_save(self):
         if not self._session:
+            self._set_save_status("Load an Excel workbook before saving.", "warning")
             return
         try:
             written = self._session.save_to_excel()
-            self.lbl_xlsx.setText(f"{self._session.excel_path} — saved {written} labels")
+            if written:
+                self._set_save_status(
+                    f"Saved {written} label change(s) to {Path(self._session.excel_path).name}.",
+                    "success",
+                )
+            else:
+                self._set_save_status("Everything is already saved.", "ready")
         except Exception as exc:
-            self.lbl_xlsx.setText(f"Save error: {exc}")
-            self.lbl_xlsx.setStyleSheet("color: red;")
+            self._set_save_status(f"Save failed: {exc}", "error")
+
+    def _mark_unsaved(self) -> None:
+        self._set_save_status(
+            "Unsaved label changes — choose Save changes or press Ctrl+S.",
+            "warning",
+        )
+
+    def _set_save_status(self, text: str, state: str) -> None:
+        self.lbl_save_status.setText(text)
+        self.lbl_save_status.setProperty("state", state)
+        style = self.lbl_save_status.style()
+        style.unpolish(self.lbl_save_status)
+        style.polish(self.lbl_save_status)
 
     def _on_toggle_wide_view(self):
         self._wide_mode = not self._wide_mode

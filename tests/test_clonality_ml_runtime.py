@@ -439,6 +439,52 @@ def test_attach_refuses_cohort_model_without_batch_context():
     assert out["ClonalityMLEvidence"] == "cohort_context_unavailable"
 
 
+def test_channel_models_attach_independent_mixed_profile_without_collapsing():
+    class ChannelStore:
+        def is_enabled(self, target):
+            return target in {"IGK_JK5", "IGK_JK1_4"}
+
+        def required_feature_columns(self, target):
+            if self.is_enabled(target):
+                return ["ladder_r2"]
+            return []
+
+        def predict(self, target, features):
+            if target == "IGK_JK5":
+                label = "polyklonal"
+            elif target == "IGK_JK1_4":
+                label = "monoklonal"
+            else:
+                return None
+            return {
+                "label": label,
+                "confidence": 0.95,
+                "review_needed": False,
+                "model_version": "channel-v1",
+                "threshold_tau": 0.8,
+            }
+
+    entry = {
+        "assay": "IGK",
+        "sample_kind": "patient",
+        "ladder_qc_status": "ok",
+        "features": {"ladder_r2": 0.9998},
+    }
+
+    out = ml_runtime._do_attach(entry, ChannelStore())
+
+    assert out["ClonalityMLSuggestion"] == ""
+    assert [
+        result["label"] for result in out["ClonalityMLChannelResults"]
+    ] == ["polyklonal", "monoklonal"]
+    assert all(
+        not result["review_needed"]
+        for result in out["ClonalityMLChannelResults"]
+    )
+    assert out["ClonalityMLSuggestion_DATA1"] == "polyklonal"
+    assert out["ClonalityMLSuggestion_DATA2"] == "monoklonal"
+
+
 def test_attach_keeps_batch_context_when_recomputing_trace_features(monkeypatch):
     observed = {}
 

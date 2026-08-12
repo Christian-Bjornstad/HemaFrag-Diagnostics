@@ -27,7 +27,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from core.engine_flags import strict_rust_ladder_enabled
+from core.engine_flags import rust_owned_ladder_enabled
 from core.log import log
 from core.rust_bridge._constants import (
     _CLI_BIN_CACHE,
@@ -68,7 +68,7 @@ from core.rust_bridge._constants import (
     ROX_MIN_MEDIAN_GAP,
     ROX_MIN_HARD_WINDOW_FRACTION,
 )
-from fraggler.fraggler import FsaFile, baseline_arPLS, fit_size_standard_to_ladder
+from fraggler.fraggler import FsaFile, fit_size_standard_to_ladder
 from core.rust_bridge._constants import _persistent_rust_worker_supported
 
 __all__ = ['_RustPrimitiveWorker', '_RustSizingModel', '_allow_guardrail_review_hydration', '_anchor_intensity', '_apply_rust_result_to_fsa', '_apply_rust_sizing_model_to_fsa', '_baseline_correct_for_validation', '_cache_key', '_cpu_topology', '_eval_monotone_cubic_spline', '_eval_polynomial', '_flt3_liz_override_enabled', '_get_cached_rust_result', '_get_rust_worker', '_get_rust_worker_pool', '_increment_rust_engine_stat', '_invalidate_rust_worker', '_invalidate_rust_worker_pool', '_is_gs500rox_ladder', '_is_rox_ladder', '_normalized_size_standard_trace_for_fsa', '_resolve_cli_bin', '_run_cli_once', '_rust_prewarm_worker_count', '_rust_timeout_seconds', '_store_cached_rust_result', '_validate_rust_anchor_selection', '_validation_trace_for_fsa', 'format_rust_engine_stats', 'merge_rust_engine_stats', 'prime_rust_worker_results', 'reset_rust_engine_stats', 'run_ladder_fit_hybrid', 'rust_engine_stats_snapshot', '_log_rust_cli_missing_once', '_in_process_native_wheel_is_available', '_run_in_process_wheel_once', '_RUST_CLI_MISSING_LOGGED', '_RUST_CLI_MISSING_FALLBACK_COUNT', '_RUST_CLI_MISSING_FIRST_SAMPLE']
@@ -773,12 +773,17 @@ def _baseline_correct_for_validation(trace: np.ndarray) -> np.ndarray:
     if trace.size == 0:
         return trace
     try:
-        baseline = np.asarray(baseline_arPLS(trace), dtype=float)
-        if baseline.shape != trace.shape:
-            return np.maximum(trace, 0.0)
-        return np.maximum(trace - baseline, 0.0)
+        from core.analysis import baseline_correct_ladder_trace
+
+        corrected = np.asarray(baseline_correct_ladder_trace(trace), dtype=float)
+        if corrected.shape == trace.shape and np.all(np.isfinite(corrected)):
+            return corrected
     except Exception:
-        return np.maximum(trace, 0.0)
+        pass
+    # Last-resort offset correction cannot remove any peak prominence.
+    finite = trace[np.isfinite(trace)]
+    offset = float(np.min(finite)) if finite.size else 0.0
+    return np.maximum(np.nan_to_num(trace, nan=offset) - min(offset, 0.0), 0.0)
 
 
 def _validation_trace_for_fsa(fsa: FsaFile) -> np.ndarray:
@@ -798,10 +803,6 @@ def _normalized_size_standard_trace_for_fsa(fsa: FsaFile) -> np.ndarray:
     raw_trace = _validation_trace_for_fsa(fsa)
     if raw_trace.size == 0:
         return raw_trace
-
-    existing = np.asarray(getattr(fsa, "size_standard", []), dtype=float)
-    if existing.size == raw_trace.size and np.all(np.isfinite(existing)) and float(np.min(existing)) >= 0.0:
-        return existing
 
     corrected = _baseline_correct_for_validation(raw_trace)
     if corrected.size == raw_trace.size and np.all(np.isfinite(corrected)):
@@ -1197,6 +1198,15 @@ def _apply_rust_result_to_fsa(fsa: FsaFile, res: dict[str, Any]) -> FsaFile | No
         fsa.rust_review_reason_codes = list(review_assessment.get("reason_codes") or [])
         fsa.rust_review_primary_reason = review_assessment.get("primary_reason")
         fsa.rust_review_summary = str(review_assessment.get("summary") or "")
+        fsa.rust_selected_baseline_like_anchor_count = int(
+            review_assessment.get("selected_baseline_like_anchor_count") or 0
+        )
+        fsa.rust_selected_cleaner_neighbor_count = int(
+            review_assessment.get("selected_cleaner_neighbor_count") or 0
+        )
+        fsa.rust_selected_strong_baseline_anchor_count = int(
+            review_assessment.get("selected_strong_baseline_anchor_count") or 0
+        )
     detected_ladder = res.get("ladder")
     if isinstance(detected_ladder, str) and detected_ladder:
         fsa.rust_detected_ladder = detected_ladder
@@ -1216,6 +1226,21 @@ def _apply_rust_result_to_fsa(fsa: FsaFile, res: dict[str, Any]) -> FsaFile | No
     fit_preview = res.get("ladder_fit_preview")
     if not fit_preview:
         log("[RUST ERROR] ladder_fit_preview missing")
+        return None
+    search_tier = str(fit_preview.get("search_tier") or "").strip()
+    if search_tier:
+        fsa.rust_ladder_fit_tier = search_tier
+    strong_baseline_anchor_count = int(
+        getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0) or 0
+    )
+    if strong_baseline_anchor_count >= 2:
+        fsa.rust_guardrail_review_required = True
+        fsa.ladder_review_required = True
+        log(
+            f"[RUST GUARDRAIL] Rejected automatic ladder hydration for {fsa.file_name}: "
+            f"{strong_baseline_anchor_count} selected anchors have strong baseline-noise signatures. "
+            "A saved manual ladder adjustment may still be applied; otherwise explicit review is required."
+        )
         return None
 
     refinement = fit_preview.get("refinement")
@@ -1277,17 +1302,20 @@ def _apply_rust_result_to_fsa(fsa: FsaFile, res: dict[str, Any]) -> FsaFile | No
     fsa.expected_ladder_steps = np.array(expected_bps, dtype=float)
     normalized_size_standard = _normalized_size_standard_trace_for_fsa(fsa)
     if normalized_size_standard.size:
+        raw_size_standard = _validation_trace_for_fsa(fsa)
+        fsa.size_standard_raw = np.asarray(raw_size_standard, dtype=float).copy()
         fsa.size_standard = normalized_size_standard
         fsa.size_standard_baseline_corrected = True
+        fsa.size_standard_baseline_method = "rolling_quantile_peak_preserving"
 
     hydrated = _apply_rust_sizing_model_to_fsa(fsa, scan_indices, expected_bps, model_preview)
     if hydrated is not None:
         return hydrated
 
-    if strict_rust_ladder_enabled():
+    if rust_owned_ladder_enabled():
         log(
-            f"[STRICT RUST] Rust sizing model could not hydrate {fsa.file_name}; "
-            "Python ladder fallback is disabled."
+            f"[RUST REVIEW] Rust sizing model could not hydrate {fsa.file_name}; "
+            "Rust-owned ladder mode will not replace the selected anchors with Python."
         )
         return None
 

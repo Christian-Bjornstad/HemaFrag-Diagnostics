@@ -22,11 +22,14 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QAbstractItemView,
 )
-from PyQt6.QtCore import Qt, QThreadPool, QTimer
+from PyQt6.QtCore import Qt, QThreadPool, QTimer, pyqtSignal
 
 from config import APP_SETTINGS, get_analysis_settings
 from core.analysis import load_ladder_adjustment, save_ladder_adjustment
-from core.analyses.clonality.ladder_review_gate import RESOLVED_LABELS
+from core.analyses.clonality.ladder_review_labels import (
+    is_review_rerunnable,
+    is_review_resolved,
+)
 from core.html_reports import extract_dit_from_name
 from gui_qt.dialogs.ladder_dialog import LadderAdjustmentDialog
 from gui_qt.ladder_utils import detect_fsa_for_ladder, load_adjustable_fsa
@@ -44,6 +47,8 @@ def _open_path(path: Path) -> None:
 
 
 class TabLadder(QWidget):
+    reportsRefreshed = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.threadpool = QThreadPool.globalInstance()
@@ -53,10 +58,12 @@ class TabLadder(QWidget):
         self._current_fsa = None
         self._report_matches: list[Path] = []
         self._review_bundle_dir: Path | None = None
+        self._review_bundle_run_manifest_path: Path | None = None
         self._review_bundle_cases: list[dict] = []
         self._review_case_by_path: dict[Path, dict] = {}
         self._review_runtime_cache: dict[Path, dict] = {}
         self._review_session_entries_by_path: dict[Path, dict] = {}
+        self._manual_rerun_consumption_by_path: dict[Path, dict] = {}
         self._recent_reviewed_files: set[Path] = set()
         self._auto_open_review_editor_once = False
         self._pending_open_editor_after_metadata = False
@@ -157,6 +164,10 @@ class TabLadder(QWidget):
         row3.addWidget(self.btn_rerun_review_bundle)
         layout.addLayout(row3)
 
+        self.review_progress_label = QLabel("Reviewed 0 / 0 — Remaining 0")
+        self.review_progress_label.setObjectName("PageSubtitle")
+        layout.addWidget(self.review_progress_label)
+
         # Phase 12.3 — chip-strip overview above the file list.
         # One chip per loaded bundle case (reviewed/needs_review/
         # file_unreachable/untouched). Click a chip to select that
@@ -198,6 +209,7 @@ class TabLadder(QWidget):
             ("fit_strategy", "Fit Strategy"),
             ("fit_counts", "Expected / Fitted"),
             ("review_state", "Review State"),
+            ("confidence", "Candidate Confidence"),
             ("missing_steps", "Missing Steps"),
             ("adjustment", "Saved Adjustment"),
         ]
@@ -219,6 +231,10 @@ class TabLadder(QWidget):
         self.btn_open_editor = QPushButton("Open Ladder Editor")
         self.btn_open_editor.setObjectName("PrimaryButton")
         self.btn_open_editor.clicked.connect(self._open_ladder_editor)
+        self.btn_exclude_missing_ladder = QPushButton("No ladder / human error")
+        self.btn_exclude_missing_ladder.clicked.connect(
+            self._exclude_current_missing_ladder_signal
+        )
         self.btn_rerun_file = QPushButton("Run This File + Reports")
         self.btn_rerun_file.clicked.connect(self._rerun_current_file_reports)
         self.btn_remove_adjustment = QPushButton("Remove Saved Adjustment")
@@ -229,6 +245,7 @@ class TabLadder(QWidget):
         for btn in [
             self.btn_refresh_meta,
             self.btn_open_editor,
+            self.btn_exclude_missing_ladder,
             self.btn_rerun_file,
             self.btn_remove_adjustment,
             self.btn_open_file_folder,
@@ -476,6 +493,16 @@ class TabLadder(QWidget):
         self._clear_details()
 
         enabled = file_path is not None
+        review_case = (
+            self._review_case_by_path.get(self._resolve_cache_key(file_path))
+            if enabled and self._review_bundle_dir is not None
+            else None
+        )
+        exclusion_enabled = bool(
+            review_case is not None
+            and not str(review_case.get("label") or "").strip()
+            and not str(review_case.get("adjustment_path") or "").strip()
+        )
         for btn in [
             self.btn_refresh_meta,
             self.btn_open_editor,
@@ -484,6 +511,7 @@ class TabLadder(QWidget):
             self.btn_open_file_folder,
         ]:
             btn.setEnabled(enabled)
+        self.btn_exclude_missing_ladder.setEnabled(exclusion_enabled)
 
         self._empty_state.setVisible(not enabled)
         self._details_card.setVisible(enabled)
@@ -510,6 +538,7 @@ class TabLadder(QWidget):
         self.detail_labels["fit_strategy"].setText("Loading...")
         self.detail_labels["fit_counts"].setText("—")
         self.detail_labels["review_state"].setText("—")
+        self.detail_labels["confidence"].setText("—")
         self.detail_labels["missing_steps"].setText("—")
         cached = self._cached_review_payload_for(self._current_file)
         if cached:
@@ -664,7 +693,37 @@ class TabLadder(QWidget):
             review_payload = dialog.get_review_payload()
             if review_payload.get("action") != "note_only":
                 adjustment = dialog.get_adjustment_payload()
-                save_ladder_adjustment(fsa, adjustment)
+                try:
+                    saved_path = save_ladder_adjustment(
+                        fsa,
+                        adjustment,
+                        operator=str(
+                            APP_SETTINGS.get("general", {}).get("author", "") or ""
+                        ),
+                        comment=str(review_payload.get("comment", "") or ""),
+                        before_qc={
+                            "linear_max": review_payload.get("linear_max"),
+                            "linear_mean": review_payload.get("linear_mean"),
+                            "linear_r2": review_payload.get("linear_r2"),
+                        },
+                        after_qc=dict(review_payload.get("after_qc") or {}),
+                    )
+                    if load_ladder_adjustment(fsa) is None:
+                        raise RuntimeError(f"Saved adjustment could not be loaded from {saved_path}.")
+                except Exception as exc:
+                    self._set_status(
+                        f"Could not save ladder adjustment for {self._current_file.name}: {exc}",
+                        error=True,
+                    )
+                    QMessageBox.critical(
+                        self,
+                        "Adjustment Not Saved",
+                        (
+                            "The ladder correction was not saved, so this review case remains unresolved.\n\n"
+                            f"{exc}"
+                        ),
+                    )
+                    return
                 preview_fsa = getattr(dialog, "_preview_fsa", None)
                 if preview_fsa is not None:
                     cache_key = self._resolve_cache_key(self._current_file)
@@ -732,6 +791,95 @@ class TabLadder(QWidget):
                     self._rerun_current_file_reports()
         else:
             self._set_status(f"Closed ladder editor for {self._current_file.name}.")
+
+    def _exclude_current_missing_ladder_signal(self) -> None:
+        if self._current_file is None or self._review_bundle_dir is None:
+            return
+
+        cache_key = self._resolve_cache_key(self._current_file)
+        if cache_key not in self._review_case_by_path:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "No Ladder / Human Error",
+            (
+                f"Mark {self._current_file.name} as excluded because it has no usable "
+                "ladder signal? This resolves the review case without saving a ladder "
+                "adjustment and will not rerun the file."
+            ),
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        note = "No usable ladder signal; preparation error."
+        reviewed_at_utc = datetime.now(timezone.utc).isoformat()
+        self.btn_exclude_missing_ladder.setEnabled(False)
+        self._set_status(f"Saving no-ladder exclusion for {self._current_file.name}...")
+        worker = Worker(
+            self._save_missing_ladder_exclusion_worker,
+            self._review_bundle_dir,
+            cache_key,
+            note=note,
+            reviewed_at_utc=reviewed_at_utc,
+        )
+        worker.signals.result.connect(
+            lambda annotation, key=cache_key: self._on_missing_ladder_exclusion_saved(
+                key, annotation
+            )
+        )
+        worker.signals.error.connect(
+            lambda err, key=cache_key: self._on_missing_ladder_exclusion_error(
+                key, err
+            )
+        )
+        self.threadpool.start(worker)
+
+    def _on_missing_ladder_exclusion_saved(
+        self, cache_key: Path, annotation: dict
+    ) -> None:
+        review_case = self._review_case_by_path.get(cache_key)
+        if review_case is not None:
+            review_case.update(annotation)
+        for row in self._review_bundle_cases:
+            try:
+                if self._resolve_cache_key(Path(str(row.get("full_path", "") or ""))) != cache_key:
+                    continue
+            except Exception:
+                continue
+            row.update(annotation)
+            break
+        self._recent_reviewed_files.discard(cache_key)
+        self._review_session_entries_by_path.pop(cache_key, None)
+        self._manual_rerun_consumption_by_path.pop(cache_key, None)
+        tab_run = self._run_tab_for_review()
+        if tab_run is not None and hasattr(
+            tab_run, "unregister_ladder_review_update"
+        ):
+            tab_run.unregister_ladder_review_update(cache_key)
+        self._sync_chip_strip()
+        self._rebuild_file_list()
+        if self._current_file is not None:
+            self._select_file(self._current_file)
+        self._refresh_review_bundle_run_button()
+        self._set_status(f"Excluded {cache_key.name}: no usable ladder signal.")
+
+    def _on_missing_ladder_exclusion_error(self, cache_key: Path, err_tuple) -> None:
+        if self._current_file is not None and self._resolve_cache_key(self._current_file) == cache_key:
+            review_case = self._review_case_by_path.get(cache_key) or {}
+            self.btn_exclude_missing_ladder.setEnabled(
+                not str(review_case.get("label") or "").strip()
+                and not str(review_case.get("adjustment_path") or "").strip()
+            )
+        self._set_status(
+            f"Could not save no-ladder exclusion for {cache_key.name}: {err_tuple[1]}",
+            error=True,
+        )
+        QMessageBox.critical(
+            self,
+            "No-Ladder Exclusion Not Saved",
+            f"The review case remains unresolved.\n\n{err_tuple[1]}",
+        )
 
     def _remove_saved_adjustment(self) -> None:
         if not self._current_file:
@@ -847,6 +995,7 @@ class TabLadder(QWidget):
             settings["aggregate_by_patient"],
             settings["patient_regex"],
             settings["aggregate_outdir_name"],
+            self._review_bundle_run_manifest_path,
         )
         worker.signals.result.connect(lambda result, rid=request_id: self._on_single_rerun_finished(rid, result))
         worker.signals.error.connect(lambda err, rid=request_id: self._on_single_rerun_error(rid, err))
@@ -863,6 +1012,7 @@ class TabLadder(QWidget):
         aggregate_by_patient: bool,
         patient_regex: str,
         aggregate_outdir_name: str | None,
+        run_manifest_path: Path | None = None,
     ) -> dict:
         # Phase 12.1 — delegate to the worker module.
         from gui_qt.tabs.tab_ladder._workers import single_file_rerun_worker
@@ -877,6 +1027,7 @@ class TabLadder(QWidget):
             aggregate_by_patient,
             patient_regex,
             aggregate_outdir_name,
+            run_manifest_path,
         )
 
     def _review_bundle_counts(self) -> tuple[int, int]:
@@ -884,11 +1035,25 @@ class TabLadder(QWidget):
         unresolved = 0
         for row in self._review_bundle_cases:
             label = str(row.get("label", "") or "").strip()
-            if label in RESOLVED_LABELS:
+            if is_review_resolved(label):
                 resolved += 1
             else:
                 unresolved += 1
         return resolved, unresolved
+
+    def _review_bundle_rerun_counts(self) -> tuple[int, int]:
+        """Return rerunnable cases and the rerunnable cases reviewed this session."""
+        rerunnable = 0
+        recent_rerunnable = 0
+        for row in self._review_bundle_cases:
+            if not is_review_rerunnable(row.get("label")):
+                continue
+            rerunnable += 1
+            raw_path = str(row.get("full_path", "") or "").strip()
+            cache_key = self._resolve_cache_key(Path(raw_path)) if raw_path else None
+            if cache_key is not None and cache_key in self._recent_reviewed_files:
+                recent_rerunnable += 1
+        return rerunnable, recent_rerunnable
 
     def _refresh_review_bundle_run_button(self) -> None:
         if self._is_run_tab_owned_review():
@@ -896,14 +1061,13 @@ class TabLadder(QWidget):
             self.btn_rerun_review_bundle.setEnabled(True)
             return
 
-        resolved, _ = self._review_bundle_counts()
-        recent_ready = len(self._recent_reviewed_files)
-        ready_count = recent_ready or resolved
+        rerunnable, recent_ready = self._review_bundle_rerun_counts()
+        ready_count = recent_ready or rerunnable
         self.btn_rerun_review_bundle.setEnabled(ready_count > 0)
         if recent_ready > 0:
             self.btn_rerun_review_bundle.setText(f"Run Recent Reviewed Files + Reports ({recent_ready})")
-        elif resolved > 0:
-            self.btn_rerun_review_bundle.setText(f"Run Reviewed Files + Reports ({resolved})")
+        elif rerunnable > 0:
+            self.btn_rerun_review_bundle.setText(f"Run Reviewed Files + Reports ({rerunnable})")
         else:
             self.btn_rerun_review_bundle.setText("Run Reviewed Files + Reports")
 
@@ -942,8 +1106,10 @@ class TabLadder(QWidget):
 
         for row in self._review_bundle_cases:
             label = str(row.get("label", "") or "").strip()
-            if label not in RESOLVED_LABELS:
+            if not is_review_resolved(label):
                 unresolved += 1
+                continue
+            if not is_review_rerunnable(label):
                 continue
 
             raw_path = str(row.get("full_path", "") or "").strip()
@@ -1016,6 +1182,7 @@ class TabLadder(QWidget):
             self.btn_load_bundle,
             self.btn_rerun_file,
             self.btn_open_editor,
+            self.btn_exclude_missing_ladder,
             self.btn_refresh_meta,
         ):
             btn.setEnabled(False)
@@ -1033,12 +1200,12 @@ class TabLadder(QWidget):
             settings["aggregate_by_patient"],
             settings["patient_regex"],
             settings["aggregate_outdir_name"],
+            self._review_bundle_run_manifest_path,
         )
         worker.signals.result.connect(lambda result, rid=request_id: self._on_review_bundle_rerun_finished(rid, result))
         worker.signals.error.connect(lambda err, rid=request_id: self._on_review_bundle_rerun_error(rid, err))
         self.threadpool.start(worker)
 
-    @staticmethod
     @staticmethod
     def _review_bundle_rerun_worker(
         file_paths: list[Path],
@@ -1051,6 +1218,7 @@ class TabLadder(QWidget):
         aggregate_by_patient: bool,
         patient_regex: str,
         aggregate_outdir_name: str | None,
+        run_manifest_path: Path | None = None,
     ) -> dict:
         """Phase 12.1 — body lives in `_workers.py`.
 
@@ -1071,6 +1239,7 @@ class TabLadder(QWidget):
             aggregate_by_patient,
             patient_regex,
             aggregate_outdir_name,
+            run_manifest_path,
         )
 
     def _on_single_rerun_finished(self, request_id: int, payload: dict) -> None:
@@ -1084,6 +1253,11 @@ class TabLadder(QWidget):
         failed_jobs = result.get("failed_jobs", [])
         output_root = Path(payload.get("output_root"))
         matches = list(payload.get("matches") or [])
+        file_path = Path(payload["file_path"])
+        consumption = dict(payload.get("manual_adjustment_consumption") or {})
+        self._manual_rerun_consumption_by_path[
+            self._resolve_cache_key(file_path)
+        ] = consumption
         self._refresh_current_metadata()
         self._refresh_report_matches()
 
@@ -1096,7 +1270,7 @@ class TabLadder(QWidget):
             )
             return
 
-        self._set_status(f"Single-file rerun complete for {Path(payload['file_path']).name}.")
+        self._set_status(f"Single-file rerun complete for {file_path.name}.")
 
         gate = result.get("ladder_review_gate") or {}
         review_count = int(gate.get("review_case_count") or 0) if isinstance(gate, dict) else 0
@@ -1107,7 +1281,25 @@ class TabLadder(QWidget):
                 f"The rerun completed, but {review_count} ladder review case(s) were still flagged.",
             )
             return
+        if (
+            consumption.get("adjustment_present")
+            and not consumption.get("consumed")
+        ):
+            self._set_status(
+                f"Rerun did not consume the saved correction for {file_path.name}.",
+                error=True,
+            )
+            QMessageBox.warning(
+                self,
+                "Saved Correction Not Consumed",
+                str(
+                    consumption.get("reason")
+                    or "The rerun did not use the saved manual correction."
+                ),
+            )
+            return
 
+        self.reportsRefreshed.emit(str(output_root))
         message = QMessageBox(self)
         message.setIcon(QMessageBox.Icon.Information)
         message.setWindowTitle("Single File Rerun Complete")
@@ -1150,11 +1342,43 @@ class TabLadder(QWidget):
         self.btn_open_editor.setEnabled(self._current_file is not None and not self._metadata_loading)
         self.btn_refresh_meta.setEnabled(self._current_file is not None)
         self._refresh_review_bundle_run_button()
+        self._sync_chip_strip()
 
         result = payload.get("result") or {}
         failed_jobs = result.get("failed_jobs", [])
         output_root = Path(payload.get("output_root"))
         file_paths = [Path(path) for path in payload.get("file_paths", [])]
+        consumption_by_file = {
+            str(path): dict(status)
+            for path, status in (payload.get("consumption_by_file") or {}).items()
+        }
+        for raw_path, status in consumption_by_file.items():
+            self._manual_rerun_consumption_by_path[
+                self._resolve_cache_key(Path(raw_path))
+            ] = status
+        if self._review_bundle_dir is not None and consumption_by_file:
+            from gui_qt.tabs.tab_ladder._io import (
+                save_review_bundle_rerun_status_worker,
+            )
+
+            try:
+                save_review_bundle_rerun_status_worker(
+                    self._review_bundle_dir,
+                    consumption_by_file,
+                    run_manifest_path=(
+                        Path(result["run_manifest_path"])
+                        if result.get("run_manifest_path")
+                        else None
+                    ),
+                    rerun_at_utc=datetime.now(timezone.utc).isoformat(),
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self,
+                    "Rerun Evidence Not Saved",
+                    "The analysis finished, but Ladder Studio could not save its "
+                    f"rerun evidence to the review bundle: {exc}",
+                )
         matches_by_file = payload.get("matches_by_file") or {}
         match_count = sum(len(matches or []) for matches in matches_by_file.values())
         final_session_reports_built = bool(payload.get("final_session_reports_built"))
@@ -1207,6 +1431,24 @@ class TabLadder(QWidget):
             elif clicked == open_folder_btn:
                 _open_path(output_root)
             return
+        unconsumed = [
+            Path(raw_path).name
+            for raw_path, status in consumption_by_file.items()
+            if status.get("adjustment_present")
+            and not status.get("consumed")
+        ]
+        if unconsumed:
+            self._set_status(
+                f"{len(unconsumed)} saved correction(s) were not consumed.",
+                error=True,
+            )
+            QMessageBox.warning(
+                self,
+                "Saved Corrections Not Consumed",
+                "The rerun finished, but did not consume the saved correction "
+                f"for: {', '.join(unconsumed)}",
+            )
+            return
 
         if final_session_reports_built:
             self._set_status(
@@ -1218,6 +1460,7 @@ class TabLadder(QWidget):
         self._review_session_entries_by_path.clear()
         self._recent_reviewed_files.clear()
         self._refresh_review_bundle_run_button()
+        self.reportsRefreshed.emit(str(output_root))
         message = QMessageBox(self)
         message.setIcon(QMessageBox.Icon.Information)
         message.setWindowTitle("Reviewed File Rerun Complete")
@@ -1289,10 +1532,25 @@ class TabLadder(QWidget):
         self.status_lbl.setText(text)
         self.status_lbl.setStyleSheet(f"color: {color}; font-weight: 500;")
 
-    @staticmethod
-    def _adjustment_status_for(file_path: Path) -> str:
+    def _adjustment_status_for(self, file_path: Path) -> str:
         payload = load_ladder_adjustment(type("Dummy", (), {"file": file_path})())
-        return "Saved" if payload else "None"
+        if not payload:
+            return "None"
+        cache_key = self._resolve_cache_key(file_path)
+        consumption = self._manual_rerun_consumption_by_path.get(cache_key)
+        if consumption is None:
+            review_case = self._review_case_by_path.get(cache_key) or {}
+            persisted_status = str(review_case.get("rerun_status") or "")
+            if persisted_status:
+                consumption = {
+                    "status": persisted_status,
+                    "consumed": persisted_status == "consumed",
+                }
+        if consumption and consumption.get("consumed"):
+            return "Saved · consumed by successful rerun"
+        if consumption:
+            return "Saved · rerun did not consume"
+        return "Saved · not rerun yet"
 
     def _save_review_bundle_annotation(self, review_case: dict, review_payload: dict) -> None:
         if self._review_bundle_dir is None or self._current_file is None:
@@ -1388,6 +1646,23 @@ class TabLadder(QWidget):
 
         return save_review_bundle_annotation_worker(bundle_dir, full_path, annotation)
 
+    @staticmethod
+    def _save_missing_ladder_exclusion_worker(
+        bundle_dir: Path,
+        full_path: Path,
+        *,
+        note: str,
+        reviewed_at_utc: str,
+    ) -> dict:
+        from gui_qt.tabs.tab_ladder._io import save_missing_ladder_exclusion_worker
+
+        return save_missing_ladder_exclusion_worker(
+            bundle_dir,
+            full_path,
+            note=note,
+            reviewed_at_utc=reviewed_at_utc,
+        )
+
     def _on_chip_activated(self, file_path) -> None:
         """Phase 12.3 — chip click selects the file in the list."""
         if file_path is None:
@@ -1441,6 +1716,14 @@ class TabLadder(QWidget):
         `self._review_bundle_cases`. The chip strip clears to empty
         when no bundle is loaded.
         """
+        rows = cases if cases is not None else getattr(
+            self, "_review_bundle_cases", None
+        ) or []
+        progress_label = getattr(self, "review_progress_label", None)
+        if progress_label is not None:
+            from gui_qt.tabs.tab_ladder._summary import review_progress_text
+
+            progress_label.setText(review_progress_text(rows))
         try:
             from gui_qt.tabs.tab_ladder._overview import ChipStripOverview
         except Exception:
@@ -1449,9 +1732,6 @@ class TabLadder(QWidget):
         strip = getattr(self, "_chip_strip", None)
         if strip is None or not isinstance(strip, ChipStripOverview):
             return
-        rows = cases if cases is not None else getattr(
-            self, "_review_bundle_cases", None
-        ) or []
         strip.setRows(rows)
 
     def _on_scan_result(self, request_id: int, source: Path, files: list[Path]) -> None:
@@ -1473,6 +1753,7 @@ class TabLadder(QWidget):
             return
         self.btn_load_bundle.setEnabled(True)
         self._review_bundle_dir = result["bundle_dir"]
+        self._review_bundle_run_manifest_path = result.get("run_manifest_path")
         self._review_bundle_cases = result["rows"]
         bundle_output_root, _ = self._review_bundle_output_context()
         if bundle_output_root is not None:
@@ -1557,6 +1838,7 @@ class TabLadder(QWidget):
                 "fit_strategy",
                 "fit_counts",
                 "review_state",
+                "confidence",
                 "missing_steps",
                 "adjustment",
             ]:
@@ -1593,6 +1875,13 @@ class TabLadder(QWidget):
         self.detail_labels["fit_strategy"].setText(fit_strategy)
         self.detail_labels["fit_counts"].setText(f"{len(expected_steps)} / {len(fitted_steps)}")
         self.detail_labels["review_state"].setText(review_state)
+        from gui_qt.tabs.tab_ladder._summary import (
+            format_ladder_confidence_shadow,
+        )
+
+        self.detail_labels["confidence"].setText(
+            format_ladder_confidence_shadow(result.get("confidence_shadow"))
+        )
         self.detail_labels["missing_steps"].setText(
             ", ".join(f"{bp:.0f}" for bp in missing_steps) if missing_steps else "None"
         )

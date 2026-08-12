@@ -21,7 +21,7 @@ from config import (
     GENERAL_DEFAULT_TRACE_CHANNELS,
     GENERAL_DEFAULT_PRIMARY_CHANNEL,
 )
-from core.analyses.clonality.ladder_review_gate import RESOLVED_LABELS
+from core.analyses.clonality.ladder_review_labels import is_review_resolved
 from . import GENERAL_LADDER_OPTIONS, GENERAL_TRACE_OPTIONS, ANALYSIS_LABELS
 
 class FlowLayout(QLayout):
@@ -187,6 +187,7 @@ class TabBatch(QWidget):
         self._review_session_bundle_dir: Path | None = None
         self._review_session_output_root: Path | None = None
         self._review_session_aggregate_outdir_name: str | None = None
+        self._review_session_run_manifest_path: Path | None = None
         self._review_corrected_paths: set[Path] = set()
         self._review_finalize_request_id = 0
         
@@ -245,7 +246,10 @@ class TabBatch(QWidget):
         self.folder_list.dropEvent = _dropEvent
         
         btn_layout = QVBoxLayout()
-        self.btn_add_folders = QPushButton("Add Folders...")
+        self.btn_add_folders = QPushButton("Add Folder...")
+        self.btn_add_folders.setToolTip(
+            "Uses the native folder picker so Windows Quick Access and pinned locations are available. Click again to add another folder."
+        )
         self.btn_add_files = QPushButton("Add Files...")
         self.btn_remove_sources = QPushButton("Remove Selected")
         self.btn_add_folders.clicked.connect(self._add_folders)
@@ -558,6 +562,7 @@ class TabBatch(QWidget):
         self._review_session_bundle_dir = None
         self._review_session_output_root = None
         self._review_session_aggregate_outdir_name = None
+        self._review_session_run_manifest_path = None
         self._review_corrected_paths = set()
         self.btn_run_reviewed.setVisible(False)
         self.btn_run_reviewed.setEnabled(False)
@@ -634,9 +639,9 @@ class TabBatch(QWidget):
             with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
                 reader = csv.DictReader(handle)
                 for row in reader:
-                    label = str(row.get("label", "") or "").strip()
+                    label = row.get("label")
                     raw_path = str(row.get("full_path", "") or "").strip()
-                    if label not in RESOLVED_LABELS or not raw_path:
+                    if not is_review_resolved(label) or not raw_path:
                         continue
                     key = str(cls._resolve_cache_key(Path(raw_path)))
                     resolved[key] = dict(row)
@@ -658,8 +663,7 @@ class TabBatch(QWidget):
             with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
                 reader = csv.DictReader(handle)
                 for row in reader:
-                    label = str(row.get("label", "") or "").strip()
-                    if label in RESOLVED_LABELS:
+                    if is_review_resolved(row.get("label")):
                         resolved += 1
                     else:
                         unresolved += 1
@@ -701,7 +705,7 @@ class TabBatch(QWidget):
                 row["reviewed_at_utc"] = str(resolved_row.get("reviewed_at_utc", "") or now)
                 row["adjustment_path"] = str(resolved_row.get("adjustment_path", "") or "")
                 changed = True
-            elif str(row.get("label", "") or "").strip() not in RESOLVED_LABELS:
+            elif not is_review_resolved(row.get("label")):
                 unresolved += 1
 
         if changed:
@@ -755,6 +759,32 @@ class TabBatch(QWidget):
         self._refresh_review_finalize_button()
         self._set_workflow_status(
             f"{len(self._review_corrected_paths)} ladder correction(s) ready. Return here to build final DIT reports.",
+            "warning",
+        )
+
+    def unregister_ladder_review_update(self, file_path: Path | str) -> None:
+        """Remove an excluded case from all pending review-session inputs."""
+
+        if not self._review_session_active:
+            return
+        cache_key = self._resolve_cache_key(Path(file_path))
+        self._review_corrected_paths.discard(cache_key)
+        self._review_session_entries_by_path.pop(cache_key, None)
+        retained_jobs: list[dict] = []
+        for job in self._review_session_jobs:
+            retained_files = [
+                path
+                for path in (job.get("files") or [])
+                if self._resolve_cache_key(Path(path)) != cache_key
+            ]
+            if not retained_files:
+                continue
+            job["files"] = retained_files
+            retained_jobs.append(job)
+        self._review_session_jobs = retained_jobs
+        self._refresh_review_finalize_button()
+        self._set_workflow_status(
+            "Excluded no-ladder case removed from rerun and final-report inputs.",
             "warning",
         )
 
@@ -899,9 +929,26 @@ class TabBatch(QWidget):
         self._refresh_dashboard()
 
     def _ask_dir(self, widget: QLineEdit):
-        folder = QFileDialog.getExistingDirectory(self, "Select Directory", widget.text() or str(Path.home()))
+        batch_settings = self._profile_for().get("batch", {})
+        start = (
+            widget.text().strip()
+            or str(batch_settings.get("last_output_directory") or "")
+            or str(Path.home())
+        )
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Output Folder",
+            start,
+            QFileDialog.Option.ShowDirsOnly,
+        )
         if folder:
             widget.setText(folder)
+            profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(
+                self._current_analysis_id,
+                {},
+            )
+            profile.setdefault("batch", {})["last_output_directory"] = folder
+            save_settings(APP_SETTINGS)
 
     def _is_general_analysis(self) -> bool:
         return self._current_analysis_id == "general"
@@ -1005,30 +1052,54 @@ class TabBatch(QWidget):
         self._reset_queue_state("Ready", "ready")
 
     def _add_folders(self):
-        dialog = QFileDialog(self, "Add Folders", str(Path.home()))
-        dialog.setFileMode(QFileDialog.FileMode.Directory)
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        
-        # Enable multiple selection in the dialog's views
-        for view in dialog.findChildren(QAbstractItemView):
-            view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-            
-        if dialog.exec():
-            folders = dialog.selectedFiles()
-            existing = {self.folder_list.item(i).text() for i in range(self.folder_list.count())}
-            for folder in folders:
-                if folder not in existing:
-                    self._add_source_item(folder)
+        batch_settings = self._profile_for().get("batch", {})
+        start = str(batch_settings.get("last_input_directory") or "").strip()
+        if not start and self.folder_list.count():
+            candidate = Path(self.folder_list.item(self.folder_list.count() - 1).text()).expanduser()
+            start = str(candidate if candidate.is_dir() else candidate.parent)
+        if not start:
+            start = str(batch_settings.get("base_input_dir") or Path.home())
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Add Input Folder",
+            start,
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not folder:
+            return
+        existing = {
+            self.folder_list.item(i).text()
+            for i in range(self.folder_list.count())
+        }
+        if folder not in existing:
+            self._add_source_item(folder)
+        profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(
+            self._current_analysis_id,
+            {},
+        )
+        profile.setdefault("batch", {})["last_input_directory"] = folder
+        save_settings(APP_SETTINGS)
 
     def _add_files(self):
+        batch_settings = self._profile_for().get("batch", {})
+        start = str(batch_settings.get("last_input_directory") or Path.home())
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Add .fsa Files",
-            str(Path.home()),
+            start,
             "FSA files (*.fsa)",
         )
         for file_name in files:
             self._add_source_item(file_name)
+        if files:
+            profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(
+                self._current_analysis_id,
+                {},
+            )
+            profile.setdefault("batch", {})["last_input_directory"] = str(
+                Path(files[0]).parent
+            )
+            save_settings(APP_SETTINGS)
 
     def _remove_sources(self):
         removed = False
@@ -1291,6 +1362,10 @@ class TabBatch(QWidget):
         self._review_session_bundle_dir = bundle_dir
         self._review_session_output_root = output_root
         self._review_session_aggregate_outdir_name = aggregate_outdir_name
+        raw_manifest_path = (result or {}).get("run_manifest_path")
+        self._review_session_run_manifest_path = (
+            Path(raw_manifest_path) if raw_manifest_path else None
+        )
         self._review_corrected_paths = set()
         self._set_review_session_entries(
             list((result or {}).get("dit_report_entries") or (result or {}).get("collected_entries") or [])
@@ -1379,6 +1454,7 @@ class TabBatch(QWidget):
             assay_filter=a_filter,
             aggregate_dit_reports=aggregate_dit_reports,
             aggregate_outdir_name=self._review_session_aggregate_outdir_name,
+            parent_run_manifest_path=self._review_session_run_manifest_path,
             update_callback=None,
         )
         worker.kwargs["update_callback"] = worker.signals.progress_ext.emit
@@ -1400,6 +1476,7 @@ class TabBatch(QWidget):
         assay_filter: str,
         aggregate_dit_reports: bool,
         aggregate_outdir_name: str | None,
+        parent_run_manifest_path: Path | None = None,
         update_callback=None,
     ) -> dict:
         from config import APP_SETTINGS, resolve_analysis_excel_output_path
@@ -1421,6 +1498,7 @@ class TabBatch(QWidget):
             defer_tracking_workbook_refresh=True,
             defer_dit_html_reports=True,
             preserve_deferred_entries=True,
+            parent_run_manifest_path=parent_run_manifest_path,
         )
 
         combined_by_path: dict[Path, dict] = {}
@@ -1443,6 +1521,53 @@ class TabBatch(QWidget):
         failed_jobs = list(result.get("failed_jobs") or [])
         final_reports_built = False
         agg_outdir = None
+        finalization_validation = {
+            "passed": bool(
+                combined_entries and not failed_jobs and review_count <= 0
+            ),
+            "expected_dit_entries": None,
+            "actual_dit_entries": len(combined_entries),
+            "expected_qc_entries": None,
+            "actual_qc_entries": None,
+        }
+
+        if parent_run_manifest_path is not None and parent_run_manifest_path.is_file():
+            from core.run_manifest import load_run_manifest
+
+            parent_manifest = load_run_manifest(parent_run_manifest_path)
+            expected_dit = int(
+                parent_manifest.get("counts", {}).get("dit_entries") or 0
+            )
+            expected_qc = int(
+                parent_manifest.get("counts", {}).get("qc_entries") or 0
+            )
+            qc_paths = {
+                TabBatch._resolve_cache_key(Path(str(file_record["path"])))
+                for job in parent_manifest.get("jobs") or []
+                if str(job.get("type") or "") == "qc"
+                for file_record in job.get("files") or []
+                if file_record.get("path")
+            }
+            actual_qc = sum(
+                1
+                for entry in combined_entries
+                if TabBatch._entry_cache_key(entry) in qc_paths
+            )
+            finalization_validation.update(
+                {
+                    "expected_dit_entries": expected_dit,
+                    "actual_dit_entries": len(combined_entries),
+                    "expected_qc_entries": expected_qc,
+                    "actual_qc_entries": actual_qc,
+                }
+            )
+            finalization_validation["passed"] = bool(
+                finalization_validation["passed"]
+                and len(combined_entries) == expected_dit
+                and actual_qc == expected_qc
+            )
+            if not finalization_validation["passed"]:
+                failed_jobs.append("finalization cohort validation")
 
         if aggregate_dit_reports and not failed_jobs and review_count <= 0 and combined_entries:
             from core.assay_config import OUTDIR_NAME
@@ -1470,6 +1595,19 @@ class TabBatch(QWidget):
                 pass
             final_reports_built = True
 
+        child_manifest_path = result.get("run_manifest_path")
+        if child_manifest_path:
+            try:
+                from core.run_manifest import record_report_finalization
+
+                record_report_finalization(
+                    Path(child_manifest_path),
+                    aggregate_output_dir=agg_outdir,
+                    validation=finalization_validation,
+                )
+            except Exception:
+                pass
+
         return {
             "result": result,
             "output_root": output_root,
@@ -1478,6 +1616,7 @@ class TabBatch(QWidget):
             "corrected_paths": corrected_paths,
             "linked_jobs": jobs_to_run,
             "final_reports_built": final_reports_built,
+            "finalization_validation": finalization_validation,
         }
         
     def _update_progress_from_thread(self, idx, total, name, state):

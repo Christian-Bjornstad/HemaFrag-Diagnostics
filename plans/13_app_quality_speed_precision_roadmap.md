@@ -1,0 +1,272 @@
+# Plan 13 - App Quality, Speed, and Precision Roadmap
+
+Date: 2026-07-27
+Branch: `codex/plan-13-quality-speed-precision`
+Status: engineering implementation complete; clinical promotion gated
+
+## Execution Goal
+
+Execute Plan 13 end to end: establish a reproducible real-FSA benchmark and timing baseline; add durable run manifests, versioned manual-adjustment provenance, resumable and idempotent report finalization; evaluate sizing, ladder-confidence, artifact-QC, and baseline alternatives in shadow mode; optimize FSA reuse, concurrency, the Rust/Python bridge, and tracking persistence; improve report/review provenance and assay-specific workflows; and promote changes only when correctness, QC-completeness, precision, performance, and chemist-review gates pass.
+
+Progress:
+
+- [ ] Phase 0 - measurement baseline
+- [x] Phase 1 - recovery and provenance
+- [ ] Phase 2 - precision experiments
+- [ ] Phase 3 - throughput
+- [x] Phase 4 - reporting and workflow
+- [ ] Phase 5 - assay-specific validation and promotion
+
+Current execution note:
+
+- Phase 0 benchmark tooling is implemented and tested. The first Rust-enabled, three-repeat real-FSA freeze is stored locally at `validation_outputs/plan13_phase0_repeat3_final/` and is excluded from git.
+- All four result fingerprints are deterministic. Measured p50/p95 wall times are LIZ `2.75/3.10 s`, ROX `0.18/0.18 s`, combined patient/QC `43.00/47.49 s`, and 25-file FLT3 `15.08/15.33 s`.
+- The combined run preserved `22` DIT entries and `14` QC entries with no failed jobs. FLT3 produced `25/25` PASS results: `24` automatic Rust CLI fits and one valid saved manual adjustment.
+- Phase 0 remains open for worker counts `1/2/4/6/8`, general-mode coverage, reviewed failure/artifact classes, finer stage timing, and a larger balanced corpus. The native PyO3 wheel contract and tracking-marker Rust attribution are explicit follow-up items.
+- Phase 1 is complete: atomic per-run manifests preserve hashed patient/QC membership and stage state; review bundles link back to an absolute manifest path; restart reruns recover the full original cohort; v2 manual sidecars carry source/ladder/channel/review provenance and reject mismatches; final HTML/workbook publication is atomic, idempotent, and count-gated.
+- Real Phase 1 smoke: the manifest recorded `22` input files, `8` patient entries, `14` QC entries, two HTML artifacts, and one workbook with matching `Runs=22`, `Patient_Runs=8`, and `Control_Runs=14` sheet counts.
+- Phase 2 sizing shadow has started with deterministic leave-one-ladder-anchor comparisons for linear, global quadratic, monotone PCHIP, and Local Southern. It is hard-coded as `promotion_eligible=false` because ladder-anchor holdout is only an interpolation-stability proxy.
+- First real shadow observations: LIZ favored linear in this proxy (`1.03 bp` MAE; PCHIP `1.27`, Local Southern `1.35`, quadratic `1.93`), while ROX narrowly favored Local Southern (`0.15 bp`; linear/PCHIP both about `0.16`, quadratic `0.90`). Runtime sizing is unchanged pending independent reviewed fragment references and assay-window gates.
+- Phase 2 now also exports non-promotable ladder-confidence, artifact-candidate, and preprocessing evidence. The confidence proxy ranks bounded local anchor alternatives, records top-1/top-2 margin and per-anchor morphology, and measures support under `0.8/1.0/1.2x` height thresholds. Artifact evidence records clipping, aligned cross-channel candidates, broad morphology, ladder-tail coverage, and height decay; the baseline bakeoff compares current guarded arPLS with a smoother arPLS, airPLS, and rolling `0.05/0.10` quantiles while measuring apex, height, and local-area changes.
+- Three repeated real single-file shadows were deterministic. The runtime sequence ranked first for both LIZ and ROX; ROX retained all anchors at each tested threshold, while LIZ support fell from `0.75` to `0.44` to `0.00`, correctly keeping this evidence review-only. Alternative preprocessing materially changed peak counts and height/area, so none is eligible for runtime promotion without reviewed peak labels and quantitative bias tolerances.
+- Phase 2 remains open: the bounded confidence score is not the Rust runtime score, artifact candidates need instrument/run labels and neighboring-capillary metadata, and sizing/baseline methods still need blinded reviewed fragment references, repeatability, assay-window, and clinical-classification gates.
+- Phase 3 now has a versioned, stat-keyed immutable FSA artifact reused by Python analysis paths. An alternating 12-repeat real-FSA A/B benchmark preserved exact output parity, reduced ABIF decodes from three to one, improved median latency by `5.42%`, and improved p95 latency by `13.88%`.
+- One machine-level concurrency resolver now caps outer Python workers and inner Rust/numeric threads. On the 25-file FLT3 corpus, three-repeat p95 fell from `14.59 s` at six workers to `13.59 s` at eight workers while preserving `25/25` PASS and deterministic outputs; new-machine defaults therefore use up to eight outer workers within the detected CPU budget.
+- The PyO3 crate now targets the project's Python `>=3.10` contract and converts Rust results directly from `serde_json::Value` instead of serializing and reparsing JSON text. Cargo checks and core tests pass; a native-wheel/NumPy-buffer benchmark remains open.
+- The append-safe SQLite run-ledger prototype round-trips workbook sheets row-for-row and supports idempotent snapshot replacement, but Excel remains the production source/export until real large-workbook formulas, styles, update behavior, and latency are validated.
+- Phase 4 provenance has started: clonality and FLT3 entries carry full source hashes, engine/strategy, reason codes, app version, and consumed manual-sidecar hashes into HTML and tracking workbooks. A real combined smoke preserved all `22` entries (`8` patient, `14` QC), with provenance hashes on `22/22` workbook rows and both reports.
+- Phase 3 remains open for cross-process artifact reuse, native typed/NumPy bridge measurements, and production-ledger migration.
+- Phase 4 is complete: Ladder Studio now distinguishes saved/not-rerun from an exact sidecar hash consumed by a successful rerun, persists that status in review bundles and child run manifests, and displays bounded top-K candidate rank/margin/threshold stability as shadow-only context. Its existing trace view overlays model and manual selections and recalculates residuals before save.
+- Both clonality and FLT3 workbooks now include run-level QC trends for residuals, anchor intensity, pass/review/fail rates, and conservative pull-up/saturation candidates. Shewhart/EWMA sheets remain advisory and fail closed until at least `20` stable runs are explicitly selected in `QC_Baseline_Config`; they never alter analysis thresholds.
+- General mode now resolves a fingerprinted `hemafrag_general_profile_v1` contract declaring profile/version/validation status, ladder steps, size-standard channel, trace channels, bp range, and report fields. Three real ROX repeats were deterministic with one analyzed file, zero skips, and source/profile provenance in the report; this coverage also fixed two dormant General report/runtime errors.
+- The machine-readable release audit at `validation_outputs/plan13_release_gate_audit.json` passes all automated engineering/performance gates: zero unexplained ladder regressions, `1/1` manual correction rerun, `22/22` report entries, `14/14` QC entries, exact performance-output parity, `13.88%` p95 improvement, and complete provenance.
+- Clinical algorithm promotion correctly remains blocked: no independent FLT3 quantitative area-bias study, no reviewed clinical-interpretation comparison, and no chemist sign-off on the Phase 2 shadow evidence were supplied. No sizing, baseline, artifact, confidence, FLT3 quantitation, or clonality interpretation default was changed.
+- Final verification: Python `479 passed, 3 skipped`; Rust core `81 passed, 1 ignored` plus `5` contract tests; PyO3 crate `cargo check` passed. Phase 0/2/3/5 checkboxes remain open only where they require a larger reviewed corpus, clinical labels/tolerances, cross-process/native-wheel evidence, or explicit chemist approval.
+
+## Objective
+
+Improve HemaFrag's correctness, precision, throughput, recoverability, and operator workflow without changing validated behavior by accident. Every algorithmic idea starts as an offline comparison against reviewed FSA data and ships only after assay-specific acceptance.
+
+## Current Strengths To Preserve
+
+- Rust-first ladder fitting with a Python fallback for supported clonality/general workflows.
+- Explicit FLT3 ROX500/GS500ROX channel and quantitation contracts.
+- Separate raw-trace area quantitation from stricter detection preprocessing.
+- Manual ladder review gate, editor, saved sidecars, and linked report reruns.
+- Patient and QC entries combined in final clonality DIT/tracking output.
+- Content-hash and grouped-validation safeguards in clonality ML.
+
+## Priority Opportunities
+
+| Priority | Opportunity | Expected value | Main risk |
+|---|---|---|---|
+| P0 | Golden real-FSA benchmark corpus and stage timings | Makes every later change measurable | Poor corpus balance can hide regressions |
+| P0 | Durable run manifest and resumable finalization | Reliable report/QC rebuild after restart | Must avoid storing raw trace data in manifests |
+| P0 | Versioned manual-adjustment provenance | Auditable, reproducible ladder corrections | Migration of legacy sidecars |
+| P1 | Assay-specific sizing-model comparison | Better local bp accuracy | A model can improve global residuals but worsen clinically relevant ranges |
+| P1 | Confidence-aware monotonic ladder matching | Fewer wrong anchors and clearer review cases | Overconfident auto-acceptance |
+| P1 | Artifact QC for pull-up, saturation, dye blobs, and missing tails | Better separation of software failures from data/instrument failures | Thresholds must be instrument/run aware |
+| P1 | Baseline/detection preprocessing bakeoff | Better weak-peak detection and stable zoom | Quantitative peak area can be biased |
+| P2 | Decode each FSA once and reuse immutable artifacts | Lower batch latency and memory churn | Cache invalidation and schema drift |
+| P2 | One concurrency budget across Python and Rust | More predictable throughput | Workload differs by machine and batch |
+| P2 | Remove JSON round-trip from the in-process Rust bridge | Lower per-file bridge overhead | Python/Rust ABI and array ownership complexity |
+| P2 | Transactional run ledger with Excel as an export | Faster, safer tracking updates | Requires careful compatibility and migration |
+| P3 | Review queue and report provenance UX | Faster manual review and easier audits | UI complexity |
+
+## Phase 0 - Measurement Baseline
+
+1. Build a de-identified, immutable benchmark manifest covering:
+   - LIZ and ROX clonality assays;
+   - FLT3 ITD, D835/TKD, controls, and known ladder edge cases;
+   - general-mode examples;
+   - clean passes, manual fixes, missing ladder, pull-up, saturation, weak signal, and truncated tails.
+2. Store only content hashes, sanitized run keys, assay labels, expected outcomes, and local paths outside git.
+3. Add stage timings for ABIF decode, ladder candidates, Rust fit, Python fallback, baseline, peak analysis, plots, HTML, and Excel.
+4. Record peak memory and p50/p95 wall time at worker counts 1, 2, 4, 6, and 8.
+5. Freeze reviewed outputs before algorithm experiments.
+
+Acceptance:
+
+- Repeated runs give the same results and stable timings.
+- Every important assay and failure class has reviewed examples.
+- No optimization is accepted without before/after evidence on this corpus.
+
+## Phase 1 - Recovery And Provenance
+
+### 1.1 Durable run manifest
+
+Write an atomic manifest beside each batch output containing:
+
+- app/engine versions and settings hash;
+- all original FSA identities and content hashes;
+- generated patient and QC job membership;
+- per-stage status and output paths;
+- review-bundle path and correction sidecar hash;
+- expected patient, control, HTML, and workbook row counts.
+
+Use it to resume interrupted work and rebuild final reports after restart without rescanning or losing the original QC cohort.
+
+### 1.2 Versioned manual correction sidecar
+
+Extend the sidecar schema in a backward-compatible version to include:
+
+- source FSA content hash, ladder name, channel, assay, and schema version;
+- exact selected peak times and expected bp steps;
+- before/after QC metrics;
+- operator, timestamp, app version, and optional comment;
+- validation state showing that the sidecar was successfully reloaded.
+
+Reject a sidecar when its source hash, ladder, or channel does not match the current input. Keep legacy sidecars readable and visibly marked as legacy.
+
+### 1.3 Transactional finalization
+
+- Write HTML/workbook outputs to temporary paths and atomically replace completed outputs.
+- Make finalization idempotent: rerunning the same manifest must not duplicate workbook rows.
+- Verify expected patient and QC counts before declaring success.
+
+## Phase 2 - Precision Experiments
+
+### 2.1 Sizing-model bakeoff
+
+Compare the current model against:
+
+- Local Southern sizing around each unknown fragment;
+- monotone cubic/PCHIP interpolation;
+- constrained spline variants;
+- the existing polynomial/linear models.
+
+Evaluate by assay and clinically relevant bp window. Local Southern is especially worth testing because it uses nearby standard fragments rather than one global curve, but an anomalous neighboring standard can distort the result. No model becomes a default based only on global R2.
+
+Research basis:
+
+- Thermo Fisher documents Local Southern as two overlapping three-standard fits around the unknown, averaged together, and warns that anomalous standards can distort the estimate: `https://apps.thermofisher.com/apps/peak-scanner/help/GUID-0FF79E69-77A3-4188-BB04-329664C4CBC3.html`.
+- The monotone PCHIP comparison follows the shape-preserving interpolation family described by Fritsch and Butland (1984): `https://doi.org/10.1137/0905021`.
+
+Metrics:
+
+- blinded absolute bp error at reviewed reference peaks;
+- within-run and between-run repeatability;
+- p95 error in each assay decision window;
+- extrapolation count and distance;
+- monotonicity failures;
+- changed clinical classifications.
+
+### 2.2 Confidence-aware ladder matching
+
+Keep top-K monotonic anchor sequences rather than only the winning mapping. Export:
+
+- score margin between first and second candidate;
+- per-anchor peak support, shape, intensity, and local alternatives;
+- expected-gap residuals;
+- model disagreement and extrapolation warnings.
+
+Auto-pass only when the winning sequence is stable under small threshold/preprocessing perturbations and has a sufficient margin. Route ambiguous cases to the editor with the alternatives already visible.
+
+### 2.3 Artifact classification
+
+Add offline detectors for:
+
+- pull-up/crosstalk aligned across dye channels;
+- clipped/saturated peaks;
+- dye-blob and broad-shoulder morphology;
+- missing high-end ladder tail;
+- abnormal peak-height decay;
+- neighboring-capillary/run-position patterns when metadata is available.
+
+These should classify likely data/instrument problems separately from ladder-algorithm failures, not rescue them by loosening fit thresholds.
+
+### 2.4 Baseline and peak-detection bakeoff
+
+HemaFrag already uses arPLS-related preprocessing. Compare current settings with bounded alternatives such as airPLS/arPLS variants, rolling quantile, and peak-preserving smoothing on labeled traces.
+
+Guardrails:
+
+- detection preprocessing remains separate from FLT3 quantitative area traces;
+- peak apex shift, height bias, and area bias are measured;
+- no method ships solely because plots look smoother;
+- parameters are fixed per validated assay/profile, not adapted from the expected result.
+
+## Phase 3 - Throughput
+
+### 3.1 Immutable per-FSA artifact
+
+Decode ABIF once into a versioned in-memory artifact containing raw channels, metadata, and content hash. Pass it through ladder, baseline, assay analysis, plots, and tracking instead of reopening the file.
+
+Persist only safe derived cache data. Cache keys must include:
+
+- FSA content hash;
+- analysis/assay profile;
+- engine and algorithm version;
+- relevant settings hash;
+- manual-adjustment hash.
+
+### 3.2 Unified concurrency budget
+
+Avoid multiplying Python workers by Rust Rayon threads. Benchmark combinations and set one machine-level CPU budget with explicit inner/outer allocation. Keep a low-memory mode for large runs.
+
+### 3.3 Rust/Python bridge
+
+The current PyO3 extension still converts Rust results through serialized JSON values. Prototype direct typed conversion and NumPy-compatible buffers for large arrays. Keep the CLI as a packaging/recovery path until parity is proven.
+
+### 3.4 Tracking storage
+
+Prototype an append-safe SQLite run ledger as the transactional source for identities, provenance, QC metrics, peaks, and report state. Continue producing the same Excel workbooks as operator-facing exports. Do not replace Excel until row-for-row parity, formulas, styling, and update behavior are verified.
+
+## Phase 4 - Reporting And Workflow
+
+- Show the exact source hash, ladder strategy, manual/automatic status, QC reason codes, and output version in reports.
+- Add manifest-based "Rebuild final reports" that works after restart and verifies QC completeness.
+- In Ladder Studio, show before/after overlays, sidecar save verification, candidate score margins, and whether the correction has been consumed by a successful rerun.
+- Add run-level QC trends for ladder residuals, anchor intensities, pass/review/fail rates, pull-up, and saturation.
+- Use Shewhart/EWMA-style monitoring only after a stable historical baseline is selected; alerts should signal investigation, not silently change analysis thresholds.
+
+## Phase 5 - Assay-Specific Improvements
+
+### Clonality
+
+- Validate zoom from reference ranges plus detected evidence, with stable minimum spans.
+- Add replicate concordance and same-patient context as review evidence, preserving independent raw-file results.
+- Continue grouped and source-run stress validation before any ML promotion.
+
+### FLT3
+
+- Preserve raw/local-sideband area quantitation.
+- Validate peak selection and ratio repeatability separately for ITD and D835/TKD.
+- Keep missing/weak ladders as data-quality failures and manual corrections as explicit reviewed evidence.
+
+### General
+
+- Move ladder/channel/range definitions into versioned profiles.
+- Require every custom profile to declare ladder steps, size-standard channel, report fields, and validation status.
+
+## Release Gates
+
+An experimental change can advance only when:
+
+- zero unexplained regressions on user-approved ladder fits;
+- 100% manual-correction save/reload/rerun success;
+- final reports contain every expected patient and QC entry exactly once;
+- no new FLT3 area bias outside an approved tolerance;
+- no changed clinical interpretation without explicit chemist review;
+- p95 latency or memory improves for performance work;
+- outputs retain source, settings, engine, model, and correction provenance;
+- shadow-mode evidence is reviewed before default enablement.
+
+## Suggested Execution Order
+
+1. Phase 0 benchmark and timing.
+2. Phase 1 run manifest, correction provenance, and idempotent finalization.
+3. Phase 2 sizing and artifact experiments in shadow mode.
+4. Phase 3 caching/concurrency/bridge optimization.
+5. Phase 4 workflow and trend monitoring.
+6. Phase 5 assay-specific promotion after chemist review.
+
+## Research Basis
+
+- Thermo Fisher's fragment-analysis guide says size-standard peaks should be sequential, correctly labeled, sufficiently strong, and relatively even; it also identifies missing peaks, pull-up, saturation, spectral calibration, and run conditions as distinct failure sources: https://documents.thermofisher.com/TFS-Assets/LSG/manuals/4474504.pdf
+- Thermo Fisher describes Local Southern sizing as a local calculation using neighboring standard fragments and warns that anomalous standard fragments can reduce accuracy: https://apps.thermofisher.com/apps/peak-scanner/help/GUID-0FF79E69-77A3-4188-BB04-329664C4CBC3.html
+- Baek et al. describe arPLS baseline estimation that accounts for noise on both sides of the baseline: https://pubmed.ncbi.nlm.nih.gov/25382860/
+- Zhang et al. describe airPLS as an adaptive, peak-detection-independent baseline method: https://pubmed.ncbi.nlm.nih.gov/20419267/
+- NIST recommends statistical control of measurement processes to detect changes in bias and long-term variability: https://www.itl.nist.gov/div898/handbook/mpc/section2/mpc2.htm
+- CLSI EP05 provides current guidance for evaluating within-site and between-site precision of quantitative measurement procedures: https://clsi.org/shop/standards/ep05-plus/
+- ISO 15189:2022 defines quality and competence requirements for medical laboratories: https://www.iso.org/standard/76677.html

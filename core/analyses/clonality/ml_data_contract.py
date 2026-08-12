@@ -12,6 +12,9 @@ from typing import Iterable
 
 import pandas as pd
 
+from core.analyses.clonality.interpretation_units import (
+    CHANNEL_CHEMIST_LABEL_COLUMNS,
+)
 
 CHEMIST_LABEL_COLUMN = "ClonalityChemistLabel"
 RULE_LABEL_COLUMN = "ClonalitySuggestion"
@@ -32,6 +35,7 @@ CANONICAL_RUN_COLUMNS = (
     "RunCode",
     "Well",
     CHEMIST_LABEL_COLUMN,
+    *CHANNEL_CHEMIST_LABEL_COLUMNS,
     RULE_LABEL_COLUMN,
 )
 
@@ -182,6 +186,7 @@ def _model_row_mask(frame: pd.DataFrame) -> pd.Series:
 
 __all__ = [
     "CANONICAL_RUN_COLUMNS",
+    "CHANNEL_CHEMIST_LABEL_COLUMNS",
     "CHEMIST_LABEL_COLUMN",
     "FALLBACK_RUN_SHEETS",
     "RULE_LABEL_COLUMN",

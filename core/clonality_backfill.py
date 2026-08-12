@@ -24,7 +24,6 @@ DEFAULT_INPUT_ROOT = Path("/Users/christian/Desktop/DATA/Klonalitet/2025_data")
 DEFAULT_OUTPUT_BASE = Path("/Users/christian/Desktop/FINAL")
 DEFAULT_TRACKING_EXCEL = Path("/Users/christian/Desktop/Excel_HemaFrag/track-clonality.xlsx")
 DEFAULT_STATE_FILE = Path("/Users/christian/Desktop/Excel_HemaFrag/backfill_2025_state.json")
-BACKFILL_OUTPUT_DIRNAME = "backfill_2025"
 BACKFILL_REPORT_DIRNAME = "reports_backfill"
 STATE_VERSION = 1
 RUNNING_HEARTBEAT_TTL_SECONDS = 300
@@ -605,7 +604,8 @@ def _build_folder_item(folder: Path, patient_regex: str) -> dict[str, Any]:
 
 
 def _mark_folder_running(item: dict[str, Any], output_base: Path, month_key: str, folder_name: str, tracking_excel_path: Path) -> None:
-    report_base = output_base / BACKFILL_OUTPUT_DIRNAME / month_key / folder_name
+    year = month_key[:4] if re.fullmatch(r"\d{4}_\d{2}", month_key) else "2025"
+    report_base = output_base / f"backfill_{year}" / month_key / folder_name
     report_dir = report_base / BACKFILL_REPORT_DIRNAME
     item["status"] = "running"
     item["attempts"] = int(item.get("attempts", 0)) + 1
@@ -839,7 +839,8 @@ def _write_month_summary(
     else:
         summary_lines.append("- none")
 
-    out_path = out_dir / f"backfill_2025_summary_{month_key}.txt"
+    year = month_key[:4] if re.fullmatch(r"\d{4}_\d{2}", month_key) else "2025"
+    out_path = out_dir / f"backfill_{year}_summary_{month_key}.txt"
     out_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
     log(f"[BACKFILL] Wrote month summary for {month_key} to {out_path}")
     return out_path

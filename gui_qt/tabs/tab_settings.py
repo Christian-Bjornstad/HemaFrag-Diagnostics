@@ -96,6 +96,18 @@ class TabAnalysisSettings(QWidget):
         row_excel.addWidget(btn_browse_excel)
         layout.addRow("Tracking Excel File:", row_excel)
 
+        self.global_tracking_excel_path = QLineEdit()
+        self.global_tracking_excel_path.setPlaceholderText(
+            "Optional; leave blank to disable the shared master workbook"
+        )
+        if self.analysis_id in {"clonality", "flt3"}:
+            row_master_excel = QHBoxLayout()
+            btn_browse_master = QPushButton("Browse...")
+            btn_browse_master.clicked.connect(self._browse_global_tracking_excel_path)
+            row_master_excel.addWidget(self.global_tracking_excel_path, stretch=1)
+            row_master_excel.addWidget(btn_browse_master)
+            layout.addRow("Master Tracking Excel File:", row_master_excel)
+
         return card
 
     def _build_run_card(self) -> QWidget:
@@ -241,6 +253,9 @@ class TabAnalysisSettings(QWidget):
         self.default_input.setText(batch_settings.get("base_input_dir", str(Path.home())))
         self.default_output.setText(batch_settings.get("output_base", str(Path.home())))
         self.tracking_excel_path.setText(batch_settings.get("tracking_excel_path", ""))
+        self.global_tracking_excel_path.setText(
+            str(batch_settings.get("global_tracking_excel_path", "") or "")
+        )
 
         self.mode_combo.setCurrentText(pipeline_settings.get("mode", "all"))
         self.assay_filter.setText(pipeline_settings.get("assay_filter_substring", ""))
@@ -273,6 +288,7 @@ class TabAnalysisSettings(QWidget):
         batch_settings["base_input_dir"] = self.default_input.text().strip()
         batch_settings["output_base"] = self.default_output.text().strip()
         batch_settings["tracking_excel_path"] = self.tracking_excel_path.text().strip()
+        batch_settings["global_tracking_excel_path"] = self.global_tracking_excel_path.text().strip()
         batch_settings["aggregate_by_patient"] = self.chk_agg_pat.isChecked()
         batch_settings["patient_id_regex"] = self.patient_regex.text().strip()
         batch_settings["aggregate_dit_reports"] = self.chk_agg_dit.isChecked()
@@ -317,6 +333,23 @@ class TabAnalysisSettings(QWidget):
         )
         if selected:
             self.tracking_excel_path.setText(selected)
+
+    def _browse_global_tracking_excel_path(self) -> None:
+        start_path = (
+            self.global_tracking_excel_path.text().strip()
+            or self.default_output.text().strip()
+            or str(Path.home())
+        )
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select Master Tracking Excel File",
+            start_path,
+            "Excel Workbook (*.xlsx)",
+        )
+        if selected:
+            if not selected.lower().endswith(".xlsx"):
+                selected += ".xlsx"
+            self.global_tracking_excel_path.setText(selected)
 
     def _browse_clonality_model_path(self) -> None:
         start_path = (

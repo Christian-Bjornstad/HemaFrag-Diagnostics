@@ -8,8 +8,11 @@ This module builds on the local `fraggler` runtime, which includes upstream-deri
 MIT-licensed components from `willros/fraggler`.
 """
 from __future__ import annotations
+import hashlib
 import os
+import tempfile
 
+from datetime import datetime, timezone
 from pathlib import Path
 import copy
 import time
@@ -39,7 +42,7 @@ from fraggler.fraggler import (
 
 from core.analysis._constants import *
 
-from core.engine_flags import strict_rust_ladder_enabled
+from core.engine_flags import rust_owned_ladder_enabled
 from core.assay_config import (
     DEFAULT_LIZ_LADDER,
     DEFAULT_ROX_LADDER,
@@ -2887,6 +2890,66 @@ def _compute_robust_arpls_baseline(
     return constrained
 
 
+def baseline_correct_ladder_trace(
+    trace: np.ndarray,
+    *,
+    bin_size: int = BASELINE_BIN_SIZE,
+    quantile: float = BASELINE_QUANTILE,
+) -> np.ndarray:
+    """Return a nonnegative, peak-preserving size-standard trace.
+
+    Ladder peaks are narrow compared with a 200-scan baseline window. A low
+    quantile envelope follows offset/drift (including negative baselines)
+    without following the ladder peaks themselves. This deliberately
+    conservative correction may leave a little residual background, but it
+    does not flatten the peaks that the fitter needs.
+    """
+    values = np.asarray(trace, dtype=float).reshape(-1)
+    if values.size == 0:
+        return values.copy()
+
+    finite = np.isfinite(values)
+    if not np.any(finite):
+        return np.zeros_like(values, dtype=float)
+    if not np.all(finite):
+        indices = np.arange(values.size, dtype=float)
+        values = np.interp(indices, indices[finite], values[finite])
+
+    baseline = _rolling_quantile_baseline(
+        values,
+        bin_size=max(20, int(bin_size)),
+        quantile=float(np.clip(quantile, 0.01, 0.35)),
+    )
+    corrected = np.maximum(values - baseline, 0.0)
+    return np.where(np.isfinite(corrected), corrected, 0.0)
+
+
+def prepare_size_standard_trace(fsa: FsaFile) -> FsaFile:
+    """Baseline-correct DATA4/DATA105 before ladder peak detection.
+
+    The original channel remains available as ``size_standard_raw`` for
+    diagnostics; fitting and ladder-editor consumers use the corrected trace.
+    """
+    channel = str(getattr(fsa, "size_standard_channel", "") or "")
+    raw_map = getattr(fsa, "fsa", {})
+    raw_values = raw_map.get(channel) if isinstance(raw_map, dict) and channel else None
+    if raw_values is None:
+        raw_values = getattr(fsa, "size_standard_raw", getattr(fsa, "size_standard", []))
+    raw = np.asarray(raw_values, dtype=float).reshape(-1)
+    corrected = baseline_correct_ladder_trace(raw)
+
+    fsa.size_standard_raw = raw.copy()
+    fsa.size_standard = corrected
+    fsa.size_standard_baseline_corrected = True
+    fsa.size_standard_baseline_method = "rolling_quantile_peak_preserving"
+    finite_raw = raw[np.isfinite(raw)]
+    fsa.size_standard_raw_min = float(np.min(finite_raw)) if finite_raw.size else float("nan")
+    fsa.size_standard_raw_negative_fraction = (
+        float(np.mean(finite_raw < 0.0)) if finite_raw.size else 0.0
+    )
+    return fsa
+
+
 def _recover_rox_size_standard_peaks_from_baseline(fsa: FsaFile, raw_trace: np.ndarray) -> bool:
     """Retry ROX peak detection on a baseline-corrected trace when the raw pass fails."""
     guarded_baseline = estimate_running_baseline(
@@ -3704,6 +3767,20 @@ def _try_core_anchored_step_completion(fsa: FsaFile, label: str, fsa_path: Path)
 # ==================== ANALYSEFUNKSJONER ===========================
 # ==================================================================
 
+LADDER_ADJUSTMENT_SCHEMA_V2 = "hemafrag_ladder_adjustment_v2"
+LADDER_ADJUSTMENT_SCHEMA_LEGACY = "legacy"
+
+
+def _ladder_adjustment_file_hash(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _normalize_ladder_adjustment_payload(adjustment: dict | None) -> dict | None:
     """Normalizes legacy and enriched ladder adjustment payloads."""
     if not adjustment:
@@ -3713,13 +3790,23 @@ def _normalize_ladder_adjustment_payload(adjustment: dict | None) -> dict | None
         mapping_raw = adjustment.get("mapping", {})
         mapping_times_raw = adjustment.get("mapping_times", {})
         manual_candidates_raw = adjustment.get("manual_candidates", [])
-        return {
+        normalized = {
             "mapping": {int(k): int(v) for k, v in mapping_raw.items()},
             "mapping_times": {int(k): float(v) for k, v in mapping_times_raw.items()},
             "manual_candidates": [float(v) for v in manual_candidates_raw],
         }
+        if adjustment.get("schema_version"):
+            normalized["schema_version"] = str(adjustment["schema_version"])
+        else:
+            normalized["schema_version"] = LADDER_ADJUSTMENT_SCHEMA_LEGACY
+        for key in ("source", "analysis", "selected_peaks", "review", "validation"):
+            value = adjustment.get(key)
+            if isinstance(value, (dict, list)):
+                normalized[key] = copy.deepcopy(value)
+        return normalized
 
     return {
+        "schema_version": LADDER_ADJUSTMENT_SCHEMA_LEGACY,
         "mapping": {int(k): int(v) for k, v in adjustment.items()},
         "mapping_times": {},
         "manual_candidates": [],
@@ -3732,9 +3819,13 @@ def save_ladder_adjustment(
     *,
     manual_candidates: list[float] | None = None,
     mapping_times: dict[int, float] | None = None,
-) -> None:
-    """Saves a manual mapping payload to a .json file alongside the .fsa file."""
-    adj_path = Path(fsa.file).resolve().with_suffix(".ladder_adj.json")
+    operator: str = "",
+    comment: str = "",
+    before_qc: dict[str, Any] | None = None,
+    after_qc: dict[str, Any] | None = None,
+) -> Path:
+    """Save and verify a manual ladder mapping in the internal adjustment store."""
+    source_path = Path(fsa.file).resolve()
     try:
         if manual_candidates is not None or mapping_times is not None:
             payload = {
@@ -3748,15 +3839,137 @@ def save_ladder_adjustment(
                 "mapping_times": {},
                 "manual_candidates": [],
             }
-        with open(adj_path, "w") as f:
-            json.dump(payload, f)
-        print_green(f"Saved ladder adjustment to {adj_path.name}")
+        mapping_payload = _normalize_ladder_adjustment_payload(payload)
+        if mapping_payload is None or not (
+            mapping_payload["mapping"] or mapping_payload["mapping_times"]
+        ):
+            raise ValueError("Ladder adjustment has no persisted peak mapping.")
+
+        expected_steps_raw = getattr(fsa, "expected_ladder_steps", None)
+        if expected_steps_raw is None or len(expected_steps_raw) == 0:
+            expected_steps_raw = getattr(fsa, "ladder_steps", None)
+        expected_steps = np.asarray(
+            [] if expected_steps_raw is None else expected_steps_raw,
+            dtype=float,
+        )
+        selected_peaks = []
+        for step_index, candidate_index in sorted(mapping_payload["mapping"].items()):
+            observed_time = mapping_payload["mapping_times"].get(step_index)
+            selected_peaks.append(
+                {
+                    "step_index": int(step_index),
+                    "candidate_index": int(candidate_index),
+                    "expected_bp": (
+                        float(expected_steps[step_index])
+                        if 0 <= step_index < expected_steps.size
+                        else None
+                    ),
+                    "observed_time": (
+                        float(observed_time) if observed_time is not None else None
+                    ),
+                }
+            )
+        try:
+            from app_meta import APP_VERSION
+        except Exception:
+            APP_VERSION = "unknown"
+        normalized = {
+            "schema_version": LADDER_ADJUSTMENT_SCHEMA_V2,
+            "source": {
+                "file_name": source_path.name,
+                "sha256": _ladder_adjustment_file_hash(source_path),
+            },
+            "analysis": {
+                "analysis_id": str(getattr(fsa, "analysis_id", "") or ""),
+                "assay": str(
+                    getattr(fsa, "assay", "")
+                    or getattr(fsa, "assay_name", "")
+                    or ""
+                ),
+                "ladder": str(getattr(fsa, "ladder", "") or ""),
+                "size_standard_channel": str(
+                    getattr(fsa, "rust_size_standard_channel", "")
+                    or getattr(fsa, "size_standard_channel", "")
+                    or ""
+                ),
+            },
+            "mapping": mapping_payload["mapping"],
+            "mapping_times": mapping_payload["mapping_times"],
+            "manual_candidates": mapping_payload["manual_candidates"],
+            "selected_peaks": selected_peaks,
+            "review": {
+                "operator": str(operator or ""),
+                "comment": str(comment or ""),
+                "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+                "app_version": str(APP_VERSION),
+                "before_qc": copy.deepcopy(before_qc or {}),
+                "after_qc": copy.deepcopy(after_qc or {}),
+            },
+            "validation": {
+                "save_verified": True,
+            },
+        }
+        from core.ladder_adjustment_store import (
+            load_ladder_adjustment_record,
+            save_ladder_adjustment_record,
+        )
+
+        database_path = save_ladder_adjustment_record(
+            source_path,
+            normalized,
+            ladder=str(getattr(fsa, "ladder", "") or ""),
+            size_standard_channel=str(
+                getattr(fsa, "rust_size_standard_channel", "")
+                or getattr(fsa, "size_standard_channel", "")
+                or ""
+            ),
+        )
+        verified = load_ladder_adjustment_record(
+            source_path,
+            ladder=str(getattr(fsa, "ladder", "") or ""),
+            size_standard_channel=str(
+                getattr(fsa, "rust_size_standard_channel", "")
+                or getattr(fsa, "size_standard_channel", "")
+                or ""
+            ),
+        )
+        if (
+            verified is None
+            or _normalize_ladder_adjustment_payload(verified.get("payload"))
+            != normalized
+        ):
+            raise OSError("Saved ladder adjustment could not be verified.")
+        legacy_path = source_path.with_suffix(".ladder_adj.json")
+        legacy_path.unlink(missing_ok=True)
+        print_green("Saved ladder adjustment in the internal adjustment store.")
+        return database_path
     except Exception as e:
         print_warning(f"Could not save ladder adjustment: {e}")
+        raise RuntimeError(f"Could not save ladder adjustment: {e}") from e
 
 
 def load_ladder_adjustment(fsa: FsaFile) -> dict | None:
-    """Loads a manual mapping payload from a .json file if it exists."""
+    """Load a manual mapping from the internal store or migrate a legacy sidecar."""
+    from core.ladder_adjustment_store import (
+        load_ladder_adjustment_record,
+        save_ladder_adjustment_record,
+    )
+
+    source_path = Path(fsa.file).expanduser()
+    ladder = str(getattr(fsa, "ladder", "") or "")
+    channel = str(
+        getattr(fsa, "rust_size_standard_channel", "")
+        or getattr(fsa, "size_standard_channel", "")
+        or ""
+    )
+    stored = load_ladder_adjustment_record(
+        source_path,
+        ladder=ladder,
+        size_standard_channel=channel,
+    )
+    if stored is not None:
+        return _normalize_ladder_adjustment_payload(stored.get("payload"))
+
     candidate_files: list[Path] = [Path(fsa.file)]
     try:
         resolved = Path(fsa.file).resolve()
@@ -3770,9 +3983,56 @@ def load_ladder_adjustment(fsa: FsaFile) -> dict | None:
         if not adj_path.exists():
             continue
         try:
-            with open(adj_path, "r", encoding="utf-8", errors="replace") as f:
-                payload = json.load(f)
-                return _normalize_ladder_adjustment_payload(payload)
+            payload = json.loads(
+                adj_path.read_text(encoding="utf-8", errors="replace")
+            )
+            if isinstance(payload, dict):
+                normalized = _normalize_ladder_adjustment_payload(payload)
+                source = normalized.get("source", {}) if normalized else {}
+                expected_hash = str(source.get("sha256") or "")
+                current_hash = _ladder_adjustment_file_hash(candidate_file)
+                if expected_hash and current_hash and expected_hash != current_hash:
+                    print_warning(
+                        f"Ignoring ladder adjustment {adj_path.name}: source FSA hash does not match."
+                    )
+                    continue
+                analysis = normalized.get("analysis", {}) if normalized else {}
+                expected_ladder = str(analysis.get("ladder") or "").strip().upper()
+                current_ladder = str(getattr(fsa, "ladder", "") or "").strip().upper()
+                if (
+                    expected_ladder
+                    and current_ladder
+                    and expected_ladder != current_ladder
+                ):
+                    print_warning(
+                        f"Ignoring ladder adjustment {adj_path.name}: ladder identity does not match."
+                    )
+                    continue
+                expected_channel = str(
+                    analysis.get("size_standard_channel") or ""
+                ).strip().upper()
+                current_channel = str(
+                    getattr(fsa, "rust_size_standard_channel", "")
+                    or getattr(fsa, "size_standard_channel", "")
+                    or ""
+                ).strip().upper()
+                if (
+                    expected_channel
+                    and current_channel
+                    and expected_channel != current_channel
+                ):
+                    print_warning(
+                        f"Ignoring ladder adjustment {adj_path.name}: size-standard channel does not match."
+                    )
+                    continue
+                save_ladder_adjustment_record(
+                    candidate_file,
+                    payload,
+                    ladder=ladder,
+                    size_standard_channel=channel,
+                )
+                adj_path.unlink(missing_ok=True)
+                return normalized
         except Exception as e:
             print_warning(f"Could not load ladder adjustment {adj_path.name}: {e}")
     return None
@@ -3794,6 +4054,66 @@ def _try_apply_saved_ladder_adjustment(fsa: FsaFile, adjustment: dict | None, la
             f"[{label}] Ignoring invalid saved ladder adjustment for {fsa.file_name}: {exc}. Falling back to auto-fit."
         )
         return None
+
+
+def _mark_rust_ladder_rejection_for_review(fsa: FsaFile, label: str) -> FsaFile:
+    """Keep a Rust-rejected file available for manual ladder review.
+
+    A rejected Rust result deliberately has no usable base-pair mapping.  The
+    raw ``FsaFile`` is nevertheless valuable to the ladder editor, and the
+    diagnostics already attached by ``run_ladder_fit_hybrid`` explain why the
+    automatic anchors were rejected.  Returning this explicit scaffold avoids
+    silently dropping the source file or accidentally analysing sample peaks
+    against an unsafe ladder fit.
+    """
+    expected = np.asarray(
+        getattr(fsa, "expected_ladder_steps", getattr(fsa, "ladder_steps", [])),
+        dtype=float,
+    ).copy()
+    reason_codes = [
+        str(code)
+        for code in (getattr(fsa, "rust_review_reason_codes", []) or [])
+        if str(code)
+    ]
+    rejection_code = "rust_ladder_fit_rejected"
+    if rejection_code not in reason_codes:
+        reason_codes.append(rejection_code)
+
+    primary_reason = str(getattr(fsa, "rust_review_primary_reason", "") or "").strip()
+    if not primary_reason or primary_reason == "Rust ladder fit looks internally consistent.":
+        primary_reason = (
+            "Rust ladder fit was rejected by the safety checks; automatic sizing "
+            "was not used."
+        )
+    review_summary = str(getattr(fsa, "rust_review_summary", "") or "").strip()
+    if not review_summary or review_summary == "Rust ladder fit looks internally consistent.":
+        review_summary = primary_reason
+
+    # Preserve the expected ladder separately, but expose zero fitted steps.
+    # Downstream pipelines use this state to create a review-only entry and must
+    # not perform patient/control peak interpretation before manual correction.
+    fsa.expected_ladder_steps = expected
+    fsa.ladder_steps = np.asarray([], dtype=float)
+    fsa.best_size_standard = np.asarray([], dtype=float)
+    fsa.fitted_to_model = False
+    fsa.sample_data_with_basepairs = None
+    fsa.ladder_model = None
+    fsa.ladder_fit_strategy = "rust_rejected_review"
+    fsa.ladder_qc_status = "review_required"
+    fsa.ladder_review_required = True
+    fsa.ladder_missing_expected_steps = [float(value) for value in expected.tolist()]
+    fsa.ladder_expected_step_count = int(expected.size)
+    fsa.ladder_fitted_step_count = 0
+    fsa.ladder_fit_note = (
+        f"{label} automatic ladder fit was rejected by safety checks. "
+        "No sample peaks or clinical result were reported; open this file in "
+        "Ladder Editor and save a reviewed mapping."
+    )
+    fsa.rust_review_reason_codes = reason_codes
+    fsa.rust_review_primary_reason = primary_reason
+    fsa.rust_review_summary = review_summary
+    fsa.analysis_status = "ladder_review_only"
+    return fsa
 
 
 def analyse_fsa_liz(
@@ -3847,6 +4167,7 @@ def analyse_fsa_liz(
     )
     base_fsa.analysis_id = "clonality"
     _set_ladder_fit_profile(base_fsa, ladder_fit_profile, analysis_id="clonality")
+    base_fsa = prepare_size_standard_trace(base_fsa)
 
     from config import APP_SETTINGS
     if APP_SETTINGS.get("engine", {}).get("use_rust", False):
@@ -3861,11 +4182,20 @@ def analyse_fsa_liz(
             if applied is not None:
                 return applied
             return hybrid_fsa
-        if strict_rust_ladder_enabled():
+        applied = _try_apply_saved_ladder_adjustment(
+            base_fsa,
+            load_ladder_adjustment(base_fsa),
+            "LIZ",
+        )
+        if applied is not None:
+            return applied
+        if rust_owned_ladder_enabled():
             print_warning(
-                f"[LIZ] Strict Rust ladder mode is enabled; Python ladder fitting fallback is disabled for {fsa_path.name}."
+                f"[LIZ] Rust could not provide a hydratable ladder result for {fsa_path.name}. "
+                "Rust-owned ladder mode will report an explicit ladder failure for review instead of silently replacing its anchors with Python. "
+                "Set HEMAFRAG_ENABLE_PYTHON_LADDER_FALLBACK=1 only for emergency compatibility."
             )
-            return None
+            return _mark_rust_ladder_rejection_for_review(base_fsa, "LIZ")
         print_warning(f"[LIZ] Rust Engine failed or returned None for {fsa_path.name}. Falling back to Python ladder fitting.")
 
     base_fsa = find_size_standard_peaks(base_fsa)
@@ -3888,7 +4218,8 @@ def analyse_fsa_liz(
         )
         fsa.analysis_id = "clonality"
         _set_ladder_fit_profile(fsa, ladder_fit_profile, analysis_id="clonality")
-        liz_data = np.asarray(fsa.fsa[ss_channel]).astype(float)
+        fsa = prepare_size_standard_trace(fsa)
+        liz_data = np.asarray(fsa.size_standard, dtype=float)
         fsa = find_size_standard_peaks(fsa)
 
         all_found = getattr(fsa, "size_standard_peaks", None)
@@ -4195,6 +4526,7 @@ def analyse_fsa_rox(
     )
     base_fsa.analysis_id = "flt3" if ladder_fit_profile == LADDER_FIT_PROFILE_FLT3_GS500ROX else "clonality"
     _set_ladder_fit_profile(base_fsa, ladder_fit_profile, analysis_id=str(getattr(base_fsa, "analysis_id", "") or ""))
+    base_fsa = prepare_size_standard_trace(base_fsa)
 
     from config import APP_SETTINGS
     if APP_SETTINGS.get("engine", {}).get("use_rust", False):
@@ -4209,35 +4541,45 @@ def analyse_fsa_rox(
             if applied is not None:
                 return applied
             return hybrid_fsa
+        applied = _try_apply_saved_ladder_adjustment(
+            base_fsa,
+            load_ladder_adjustment(base_fsa),
+            "ROX",
+        )
+        if applied is not None:
+            return applied
         if str(getattr(base_fsa, "analysis_id", "") or "").lower() == "flt3" and str(ladder_name).upper() == "GS500ROX":
             print_warning(
                 f"[ROX] FLT3 GS500ROX is Rust-only; Python ladder fitting fallback is disabled for {fsa_path.name}."
             )
-            return None
-        if strict_rust_ladder_enabled():
+            return _mark_rust_ladder_rejection_for_review(base_fsa, "GS500ROX")
+        if rust_owned_ladder_enabled():
             print_warning(
-                f"[ROX] Strict Rust ladder mode is enabled; Python ladder fitting fallback is disabled for {fsa_path.name}."
+                f"[ROX] Rust could not provide a hydratable ladder result for {fsa_path.name}. "
+                "Rust-owned ladder mode will report an explicit ladder failure for review instead of silently replacing its anchors with Python. "
+                "Set HEMAFRAG_ENABLE_PYTHON_LADDER_FALLBACK=1 only for emergency compatibility."
             )
-            return None
+            return _mark_rust_ladder_rejection_for_review(base_fsa, "ROX")
         print_warning(f"[ROX] Rust Engine failed or returned None for {fsa_path.name}. Falling back to Python ladder fitting.")
 
     base_fsa = find_size_standard_peaks(base_fsa)
-    base_raw_rox = np.asarray(base_fsa.fsa[ss_channel], dtype=float)
+    base_raw_rox = np.asarray(base_fsa.size_standard_raw, dtype=float)
+    base_working_rox = np.asarray(base_fsa.size_standard, dtype=float)
     base_found = np.asarray(getattr(base_fsa, "size_standard_peaks", []), dtype=float)
     base_supplemented = _supplement_rox_preferred_region_peaks(
         base_found,
-        base_raw_rox,
+        base_working_rox,
         expected_count=int(len(np.asarray(getattr(base_fsa, "ladder_steps", []), dtype=float))),
         min_distance=float(getattr(base_fsa, "min_distance_between_peaks", 1.0) or 1.0),
     )
     base_cleaned = _clean_rox_size_standard_peaks(
         np.asarray(base_supplemented, dtype=int),
-        base_raw_rox,
+        base_working_rox,
     )
     if len(base_cleaned) >= ROX_BASELINE_FALLBACK_MIN_PEAKS:
         base_fsa.size_standard_peaks = _prepare_rox_size_standard_peaks(
             np.asarray(base_cleaned, dtype=float),
-            base_raw_rox,
+            base_working_rox,
             expected_count=int(len(np.asarray(getattr(base_fsa, "ladder_steps", []), dtype=float))),
         )
     else:
@@ -4261,7 +4603,8 @@ def analyse_fsa_rox(
         )
         fsa.analysis_id = "flt3" if ladder_fit_profile == LADDER_FIT_PROFILE_FLT3_GS500ROX else "clonality"
         _set_ladder_fit_profile(fsa, ladder_fit_profile, analysis_id=str(getattr(fsa, "analysis_id", "") or ""))
-        rox_data = np.asarray(fsa.fsa[ss_channel]).astype(float)
+        fsa = prepare_size_standard_trace(fsa)
+        rox_data = np.asarray(fsa.size_standard, dtype=float)
         fsa = find_size_standard_peaks(fsa)
 
         all_found = getattr(fsa, "size_standard_peaks", None)
@@ -4648,7 +4991,34 @@ def get_ladder_candidates(fsa: FsaFile) -> pd.DataFrame:
     Returns all detected peaks in the size standard channel as a DataFrame.
     Useful for manual selection.
     """
+    trace_before = np.asarray(getattr(fsa, "size_standard", []), dtype=float)
+    finite_before = trace_before[np.isfinite(trace_before)]
+    needs_correction = (
+        not bool(getattr(fsa, "size_standard_baseline_corrected", False))
+        or (finite_before.size > 0 and float(np.min(finite_before)) < 0.0)
+    )
+    if needs_correction:
+        fsa = prepare_size_standard_trace(fsa)
+
     ss_peaks = getattr(fsa, "size_standard_peaks", None)
+    if ss_peaks is None or np.asarray(ss_peaks).size == 0:
+        found_peaks, peak_properties = signal.find_peaks(
+            np.asarray(fsa.size_standard, dtype=float),
+            height=max(5.0, min(float(getattr(fsa, "min_size_standard_height", 20.0)), 50.0)),
+            distance=max(1, int(getattr(fsa, "min_distance_between_peaks", 8) or 8)),
+        )
+        if found_peaks.size:
+            heights = np.asarray(peak_properties.get("peak_heights", []), dtype=float)
+            limit = max(
+                int(getattr(fsa, "n_ladder_peaks", 0) or 0) + 15,
+                int(getattr(fsa, "max_peaks_allow_in_size_standard", 0) or 0),
+                20,
+            )
+            if heights.size == found_peaks.size and found_peaks.size > limit:
+                strongest = np.argsort(heights)[-limit:]
+                found_peaks = np.sort(found_peaks[strongest])
+            fsa.size_standard_peaks = np.asarray(found_peaks, dtype=float)
+            ss_peaks = fsa.size_standard_peaks
     if ss_peaks is None:
         return pd.DataFrame(columns=["index", "time", "intensity"])
 

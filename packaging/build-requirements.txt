@@ -1,1 +1,4 @@
 PyInstaller==6.19.0
+# Python 3.12 removed pkgutil.ImpImporter; old setuptools releases import it
+# through pkg_resources and make PyInstaller's setuptools hook fail.
+setuptools>=82,<84
