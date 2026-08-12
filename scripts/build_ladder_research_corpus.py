@@ -41,6 +41,7 @@ from core.research.ladder.fit_improvement import (
     build_approved_fit_gold,
     finalize_fit_improvement_wave,
     freeze_fit_candidate,
+    prepare_core_first_holdout,
     prepare_fit_improvement_experiment,
 )
 from core.research.ladder.inventory import (
@@ -817,6 +818,39 @@ def _freeze_fit_candidate_command(args: argparse.Namespace) -> None:
     )
 
 
+def _prepare_core_first_holdout_command(args: argparse.Namespace) -> None:
+    workspace = args.workspace.resolve()
+    assert_canonical_production_workspace(workspace)
+    configuration = json.loads(args.configuration_json)
+    if not isinstance(configuration, dict):
+        raise ValueError("--configuration-json must decode to a JSON object")
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = prepare_core_first_holdout(
+        workspace,
+        cli=args.cli.resolve(),
+        configuration=configuration,
+        git_revision=completed.stdout.strip(),
+        seed=args.seed,
+    )
+    print(
+        json.dumps(
+            {
+                "bundle": str(result.bundle.bundle_dir),
+                "case_count": result.bundle.case_count,
+                "withheld_manifest": str(result.withheld_manifest),
+                "freeze_manifest": str(result.freeze_manifest),
+            },
+            indent=2,
+        )
+    )
+
+
 def _export_fit_gold_command(args: argparse.Namespace) -> None:
     workspace = args.workspace.resolve()
     assert_canonical_production_workspace(workspace)
@@ -987,6 +1021,13 @@ def main() -> None:
     prepare_fit.add_argument("--workspace", required=True, type=Path)
     prepare_fit.add_argument("--seed", type=int, default=20260811)
     prepare_fit.set_defaults(handler=_prepare_fit_improvement_command)
+
+    prepare_core_holdout = commands.add_parser("prepare-core-first-holdout")
+    prepare_core_holdout.add_argument("--workspace", required=True, type=Path)
+    prepare_core_holdout.add_argument("--cli", required=True, type=Path)
+    prepare_core_holdout.add_argument("--seed", type=int, default=20260812)
+    prepare_core_holdout.add_argument("--configuration-json", default="{}")
+    prepare_core_holdout.set_defaults(handler=_prepare_core_first_holdout_command)
 
     finalize_fit_development = commands.add_parser("finalize-fit-development")
     finalize_fit_development.add_argument("--workspace", required=True, type=Path)

@@ -136,6 +136,13 @@ class FitImprovementOutcomeResult:
     ml_eligible_count: int
 
 
+@dataclass(frozen=True)
+class CoreFirstHoldoutResult:
+    bundle: ReviewBundleResult
+    withheld_manifest: Path
+    freeze_manifest: Path
+
+
 def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -469,6 +476,53 @@ def select_fit_improvement_waves(
     )
 
 
+def select_core_first_holdout(
+    diagnostics: Iterable[Mapping[str, Any]],
+    inventory_rows: Iterable[Mapping[str, Any]],
+    *,
+    excluded_hashes: set[str],
+    excluded_runs: set[str],
+    count: int = 40,
+    seed: int = 20260812,
+) -> tuple[FitImprovementCase, ...]:
+    """Select unseen patient LIZ controls for blind core-first evaluation."""
+
+    excluded_run_keys = {_normalized_run(value) for value in excluded_runs}
+    candidates = [
+        case
+        for case in _candidate_cases(diagnostics, inventory_rows, excluded_hashes)
+        if case.ladder == "LIZ"
+        and case.cohort_group == "control"
+        and _normalized_run(case.physical_run_key) not in excluded_run_keys
+    ]
+    best_per_run: dict[str, FitImprovementCase] = {}
+    for case in sorted(
+        candidates,
+        key=lambda value: (
+            _stable_digest(
+                SELECTION_DOMAIN,
+                seed,
+                "core-first-holdout",
+                value.content_sha256,
+            ),
+            value.content_sha256,
+        ),
+    ):
+        best_per_run.setdefault(_normalized_run(case.physical_run_key), case)
+    selected = _pick_diverse(
+        list(best_per_run.values()),
+        int(count),
+        seed=int(seed),
+        domain="core-first-holdout|control|LIZ",
+    )
+    if len(selected) != int(count):
+        raise ValueError(
+            f"Insufficient unseen patient LIZ controls: required {int(count)}, "
+            f"available {len(best_per_run)}"
+        )
+    return _blind_order(selected, wave="core_first_holdout", seed=int(seed))
+
+
 FIT_IMPROVEMENT_PUBLIC_FIELDS = (
     "content_sha256",
     "physical_run_key",
@@ -642,6 +696,124 @@ def prepare_fit_improvement_experiment(
         development_withheld_manifest=development_withheld,
         validation_withheld_manifest=validation_withheld,
         experiment_manifest=experiment_manifest,
+    )
+
+
+def prepare_core_first_holdout(
+    workspace: Path,
+    *,
+    cli: Path,
+    configuration: Mapping[str, Any],
+    git_revision: str,
+    seed: int = 20260812,
+    roots: ResearchRoots | None = None,
+) -> CoreFirstHoldoutResult:
+    """Freeze and publish a fresh 40-case LIZ core-first holdout."""
+
+    target = Path(workspace).resolve()
+    resolved_roots = _round_two_roots(target, roots)
+    experiment = target / "rust_fit_improvement"
+    if not experiment.is_dir():
+        raise FileNotFoundError(f"Missing fit-improvement experiment: {experiment}")
+    final_bundle = experiment / "core_first_holdout_40"
+    withheld_manifest = experiment / "core_first_holdout_selection_withheld.json"
+    freeze_manifest = experiment / "core_first_candidate_freeze_manifest.json"
+    for output in (final_bundle, withheld_manifest, freeze_manifest):
+        if output.exists():
+            raise FileExistsError(f"Refusing to overwrite core-first holdout: {output}")
+
+    binary = Path(cli).resolve()
+    if not binary.is_file():
+        raise FileNotFoundError(f"Core-first Rust binary does not exist: {binary}")
+    diagnostics, inventory, manual_hashes, round_one_hashes = load_round_two_inputs(
+        target
+    )
+    excluded_hashes = {
+        _normalized_hash(value) for value in (*manual_hashes, *round_one_hashes)
+    }
+    excluded_runs: set[str] = set()
+    for relative in (
+        "round_2_selection_withheld.json",
+        "rust_fit_improvement/development_selection_withheld.json",
+        "rust_fit_improvement/validation_selection_withheld.json",
+    ):
+        payload = json.loads((target / relative).read_text(encoding="utf-8"))
+        for case in payload.get("cases") or []:
+            excluded_hashes.add(_normalized_hash(case.get("content_sha256")))
+            run = _normalized_run(case.get("physical_run_key"))
+            if run:
+                excluded_runs.add(run)
+    cases = select_core_first_holdout(
+        diagnostics,
+        inventory,
+        excluded_hashes=excluded_hashes,
+        excluded_runs=excluded_runs,
+        count=40,
+        seed=seed,
+    )
+    generated_at = datetime.now(timezone.utc).isoformat()
+    staging = Path(tempfile.mkdtemp(prefix=".core-first-holdout-", dir=experiment))
+    published: list[Path] = []
+    try:
+        bundle = prepare_blind_review_bundle(
+            [case.as_record() for case in cases],
+            staging / "bundle",
+            resolved_roots,
+            bundle_name="Blind LIZ Core-First Holdout Review (40)",
+            public_case_fields=FIT_IMPROVEMENT_PUBLIC_FIELDS,
+            summary_fields={
+                "experiment_wave": "core_first_holdout",
+                "experiment_root": str(experiment),
+                "candidate_freeze_manifest": str(freeze_manifest),
+            },
+            published_bundle_dir=final_bundle,
+        )
+        _write_json(
+            staging / "withheld.json",
+            {
+                "schema_version": "1.0",
+                "generated_at_utc": generated_at,
+                "seed": int(seed),
+                "wave": "core_first_holdout",
+                "case_count": 40,
+                "bundle_dir": str(final_bundle),
+                "cases": _withheld_cases(cases, final_bundle),
+            },
+        )
+        configuration_value = dict(configuration)
+        _write_json(
+            staging / "freeze.json",
+            {
+                "schema_version": "1.0",
+                "frozen_at_utc": generated_at,
+                "binary_path": str(binary),
+                "binary_sha256": _sha256_file(binary),
+                "configuration": configuration_value,
+                "configuration_fingerprint": _stable_digest(
+                    _canonical(configuration_value)
+                ),
+                "git_revision": str(git_revision).strip(),
+            },
+        )
+        (staging / "bundle").replace(final_bundle)
+        published.append(final_bundle)
+        (staging / "withheld.json").replace(withheld_manifest)
+        published.append(withheld_manifest)
+        (staging / "freeze.json").replace(freeze_manifest)
+        published.append(freeze_manifest)
+    except Exception:
+        for output in reversed(published):
+            if output.is_dir():
+                shutil.rmtree(output, ignore_errors=True)
+            else:
+                output.unlink(missing_ok=True)
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return CoreFirstHoldoutResult(
+        bundle=bundle,
+        withheld_manifest=withheld_manifest,
+        freeze_manifest=freeze_manifest,
     )
 
 

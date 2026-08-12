@@ -19,6 +19,8 @@ from core.research.ladder.fit_improvement import (
     finalize_fit_improvement_wave,
     freeze_fit_candidate,
     prepare_fit_improvement_experiment,
+    prepare_core_first_holdout,
+    select_core_first_holdout,
     select_fit_improvement_waves,
 )
 
@@ -303,7 +305,32 @@ def test_select_fit_improvement_waves_excludes_missing_year():
         )
 
 
-def _published_workspace(tmp_path: Path):
+def test_select_core_first_holdout_is_unseen_patient_liz_only():
+    diagnostics, inventory = _candidate_rows(extras_per_stratum=10)
+    excluded_hash = inventory[0]["content_sha256"]
+    excluded_run = inventory[1]["physical_run_key"]
+
+    cases = select_core_first_holdout(
+        diagnostics,
+        inventory,
+        excluded_hashes={excluded_hash},
+        excluded_runs={excluded_run},
+        count=40,
+        seed=20260812,
+    )
+
+    assert len(cases) == 40
+    assert all(case.sample_kind == "patient" for case in cases)
+    assert all(case.ladder == "LIZ" for case in cases)
+    assert all(case.cohort_group == "control" for case in cases)
+    assert {case.year for case in cases} == {"2024", "2025", "2026"}
+    assert excluded_hash not in {case.content_sha256 for case in cases}
+    assert excluded_run.casefold() not in {
+        case.physical_run_key.casefold() for case in cases
+    }
+
+
+def _published_workspace(tmp_path: Path, *, extras_per_stratum: int = 2):
     raw_roots = tuple(tmp_path / "raw" / year for year in ("2024", "2025", "2026"))
     for root in raw_roots:
         root.mkdir(parents=True)
@@ -333,7 +360,9 @@ def _published_workspace(tmp_path: Path):
         encoding="utf-8",
     )
 
-    diagnostics, inventory = _candidate_rows(extras_per_stratum=2)
+    diagnostics, inventory = _candidate_rows(
+        extras_per_stratum=extras_per_stratum
+    )
     for serial, (diagnostic, row) in enumerate(zip(diagnostics, inventory), 1):
         source = raw_roots[(serial - 1) % len(raw_roots)] / row["file"]
         source.write_bytes(f"fsa-{serial}".encode())
@@ -402,6 +431,39 @@ def test_prepare_fit_improvement_publishes_two_blind_waves_atomically(tmp_path):
     assert "cohort_group" not in public
     assert "selection_reason" not in public
     assert not list(result.experiment_dir.rglob("*.ladder_adj.json"))
+
+
+def test_prepare_core_first_holdout_is_hash_bound_and_disjoint(tmp_path):
+    workspace, roots = _published_workspace(tmp_path, extras_per_stratum=45)
+    experiment = prepare_fit_improvement_experiment(workspace, seed=7, roots=roots)
+    cli = tmp_path / "fraggler-cli.exe"
+    cli.write_bytes(b"frozen core-first cli")
+
+    result = prepare_core_first_holdout(
+        workspace,
+        cli=cli,
+        configuration={"core_first": True},
+        git_revision="abc123",
+        seed=11,
+        roots=roots,
+    )
+
+    assert result.bundle.case_count == 40
+    assert len(list(result.bundle.bundle_dir.rglob("*.fsa"))) == 40
+    assert not result.bundle.adjustment_database.exists()
+    freeze = json.loads(result.freeze_manifest.read_text(encoding="utf-8"))
+    assert freeze["binary_sha256"] == hashlib.sha256(cli.read_bytes()).hexdigest()
+    prior = set()
+    for path in (
+        experiment.development_withheld_manifest,
+        experiment.validation_withheld_manifest,
+    ):
+        prior.update(
+            case["content_sha256"]
+            for case in json.loads(path.read_text(encoding="utf-8"))["cases"]
+        )
+    holdout = json.loads(result.withheld_manifest.read_text(encoding="utf-8"))
+    assert prior.isdisjoint(case["content_sha256"] for case in holdout["cases"])
 
 
 def test_prepare_fit_improvement_rolls_back_both_waves_on_copy_failure(
@@ -525,6 +587,7 @@ def test_finalize_validation_refuses_even_resolved_rows_before_freeze(tmp_path):
         "finalize-fit-development",
         "freeze-fit-candidate",
         "finalize-fit-validation",
+        "prepare-core-first-holdout",
     ],
 )
 def test_fit_improvement_cli_routes_have_help(command):
