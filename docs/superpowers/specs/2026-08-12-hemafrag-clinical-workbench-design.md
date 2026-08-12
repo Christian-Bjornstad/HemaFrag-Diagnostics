@@ -1,6 +1,6 @@
 # HemaFrag Clinical Workbench Design
 
-**Date:** 2026-08-12  
+**Date:** 2026-08-12
 **Status:** Approved
 **Branch:** `codex/ui-polish`
 
