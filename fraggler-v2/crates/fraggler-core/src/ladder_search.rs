@@ -249,6 +249,35 @@ pub fn liz_local_rescue_candidates(
     })
 }
 
+pub fn liz_core_rescue_candidates(
+    input: &LadderRescueInput,
+    budget: SearchBudget,
+    beam_width: usize,
+) -> Option<SearchOutcome> {
+    let first_scan = *input.current_scan_indices.first()?;
+    if input.expected_basepairs.len() != input.current_scan_indices.len()
+        || input.current_scan_indices.len() < 4
+    {
+        return None;
+    }
+    let core_input = LadderRescueInput::new(
+        input.expected_basepairs[1..].to_vec(),
+        input.current_scan_indices[1..].to_vec(),
+        input
+            .peaks
+            .iter()
+            .filter(|peak| peak.scan > first_scan)
+            .cloned()
+            .collect(),
+    );
+    let mut outcome = deep_rescue_candidates(&core_input, budget, beam_width)?;
+    let mut full_sequence = Vec::with_capacity(input.current_scan_indices.len());
+    full_sequence.push(first_scan);
+    full_sequence.extend(outcome.candidate.scan_indices);
+    outcome.candidate.scan_indices = full_sequence;
+    Some(outcome)
+}
+
 pub fn rox_local_rescue_candidates(
     input: &LadderRescueInput,
     budget: SearchBudget,
@@ -525,6 +554,40 @@ mod tests {
         let outcome = liz_local_rescue_candidates(&input, SearchBudget::tier_one()).unwrap();
         assert_eq!(outcome.candidate.scan_indices[0], 1544);
         assert_eq!(&outcome.candidate.scan_indices[1..], &current[1..]);
+    }
+
+    #[test]
+    fn liz_core_rescue_repairs_core_before_reattaching_unchanged_35() {
+        let expected_bp = vec![35.0, 50.0, 75.0, 100.0, 139.0, 150.0];
+        let current = vec![1500, 1640, 1790, 1940, 2200, 2240];
+        let expected = vec![1500, 1640, 1790, 1940, 2174, 2240];
+        let peaks = vec![1500, 1640, 1790, 1940, 2174, 2200, 2240]
+            .into_iter()
+            .map(|scan| evidence(scan, 1000.0, 950.0))
+            .collect();
+        let input = LadderRescueInput::new(expected_bp, current, peaks);
+
+        let outcome = liz_core_rescue_candidates(&input, SearchBudget::tier_one(), 64).unwrap();
+
+        assert_eq!(outcome.candidate.scan_indices, expected);
+        assert_eq!(outcome.candidate.scan_indices[0], 1500);
+    }
+
+    #[test]
+    fn liz_core_rescue_never_moves_35_when_core_is_unchanged() {
+        let expected_bp = vec![35.0, 50.0, 75.0, 100.0, 139.0, 150.0];
+        let current = vec![1544, 1640, 1790, 1940, 2174, 2240];
+        let peaks = current
+            .iter()
+            .copied()
+            .chain(std::iter::once(1505))
+            .map(|scan| evidence(scan, 1000.0, 950.0))
+            .collect();
+        let input = LadderRescueInput::new(expected_bp, current.clone(), peaks);
+
+        let outcome = liz_core_rescue_candidates(&input, SearchBudget::tier_one(), 64).unwrap();
+
+        assert_eq!(outcome.candidate.scan_indices, current);
     }
 
     #[test]

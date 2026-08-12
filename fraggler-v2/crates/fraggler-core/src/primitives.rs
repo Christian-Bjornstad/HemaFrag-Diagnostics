@@ -9,7 +9,7 @@ use crate::contract::AnalysisKind;
 use crate::engine::EngineError;
 use crate::ladder_search::{
     LadderRescueInput, PeakEvidence, SearchBudget, deep_rescue_candidates,
-    liz_local_rescue_candidates, score_candidate_sequence,
+    liz_core_rescue_candidates, score_candidate_sequence,
 };
 use crate::ladders::LadderKind;
 use crate::signal::{
@@ -3489,7 +3489,7 @@ fn apply_liz_tier_one_rescue(
             })
             .collect(),
     );
-    let Some(outcome) = liz_local_rescue_candidates(&input, SearchBudget::tier_one()) else {
+    let Some(outcome) = liz_core_rescue_candidates(&input, SearchBudget::tier_one(), 128) else {
         return preview;
     };
     preview.search_diagnostics = Some(outcome.diagnostics);
@@ -3497,18 +3497,27 @@ fn apply_liz_tier_one_rescue(
     if rescued == current {
         return preview;
     }
-    let rescued_model = fit_best_sizing_model(&rescued, ladder.sizes(), sample_trace);
-    if let (Some((current_max, current_mean, current_r2, _)), Some(model)) =
-        (preview_linear_metrics(&preview), rescued_model.as_ref())
-    {
-        let qc = &model.qc_metrics;
-        if qc.linear_trend_max_abs_error_bp > current_max + 0.50
-            || qc.linear_trend_mean_abs_error_bp > current_mean + 0.15
-            || qc.linear_trend_r2 + 0.00001 < current_r2
-        {
-            return preview;
-        }
+    let core_sizes = &ladder.sizes()[1..];
+    let current_core_model = fit_best_sizing_model(&current[1..], core_sizes, sample_trace);
+    let rescued_core_model = fit_best_sizing_model(&rescued[1..], core_sizes, sample_trace);
+    let (Some(current_core), Some(rescued_core)) =
+        (current_core_model.as_ref(), rescued_core_model.as_ref())
+    else {
+        return preview;
+    };
+    let current_qc = &current_core.qc_metrics;
+    let rescued_qc = &rescued_core.qc_metrics;
+    if !liz_core_candidate_qc_allows(
+        current_qc.linear_trend_max_abs_error_bp,
+        current_qc.linear_trend_mean_abs_error_bp,
+        current_qc.linear_trend_r2,
+        rescued_qc.linear_trend_max_abs_error_bp,
+        rescued_qc.linear_trend_mean_abs_error_bp,
+        rescued_qc.linear_trend_r2,
+    ) {
+        return preview;
     }
+    let rescued_model = fit_best_sizing_model(&rescued, ladder.sizes(), sample_trace);
     preview.best_scan_indices = rescued.clone();
     preview.best_curvature_score = Some(curvature_score(ladder.sizes(), &rescued));
     preview.best_quadratic_r2 = Some(quadratic_fit_r2(
@@ -3521,6 +3530,23 @@ fn apply_liz_tier_one_rescue(
     preview.sizing_model = rescued_model;
     preview.refinement = apex_recenter_refinement_preview(&current, &rescued, ladder.sizes());
     preview
+}
+
+fn liz_core_candidate_qc_allows(
+    current_max: f64,
+    current_mean: f64,
+    current_r2: f64,
+    candidate_max: f64,
+    candidate_mean: f64,
+    candidate_r2: f64,
+) -> bool {
+    let clear_improvement = candidate_max + 0.5 < current_max
+        && candidate_mean <= current_mean + 0.15
+        && candidate_r2 + 0.00001 >= current_r2;
+    let guarded_non_regression = candidate_max <= current_max + 0.25
+        && candidate_mean <= current_mean + 0.10
+        && candidate_r2 + 0.00001 >= current_r2;
+    clear_improvement || guarded_non_regression
 }
 
 fn should_try_liz_tier_one_rescue(preview: &LadderFitPreview) -> bool {
@@ -19800,7 +19826,7 @@ mod tests {
         curvature_score, estimate_combination_count_capped, eval_polynomial,
         expected_clonality_ladder_kind, filter_liz_peak_pool_for_fit, filter_rox_peak_pool_for_fit,
         fit_polynomial_least_squares, generate_peak_combinations, ladder_domain_penalty,
-        ladder_gap_template_penalty, ladder_peak_sequence_penalty,
+        ladder_gap_template_penalty, ladder_peak_sequence_penalty, liz_core_candidate_qc_allows,
         liz_initial_fit_can_skip_repairs, liz_linear_first_candidate_is_acceptable,
         liz_preview_is_high_confidence_bounded, local_peak_quality_penalty, quadratic_fit_r2,
         refine_best_combination, repair_anchor_block_sequence,
@@ -19830,6 +19856,20 @@ mod tests {
     fn rox_deep_rescue_allows_stable_low_error_recenter() {
         assert!(rox_deep_rescue_qc_allows(
             3.91, 1.37, 0.999748, 3.88, 1.43, 0.999745,
+        ));
+    }
+
+    #[test]
+    fn liz_core_candidate_qc_rejects_core_regression() {
+        assert!(!liz_core_candidate_qc_allows(
+            2.0, 0.8, 0.99990, 3.0, 1.1, 0.99970,
+        ));
+    }
+
+    #[test]
+    fn liz_core_candidate_qc_allows_clear_core_improvement() {
+        assert!(liz_core_candidate_qc_allows(
+            9.0, 3.0, 0.9970, 3.5, 1.2, 0.9997,
         ));
     }
 
