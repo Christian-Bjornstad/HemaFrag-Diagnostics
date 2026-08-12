@@ -13,6 +13,7 @@ from scripts.benchmark_rust_ladder import (
     _load_gold_expectations,
     _load_manifest,
     _load_manifest_metadata,
+    _gold_anchor_metrics,
     _percentile,
     _result_identity,
     _run_once,
@@ -463,6 +464,23 @@ def test_ladder_benchmark_reports_exact_anchor_error_metrics(
     assert row["gold_mean_abs_scan_delta"] == pytest.approx(2.0)
     assert row["gold_max_abs_scan_delta"] == 5
     assert row["gold_major_wrong_sequence"] is True
+    assert result["gold_core_exact_match_count"] == 0
+    assert result["by_ladder"]["LIZ500_250"][
+        "gold_core_major_wrong_sequence_count"
+    ] == 1
+
+
+def test_liz_gold_metrics_treat_35_as_outside_the_core():
+    metrics = _gold_anchor_metrics(
+        [90, 200, 300, 400],
+        [100, 200, 300, 400],
+        ladder="LIZ500_250",
+    )
+
+    assert metrics["gold_exact_match"] is False
+    assert metrics["gold_core_exact_match"] is True
+    assert metrics["gold_core_anchors_changed"] == 0
+    assert metrics["gold_core_major_wrong_sequence"] is False
 
 
 def test_ladder_benchmark_reports_search_tier_and_watchdog_metrics(
@@ -549,6 +567,42 @@ def test_promotion_gate_rejects_changed_exact_control():
     baseline, candidate = _comparison_fixture(candidate_exact=False)
     gate = evaluate_fit_candidate(baseline, candidate)
     assert gate["existing_exact_preserved"] is False
+    assert gate["promotable"] is False
+
+
+def test_promotion_gate_preserves_liz_core_when_only_35_moves():
+    baseline, candidate = _comparison_fixture(candidate_exact=False)
+    baseline["files"][0]["ladder"] = "LIZ500_250"
+    candidate["files"][0]["ladder"] = "LIZ500_250"
+    baseline["files"][0].update(
+        {"gold_core_exact_match": True, "gold_core_major_wrong_sequence": False}
+    )
+    candidate["files"][0].update(
+        {"gold_core_exact_match": True, "gold_core_major_wrong_sequence": False}
+    )
+    candidate["files"][0]["identity"]["scan_indices"] = [11, 20]
+
+    gate = evaluate_fit_candidate(baseline, candidate)
+
+    assert gate["existing_core_exact_preserved"] is True
+    assert gate["core_exact_control_regressions"] == 0
+
+
+def test_promotion_gate_rejects_liz_core_regression():
+    baseline, candidate = _comparison_fixture(candidate_exact=False)
+    baseline["files"][0]["ladder"] = "LIZ500_250"
+    candidate["files"][0]["ladder"] = "LIZ500_250"
+    baseline["files"][0].update(
+        {"gold_core_exact_match": True, "gold_core_major_wrong_sequence": False}
+    )
+    candidate["files"][0].update(
+        {"gold_core_exact_match": False, "gold_core_major_wrong_sequence": True}
+    )
+
+    gate = evaluate_fit_candidate(baseline, candidate)
+
+    assert gate["existing_core_exact_preserved"] is False
+    assert gate["core_major_wrong_sequence_regressions"] == 1
     assert gate["promotable"] is False
 
 

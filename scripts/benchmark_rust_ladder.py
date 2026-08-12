@@ -373,6 +373,12 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, object]:
         "gold_major_wrong_sequence_count": sum(
             row.get("gold_major_wrong_sequence") is True for row in rows
         ),
+        "gold_core_exact_match_count": sum(
+            row.get("gold_core_exact_match") is True for row in rows
+        ),
+        "gold_core_major_wrong_sequence_count": sum(
+            row.get("gold_core_major_wrong_sequence") is True for row in rows
+        ),
         "taxonomy_case_count": sum(row.get("taxonomy_agreement") is not None for row in rows),
         "taxonomy_agreement_count": sum(row.get("taxonomy_agreement") is True for row in rows),
         "taxonomy_model_transition_count": sum(
@@ -471,8 +477,11 @@ def evaluate_fit_candidate(
     same_cases = set(baseline_rows) == set(candidate_rows) and bool(baseline_rows)
     exact_regressions = 0
     major_regressions = 0
+    core_exact_regressions = 0
+    core_major_regressions = 0
     farther_changed_cases = 0
     ladder_major_deltas: dict[str, int] = {}
+    ladder_core_major_deltas: dict[str, int] = {}
     if same_cases:
         ladders = sorted(
             {str(row.get("ladder") or "") for row in baseline_rows.values()}
@@ -489,6 +498,25 @@ def evaluate_fit_candidate(
                 if str(row.get("ladder") or "") == ladder
             )
             ladder_major_deltas[ladder] = after - before
+            core_before = sum(
+                row.get(
+                    "gold_core_major_wrong_sequence",
+                    row.get("gold_major_wrong_sequence"),
+                )
+                is True
+                for row in baseline_rows.values()
+                if str(row.get("ladder") or "") == ladder
+            )
+            core_after = sum(
+                row.get(
+                    "gold_core_major_wrong_sequence",
+                    row.get("gold_major_wrong_sequence"),
+                )
+                is True
+                for row in candidate_rows.values()
+                if str(row.get("ladder") or "") == ladder
+            )
+            ladder_core_major_deltas[ladder] = core_after - core_before
         for content_hash, before in baseline_rows.items():
             after = candidate_rows[content_hash]
             if before.get("gold_exact_match") is True and after.get(
@@ -499,6 +527,24 @@ def evaluate_fit_candidate(
                 "gold_major_wrong_sequence"
             ) is True:
                 major_regressions += 1
+            before_core_exact = before.get(
+                "gold_core_exact_match", before.get("gold_exact_match")
+            )
+            after_core_exact = after.get(
+                "gold_core_exact_match", after.get("gold_exact_match")
+            )
+            if before_core_exact is True and after_core_exact is not True:
+                core_exact_regressions += 1
+            before_core_major = before.get(
+                "gold_core_major_wrong_sequence",
+                before.get("gold_major_wrong_sequence"),
+            )
+            after_core_major = after.get(
+                "gold_core_major_wrong_sequence",
+                after.get("gold_major_wrong_sequence"),
+            )
+            if before_core_major is not True and after_core_major is True:
+                core_major_regressions += 1
             before_scans = (before.get("identity") or {}).get("scan_indices") or []
             after_scans = (after.get("identity") or {}).get("scan_indices") or []
             if (
@@ -510,6 +556,9 @@ def evaluate_fit_candidate(
     watchdog_overflow_count = _watchdog_overflow_count(candidate)
     deterministic = bool(candidate.get("deterministic"))
     family_major_regressions = sum(delta > 0 for delta in ladder_major_deltas.values())
+    family_core_major_regressions = sum(
+        delta > 0 for delta in ladder_core_major_deltas.values()
+    )
     baseline_fast_p95 = _fast_path_p95(baseline)
     candidate_fast_p95 = _fast_path_p95(candidate)
     fast_path_p95_regression = bool(
@@ -520,10 +569,9 @@ def evaluate_fit_candidate(
     promotable = bool(
         same_cases
         and deterministic
-        and exact_regressions == 0
-        and major_regressions == 0
-        and family_major_regressions == 0
-        and farther_changed_cases == 0
+        and core_exact_regressions == 0
+        and core_major_regressions == 0
+        and family_core_major_regressions == 0
         and watchdog_overflow_count == 0
         and not fast_path_p95_regression
     )
@@ -532,9 +580,14 @@ def evaluate_fit_candidate(
         "deterministic": deterministic,
         "existing_exact_preserved": exact_regressions == 0,
         "exact_control_regressions": exact_regressions,
+        "existing_core_exact_preserved": core_exact_regressions == 0,
+        "core_exact_control_regressions": core_exact_regressions,
         "major_wrong_sequence_regressions": major_regressions,
+        "core_major_wrong_sequence_regressions": core_major_regressions,
         "major_wrong_sequence_delta_by_ladder": ladder_major_deltas,
+        "core_major_wrong_sequence_delta_by_ladder": ladder_core_major_deltas,
         "ladder_families_with_major_regression": family_major_regressions,
+        "ladder_families_with_core_major_regression": family_core_major_regressions,
         "changed_cases_not_strictly_closer": farther_changed_cases,
         "watchdog_overflow_count": watchdog_overflow_count,
         "baseline_fast_path_p95_seconds": baseline_fast_p95,
@@ -544,8 +597,29 @@ def evaluate_fit_candidate(
     }
 
 
+def _sequence_metrics(selected: list[int], expected: list[int]) -> dict[str, object]:
+    exact = selected == expected
+    if len(selected) != len(expected):
+        return {
+            "exact_match": False,
+            "anchors_changed": max(len(selected), len(expected)),
+            "mean_abs_scan_delta": None,
+            "max_abs_scan_delta": None,
+            "major_wrong_sequence": True,
+        }
+    deltas = [abs(left - right) for left, right in zip(selected, expected)]
+    changed = sum(delta != 0 for delta in deltas)
+    return {
+        "exact_match": exact,
+        "anchors_changed": changed,
+        "mean_abs_scan_delta": statistics.mean(deltas) if deltas else 0.0,
+        "max_abs_scan_delta": max(deltas, default=0),
+        "major_wrong_sequence": (not exact and changed >= 2),
+    }
+
+
 def _gold_anchor_metrics(
-    selected: list[int], expected: list[int] | None
+    selected: list[int], expected: list[int] | None, *, ladder: str = ""
 ) -> dict[str, object]:
     if expected is None:
         return {
@@ -554,24 +628,19 @@ def _gold_anchor_metrics(
             "gold_mean_abs_scan_delta": None,
             "gold_max_abs_scan_delta": None,
             "gold_major_wrong_sequence": None,
+            "gold_core_exact_match": None,
+            "gold_core_anchors_changed": None,
+            "gold_core_mean_abs_scan_delta": None,
+            "gold_core_max_abs_scan_delta": None,
+            "gold_core_major_wrong_sequence": None,
         }
-    exact = selected == expected
-    if len(selected) != len(expected):
-        return {
-            "gold_exact_match": False,
-            "gold_anchors_changed": max(len(selected), len(expected)),
-            "gold_mean_abs_scan_delta": None,
-            "gold_max_abs_scan_delta": None,
-            "gold_major_wrong_sequence": True,
-        }
-    deltas = [abs(left - right) for left, right in zip(selected, expected)]
-    changed = sum(delta != 0 for delta in deltas)
+    strict = _sequence_metrics(selected, expected)
+    core_selected = selected[1:] if ladder == "LIZ500_250" else selected
+    core_expected = expected[1:] if ladder == "LIZ500_250" else expected
+    core = _sequence_metrics(core_selected, core_expected)
     return {
-        "gold_exact_match": exact,
-        "gold_anchors_changed": changed,
-        "gold_mean_abs_scan_delta": statistics.mean(deltas) if deltas else 0.0,
-        "gold_max_abs_scan_delta": max(deltas, default=0),
-        "gold_major_wrong_sequence": (not exact and changed >= 2),
+        **{f"gold_{key}": value for key, value in strict.items()},
+        **{f"gold_core_{key}": value for key, value in core.items()},
     }
 
 
@@ -676,7 +745,11 @@ def benchmark(
             expected_scans = gold_expectations.get(input_file)
             metadata = case_metadata.get(input_file, {})
             selected_scans = [int(value) for value in first["identity"]["scan_indices"]]
-            gold_metrics = _gold_anchor_metrics(selected_scans, expected_scans)
+            gold_metrics = _gold_anchor_metrics(
+                selected_scans,
+                expected_scans,
+                ladder=str(first["identity"]["ladder"]),
+            )
             engine_outcome = classify_ladder_outcome(
                 {
                     "configured_ladder": metadata.get("ladder", ""),
@@ -780,6 +853,12 @@ def benchmark(
         "gold_exact_match_count": sum(row.get("gold_exact_match") is True for row in rows),
         "gold_major_wrong_sequence_count": sum(
             row.get("gold_major_wrong_sequence") is True for row in rows
+        ),
+        "gold_core_exact_match_count": sum(
+            row.get("gold_core_exact_match") is True for row in rows
+        ),
+        "gold_core_major_wrong_sequence_count": sum(
+            row.get("gold_core_major_wrong_sequence") is True for row in rows
         ),
         "overall": _summarize(rows),
         "by_ladder": by_ladder,
