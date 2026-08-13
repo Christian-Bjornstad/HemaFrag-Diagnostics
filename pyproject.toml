@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=80", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hemafrag-diagnostics"
+version = "1.2.0"
+description = "Offline-first fragment analysis, review, and reporting"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dynamic = ["dependencies"]
+
+[project.scripts]
+hemafrag-diagnostics = "hemafrag_diagnostics.__main__:main"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["app_meta", "app_resources", "config", "qt_app"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["assets*", "core*", "fraggler*", "gui_qt*", "hemafrag_diagnostics*"]
+exclude = ["fraggler-v2*"]
+
+[tool.setuptools.package-data]
+assets = ["*"]
+"core.analyses.clonality" = ["*.md"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
