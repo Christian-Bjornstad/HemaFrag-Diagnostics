@@ -55,9 +55,14 @@ data/*
 *.xlsx
 *.xls
 *.csv
-*.html
 *.pdf
 *.docx
+
+# Knowledge graph views we DO want to track:
+!docs/knowledge-graph.html
+!docs/knowledge-graph-full.html
+!docs/knowledge-graph-force.html
+!docs/knowledge-graph-callflow.html
 
 # Logs
 *.log
@@ -100,4 +105,3 @@ Thumbs.db
 # Graphify local graph, caches, reports, and interactive HTML
 # The compact GitHub-safe overview is committed at docs/knowledge-graph.svg.
 graphify-out/
-docs/knowledge-graph.html
