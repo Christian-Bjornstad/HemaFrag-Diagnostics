@@ -169,6 +169,52 @@ python qt_app.py
 
 ## Development and testing
 
+### AI-readable knowledge graph
+
+[![HemaFrag-Diagnostics knowledge graph](docs/knowledge-graph.svg)](docs/knowledge-graph.svg)
+
+The repository can be indexed locally with [Graphify](https://github.com/Graphify-Labs/graphify). The graph above is a compact, GitHub-renderable overview of the most connected Python and Rust symbols. The full local graph remains untracked because it includes generated caches and can grow to tens of megabytes.
+
+Install Graphify's current PyPI release once:
+
+```bash
+uv tool install graphifyy
+graphify --version
+```
+
+Build the AI-queryable graph and interactive explorer from the repository root:
+
+```bash
+graphify extract . --code-only --no-viz
+graphify cluster-only . --no-viz --no-label
+graphify tree --graph graphify-out/graph.json \
+  --output docs/knowledge-graph.html \
+  --root . \
+  --label HemaFrag-Diagnostics \
+  --max-children 100
+python scripts/render_knowledge_graph.py
+```
+
+Open `docs/knowledge-graph.html` locally for the interactive tree. Query the full graph directly for AI-assisted navigation:
+
+```bash
+graphify query "How does ladder fitting reach report generation?"
+graphify explain "FsaFile"
+graphify path "FsaFile" "LadderAdjustmentDialog"
+graphify affected "LadderKind" --depth 3
+```
+
+After source changes, refresh the deterministic code graph and both views:
+
+```bash
+graphify update .
+graphify cluster-only . --no-viz --no-label
+graphify tree --graph graphify-out/graph.json --output docs/knowledge-graph.html --root . --label HemaFrag-Diagnostics --max-children 100
+python scripts/render_knowledge_graph.py
+```
+
+GitHub renders SVG in a README but does not run the JavaScript used by an interactive HTML graph. Therefore the README embeds the committed SVG and links to the local HTML file. To host the interactive explorer in a browser, publish `docs/knowledge-graph.html` with GitHub Pages or attach it as a workflow artifact.
+
 Run the complete Python suite:
 
 ```bash

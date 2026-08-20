@@ -1,0 +1,35 @@
+# Patient and clinical inputs must never enter the generated knowledge graph.
+*.fsa
+*.FSA
+*.ab1
+*.AB1
+*.xlsx
+*.xls
+*.csv
+*.doc
+*.docx
+*.pdf
+
+# Generated, private, or local-only project data.
+artifacts/
+local_triage/
+validation_outputs/
+clonality_ml_audit/
+clonality_ml_features/
+review_bundles/
+graphify-out/
+.worktrees/
+.git/
+
+# Build outputs, virtual environments, caches, and bundled vendor assets.
+.venv/
+venv/
+build/
+dist/
+target/
+node_modules/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+assets/plotly-*.min.js

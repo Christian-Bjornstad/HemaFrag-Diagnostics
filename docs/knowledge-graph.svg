@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820">
+<style>
+.title{font:700 28px system-ui,sans-serif;fill:#F5F6FA}.subtitle{font:15px system-ui,sans-serif;fill:#AAB4C3}
+.node{fill:#252B3B;stroke:#70839D;stroke-width:1.5}.label{font:12px system-ui,sans-serif;fill:#F5F6FA}.degree{font:11px system-ui,sans-serif;fill:#AAB4C3}
+.edge{fill:none;stroke-width:1.5;opacity:.38}
+</style>
+<rect width="100%" height="100%" rx="18" fill="#1A1F2E"/>
+<text x="54" y="58" class="title">HemaFrag-Diagnostics knowledge graph</text>
+<text x="54" y="88" class="subtitle">Graphify code graph · 4,392 code nodes · 11,659 code relationships · top 24 hubs shown</text>
+<path class="edge" stroke="#2E86AB" d="M300,690 C600,690 600,258 900,258"><title>calls</title></path>
+<path class="edge" stroke="#9C6ADE" d="M300,690 C600,690 600,420 900,420"><title>references</title></path>
+<path class="edge" stroke="#F18F01" d="M900,150 C600,150 600,258 300,258"><title>imports</title></path>
+<path class="edge" stroke="#F18F01" d="M900,204 C600,204 600,258 300,258"><title>imports</title></path>
+<path class="edge" stroke="#F18F01" d="M900,582 C600,582 600,636 900,636"><title>imports</title></path>
+<path class="edge" stroke="#F18F01" d="M300,744 C600,744 600,636 900,636"><title>imports</title></path>
+<path class="edge" stroke="#F18F01" d="M300,474 C600,474 600,636 900,636"><title>imports</title></path>
+<path class="edge" stroke="#F18F01" d="M900,474 C600,474 600,420 300,420"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M900,474 C600,474 600,528 300,528"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M900,474 C600,474 600,582 300,582"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M300,528 C600,528 600,582 300,582"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M300,528 C600,528 600,420 300,420"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M900,150 C600,150 600,420 300,420"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M900,204 C600,204 600,420 300,420"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M300,312 C600,312 600,420 300,420"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M900,582 C600,582 600,744 300,744"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M300,150 C600,150 600,312 900,312"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M300,150 C600,150 600,204 300,204"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M300,474 C600,474 600,582 900,582"><title>imports_from</title></path>
+<path class="edge" stroke="#F18F01" d="M300,474 C600,474 600,744 300,744"><title>imports_from</title></path>
+<path class="edge" stroke="#9C6ADE" d="M900,258 C600,258 600,312 900,312"><title>references</title></path>
+<path class="edge" stroke="#9C6ADE" d="M900,258 C600,258 600,204 300,204"><title>references</title></path>
+<path class="edge" stroke="#9C6ADE" d="M300,690 C600,690 600,312 900,312"><title>references</title></path>
+<path class="edge" stroke="#9C6ADE" d="M300,690 C600,690 600,204 300,204"><title>references</title></path>
+<path class="edge" stroke="#9C6ADE" d="M900,258 C600,258 600,420 900,420"><title>references</title></path>
+<path class="edge" stroke="#E05A47" d="M900,528 C600,528 600,690 900,690"><title>uses</title></path>
+<rect class="node" x="80" y="131" width="440" height="38" rx="9"><title>fraggler-v2/crates/fraggler-core/src/primitives.rs</title></rect>
+<text x="95" y="154" class="label">fraggler-v2/crates/fraggler-core/…</text>
+<text x="475" y="154" text-anchor="end" class="degree">329</text>
+<rect class="node" x="680" y="131" width="440" height="38" rx="9"><title>core/analyses/flt3/pipeline/_legacy.py</title></rect>
+<text x="695" y="154" class="label">core/analyses/flt3/pipeline/_lega…</text>
+<text x="1075" y="154" text-anchor="end" class="degree">189</text>
+<rect class="node" x="80" y="185" width="440" height="38" rx="9"><title>fraggler-v2/crates/fraggler-core/src/signal.rs</title></rect>
+<text x="95" y="208" class="label">Peak</text>
+<text x="475" y="208" text-anchor="end" class="degree">131</text>
+<rect class="node" x="680" y="185" width="440" height="38" rx="9"><title>core/analysis/_legacy.py</title></rect>
+<text x="695" y="208" class="label">core/analysis/_legacy.py</text>
+<text x="1075" y="208" text-anchor="end" class="degree">124</text>
+<rect class="node" x="80" y="239" width="440" height="38" rx="9"><title>fraggler/fraggler.py</title></rect>
+<text x="95" y="262" class="label">FsaFile</text>
+<text x="475" y="262" text-anchor="end" class="degree">116</text>
+<rect class="node" x="680" y="239" width="440" height="38" rx="9"><title>fraggler-v2/crates/fraggler-core/src/primitives.rs</title></rect>
+<text x="695" y="262" class="label">score_combination()</text>
+<text x="1075" y="262" text-anchor="end" class="degree">93</text>
+<rect class="node" x="80" y="293" width="440" height="38" rx="9"><title>core/html_reports/_legacy.py</title></rect>
+<text x="95" y="316" class="label">core/html_reports/_legacy.py</text>
+<text x="475" y="316" text-anchor="end" class="degree">89</text>
+<rect class="node" x="680" y="293" width="440" height="38" rx="9"><title>fraggler-v2/crates/fraggler-core/src/ladders.rs</title></rect>
+<text x="695" y="316" class="label">LadderKind</text>
+<text x="1075" y="316" text-anchor="end" class="degree">83</text>
+<rect class="node" x="80" y="347" width="440" height="38" rx="9"><title>gui_qt/tabs/tab_ladder/_legacy.py</title></rect>
+<text x="95" y="370" class="label">TabLadder</text>
+<text x="475" y="370" text-anchor="end" class="degree">83</text>
+<rect class="node" x="680" y="347" width="440" height="38" rx="9"><title>gui_qt/dialogs/ladder_dialog/_legacy.py</title></rect>
+<text x="695" y="370" class="label">LadderAdjustmentDialog</text>
+<text x="1075" y="370" text-anchor="end" class="degree">76</text>
+<rect class="node" x="80" y="401" width="440" height="38" rx="9"><title>fraggler/fraggler.py</title></rect>
+<text x="95" y="424" class="label">fraggler/fraggler.py</text>
+<text x="475" y="424" text-anchor="end" class="degree">72</text>
+<rect class="node" x="680" y="401" width="440" height="38" rx="9"><title>fraggler-v2/crates/fraggler-core/src/primitives.rs</title></rect>
+<text x="695" y="424" class="label">CombinationScore</text>
+<text x="1075" y="424" text-anchor="end" class="degree">72</text>
+<rect class="node" x="80" y="455" width="440" height="38" rx="9"><title>scripts/build_ladder_research_corpus.py</title></rect>
+<text x="95" y="478" class="label">scripts/build_ladder_research_cor…</text>
+<text x="475" y="478" text-anchor="end" class="degree">71</text>
+<rect class="node" x="680" y="455" width="440" height="38" rx="9"><title>core/analyses/clonality/pipeline.py</title></rect>
+<text x="695" y="478" class="label">core/analyses/clonality/pipeline.py</text>
+<text x="1075" y="478" text-anchor="end" class="degree">67</text>
+<rect class="node" x="80" y="509" width="440" height="38" rx="9"><title>core/analyses/clonality/tracking_excel.py</title></rect>
+<text x="95" y="532" class="label">core/analyses/clonality/tracking_…</text>
+<text x="475" y="532" text-anchor="end" class="degree">65</text>
+<rect class="node" x="680" y="509" width="440" height="38" rx="9"><title>gui_qt/tabs/tab_labeling.py</title></rect>
+<text x="695" y="532" class="label">TabLabeling</text>
+<text x="1075" y="532" text-anchor="end" class="degree">64</text>
+<rect class="node" x="80" y="563" width="440" height="38" rx="9"><title>core/analyses/clonality/interpretation.py</title></rect>
+<text x="95" y="586" class="label">core/analyses/clonality/interpret…</text>
+<text x="475" y="586" text-anchor="end" class="degree">64</text>
+<rect class="node" x="680" y="563" width="440" height="38" rx="9"><title>core/research/ladder/fit_improvement.py</title></rect>
+<text x="695" y="586" class="label">core/research/ladder/fit_improvem…</text>
+<text x="1075" y="586" text-anchor="end" class="degree">62</text>
+<rect class="node" x="80" y="617" width="440" height="38" rx="9"><title>gui_qt/tabs/tab_batch/_legacy.py</title></rect>
+<text x="95" y="640" class="label">TabBatch</text>
+<text x="475" y="640" text-anchor="end" class="degree">60</text>
+<rect class="node" x="680" y="617" width="440" height="38" rx="9"><title>core/research/ladder/contracts.py</title></rect>
+<text x="695" y="640" class="label">ResearchRoots</text>
+<text x="1075" y="640" text-anchor="end" class="degree">59</text>
+<rect class="node" x="80" y="671" width="440" height="38" rx="9"><title>fraggler-v2/crates/fraggler-core/src/primitives.rs</title></rect>
+<text x="95" y="694" class="label">select_best_combination()</text>
+<text x="475" y="694" text-anchor="end" class="degree">59</text>
+<rect class="node" x="680" y="671" width="440" height="38" rx="9"><title>core/labeling/labeling_session.py</title></rect>
+<text x="695" y="694" class="label">LabelingSession</text>
+<text x="1075" y="694" text-anchor="end" class="degree">59</text>
+<rect class="node" x="80" y="725" width="440" height="38" rx="9"><title>core/research/ladder/round_two.py</title></rect>
+<text x="95" y="748" class="label">core/research/ladder/round_two.py</text>
+<text x="475" y="748" text-anchor="end" class="degree">58</text>
+<rect class="node" x="680" y="725" width="440" height="38" rx="9"><title>gui_qt/tabs/tab_archive_runner.py</title></rect>
+<text x="695" y="748" class="label">TabArchiveRunner</text>
+<text x="1075" y="748" text-anchor="end" class="degree">57</text>
+<line x1="54" y1="788" x2="78" y2="788" stroke="#2E86AB" stroke-width="3"/>
+<text x="85" y="792" class="degree">calls</text>
+<line x1="204" y1="788" x2="228" y2="788" stroke="#F18F01" stroke-width="3"/>
+<text x="235" y="792" class="degree">imports</text>
+<line x1="354" y1="788" x2="378" y2="788" stroke="#F18F01" stroke-width="3"/>
+<text x="385" y="792" class="degree">imports_from</text>
+<line x1="504" y1="788" x2="528" y2="788" stroke="#6C7A89" stroke-width="3"/>
+<text x="535" y="792" class="degree">contains</text>
+<line x1="654" y1="788" x2="678" y2="788" stroke="#4CAF50" stroke-width="3"/>
+<text x="685" y="792" class="degree">method</text>
+<line x1="804" y1="788" x2="828" y2="788" stroke="#9C6ADE" stroke-width="3"/>
+<text x="835" y="792" class="degree">references</text>
+</svg>

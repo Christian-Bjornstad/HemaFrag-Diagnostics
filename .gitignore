@@ -96,3 +96,8 @@ Thumbs.db
 
 # Local isolated development worktrees
 .worktrees/
+
+# Graphify local graph, caches, reports, and interactive HTML
+# The compact GitHub-safe overview is committed at docs/knowledge-graph.svg.
+graphify-out/
+docs/knowledge-graph.html
