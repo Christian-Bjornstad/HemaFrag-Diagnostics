@@ -566,25 +566,27 @@ class TabLabeling(QWidget):
 
     def _populate_channel_selector(self, sample) -> None:
         previous = self._selected_channel
-        self.channel_selector.blockSignals(True)
-        self.channel_selector.clear()
-        for unit in sample.interpretation_units:
-            label = sample.label_for_channel(unit.channel) or "unlabeled"
-            self.channel_selector.addItem(
-                f"{unit.channel} | {unit.target_name} | {label}",
-                unit.channel,
-            )
-        self.channel_selector.blockSignals(False)
-        index = self.channel_selector.findData(previous)
-        if index < 0 and self.channel_selector.count():
-            index = 0
-        if index >= 0:
-            self.channel_selector.setCurrentIndex(index)
-            self._selected_channel = str(
-                self.channel_selector.itemData(index) or ""
-            )
-        else:
-            self._selected_channel = ""
+        signals_were_blocked = self.channel_selector.blockSignals(True)
+        try:
+            self.channel_selector.clear()
+            for unit in sample.interpretation_units:
+                label = sample.label_for_channel(unit.channel) or "unlabeled"
+                self.channel_selector.addItem(
+                    f"{unit.channel} | {unit.target_name} | {label}",
+                    unit.channel,
+                )
+            index = self.channel_selector.findData(previous)
+            if index < 0 and self.channel_selector.count():
+                index = 0
+            if index >= 0:
+                self.channel_selector.setCurrentIndex(index)
+                self._selected_channel = str(
+                    self.channel_selector.itemData(index) or ""
+                )
+            else:
+                self._selected_channel = ""
+        finally:
+            self.channel_selector.blockSignals(signals_were_blocked)
         self.btn_apply_all_channels.setVisible(
             len(sample.interpretation_units) > 1
         )
