@@ -52,15 +52,15 @@ HemaFrag Diagnostics is a Python/PyQt6 desktop application for processing fragme
 
 ```mermaid
 flowchart LR
-    A["FSA input"] --> B["Immutable FSA artifact"]
-    B --> C["Rust-first ladder fitting"]
-    C -->|accepted| D["Assay analysis"]
-    C -->|review required| E["Ladder Studio"]
-    E --> F["Validated adjustment + rerun"]
+    A[FSA input] --> B[Immutable FSA artifact]
+    B --> C[Rust-first ladder fitting]
+    C -->|accepted| D[Assay analysis]
+    C -->|review required| E[Ladder Studio]
+    E --> F[Validated adjustment + rerun]
     F --> D
-    D --> G["Plots and HTML reports"]
-    D --> H["QC and Excel tracking"]
-    D --> I["Batch manifest and provenance"]
+    D --> G[Plots and HTML reports]
+    D --> H[QC and Excel tracking]
+    D --> I[Batch manifest and provenance]
 ```
 
 ## Supported workflows
