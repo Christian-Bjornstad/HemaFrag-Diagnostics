@@ -783,7 +783,10 @@ class TabLadderRerunSelectionTests(unittest.TestCase):
                 fake_tab
             )
 
-            self.assertEqual(files, [adjusted_fsa.resolve()])
+            self.assertEqual(len(files), 1)
+            # Windows hosted runners can canonicalize the same temp directory
+            # as either ``runneradmin`` or its DOS short name ``RUNNER~1``.
+            self.assertTrue(os.path.samefile(files[0], adjusted_fsa))
             self.assertEqual(missing, [])
             self.assertEqual(unresolved, 0)
 
