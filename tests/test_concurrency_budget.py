@@ -71,6 +71,9 @@ def test_worker_initializer_sets_rust_and_numeric_thread_limits(monkeypatch):
 
 
 def test_concurrency_environment_restores_existing_values(monkeypatch):
+    # The explicit budget below is meaningful only when the simulated machine
+    # has at least eight logical CPUs. Hosted CI runners can have fewer.
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
     monkeypatch.setenv("RAYON_NUM_THREADS", "99")
     monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
     plan = resolve_concurrency_plan(

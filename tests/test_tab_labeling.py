@@ -7,6 +7,7 @@ file on disk.
 """
 from __future__ import annotations
 
+import gc
 import os
 from types import SimpleNamespace
 
@@ -20,12 +21,20 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def qapp():
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
-    return app
+    yield app
+    # pyqtgraph schedules geometry updates. Dispose plot widgets and drain the
+    # event queue before their view boxes disappear during Python shutdown.
+    for widget in app.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    app.processEvents()
+    gc.collect()
+    app.processEvents()
 
 
 def _make_test_excel(tmp_path) -> str:
