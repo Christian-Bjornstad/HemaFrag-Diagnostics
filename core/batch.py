@@ -960,7 +960,14 @@ def run_batch_jobs(
                 completed_jobs.append(job_name)
             with callback_lock:
                 if update_callback:
-                    update_callback(i + 1, total, job_name, "success")
+                    # Honest status: in aggregated mode DIT reports + tracking
+                    # workbooks are still built AFTER all jobs. Emit "collected"
+                    # (not "success") so the GUI cannot show premature completion;
+                    # the single final "Done" callback marks real completion.
+                    if aggregate_dit_reports and not defer_dit_html_reports and not skip_html_reports:
+                        update_callback(i + 1, total, job_name, "collected")
+                    else:
+                        update_callback(i + 1, total, job_name, "success")
             _emit_progress(
                 job_name,
                 "done",
@@ -1094,9 +1101,12 @@ def run_batch_jobs(
         and not block_dit_for_ladder_review
     ):
         log("\n[BATCH] Final step: Building aggregated DIT HTML reports...")
-        
+
         from core.html_reports import build_dit_html_reports
-        
+
+        with callback_lock:
+            if update_callback:
+                update_callback(total, total, "DIT aggregation", "running")
         try:
             if (not stream_aggregated_dit) or defer_dit_html_reports:
                 _with_heartbeat(

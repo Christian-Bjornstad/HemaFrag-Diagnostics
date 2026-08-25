@@ -833,19 +833,21 @@ class TabBatch(QWidget):
             tooltip=output_detail,
         )
 
-        counts = {"pending": 0, "running": 0, "success": 0, "error": 0}
+        counts = {"pending": 0, "running": 0, "success": 0, "error": 0, "collected": 0}
         for state in self._job_states.values():
             if state in {"success", "done"}:
                 counts["success"] += 1
             elif state.startswith("error"):
                 counts["error"] += 1
-            elif state == "running":
+            elif state == "running" or (state == "DIT aggregation"):
                 counts["running"] += 1
+            elif state == "collected":
+                counts["collected"] += 1
             else:
                 counts["pending"] += 1
 
         self.queue_summary_lbl.setText(
-            f"Pending {counts['pending']}   •   Running {counts['running']}   •   Complete {counts['success']}   •   Errors {counts['error']}"
+            f"Pending {counts['pending']}   •   Running {counts['running']}   •   Collected {counts['collected']}   •   Complete {counts['success']}   •   Errors {counts['error']}"
         )
         self.dashboard_title.setText(f"{analysis_name} Workflow")
         
@@ -1175,6 +1177,9 @@ class TabBatch(QWidget):
                 item_state.setForeground(Qt.GlobalColor.red)
             elif state == "running":
                 item_state.setForeground(Qt.GlobalColor.blue)
+            elif state == "collected":
+                # Data collected but final reports still pending — not green yet.
+                item_state.setForeground(Qt.GlobalColor.darkYellow)
             else:
                 item_state.setForeground(Qt.GlobalColor.darkGray)
                 
@@ -1625,10 +1630,31 @@ class TabBatch(QWidget):
         self.progress.setValue(idx)
         if state.startswith("error"):
             self._set_workflow_status(f"Run error in {name} ({idx}/{total})", "error")
-        elif state == "success":
-            self._set_workflow_status(f"Completed: {name} ({idx}/{total})", "success")
         elif state == "done":
             pass
+        elif name == "DIT aggregation" and state == "running":
+            # All sample/QC jobs are finished; final reports + tracking workbook
+            # are still being built. This is NOT "complete" yet.
+            self._set_workflow_status(
+                f"All {idx}/{idx} jobs collected — building final DIT reports…",
+                "running",
+            )
+        elif state == "success":
+            self._set_workflow_status(f"Completed: {name} ({idx}/{total})", "success")
+        elif state == "collected":
+            # Aggregated mode: job data collected, but final reports are still
+            # pending. Keep the banner in a running state — no premature green.
+            remaining = max(total - idx, 0)
+            if remaining:
+                self._set_workflow_status(
+                    f"Collected: {name} ({idx}/{total}) — waiting for remaining jobs…",
+                    "running",
+                )
+            else:
+                self._set_workflow_status(
+                    f"Collected: {name} ({idx}/{total}) — building final reports…",
+                    "running",
+                )
         else:
             self._set_workflow_status(f"Running: {name} ({idx}/{total})", "running")
         
