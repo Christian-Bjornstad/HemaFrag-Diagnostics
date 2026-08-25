@@ -695,6 +695,58 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
         except Exception as ex:
             print_warning(f"[SL] Klarte ikke autovalg av SL-peaks for {fsa.file_name}: {ex}")
             peaks_by_channel = {ch: pd.DataFrame(columns=["basepairs", "peaks", "keep"]) for ch in peak_channels}
+    elif assay.startswith("IGHV"):
+        # IGHV: topper > 5000 RFU i referanseområdet vises i tabellen;
+        # prøvetype (DNA/RNA for Mix 1) velges i GUI og settes via core.ighv.
+        from core.ighv import (
+            IGHV_RFU_PEAK_THRESHOLD,
+            _peak_area_near,
+            find_peaks_in_window,
+            ighv_reference_range,
+        )
+
+        try:
+            # Prøvetype følger GUI-valget (core.ighv.set_sample_type).
+            from core.ighv import get_sample_type
+
+            sample_type = get_sample_type(assay)  # "DNA" | "RNA"
+            lo, hi = ighv_reference_range(assay, sample_type)
+            signal_arr, bp_arr = None, None
+            raw_df = getattr(fsa, "sample_data_with_basepairs", None)
+            if raw_df is not None and not getattr(raw_df, "empty", True):
+                import numpy as _np
+
+                sig = _np.asarray(fsa.fsa[primary_peak_channel], dtype=float)
+                bps = raw_df["basepairs"].to_numpy(dtype=float)
+                n = min(len(sig), len(bps))
+                signal_arr, bp_arr = sig[:n], bps[:n]
+            if bp_arr is not None:
+                hits = find_peaks_in_window(
+                    bp_arr,
+                    signal_arr,
+                    lo,
+                    hi,
+                    rfu_threshold=IGHV_RFU_PEAK_THRESHOLD,
+                )
+                rows = [
+                    {
+                        "basepairs": float(p["bp"]),
+                        "peaks": float(p["height"]),
+                        "area": _peak_area_near(fsa, p["bp"], channel=primary_peak_channel),
+                        "keep": True,
+                    }
+                    for p in hits
+                ]
+                peaks_by_channel[primary_peak_channel] = pd.DataFrame(
+                    rows,
+                    columns=["basepairs", "peaks", "area", "keep"],
+                )
+        except Exception as ex:
+            print_warning(f"[IGHV] Klarte ikke detektere klonale topper for {fsa.file_name}: {ex}")
+            peaks_by_channel = {
+                ch: pd.DataFrame(columns=["basepairs", "peaks", "area", "keep"])
+                for ch in peak_channels
+            }
     else:
         for ch in peak_channels:
             peaks_by_channel[ch] = pd.DataFrame(columns=["basepairs", "peaks", "keep"])
@@ -855,6 +907,14 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
         "sl_metrics": sl_metrics,
     }
     from core.analysis_provenance import attach_analysis_provenance
+
+    if assay.startswith("IGHV"):
+        from core.ighv import attach_ighv_results
+
+        try:
+            entry = attach_ighv_results(entry)  # prøvetype følger GUI-valget
+        except Exception as ex:
+            print_warning(f"[IGHV] Klarte ikke beregne IGHV-resultater for {fsa.file_name}: {ex}")
 
     return attach_interpretation_if_enabled(attach_analysis_provenance(entry))
 

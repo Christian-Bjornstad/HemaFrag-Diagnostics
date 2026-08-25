@@ -286,6 +286,21 @@ class TabBatch(QWidget):
         self.input_scope_combo.currentIndexChanged.connect(self._on_input_scope_changed)
         row3.addWidget(self.input_scope_label)
         row3.addWidget(self.input_scope_combo)
+
+        # IGHV DNA/RNA-velger — styrer referanseområdet for Mix 1
+        # (DNA 500–570 bp, RNA 415–485 bp). Kun synlig når IGHV-filer
+        # finnes i jobbkøen (oppdateres i _scan_jobs).
+        self.ighv_sample_type_label = QLabel("IGHV sample type:")
+        self.ighv_dna_rna_combo = QComboBox()
+        self.ighv_dna_rna_combo.addItem("DNA", "DNA")
+        self.ighv_dna_rna_combo.addItem("RNA (cDNA)", "RNA")
+        self.ighv_dna_rna_combo.setToolTip(
+            "IGHV Mix 1 reference area: DNA 500\u2013570 bp, RNA 415\u2013485 bp.\n"
+            "Mix 2 is always 310\u2013380 bp."
+        )
+        self.ighv_dna_rna_combo.currentIndexChanged.connect(self._on_ighv_sample_type_changed)
+        row3.addWidget(self.ighv_sample_type_label)
+        row3.addWidget(self.ighv_dna_rna_combo)
         row3.addStretch()
         
         f_layout.addWidget(l_ftitle)
@@ -1053,6 +1068,25 @@ class TabBatch(QWidget):
         save_settings(APP_SETTINGS)
         self._reset_queue_state("Ready", "ready")
 
+    def _on_ighv_sample_type_changed(self, *_args) -> None:
+        """DNA/RNA-velger: aktiver riktig IGHV-referanseområde."""
+        from core.ighv import set_sample_type
+
+        sample_type = str(self.ighv_dna_rna_combo.currentData() or "DNA")
+        for assay in ("IGHV Mix 1", "IGHV Mix 2"):
+            set_sample_type(assay, sample_type)
+
+    def _update_ighv_toggle_visibility(self) -> None:
+        """Vis DNA/RNA-velgeren kun når IGHV-filer er lagt til i køen."""
+        has_ighv = False
+        for i in range(self.folder_list.count()):
+            text = self.folder_list.item(i).text().upper()
+            if "IGHV" in Path(text).name or "IGHV" in text:
+                has_ighv = True
+                break
+        self.ighv_sample_type_label.setVisible(has_ighv)
+        self.ighv_dna_rna_combo.setVisible(has_ighv)
+
     def _add_folders(self):
         batch_settings = self._profile_for().get("batch", {})
         start = str(batch_settings.get("last_input_directory") or "").strip()
@@ -1110,6 +1144,7 @@ class TabBatch(QWidget):
             removed = True
         if removed:
             self._reset_queue_state("Ready", "ready")
+            self._update_ighv_toggle_visibility()
         else:
             self._refresh_dashboard()
 
@@ -1126,6 +1161,7 @@ class TabBatch(QWidget):
         if normalized not in existing:
             self.folder_list.addItem(normalized)
             self._reset_queue_state("Ready", "ready")
+            self._update_ighv_toggle_visibility()
 
 
     def _general_selected_paths(self) -> list[Path]:

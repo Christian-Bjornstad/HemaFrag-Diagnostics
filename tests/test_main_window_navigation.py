@@ -20,6 +20,7 @@ def test_analysis_groups_keep_exact_navigation_contract(qapp):
         "Run",
         "Ladder",
         "Archive Runner",
+        "Compare",
         "Log",
         "Labeling",
         "Settings",
@@ -28,10 +29,18 @@ def test_analysis_groups_keep_exact_navigation_contract(qapp):
         "Run",
         "Ladder",
         "Archive Runner",
+        "Compare",
         "Log",
         "Settings",
     ]
-    assert window.group_general.sub_button_labels == ["Run", "Ladder", "Log", "Settings"]
+    assert window.group_general.sub_button_labels == [
+        "Run",
+        "Ladder",
+        "Archive Runner",
+        "Compare",
+        "Log",
+        "Settings",
+    ]
     assert not hasattr(window, "tab_ml_training")
 
 

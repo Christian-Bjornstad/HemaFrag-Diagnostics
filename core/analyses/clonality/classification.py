@@ -31,6 +31,16 @@ TCRB_PATTERNS = {
     "TCRbC": _assay_pattern("tcrb", "trb", "tcrbeta", "trbeta", suffix="c"),
 }
 
+IGHV_PATTERNS = {
+    # Filnavn som "...IGHV_Mix1_..." / "ighv mix 2 ..." / "..._IGHV1_..."
+    "IGHV Mix 1": re.compile(
+        r"(?<![a-z])igh[\s_-]*v(?:[\s_-]*mix)?[\s_-]*1(?![a-z0-9])", re.IGNORECASE
+    ),
+    "IGHV Mix 2": re.compile(
+        r"(?<![a-z])igh[\s_-]*v(?:[\s_-]*mix)?[\s_-]*2(?![a-z0-9])", re.IGNORECASE
+    ),
+}
+
 def detect_assay(name: str) -> str:
     """
     Returnerer assay-navn slik at det matcher nøkkelen i ASSAY_CONFIG.
@@ -81,6 +91,12 @@ def detect_assay(name: str) -> str:
     # 7) LIZ IgK / KDE
     if "igk" in lower: return "IGK"
     if "kde" in lower: return "KDE"
+
+    # 8) IGHV-mikser (sjekkes SIST: "ighv" inneholder ikke fr/igk/kde-tokens,
+    #    men hold rekkefølgen stabil for eksisterende assays)
+    for assay, pattern in IGHV_PATTERNS.items():
+        if pattern.search(lower):
+            return assay
 
     return "UNKNOWN"
 

@@ -1444,6 +1444,58 @@ def _render_clonality_channel_ml_results(
     )
 
 
+def _render_ighv_peak_table(peaks: list[dict], html_lines: list[str]) -> None:
+    """IGHV-topptabell: alle detekterte topper i referanseområdet."""
+    if not peaks:
+        html_lines.append(
+            "<p class='small'>Ingen topper &gt; 5000 RFU i referanseområdet.</p>"
+        )
+        return
+    rows = []
+    for p in peaks:
+        bp = float(p.get("bp", float("nan")))
+        ht = float(p.get("height", float("nan")) or p.get("peaks", float("nan")))
+        ar = float(p.get("area", float("nan")))
+        bp_txt = f"{bp:.0f}" if bp == bp else "&mdash;"
+        ht_txt = f"{ht:,.0f}" if ht == ht else "&mdash;"
+        ar_txt = f"{ar:,.0f}" if ar == ar else "&mdash;"
+        rows.append(f"<tr><td>{bp_txt}</td><td>{ht_txt}</td><td>{ar_txt}</td></tr>")
+    html_lines.append(
+        "<table class='peak-table'><thead><tr>"
+        "<th>Topp (bp)</th><th>H&oslash;yde (RFU)</th><th>Areal</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )
+
+
+def _render_ighv_qc_table(qc_rows: dict, html_lines: list[str]) -> None:
+    """IGHV QC-tabell: 300 bp stigetopp + PK-fragment."""
+    if not qc_rows:
+        return
+    ladder = qc_rows.get("ladder_300") or {}
+    pk = qc_rows.get("pk") or {}
+
+    def _cell(row: dict, key: str, decimals: int = 0) -> str:
+        val = row.get(key, float("nan"))
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            return "&mdash;"
+        if val != val:
+            return "&mdash;"
+        return f"{val:,.{decimals}f}"
+
+    html_lines.append(
+        "<table class='peak-table ighv-qc-table'><thead><tr>"
+        "<th>Kontroll</th><th>Topp (bp)</th><th>H&oslash;yde (RFU)</th><th>Areal</th>"
+        "</tr></thead><tbody>"
+        f"<tr><td>Stige 300 bp</td><td>{_cell(ladder, 'bp')}</td>"
+        f"<td>{_cell(ladder, 'height')}</td><td>{_cell(ladder, 'area')}</td></tr>"
+        f"<tr><td>PK</td><td>{_cell(pk, 'bp', 1)}</td>"
+        f"<td>{_cell(pk, 'height')}</td><td>{_cell(pk, 'area')}</td></tr>"
+        "</tbody></table>"
+    )
+
+
 def _render_assay_block(
     assay_name: str,
     assay_entries: list[dict],
@@ -1475,6 +1527,30 @@ def _render_assay_block(
             ]
             html_lines.append(f"<p class='small'>{escape(' | '.join(sub))}</p>")
         html_lines.append(_build_report_plot_fragment(e, report_metrics))
+        if reference_assay.startswith("IGHV"):
+            # Klonal-topp-verdict + topptabell + (for kontroller) QC-tabell.
+            from core.ighv import format_clonal_verdict
+
+            peaks = e.get("ighv_clonal_peaks")
+            if peaks is None:
+                tbl = e.get("peaks_by_channel", {}).get(primary_ch)
+                try:
+                    if tbl is not None and hasattr(tbl, "itertuples") and len(tbl):
+                        peaks = [
+                            {"bp": r.basepairs, "height": r.peaks, "area": getattr(r, "area", float("nan"))}
+                            for r in tbl.itertuples(index=False)
+                        ]
+                    else:
+                        peaks = []
+                except Exception:
+                    peaks = []
+            if not e.get("ighv_verdict"):
+                e["ighv_verdict"] = format_clonal_verdict(peaks)
+            html_lines.append(
+                f"<p class='ighv-verdict'><strong>{escape(str(e.get('ighv_verdict') or ''))}</strong></p>"
+            )
+            _render_ighv_peak_table(peaks or [], html_lines)
+            _render_ighv_qc_table(e.get("ighv_qc_rows") or {}, html_lines)
         # ML badge (clonality only) — inserts before the FLT3 summary
         # table so the dismiss buttons line up vertically. We also call
         # this for FLT3 entries; they just won't render anything since

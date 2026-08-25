@@ -55,6 +55,7 @@ ASSAY_DISPLAY_ORDER = [
     "DHJH_D", "DHJH_E",
     "TCRbA", "TCRbB", "TCRbC",
     "TCRgA", "TCRgB",
+    "IGHV Mix 1", "IGHV Mix 2",
 ]
 
 # ============================================================
@@ -167,6 +168,20 @@ ASSAY_CONFIG = {
         "bp_min": 60.0,
         "bp_max": 250.0,
     },
+    "IGHV Mix 1": {
+        "dye": "ROX",
+        "trace_channels": ["DATA1"],
+        "peak_channels": ["DATA1"],
+        "bp_min": 380.0,
+        "bp_max": 620.0,
+    },
+    "IGHV Mix 2": {
+        "dye": "ROX",
+        "trace_channels": ["DATA1"],
+        "peak_channels": ["DATA1"],
+        "bp_min": 270.0,
+        "bp_max": 420.0,
+    },
 }
 
 # ============================================================
@@ -174,6 +189,27 @@ ASSAY_CONFIG = {
 # ============================================================
 
 REFERENCE_SHADE_COLOR = "#ded7a6"
+
+# ------------------------------------------------------------------
+# IGHV-spesifikasjon (brukes av core/ighv.py)
+# ------------------------------------------------------------------
+IGHV_RFU_PEAK_THRESHOLD = 5000.0
+
+IGHV_REFERENCE_RANGES = {
+    "IGHV Mix 1": {"DNA": (500.0, 570.0), "RNA": (415.0, 485.0)},
+    "IGHV Mix 2": {"DNA": (310.0, 380.0), "RNA": (310.0, 380.0)},
+}
+
+# QC-kontroller: 300 bp ladder-peak + PK-fragment
+IGHV_QC_LADDER_TARGET_BP = 300.0
+IGHV_QC_LADDER_WINDOW_BP = 8.0
+# Laveste signal en QC-topp må ha for å telle som «funnet»
+# (samme konvensjon som SL-autovalg); hindrer at støy telles som topp.
+IGHV_QC_MIN_HEIGHT_RFU = 800.0
+IGHV_PK_WINDOWS_BP = {
+    "IGHV Mix 1": (535.0, 550.0),
+    "IGHV Mix 2": (357.0, 358.0),
+}
 
 ASSAY_REFERENCE_RANGES: dict[str, list[tuple[float, float]]] = {
     "FR1": [(310.0, 360.0)],
@@ -194,6 +230,11 @@ ASSAY_REFERENCE_RANGES: dict[str, list[tuple[float, float]]] = {
     "TCRbA": [(240.0, 285.0)],
     "TCRbB": [(240.0, 285.0)],
     "TCRbC": [(170.0, 210.0), (285.0, 325.0)],
+
+    # IGHV: nominal ranges (Mix 1 = DNA default). The GUI DNA/RNA toggle
+    # overrides Mix 1 at plot time — see core/ighv.py.
+    "IGHV Mix 1": [(500.0, 570.0)],
+    "IGHV Mix 2": [(310.0, 380.0)],
 }
 
 # Channel → text color mapping for rearrangement info tables
@@ -312,6 +353,16 @@ ASSAY_REARRANGEMENT_INFO: dict[str, dict] = {
             {"name": "Dβ1+Jβ1/2", "range": "285–325"},
             {"name": "Dβ2 + Jβ2", "range": "170–210"},
         ],
+    },
+    # IGHV: ingen faste V-J-segmentrader — analysen rapporterer klonale
+    # topper (> 5000 RFU) i referanseområdet, ikke rearrangement-tabell.
+    "IGHV Mix 1": {
+        "title": "IGHV Mix 1: 500–570 bp (RNA: 415–485 bp)",
+        "rows": [],
+    },
+    "IGHV Mix 2": {
+        "title": "IGHV Mix 2: 310–380 bp",
+        "rows": [],
     },
 }
 
