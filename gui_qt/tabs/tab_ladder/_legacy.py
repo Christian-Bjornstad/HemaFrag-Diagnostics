@@ -25,15 +25,21 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThreadPool, QTimer, pyqtSignal
 
 from config import APP_SETTINGS, get_analysis_settings
-from core.analysis import load_ladder_adjustment, save_ladder_adjustment
+from core.ladder_adjustment_io import load_ladder_adjustment, save_ladder_adjustment
 from core.analyses.clonality.ladder_review_labels import (
     is_review_rerunnable,
     is_review_resolved,
 )
 from core.html_reports import extract_dit_from_name
-from gui_qt.dialogs.ladder_dialog import LadderAdjustmentDialog
 from gui_qt.ladder_utils import detect_fsa_for_ladder, load_adjustable_fsa
 from gui_qt.worker import Worker
+
+
+def _open_ladder_adjustment_dialog(*args, **kwargs):
+    """Import the ladder dialog lazily (it drags in matplotlib/pandas)."""
+    from gui_qt.dialogs.ladder_dialog import LadderAdjustmentDialog
+
+    return LadderAdjustmentDialog(*args, **kwargs)
 
 
 
@@ -683,7 +689,7 @@ class TabLadder(QWidget):
         review_comment = ""
         if review_case:
             review_comment = str(review_case.get("label_note", "") or "")
-        dialog = LadderAdjustmentDialog(
+        dialog = _open_ladder_adjustment_dialog(
             fsa,
             self,
             review_context=review_case,

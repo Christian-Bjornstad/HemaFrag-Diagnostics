@@ -22,7 +22,7 @@ from core.assay_config import (
     merged_analysis_attr,
     reference_shade_rgba,
 )
-from core.analysis import estimate_running_baseline
+from core.baseline import estimate_running_baseline
 
 
 def _assay_reference_ranges() -> dict:

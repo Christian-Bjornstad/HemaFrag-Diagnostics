@@ -5,12 +5,14 @@ from pathlib import Path
 
 from core.analyses.clonality.classification import classify_fsa as classify_clonality_fsa
 from core.analyses.flt3.classification import classify_fsa as classify_flt3_fsa
-from core.analysis import (
+# Heavy scientific stack (scipy/sklearn/Bio via core.analysis) is imported
+# lazily inside the analyse_* call sites so that importing this module at
+# application startup stays lightweight. The ladder-fit profile constants
+# are plain string constants re-exported from the light _constants module.
+from core.analysis._constants import (
     LADDER_FIT_PROFILE_CLONALITY_LIZ500,
     LADDER_FIT_PROFILE_CLONALITY_ROX400HD,
     LADDER_FIT_PROFILE_FLT3_GS500ROX,
-    analyse_fsa_liz,
-    analyse_fsa_rox,
 )
 from core.assay_config import (
     LIZ_LADDER,
@@ -233,6 +235,10 @@ def load_adjustable_fsa(
     ladder, min_distance, min_height = _resolve_ladder_runtime(metadata["analysis"], metadata["ladder"])
     metadata["ladder"] = ladder
     ladder_fit_profile = metadata.get("ladder_fit_profile")
+
+    # Lazy import: core.analysis pulls in scipy/sklearn/Bio (~1.5 s) and is
+    # only needed once a file is actually being analysed.
+    from core.analysis import analyse_fsa_liz, analyse_fsa_rox
 
     if ladder.upper().startswith("LIZ"):
         fsa = analyse_fsa_liz(

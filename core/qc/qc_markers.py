@@ -10,7 +10,7 @@ from html import escape as html_escape_builtin
 import numpy as np
 
 from core.qc.qc_rules import QCRules, normalize_assay_qc
-from core.analysis import estimate_running_baseline
+from core.baseline import estimate_running_baseline
 from core.area import compute_peak_area_gaussian
 from core.utils import strip_stage_prefix, CONTROL_PREFIX_RE
 

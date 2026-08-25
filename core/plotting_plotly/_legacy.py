@@ -8,10 +8,22 @@ from __future__ import annotations
 import json
 import uuid
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 from pathlib import Path
 from html import escape
+
+
+class _PandasModuleProxy:
+    """Deferred pandas access — plotting module is imported at GUI startup;
+    pandas (~0.6 s) is only needed once plots are actually built."""
+
+    def __getattr__(self, name: str):
+        import pandas
+
+        return getattr(pandas, name)
+
+
+pd = _PandasModuleProxy()
 
 import core.assay_config as assay_config
 from core.assay_config import (
@@ -20,12 +32,14 @@ from core.assay_config import (
     merged_analysis_attr,
     reference_shade_rgba,
 )
-from core.analysis import (
+from core.baseline import (
     estimate_running_baseline,
     BASELINE_BIN_SIZE,
     BASELINE_QUANTILE,
-    YMAX_PADDING_FACTOR,
 )
+# Plain numeric constant re-imported from the light _constants module
+# (kept out of core.baseline so baseline stays a pure numpy module).
+from core.analysis._constants import YMAX_PADDING_FACTOR
 from core.plotly_offline import local_plotly_tag as _local_plotly_tag
 from core.plot_cache import (
     FsaPlotCache,

@@ -9,7 +9,23 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from Bio import SeqIO
+
+class _LazySeqIOModule:
+    """Module-like proxy for Bio.SeqIO.
+
+    ``core.fsa_artifact`` sits on the GUI startup path; importing Bio costs
+    ~100 ms and drags sqlite3, so it is deferred until the first decode.
+    Attribute access (including test monkeypatching of ``SeqIO.read``)
+    triggers the one-time import.
+    """
+
+    def __getattr__(self, name: str):
+        from Bio import SeqIO
+
+        return getattr(SeqIO, name)
+
+
+SeqIO = _LazySeqIOModule()
 
 
 FSA_ARTIFACT_SCHEMA = "hemafrag_fsa_artifact_v1"

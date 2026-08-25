@@ -186,6 +186,8 @@ def test_yearly_orchestration_writes_resumable_manifest(
 def test_archive_runner_support_modules_are_available():
     from gui_qt.tabs import tab_archive_runner
 
+    # Modules load lazily on first use (pandas ~0.5 s at startup otherwise).
+    tab_archive_runner._ensure_archive_modules()
     assert tab_archive_runner._ARCHIVE_SUPPORT_AVAILABLE is True
     assert tab_archive_runner.run_yearly_validation is not None
     assert tab_archive_runner.combine_run_root is not None

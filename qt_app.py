@@ -118,7 +118,11 @@ def _remove_macos_metadata_files(bundle_dir: Path) -> None:
 
 def _prepare_runtime_bundle() -> Path:
     bundle_dir = Path(getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))))
-    _remove_macos_metadata_files(bundle_dir)
+    # The AppleDouble cleanup only matters inside a PyInstaller bundle
+    # (extracted _MEIPASS dir on Linux). Scanning a source checkout costs
+    # ~0.7 s on every startup for zero matches — skip it when not frozen.
+    if hasattr(sys, "_MEIPASS"):
+        _remove_macos_metadata_files(bundle_dir)
     return bundle_dir
 
 

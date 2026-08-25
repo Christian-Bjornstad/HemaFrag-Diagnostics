@@ -16,7 +16,20 @@ from collections import defaultdict
 from dataclasses import asdict, is_dataclass
 from html import escape
 from datetime import datetime
-import pandas as pd
+
+
+class _PandasModuleProxy:
+    """Minimal module-like proxy so `pd.DataFrame()` calls and annotations
+    keep working with a deferred pandas import (report building happens
+    long after startup; pandas costs ~0.6 s to import)."""
+
+    def __getattr__(self, name: str):
+        import pandas
+
+        return getattr(pandas, name)
+
+
+pd = _PandasModuleProxy()
 
 from core.analyses.registry import get_active_analysis_name
 from core.analyses.flt3.distance import (

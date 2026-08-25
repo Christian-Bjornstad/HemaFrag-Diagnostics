@@ -31,42 +31,70 @@ from config import APP_SETTINGS, get_analysis_settings, save_settings
 from core.analyses.clonality.ladder_review_labels import is_review_resolved
 from gui_qt.worker import Worker
 
+# The yearly-runner modules import pandas (~0.5 s). They are loaded lazily on
+# first use so application startup stays lightweight.
 _ARCHIVE_SUPPORT_ERROR = ""
-try:
-    from scripts.combine_clonality_yearly_overview import (
-        combine_run_root as combine_clonality_run_root,
-    )
-    from scripts.combine_flt3_yearly_overview import (
-        combine_run_root as combine_flt3_run_root,
-    )
-    from scripts.run_clonality_yearly import (
-        discover_month_folders,
-        normalize_month_keys,
-        run_yearly_validation as run_clonality_yearly_validation,
-    )
-    from scripts.run_flt3_yearly import (
-        run_yearly_validation as run_flt3_yearly_validation,
-    )
-    combine_run_root = combine_clonality_run_root
-    run_yearly_validation = run_clonality_yearly_validation
-    _RUNNERS = {
-        "clonality": run_clonality_yearly_validation,
-        "flt3": run_flt3_yearly_validation,
-    }
-    _COMBINERS = {
-        "clonality": combine_clonality_run_root,
-        "flt3": combine_flt3_run_root,
-    }
-    _ARCHIVE_SUPPORT_AVAILABLE = True
-except Exception as exc:
-    combine_run_root = None
-    discover_month_folders = None
-    normalize_month_keys = None
-    run_yearly_validation = None
-    _RUNNERS = {}
-    _COMBINERS = {}
-    _ARCHIVE_SUPPORT_AVAILABLE = False
-    _ARCHIVE_SUPPORT_ERROR = str(exc)
+_ARCHIVE_SUPPORT_AVAILABLE = False
+
+
+def _ensure_archive_modules() -> dict:
+    """Import the heavy archive-runner stack once, on first use.
+
+    Returns the runners dict; also populates ``_COMBINERS`` and the module
+    level helpers (``discover_month_folders``, ``normalize_month_keys``,
+    ``run_yearly_validation``). On ImportError the support flags record why
+    the Archive Runner is unavailable.
+    """
+    global _ARCHIVE_SUPPORT_AVAILABLE, _ARCHIVE_SUPPORT_ERROR
+    global discover_month_folders, normalize_month_keys, run_yearly_validation
+    global combine_run_root
+    if _RUNNERS:
+        return _RUNNERS
+    try:
+        from scripts.combine_clonality_yearly_overview import (
+            combine_run_root as combine_clonality_run_root,
+        )
+        from scripts.combine_flt3_yearly_overview import (
+            combine_run_root as combine_flt3_run_root,
+        )
+        from scripts.run_clonality_yearly import (
+            discover_month_folders as _discover_month_folders,
+            normalize_month_keys as _normalize_month_keys,
+            run_yearly_validation as run_clonality_yearly_validation,
+        )
+        from scripts.run_flt3_yearly import (
+            run_yearly_validation as run_flt3_yearly_validation,
+        )
+
+        combine_run_root = combine_clonality_run_root
+        run_yearly_validation = run_clonality_yearly_validation
+        _RUNNERS.update(
+            {
+                "clonality": run_clonality_yearly_validation,
+                "flt3": run_flt3_yearly_validation,
+            }
+        )
+        _COMBINERS.update(
+            {
+                "clonality": combine_clonality_run_root,
+                "flt3": combine_flt3_run_root,
+            }
+        )
+        discover_month_folders = _discover_month_folders
+        normalize_month_keys = _normalize_month_keys
+        _ARCHIVE_SUPPORT_AVAILABLE = True
+    except Exception as exc:
+        _ARCHIVE_SUPPORT_AVAILABLE = False
+        _ARCHIVE_SUPPORT_ERROR = str(exc)
+    return _RUNNERS
+
+
+_RUNNERS: dict = {}
+_COMBINERS: dict = {}
+discover_month_folders = None
+normalize_month_keys = None
+run_yearly_validation = None
+combine_run_root = None
 
 
 def _open_path(path: Path) -> None:
@@ -119,6 +147,7 @@ class TabArchiveRunner(QWidget):
         self.set_analysis(self._current_analysis_id)
 
     def _archive_support_available(self) -> bool:
+        _ensure_archive_modules()
         return (
             _ARCHIVE_SUPPORT_AVAILABLE
             and self._current_analysis_id in _RUNNERS
@@ -135,9 +164,11 @@ class TabArchiveRunner(QWidget):
         )
 
     def _runner(self):
+        _ensure_archive_modules()
         return _RUNNERS.get(self._current_analysis_id)
 
     def _combiner(self):
+        _ensure_archive_modules()
         return _COMBINERS.get(self._current_analysis_id)
 
     def _analysis_label(self) -> str:
@@ -460,6 +491,7 @@ class TabArchiveRunner(QWidget):
     def _selected_months(self) -> list[str]:
         year_label = self.year_input.text().strip()
         raw_months = [f"{year_label}_{month}" for month, checkbox in self._month_checkboxes.items() if checkbox.isChecked()]
+        _ensure_archive_modules()
         if normalize_month_keys is None:
             return raw_months
         return normalize_month_keys(year_label, raw_months)
@@ -585,6 +617,7 @@ class TabArchiveRunner(QWidget):
     def _month_counts(self) -> dict[str, int]:
         year_label = self.year_input.text().strip()
         input_root = self.input_root.text().strip()
+        _ensure_archive_modules()
         if discover_month_folders is None:
             return {}
         if len(year_label) != 4 or not year_label.isdigit() or not input_root:
