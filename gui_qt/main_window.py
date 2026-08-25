@@ -16,6 +16,7 @@ from gui_qt.tabs.tab_labeling import TabLabeling
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_log import TabLog
 from gui_qt.tabs.tab_about import TabAbout
+from gui_qt.tabs.tab_compare import TabCompare
 from gui_qt.tabs.tab_settings import TabAnalysisSettings
 from gui_qt.widgets.brand_lockup import BrandLockup
 from config import APP_SETTINGS, get_analysis_settings, save_settings
@@ -143,6 +144,7 @@ class MainWindow(QMainWindow):
                 "Run",
                 "Ladder",
                 "Archive Runner",
+                "Compare",
                 "Log",
                 "Labeling",
                 "Settings",
@@ -156,11 +158,24 @@ class MainWindow(QMainWindow):
                 "Run",
                 "Ladder",
                 "Archive Runner",
+                "Compare",
                 "Log",
                 "Settings",
             ],
         )
-        self.group_general = AnalysisGroup("General", "general", self.on_sub_tab_clicked)
+        self.group_general = AnalysisGroup(
+            "General",
+            "general",
+            self.on_sub_tab_clicked,
+            sub_buttons=[
+                "Run",
+                "Ladder",
+                "Archive Runner",
+                "Compare",
+                "Log",
+                "Settings",
+            ],
+        )
         
         self.groups = [self.group_clonality, self.group_flt3, self.group_general]
         for g in self.groups:
@@ -183,6 +198,7 @@ class MainWindow(QMainWindow):
         self.tab_labeling = TabLabeling()
         self.tab_log = TabLog()
         self.tab_about = TabAbout()
+        self.tab_compare = TabCompare()
         self.tab_settings_clonality = TabAnalysisSettings("clonality")
         self.tab_settings_flt3 = TabAnalysisSettings("flt3")
         self.tab_settings_general = TabAnalysisSettings("general")
@@ -214,6 +230,7 @@ class MainWindow(QMainWindow):
         self.tab_settings_clonality_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_clonality))
         self.tab_settings_flt3_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_flt3))
         self.tab_settings_general_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_general))
+        self.tab_compare_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_compare))
 
         # Per-analysis sub-button → stack index. Scoped by analysis_id so a
         # single ``tab_run_idx`` index can be shared cleanly. Built from a
@@ -224,6 +241,7 @@ class MainWindow(QMainWindow):
                 "Run": self.tab_run_idx,
                 "Ladder": self.tab_ladder_idx,
                 "Archive Runner": self.tab_archive_idx,
+                "Compare": self.tab_compare_idx,
                 "Log": self.tab_log_idx,
                 "Labeling": self.tab_labeling_idx,
                 "Settings": self.tab_settings_clonality_idx,
@@ -232,6 +250,7 @@ class MainWindow(QMainWindow):
                 "Run": self.tab_run_idx,
                 "Ladder": self.tab_ladder_idx,
                 "Archive Runner": self.tab_archive_idx,
+                "Compare": self.tab_compare_idx,
                 "Log": self.tab_log_idx,
                 "Settings": self.tab_settings_flt3_idx,
             },
@@ -239,6 +258,7 @@ class MainWindow(QMainWindow):
                 "Run": self.tab_run_idx,
                 "Ladder": self.tab_ladder_idx,
                 "Archive Runner": self.tab_archive_idx,
+                "Compare": self.tab_compare_idx,
                 "Log": self.tab_log_idx,
                 "Settings": self.tab_settings_general_idx,
             },
