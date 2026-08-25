@@ -1484,13 +1484,32 @@ def _render_ighv_qc_table(qc_rows: dict, html_lines: list[str]) -> None:
             return "&mdash;"
         return f"{val:,.{decimals}f}"
 
+    def _pk_flag(pk_row: dict) -> str:
+        """«(utenfor forventet område)&raquo; kun når PK-topp ligger utenfor vinduet."""
+        bp = pk_row.get("bp", float("nan"))
+        lo = pk_row.get("window_lo")
+        hi = pk_row.get("window_hi")
+        try:
+            bp_v = float(bp)
+            lo_v = float(lo)
+            hi_v = float(hi)
+        except (TypeError, ValueError):
+            return ""
+        if bp_v != bp_v or lo_v != lo_v or hi_v != hi_v:
+            return ""
+        if not (lo_v <= bp_v <= hi_v):
+            return f" <span class='ighv-pk-flag'>(utenfor {lo_v:.0f}&ndash;{hi_v:.0f} bp)</span>"
+        return ""
+
+    pk_flag_html = _pk_flag(pk)
+
     html_lines.append(
         "<table class='peak-table ighv-qc-table'><thead><tr>"
         "<th>Kontroll</th><th>Topp (bp)</th><th>H&oslash;yde (RFU)</th><th>Areal</th>"
         "</tr></thead><tbody>"
         f"<tr><td>Stige 300 bp</td><td>{_cell(ladder, 'bp')}</td>"
         f"<td>{_cell(ladder, 'height')}</td><td>{_cell(ladder, 'area')}</td></tr>"
-        f"<tr><td>PK</td><td>{_cell(pk, 'bp', 1)}</td>"
+        f"<tr><td>PK</td><td>{_cell(pk, 'bp', 1)}{pk_flag_html}</td>"
         f"<td>{_cell(pk, 'height')}</td><td>{_cell(pk, 'area')}</td></tr>"
         "</tbody></table>"
     )

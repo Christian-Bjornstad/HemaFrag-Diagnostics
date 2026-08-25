@@ -222,8 +222,15 @@ def qc_control_rows(
         hit["found"] = 1.0
         return hit
 
+    pk_row = _row(_strongest(pk_hits))
+    if pk_row.get("found") == 1.0:
+        # Vindu følger med på raden slik at rapporten kan flagge avvik
+        # («utenfor …») — delta trackes kun når toppen ligger utenfor.
+        pk_row["window_lo"] = float(pk_lo)
+        pk_row["window_hi"] = float(pk_hi)
+
     return {"ladder_300": _row(_strongest(ladder_hits)),
-            "pk": _row(_strongest(pk_hits))}
+            "pk": pk_row}
 
 
 def attach_ighv_results(

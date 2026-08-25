@@ -288,8 +288,8 @@ class TabBatch(QWidget):
         row3.addWidget(self.input_scope_combo)
 
         # IGHV DNA/RNA-velger — styrer referanseområdet for Mix 1
-        # (DNA 500–570 bp, RNA 415–485 bp). Kun synlig når IGHV-filer
-        # finnes i jobbkøen (oppdateres i _scan_jobs).
+        # (DNA 500–570 bp, RNA 415–485 bp). Synlighet styres av analyse-
+        # gruppe (Klonalitet) i _update_ighv_toggle_visibility.
         self.ighv_sample_type_label = QLabel("IGHV sample type:")
         self.ighv_dna_rna_combo = QComboBox()
         self.ighv_dna_rna_combo.addItem("DNA", "DNA")
@@ -302,6 +302,7 @@ class TabBatch(QWidget):
         row3.addWidget(self.ighv_sample_type_label)
         row3.addWidget(self.ighv_dna_rna_combo)
         row3.addStretch()
+        self._update_ighv_toggle_visibility()
         
         f_layout.addWidget(l_ftitle)
         f_layout.addLayout(row1)
@@ -908,6 +909,7 @@ class TabBatch(QWidget):
         self.input_scope_combo.setVisible(not is_general)
         self.btn_add_files.setVisible(is_general)
         self.input_label.setText("Files / Folders:" if is_general else "Samples:")
+        self._update_ighv_toggle_visibility()
         self._set_workflow_status(
             "Ready",
             "ready",
@@ -1077,15 +1079,15 @@ class TabBatch(QWidget):
             set_sample_type(assay, sample_type)
 
     def _update_ighv_toggle_visibility(self) -> None:
-        """Vis DNA/RNA-velgeren kun når IGHV-filer er lagt til i køen."""
-        has_ighv = False
-        for i in range(self.folder_list.count()):
-            text = self.folder_list.item(i).text().upper()
-            if "IGHV" in Path(text).name or "IGHV" in text:
-                has_ighv = True
-                break
-        self.ighv_sample_type_label.setVisible(has_ighv)
-        self.ighv_dna_rna_combo.setVisible(has_ighv)
+        """Vis DNA/RNA-velgeren for alle Klonalitet-kjøringer.
+
+        Den påvirker kun IGHV Mix 1 sitt referanseområde, men kjører man
+        hele run-mapper ser ikke filnavnene nødvendigvis «IGHV» — derfor
+        styres synlighet av analysen, ikke av filnavn.
+        """
+        is_clonality = getattr(self, "_current_analysis_id", "") == "clonality"
+        self.ighv_sample_type_label.setVisible(is_clonality)
+        self.ighv_dna_rna_combo.setVisible(is_clonality)
 
     def _add_folders(self):
         batch_settings = self._profile_for().get("batch", {})

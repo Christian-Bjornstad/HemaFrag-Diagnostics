@@ -159,6 +159,24 @@ def test_qc_rows_ladder_and_pk_strongest_in_window():
     assert abs(pk["bp"] - 542.0) < 1.0
 
 
+def test_qc_rows_pk_carries_window_bounds():
+    from core.ighv import qc_control_rows
+    import core.ighv as m
+
+    sig, bp = _trace([(542.0, 2600.0)])
+    orig = m._trace_arrays
+    m._trace_arrays = lambda f, ch="DATA1": (sig, bp)
+    try:
+        rows = qc_control_rows(object(), "IGHV Mix 1")
+    finally:
+        m._trace_arrays = orig
+
+    pk = rows["pk"]
+    assert pk["found"] == 1.0
+    assert pk["window_lo"] == 535.0 and pk["window_hi"] == 550.0
+    assert pk["window_lo"] <= pk["bp"] <= pk["window_hi"]
+
+
 def test_qc_rows_missing_peaks_give_nan_rows():
     from core.ighv import qc_control_rows
     import core.ighv as m
