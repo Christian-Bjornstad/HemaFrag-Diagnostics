@@ -119,11 +119,15 @@ def save_ladder_adjustment(
         ):
             raise ValueError("Ladder adjustment has no persisted peak mapping.")
 
+        # NB: expected_ladder_steps/ladder_steps kan være numpy-array
+        # fra Ladder Studio-preview — aldri bruk `array or []` her.
         expected_steps_raw = getattr(fsa, "expected_ladder_steps", None)
         if expected_steps_raw is None or len(expected_steps_raw) == 0:
             expected_steps_raw = getattr(fsa, "ladder_steps", None)
+        if expected_steps_raw is None:
+            expected_steps_raw = []
         expected_steps = [
-            float(step) for step in (expected_steps_raw or [])
+            float(step) for step in list(expected_steps_raw)
         ]
         selected_peaks = []
         for step_index, candidate_index in sorted(mapping_payload["mapping"].items()):
