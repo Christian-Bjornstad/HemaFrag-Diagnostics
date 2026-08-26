@@ -1107,11 +1107,14 @@ class LadderAdjustmentDialog(QDialog):
         for step_idx, cand_idx in self.mapping.items():
             if 0 <= cand_idx < len(self.candidates):
                 mapping_times[int(step_idx)] = float(self.candidates.iloc[cand_idx]["time"])
-        return {
+        payload = {
             "mapping": dict(self.mapping),
             "mapping_times": mapping_times,
             "manual_candidates": list(self._manual_candidate_times),
         }
+        if self._missing_step_indices():
+            payload["partial_mapping"] = True
+        return payload
 
     def _candidate_time_exists(self, peak_time: float, tolerance: float = 2.0) -> int | None:
         if self.candidates.empty:
@@ -1295,16 +1298,21 @@ class LadderAdjustmentDialog(QDialog):
         missing_count = sum(1 for row in self._fit_rows if row["status"] == "Missing")
         outlier_count = sum(1 for row in self._fit_rows if row["status"] == "Outlier")
         if self._preview_metrics is None:
-            if len(self.mapping) < 3:
-                return "check", "Map at least 3 ladder steps to preview the fit."
-            if missing_count:
-                return "check", f"{missing_count} ladder step(s) are still missing from the current edit."
+            if len(self.mapping) < 2:
+                return "check", "Map at least 2 ladder steps to preview the fit."
             return "unknown", "Preview not run"
 
         r2 = float(self._preview_metrics.get("r2", float("nan")))
         max_abs = float(self._preview_metrics.get("max_abs_error_bp", float("inf")))
-        if missing_count or outlier_count or r2 < CHECK_R2 or max_abs > CHECK_MAX_ABS_RESIDUAL:
-            return "fail", "Fit needs attention: missing steps, low R², or high residual outlier detected."
+        # Delvis kartlegging (interpolerte trinn) gir "check", ikke "fail" —
+        # residualene gjelder kun de faktisk plasserte toppene.
+        if outlier_count or r2 < CHECK_R2 or max_abs > CHECK_MAX_ABS_RESIDUAL:
+            return "fail", "Fit needs attention: low R², or high residual outlier detected."
+        if missing_count:
+            return (
+                "check",
+                f"{missing_count} ladder step(s) interpolated/extrapolated from placed peaks.",
+            )
         if r2 < PASS_R2 or max_abs > PASS_MAX_ABS_RESIDUAL:
             return "check", "Fit is usable, but one or more residuals still need review."
         return "pass", "Stable ladder fit with low residuals across mapped steps."
@@ -1316,17 +1324,13 @@ class LadderAdjustmentDialog(QDialog):
         self._fit_grade = "unknown"
         self._fit_reason = "Preview not run"
 
-        if len(self.mapping) < 3:
+        if len(self.mapping) < 2:
             self._fit_rows = self._build_fit_rows()
             self._fit_grade, self._fit_reason = self._grade_preview_state()
             return
 
-        missing_steps = [idx for idx in range(len(self.ladder_steps)) if idx not in self.mapping]
-        if missing_steps:
-            self._fit_rows = self._build_fit_rows()
-            self._fit_grade, self._fit_reason = self._grade_preview_state()
-            return
-
+        # Delvis kartlegging er tillatt: manglende trinn interpoleres i
+        # apply_manual_ladder_mapping, sa previewen kjores uansett.
         from core.analysis import apply_manual_ladder_mapping, compute_ladder_qc_metrics
 
         try:
@@ -2062,21 +2066,30 @@ class LadderAdjustmentDialog(QDialog):
 
     def _on_apply(self):
         self._review_action = "apply"
-        if not self.mapping:
-            QMessageBox.warning(self, "No Mapping", "Map at least one ladder step before applying.")
+        if len(self.mapping) < 2:
+            QMessageBox.warning(
+                self,
+                "No Mapping",
+                "Map at least two ladder steps before applying (the rest is interpolated).",
+            )
             return
         missing_steps = self._missing_step_indices()
         if missing_steps:
             missing_text = ", ".join(f"{self.ladder_steps[idx]:.0f} bp" for idx in missing_steps[:8])
             if len(missing_steps) > 8:
                 missing_text += ", ..."
-            QMessageBox.warning(
+            answer = QMessageBox.question(
                 self,
                 "Incomplete Ladder Mapping",
-                "All expected ladder steps must be assigned before saving this adjustment.\n\n"
-                f"Missing: {missing_text}",
+                "Not all ladder steps are assigned. The remaining steps will be "
+                "interpolated/extrapolated from the peaks you have placed.\n\n"
+                f"Missing: {missing_text}\n\n"
+                "Save this adjustment anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
             )
-            return
+            if answer != QMessageBox.Yes:
+                return
 
         self._refresh_preview_state(show_errors=True)
         self._refresh_all()

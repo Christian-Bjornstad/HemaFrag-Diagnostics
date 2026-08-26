@@ -5108,7 +5108,34 @@ def apply_manual_ladder_mapping(fsa: FsaFile, adjustment: dict[int, int] | dict)
 
     missing = np.isnan(selected_peaks)
     if np.any(missing):
-        raise ValueError("Manual ladder mapping is incomplete. Start from an auto-fit or map every missing ladder step.")
+        # Partial mapping: interpoler/ekstrapoler manglende stige-ankre fra de
+        # tilordnede (lineært i tid mellom nabotopper). Brukes når skannet
+        # ikke dekker hele stigen — brukeren har godkjent delvis kartlegging.
+        mapped_idx = np.flatnonzero(~missing)
+        if mapped_idx.size < 2:
+            raise ValueError(
+                "Manual ladder mapping needs at least two assigned ladder steps to interpolate the rest."
+            )
+        filled = selected_peaks.copy()
+        missing_idx = np.flatnonzero(missing)
+        # Interiør: standard lineær interpolasjon mellom nabotopper.
+        interior = missing_idx[(missing_idx > mapped_idx[0]) & (missing_idx < mapped_idx[-1])]
+        filled[interior] = np.interp(interior, mapped_idx, selected_peaks[mapped_idx])
+        # Kanter: ekstrapoler med stigningstallet fra de ytterste ankerne
+        # (np.interp klemmer ved kantene og gir flat/lik verdier der).
+        left = missing_idx[missing_idx < mapped_idx[0]]
+        if left.size:
+            slope = (
+                selected_peaks[mapped_idx[1]] - selected_peaks[mapped_idx[0]]
+            ) / (mapped_idx[1] - mapped_idx[0])
+            filled[left] = selected_peaks[mapped_idx[0]] + slope * (left - mapped_idx[0])
+        right = missing_idx[missing_idx > mapped_idx[-1]]
+        if right.size:
+            slope = (
+                selected_peaks[mapped_idx[-1]] - selected_peaks[mapped_idx[-2]]
+            ) / (mapped_idx[-1] - mapped_idx[-2])
+            filled[right] = selected_peaks[mapped_idx[-1]] + slope * (right - mapped_idx[-1])
+        selected_peaks = filled
 
     if np.any(np.diff(selected_peaks) <= 0):
         raise ValueError("Selected ladder peaks must be strictly increasing in time.")
