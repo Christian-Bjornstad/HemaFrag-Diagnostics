@@ -190,6 +190,156 @@ def build_comparison_html_report(
     return html_path
 
 
+def build_group_comparison_html_report(
+    entries: list[dict[str, Any]],
+    outdir: Path,
+    *,
+    report_name: str | None = None,
+) -> Path:
+    """Build a multi-file comparison HTML report grouped per assay.
+
+    Unlike :func:`build_comparison_html_report` (exactly two files), this
+    accepts any number of entries — e.g. every FSA from one or more
+    selected patients. Entries are grouped by assay in first-seen order;
+    each assay section shares one Y-axis max so plots are directly
+    comparable within the section.
+
+    Args:
+        entries: Analysis entry dicts (from pipeline).
+        outdir: Output directory for the HTML file.
+        report_name: Optional custom name (without extension).
+
+    Returns:
+        Path to the generated HTML file.
+
+    Raises:
+        ValueError: If ``entries`` is empty.
+    """
+    clean_entries = [e for e in entries if isinstance(e, dict)]
+    if not clean_entries:
+        raise ValueError("No analysis entries to compare.")
+
+    sections: dict[str, list[dict[str, Any]]] = {}
+    for entry in clean_entries:
+        assay = str(entry.get("assay") or "UKJENT")
+        sections.setdefault(assay, []).append(entry)
+
+    if report_name is None:
+        first_dit = next(
+            (str(e.get("dit")) for e in clean_entries if e.get("dit")),
+            "no-dit",
+        )
+        report_name = f"COMPARE_GROUP_{len(clean_entries)}filer_{first_dit}"
+
+    html_path = Path(outdir) / f"{report_name}.html"
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+
+    report_metrics = _new_report_metrics()
+    started = time.perf_counter()
+
+    primary_dit = next(
+        (str(e.get("dit")) for e in clean_entries if e.get("dit")), "no-dit"
+    )
+    year = None
+    try:
+        if primary_dit and primary_dit != "no-dit":
+            year = int(primary_dit[:4])
+    except Exception:
+        pass
+
+    assay_summary = ", ".join(f"{a} ({len(v)})" for a, v in sections.items())
+    html_lines: list[str] = []
+    _create_html_header(
+        dit=str(primary_dit),
+        year=year,
+        num_entries=len(clean_entries),
+        dit_root=html_path.parent,
+        html_lines=html_lines,
+        display_name=f"Sammenligning: {len(clean_entries)} filer",
+    )
+
+    for i, line in enumerate(html_lines):
+        if "<title>" in line:
+            html_lines[i] = (
+                f"<title>Sammenligning: {escape(assay_summary)}"
+                f" — {len(clean_entries)} filer</title>"
+            )
+            break
+
+    html_lines.append(
+        "<div class='comparison-header'>"
+        f"<h2>Sammenligning: {len(clean_entries)} filer</h2>"
+        f"<p class='small'><strong>Analyser:</strong> {escape(assay_summary)}</p>"
+        "</div>"
+    )
+
+    for assay, group_entries in sections.items():
+        html_lines.append(
+            f"<h2 class='comparison-section-title'>{escape(assay)}"
+            f" ({len(group_entries)} filer)</h2>"
+        )
+
+        ymax = compute_group_ymax_for_entries(group_entries)
+
+        html_lines.append("<div class='comparison-grid'>")
+        for entry in group_entries:
+            fsa_name = str(getattr(entry["fsa"], "file_name", "?"))
+            dit = str(entry.get("dit") or "no-dit")
+            channel = str(entry.get("primary_peak_channel", ""))
+            html_lines.append("<div class='comparison-column'>")
+            html_lines.append(f"<h3>{escape(fsa_name)}</h3>")
+            html_lines.append(
+                f"<p class='small'>DIT: {escape(dit)} | "
+                f"Kanal: {escape(channel)}</p>"
+            )
+            orig_ymax = entry.get("forced_ymax")
+            entry["forced_ymax"] = ymax
+            try:
+                html_lines.append(
+                    _build_report_plot_fragment(entry, report_metrics)
+                )
+            finally:
+                if orig_ymax is None:
+                    entry.pop("forced_ymax", None)
+                else:
+                    entry["forced_ymax"] = orig_ymax
+            html_lines.append("</div>")
+        html_lines.append("</div>")  # comparison-grid
+
+        html_lines.append("<h3>Peak-tabeller</h3>")
+        html_lines.append("<div class='comparison-grid'>")
+        for idx, entry in enumerate(group_entries, start=1):
+            html_lines.append("<div class='comparison-column'>")
+            html_lines.append(
+                f"<h4>{escape(str(getattr(entry['fsa'], 'file_name', '?')))}</h4>"
+            )
+            html_lines.append(
+                _render_peak_table_for_comparison(entry, str(idx))
+            )
+            html_lines.append("</div>")
+        html_lines.append("</div>")  # comparison-grid
+
+    total_sec = time.perf_counter() - started
+    html_lines.append(
+        """
+<div class="print-fab no-print">
+  <button class="print-btn" onclick="printReport()">🖨&nbsp; Print / PDF</button>
+</div>
+</body></html>"""
+    )
+    _atomic_write_html(html_path, "\n".join(html_lines))
+    print_green(f"[COMPARE] Lagret gruppe-rapport: {html_path}")
+    print_green(
+        _format_report_metrics_summary(
+            f"group:{primary_dit}",
+            report_metrics,
+            total_sec,
+            html_path.stat().st_size,
+        )
+    )
+    return html_path
+
+
 def _render_peak_table_for_comparison(entry: dict[str, Any], label: str) -> str:
     """Render a simplified peak table for comparison view."""
     from core.html_reports._legacy import pd
