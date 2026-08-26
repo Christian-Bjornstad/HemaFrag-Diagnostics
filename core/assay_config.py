@@ -93,9 +93,14 @@ def _hex_to_rgb(color: str) -> tuple[int, int, int]:
         fallback = DEFAULT_REFERENCE_SHADE_COLOR[1:]
         return int(fallback[0:2], 16), int(fallback[2:4], 16), int(fallback[4:6], 16)
 
-def reference_shade_rgba(alpha: float | None = None) -> str:
-    """Return the shared Plotly fill color for assay reference windows."""
-    color = _get_analysis_attr("REFERENCE_SHADE_COLOR", DEFAULT_REFERENCE_SHADE_COLOR)
+def reference_shade_rgba(alpha: float | None = None, color: str | None = None) -> str:
+    """Return the shared Plotly fill color for assay reference windows.
+
+    ``color`` overrides the configured default — used for the IGHV RNA
+    shade (a redder tint of the standard beige).
+    """
+    if color is None:
+        color = _get_analysis_attr("REFERENCE_SHADE_COLOR", DEFAULT_REFERENCE_SHADE_COLOR)
     r, g, b = _hex_to_rgb(str(color))
     a = DEFAULT_REFERENCE_SHADE_ALPHA if alpha is None else float(alpha)
     a = max(0.0, min(1.0, a))

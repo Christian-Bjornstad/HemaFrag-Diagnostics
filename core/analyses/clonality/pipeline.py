@@ -701,15 +701,22 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
         from core.ighv import (
             IGHV_RFU_PEAK_THRESHOLD,
             _peak_area_near,
+            apply_sample_type,
             find_peaks_in_window,
             ighv_reference_range,
         )
 
         try:
-            # Prøvetype følger GUI-valget (core.ighv.set_sample_type).
+            # Prøvetype følger GUI-valget (core.ighv.set_sample_type), men en
+            # eksplisitt RNA/cDNA-markør i filnavnet trumfer (samme regel som
+            # attach_ighv_results) — rapporten blir da riktig uten app-valg.
             from core.ighv import get_sample_type
+            from core.analyses.clonality.classification import filename_suggests_rna
 
             sample_type = get_sample_type(assay)  # "DNA" | "RNA"
+            if sample_type != "RNA" and filename_suggests_rna(fsa.file_name):
+                sample_type = "RNA"
+                apply_sample_type(assay, "RNA")
             lo, hi = ighv_reference_range(assay, sample_type)
             signal_arr, bp_arr = None, None
             raw_df = getattr(fsa, "sample_data_with_basepairs", None)

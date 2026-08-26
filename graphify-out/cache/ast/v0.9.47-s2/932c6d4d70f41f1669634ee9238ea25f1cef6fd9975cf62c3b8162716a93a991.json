@@ -1,0 +1,1 @@
+{"nodes": [{"id": "pkg_fraggler_kernels", "label": "fraggler-kernels", "file_type": "code", "type": "package", "ecosystem": "python", "source_file": "fraggler-v2/crates/fraggler-kernels-py/pyproject.toml", "source_location": "L1", "version": "0.1.2"}], "edges": []}

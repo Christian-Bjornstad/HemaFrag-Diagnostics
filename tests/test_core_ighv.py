@@ -1,16 +1,17 @@
 """Tests for core/ighv.py — IGHV Mix 1/Mix 2 analysis.
 
-Covers: reference ranges, RFU>5000 detection, verdict phrasing,
-QC ladder/PK rows, sample-type toggle, and config integration
+Covers: reference ranges, RFU>5000 detection, filename-derived
+sample type (DNA/RNA), QC ladder/PK rows, and config integration
 (ASSAY_REFERENCE_RANGES mutation via apply_sample_type).
 """
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from core.ighv import (
-    format_clonal_verdict,
     find_peaks_in_window,
     ighv_pk_window,
     ighv_reference_range,
@@ -115,22 +116,49 @@ def test_multiple_clonal_peaks_all_reported():
     assert len(hits) == 2
 
 
-# ----------------------------------------------------------------- verdict
-def test_verdict_single_peak_phrasing():
-    assert format_clonal_verdict([{"bp": 534.2, "height": 8000.0}]) == (
-        "Klonal topp (534 bp) detektert."
-    )
+# ------------------------------------------- filename-derived prøvetype
+def test_filename_suggests_rna_variants():
+    from core.analyses.clonality.classification import filename_suggests_rna
+
+    assert filename_suggests_rna("IGHV_Mix1_cDNA.fsa")
+    assert filename_suggests_rna("26OUM00001_IGHVRNA_M1.fsa")
+    assert filename_suggests_rna("sample_mRNA_run.fsa")
+    assert not filename_suggests_rna("IGHV_Mix1_DNA.fsa")
+    assert not filename_suggests_rna("26OUM00001_A01.fsa")
 
 
-def test_verdict_no_peaks():
-    assert format_clonal_verdict([]) == "Ingen klonal topp detektert."
+def test_attach_ighv_results_filename_rna_stamps_entry(monkeypatch):
+    """Filnavn med cDNA-markør stempler entry som RNA (uavhengig av GUI)."""
+    import core.ighv as m
+
+    sig, bp = _trace([(450.0, 9000.0)])
+    fsa = SimpleNamespace(file_name="IGHV_Mix1_cDNA.fsa")
+    monkeypatch.setattr(m, "_trace_arrays", lambda f, ch="DATA1": (sig, bp))
+
+    entry = {"assay": "IGHV Mix 1", "fsa": fsa}
+    out = m.attach_ighv_results(entry)
+
+    assert out["ighv_sample_type"] == "RNA"
+    assert out["ighv_sample_type_from_filename"] is True
 
 
-def test_verdict_two_peaks_lists_both():
-    txt = format_clonal_verdict(
-        [{"bp": 512.0, "height": 7000.0}, {"bp": 551.0, "height": 6100.0}]
-    )
-    assert txt == "Klonal topp (512 bp, 551 bp) detektert."
+def test_attach_ighv_results_dna_default_without_marker(monkeypatch):
+    """Uten filnavn-markør følger prøvetypen GUI-valget (her DNA-default)."""
+    import core.ighv as m
+
+    from types import SimpleNamespace
+
+    sig, bp = _trace([(534.0, 9000.0)])
+    fsa = SimpleNamespace(file_name="26OUM00001_A01.fsa")
+    monkeypatch.setattr(m, "_trace_arrays", lambda f, ch="DATA1": (sig, bp))
+    m.set_sample_type("IGHV Mix 1", "DNA")
+
+    entry = {"assay": "IGHV Mix 1", "fsa": fsa}
+    out = m.attach_ighv_results(entry)
+
+    assert out["ighv_sample_type"] == "DNA"
+    assert "ighv_sample_type_from_filename" not in out
+    assert not any("verdict" in k for k in out)  # verdict fjernet
 
 
 # ---------------------------------------------------------------- QC rows

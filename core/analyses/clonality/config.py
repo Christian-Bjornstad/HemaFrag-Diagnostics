@@ -190,6 +190,13 @@ ASSAY_CONFIG = {
 
 REFERENCE_SHADE_COLOR = "#ded7a6"
 
+# IGHV RNA: samme nyanserie som standard-beige men et tydelig hakk rødere,
+# så RNA-området skiller seg fra DNA-beige i rapporten.
+IGHV_RNA_SHADE_COLOR = "#e8b4a6"
+# Tekstfarge for «RNA: 415–485 bp» — matchet mot shadingen over.
+IGHV_RNA_TEXT_COLOR = "#c05a44"
+
+
 # ------------------------------------------------------------------
 # IGHV-spesifikasjon (brukes av core/ighv.py)
 # ------------------------------------------------------------------
@@ -231,10 +238,14 @@ ASSAY_REFERENCE_RANGES: dict[str, list[tuple[float, float]]] = {
     "TCRbB": [(240.0, 285.0)],
     "TCRbC": [(170.0, 210.0), (285.0, 325.0)],
 
-    # IGHV: nominal ranges (Mix 1 = DNA default). The GUI DNA/RNA toggle
-    # overrides Mix 1 at plot time — see core/ighv.py.
+    # IGHV: nominal ranges (Mix 1 = DNA default). Prøvetype styres per fil
+    # (filnavn-markør eller GUI) — se core/ighv.py.
     "IGHV Mix 1": [(500.0, 570.0)],
     "IGHV Mix 2": [(310.0, 380.0)],
+
+    # RNA-områder (Mix 2 har samme vindu for DNA og RNA)
+    "IGHV Mix 1 RNA": [(415.0, 485.0)],
+    "IGHV Mix 2 RNA": [(310.0, 380.0)],
 }
 
 # Channel → text color mapping for rearrangement info tables
@@ -356,12 +367,14 @@ ASSAY_REARRANGEMENT_INFO: dict[str, dict] = {
     },
     # IGHV: ingen faste V-J-segmentrader — analysen rapporterer klonale
     # topper (> 5000 RFU) i referanseområdet, ikke rearrangement-tabell.
+    # Prøvetype (DNA/RNA) og aktivt område settes per fil i rapporten
+    # (se _render_assay_block / core/ighv.py).
     "IGHV Mix 1": {
-        "title": "IGHV Mix 1: 500–570 bp (RNA: 415–485 bp)",
+        "title": "IGHV Mix 1",
         "rows": [],
     },
     "IGHV Mix 2": {
-        "title": "IGHV Mix 2: 310–380 bp",
+        "title": "IGHV Mix 2",
         "rows": [],
     },
 }

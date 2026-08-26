@@ -2,8 +2,8 @@
 
 Spesifikasjon (lab):
 - Referanseområder: Mix 1 DNA 500–570 bp / RNA 415–485 bp; Mix 2 310–380 bp.
-- Alle topper i referanseområdet med signal > 5000 RFU markeres som topp
-  og får setningen «Klonal topp (<bp> bp) detektert.»
+- Alle topper i referanseområdet med signal > 5000 RFU listes i topptabellen
+  (markeres manuelt av bruker — ingen automatisk «klonal topp»-verdict).
 - QC (PK/NK): 300 bp stigetopp måles for begge mikser; PK-fragment måles i
   vinduet Mix 1 535–550 bp / Mix 2 357–358 bp. NK skal være tom/baseline.
 """
@@ -174,13 +174,6 @@ def detect_clonal_peaks(
     return peaks
 
 
-def format_clonal_verdict(peaks: list[dict[str, float]]) -> str:
-    """«Klonal topp (534 bp) detektert.» / «Ingen klonal topp detektert.»"""
-    if not peaks:
-        return "Ingen klonal topp detektert."
-    parts = [f"{p['bp']:.0f} bp" for p in peaks]
-    return f"Klonal topp ({', '.join(parts)}) detektert."
-
 
 def qc_control_rows(
     fsa: Any,
@@ -249,12 +242,24 @@ def attach_ighv_results(
     if fsa is None:
         return entry
     effective = normalize_sample_type(sample_type) if sample_type else get_sample_type(assay)
+    # Filnavn-trumf: en eksplisitt RNA/cDNA-markør i filnavnet overstyrer
+    # GUI-standard (DNA), slik at rapporten viser riktig prøvetype uten app-valg.
+    try:
+        from core.analyses.clonality.classification import filename_suggests_rna
+
+        if effective != "RNA" and filename_suggests_rna(getattr(fsa, "file_name", "")):
+            effective = "RNA"
+            apply_sample_type(assay, "RNA")
+            entry["ighv_sample_type_from_filename"] = True
+    except Exception:
+        pass
     entry["ighv_sample_type"] = effective
     try:
-        entry["ighv_clonal_peaks"] = detect_clonal_peaks(fsa, assay)
+        entry["ighv_clonal_peaks"] = detect_clonal_peaks(fsa, assay, sample_type=effective)
     except Exception:
         entry["ighv_clonal_peaks"] = []
-    entry["ighv_verdict"] = format_clonal_verdict(entry["ighv_clonal_peaks"])
+    # NB: ingen automatisk «Klonal topp … detektert.»-verdict lenger —
+    # topper markeres manuelt i rapporten.
     group = str(entry.get("group") or "")
     if group in {"positive", "negative", "reactive"}:
         try:

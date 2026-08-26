@@ -1515,6 +1515,57 @@ def _render_ighv_qc_table(qc_rows: dict, html_lines: list[str]) -> None:
     )
 
 
+def _ighv_rna_text_color() -> str:
+    try:
+        from core.analyses.clonality import config as clonality_config
+
+        return str(getattr(clonality_config, "IGHV_RNA_TEXT_COLOR", "#c05a44"))
+    except Exception:
+        return "#c05a44"
+
+
+def _render_ighv_sample_type_line(entry: dict) -> str:
+    """Prøvetypelinje for IGHV: «Prøvetype: RNA — Referanseområde: 415–485 bp».
+
+    RNA-teksten farges i samme røde nyanse som RNA-shadingen i plottet,
+    så det er umiddelbart tydelig hvilket område som er aktivt. DNA vises
+    i standard tekstfarge med beige-område.
+    """
+    assay = str(entry.get("assay") or "")
+    sample_type = str(entry.get("ighv_sample_type") or "DNA")
+    is_rna = sample_type.upper().startswith("RNA")
+
+    lo = hi = None
+    try:
+        from core.ighv import ighv_reference_range
+
+        lo, hi = ighv_reference_range(assay, sample_type)
+    except Exception:
+        lo = entry.get("bp_min")
+        hi = entry.get("bp_max")
+
+    range_txt = (
+        f"{int(round(float(lo)))}&ndash;{int(round(float(hi)))} bp"
+        if lo is not None and hi is not None
+        else "ukjent"
+    )
+
+    if is_rna:
+        color = _ighv_rna_text_color()
+        type_html = f"<strong style='color:{color};'>RNA</strong>"
+        range_html = f"<span style='color:{color}; font-weight:600;'>{range_txt}</span>"
+    else:
+        type_html = "<strong>DNA</strong>"
+        range_html = range_txt
+
+    source = " (filnavn)" if entry.get("ighv_sample_type_from_filename") else ""
+    return (
+        f"<p class='small' style='margin-top:2px;'>"
+        f"Pr&oslash;vetype: {type_html}{escape(source)} &nbsp;&middot;&nbsp; "
+        f"Referanseomr&aring;de: {range_html}</p>"
+    )
+
+
 def _render_assay_block(
     assay_name: str,
     assay_entries: list[dict],
@@ -1547,27 +1598,8 @@ def _render_assay_block(
             html_lines.append(f"<p class='small'>{escape(' | '.join(sub))}</p>")
         html_lines.append(_build_report_plot_fragment(e, report_metrics))
         if reference_assay.startswith("IGHV"):
-            # Klonal-topp-verdict + topptabell + (for kontroller) QC-tabell.
-            from core.ighv import format_clonal_verdict
-
-            peaks = e.get("ighv_clonal_peaks")
-            if peaks is None:
-                tbl = e.get("peaks_by_channel", {}).get(primary_ch)
-                try:
-                    if tbl is not None and hasattr(tbl, "itertuples") and len(tbl):
-                        peaks = [
-                            {"bp": r.basepairs, "height": r.peaks, "area": getattr(r, "area", float("nan"))}
-                            for r in tbl.itertuples(index=False)
-                        ]
-                    else:
-                        peaks = []
-                except Exception:
-                    peaks = []
-            if not e.get("ighv_verdict"):
-                e["ighv_verdict"] = format_clonal_verdict(peaks)
-            html_lines.append(
-                f"<p class='ighv-verdict'><strong>{escape(str(e.get('ighv_verdict') or ''))}</strong></p>"
-            )
+            # Prøvetype (DNA/RNA) + aktivt referanseområde per fil.
+            html_lines.append(_render_ighv_sample_type_line(e))
             _render_ighv_peak_table(peaks or [], html_lines)
             _render_ighv_qc_table(e.get("ighv_qc_rows") or {}, html_lines)
         # ML badge (clonality only) — inserts before the FLT3 summary

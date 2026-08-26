@@ -20,6 +20,7 @@ from core.html_reports._legacy import (
     _create_html_header,
     _format_report_metrics_summary,
     _new_report_metrics,
+    _render_ighv_sample_type_line,
 )
 from core.plotting_plotly import compute_group_ymax_for_entries
 from fraggler.fraggler import print_green
@@ -292,6 +293,9 @@ def build_group_comparison_html_report(
                 f"<p class='small'>DIT: {escape(dit)} | "
                 f"Kanal: {escape(channel)}</p>"
             )
+            if assay.startswith("IGHV"):
+                # Prøvetype (DNA/RNA) + aktivt referanseområde per fil.
+                html_lines.append(_render_ighv_sample_type_line(entry))
             orig_ymax = entry.get("forced_ymax")
             entry["forced_ymax"] = ymax
             try:

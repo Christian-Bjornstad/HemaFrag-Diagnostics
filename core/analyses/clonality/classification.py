@@ -44,6 +44,19 @@ IGHV_PATTERNS = {
     ),
 }
 
+# RNA/cDNA-markør i filnavn ("...cDNA.fsa", "IGHVRNA_Mix1...", "_RNA_").
+# Ordgrens på venstre side BORTSETN fra IGHV-komposittformer (IGHVRNA),
+# så vanlige ord som "alternate"/"supernatant" ikke feiltriggere.
+IGHV_RNA_MARKER_RE = re.compile(
+    r"(?<![a-z])(?:cdna|mrna|rna)(?![a-z0-9])|(?<=ighv)rna(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def filename_suggests_rna(name: str) -> bool:
+    """True hvis filnavnet bærer en RNA/cDNA-markør (IGHV-prøvetype)."""
+    return bool(IGHV_RNA_MARKER_RE.search(str(name or "")))
+
 def detect_assay(name: str) -> str:
     """
     Returnerer assay-navn slik at det matcher nøkkelen i ASSAY_CONFIG.

@@ -287,23 +287,11 @@ class TabBatch(QWidget):
         row3.addWidget(self.input_scope_label)
         row3.addWidget(self.input_scope_combo)
 
-        # IGHV DNA/RNA-velger — styrer referanseområdet for Mix 1
-        # (DNA 500–570 bp, RNA 415–485 bp). Synlighet styres av analyse-
-        # gruppe (Klonalitet) i _update_ighv_toggle_visibility.
-        self.ighv_sample_type_label = QLabel("IGHV sample type:")
-        self.ighv_dna_rna_combo = QComboBox()
-        self.ighv_dna_rna_combo.addItem("DNA", "DNA")
-        self.ighv_dna_rna_combo.addItem("RNA (cDNA)", "RNA")
-        self.ighv_dna_rna_combo.setToolTip(
-            "IGHV Mix 1 reference area: DNA 500\u2013570 bp, RNA 415\u2013485 bp.\n"
-            "Mix 2 is always 310\u2013380 bp."
-        )
-        self.ighv_dna_rna_combo.currentIndexChanged.connect(self._on_ighv_sample_type_changed)
-        row3.addWidget(self.ighv_sample_type_label)
-        row3.addWidget(self.ighv_dna_rna_combo)
+        # IGHV prøvetype (DNA/RNA) utledes per fil fra filnavnet
+        # (core.analyses.clonality.classification.filename_suggests_rna)
+        # og vises i HTML-rapporten — ingen GUI-velger lenger.
         row3.addStretch()
-        self._update_ighv_toggle_visibility()
-        
+
         f_layout.addWidget(l_ftitle)
         f_layout.addLayout(row1)
         f_layout.addLayout(row2)
@@ -909,7 +897,6 @@ class TabBatch(QWidget):
         self.input_scope_combo.setVisible(not is_general)
         self.btn_add_files.setVisible(is_general)
         self.input_label.setText("Files / Folders:" if is_general else "Samples:")
-        self._update_ighv_toggle_visibility()
         self._set_workflow_status(
             "Ready",
             "ready",
@@ -1070,25 +1057,6 @@ class TabBatch(QWidget):
         save_settings(APP_SETTINGS)
         self._reset_queue_state("Ready", "ready")
 
-    def _on_ighv_sample_type_changed(self, *_args) -> None:
-        """DNA/RNA-velger: aktiver riktig IGHV-referanseområde."""
-        from core.ighv import set_sample_type
-
-        sample_type = str(self.ighv_dna_rna_combo.currentData() or "DNA")
-        for assay in ("IGHV Mix 1", "IGHV Mix 2"):
-            set_sample_type(assay, sample_type)
-
-    def _update_ighv_toggle_visibility(self) -> None:
-        """Vis DNA/RNA-velgeren for alle Klonalitet-kjøringer.
-
-        Den påvirker kun IGHV Mix 1 sitt referanseområde, men kjører man
-        hele run-mapper ser ikke filnavnene nødvendigvis «IGHV» — derfor
-        styres synlighet av analysen, ikke av filnavn.
-        """
-        is_clonality = getattr(self, "_current_analysis_id", "") == "clonality"
-        self.ighv_sample_type_label.setVisible(is_clonality)
-        self.ighv_dna_rna_combo.setVisible(is_clonality)
-
     def _add_folders(self):
         batch_settings = self._profile_for().get("batch", {})
         start = str(batch_settings.get("last_input_directory") or "").strip()
@@ -1146,7 +1114,6 @@ class TabBatch(QWidget):
             removed = True
         if removed:
             self._reset_queue_state("Ready", "ready")
-            self._update_ighv_toggle_visibility()
         else:
             self._refresh_dashboard()
 
@@ -1163,7 +1130,6 @@ class TabBatch(QWidget):
         if normalized not in existing:
             self.folder_list.addItem(normalized)
             self._reset_queue_state("Ready", "ready")
-            self._update_ighv_toggle_visibility()
 
 
     def _general_selected_paths(self) -> list[Path]:

@@ -63,7 +63,27 @@ def _flt3_peak_id(row: pd.Series, index: int) -> str:
     return f"flt3_pk_{bp_key}_{height_key}_{area_key}_{index}"
 
 
-def _reference_shape_fill() -> str:
+def _reference_shape_fill(entry: dict | None = None) -> str:
+    """Reference-window fill; IGHV RNA-filer får en rødere nyanse enn beige."""
+    if entry is not None:
+        assay = str((entry or {}).get("assay") or "")
+        if assay.startswith("IGHV"):
+            # Per-fil prøvetype (satt av attach_ighv_results, filnavn-trumf
+            # inkludert); faller tilbake til GUI-valg hvis ikke stemplet.
+            sample_type = entry.get("ighv_sample_type")
+            try:
+                if sample_type is None:
+                    from core.ighv import get_sample_type
+
+                    sample_type = get_sample_type(assay)
+                if str(sample_type).upper().startswith("RNA"):
+                    from core.analyses.clonality import config as clonality_config
+
+                    return reference_shade_rgba(
+                        color=str(getattr(clonality_config, "IGHV_RNA_SHADE_COLOR", "#e8b4a6"))
+                    )
+            except Exception:
+                pass
     return reference_shade_rgba()
 
 
@@ -478,9 +498,9 @@ def _create_plotly_figure(data: dict) -> tuple[go.Figure, float, int]:
     shapes = []
     if assay_name and assay_name in _assay_reference_ranges():
         for (a, b) in _assay_reference_ranges()[assay_name]:
-            shapes.append(dict(type="rect", x0=float(a), x1=float(b), y0=0, y1=1, xref="x", yref="paper", fillcolor=_reference_shape_fill(), line_width=0, layer="above", opacity=1.0))
+            shapes.append(dict(type="rect", x0=float(a), x1=float(b), y0=0, y1=1, xref="x", yref="paper", fillcolor=_reference_shape_fill(entry), line_width=0, layer="above", opacity=1.0))
     else:
-        shapes.append(dict(type="rect", x0=float(bp_min), x1=float(bp_max), y0=0, y1=1, xref="x", yref="paper", fillcolor=_reference_shape_fill(), line_width=0, layer="above", opacity=1.0))
+        shapes.append(dict(type="rect", x0=float(bp_min), x1=float(bp_max), y0=0, y1=1, xref="x", yref="paper", fillcolor=_reference_shape_fill(entry), line_width=0, layer="above", opacity=1.0))
 
     # NS Peaks
     if assay_name in _nonspecific_peaks():
@@ -1698,7 +1718,7 @@ def build_interactive_assay_batch_plot_html(
                         y1=1,
                         xref="x",
                         yref="paper",
-                        fillcolor=_reference_shape_fill(),
+                        fillcolor=_reference_shape_fill(e),
                         line_width=0,
                         layer="above",
                         opacity=1.0,
@@ -1714,7 +1734,7 @@ def build_interactive_assay_batch_plot_html(
                     y1=1,
                     xref="x",
                     yref="paper",
-                    fillcolor=_reference_shape_fill(),
+                    fillcolor=_reference_shape_fill(e),
                     line_width=0,
                     layer="above",
                     opacity=1.0,
