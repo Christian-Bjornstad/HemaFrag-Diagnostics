@@ -4,11 +4,10 @@ import csv
 import json
 import sys
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from core.analyses.clonality.ladder_review_labels import (
-    RESOLVED_LABELS,
     is_review_resolved,
 )
 

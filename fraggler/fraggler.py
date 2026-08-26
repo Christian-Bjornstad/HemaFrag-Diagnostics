@@ -2021,7 +2021,7 @@ def main(
             size_standard_channel=size_standard_channel,
         )    
 
-        if fsa_file == None:
+        if fsa_file is None:
             print_fail(f"Could not parse fsa {fsa}")
             write_log(
                 LOG_FILE,

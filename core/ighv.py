@@ -26,6 +26,7 @@ from core.analyses.clonality.config import (
     IGHV_REFERENCE_RANGES,
     IGHV_RFU_PEAK_THRESHOLD,
 )
+from fraggler.fraggler import print_warning
 
 # Minste avstand mellom godkjente topper (bp) – undertrykker skuldre.
 _MIN_PEAK_SEPARATION_BP = 2.0
@@ -251,8 +252,8 @@ def attach_ighv_results(
             effective = "RNA"
             apply_sample_type(assay, "RNA")
             entry["ighv_sample_type_from_filename"] = True
-    except Exception:
-        pass
+    except Exception as exc:  # pragma: no cover - defensiv: aldri la prøvetype-tumfe krasje rapporten
+        print_warning(f"[IGHV] Kunne ikke sjekke filnavn for RNA-markør: {exc}")
     entry["ighv_sample_type"] = effective
     try:
         entry["ighv_clonal_peaks"] = detect_clonal_peaks(fsa, assay, sample_type=effective)

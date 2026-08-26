@@ -25,7 +25,6 @@ class _PandasModuleProxy:
 
 pd = _PandasModuleProxy()
 
-import core.assay_config as assay_config
 from core.assay_config import (
     CHANNEL_COLORS,
     DEFAULT_TRACE_COLOR,

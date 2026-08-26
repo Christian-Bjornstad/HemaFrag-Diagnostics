@@ -456,8 +456,8 @@ def run_pipeline_job_collect(
                 )
                 tmp_input = stage_files(chunk)
                 try:
-                    def _chunk_progress(event):
-                        files_done = int(event.get("files_done", 0)) + offset
+                    def _chunk_progress(event, _offset=offset):
+                        files_done = int(event.get("files_done", 0)) + _offset
                         _emit_progress(
                             progress_callback,
                             **{

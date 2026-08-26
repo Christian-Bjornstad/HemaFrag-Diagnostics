@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QBrush, QColor, QPalette
+from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -200,7 +201,6 @@ class TabClonalityInterpretation(QWidget):
 
     def _export_csv_clicked(self) -> None:
         """Save the visible rows to a CSV the chemist can review."""
-        from PyQt6.QtWidgets import QFileDialog
         if not self._rows:
             QMessageBox.information(
                 self, "Nothing to export",
@@ -248,7 +248,6 @@ class TabClonalityInterpretation(QWidget):
         one; otherwise prompts the user first.
         """
         from datetime import datetime, timezone
-        import json
 
         items = self._table.selectedItems()
         if not items:
@@ -332,7 +331,6 @@ Was the rule right (Yes), the ML right (No), or ambiguous (Cancel)?""" % (
 
     def _browse_btn_clicked(self) -> None:
         """Open QFileDialog to pick a tracking workbook."""
-        from PyQt6.QtWidgets import QFileDialog
 
         if not self._batch_combo.currentText() or self._batch_combo.currentText() == "(no batch loaded)":
             start_dir = str(Path.cwd())

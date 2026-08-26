@@ -13,7 +13,6 @@ from typing import Any
 
 import numpy as np
 
-from core.html_reports._constants import REPORT_STYLE
 from core.html_reports._legacy import (
     _atomic_write_html,
     _build_report_plot_fragment,
@@ -346,7 +345,6 @@ def build_group_comparison_html_report(
 
 def _render_peak_table_for_comparison(entry: dict[str, Any], label: str) -> str:
     """Render a simplified peak table for comparison view."""
-    from core.html_reports._legacy import pd
 
     peaks_by_channel = entry.get("peaks_by_channel", {})
     primary_ch = entry.get("primary_peak_channel", "")

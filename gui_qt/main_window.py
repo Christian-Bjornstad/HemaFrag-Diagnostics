@@ -2,10 +2,10 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QStackedWidget, QPushButton, QLabel, QFrame, QComboBox, QScrollArea,
+    QStackedWidget, QPushButton, QFrame, QScrollArea,
     QApplication,
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QShortcut, QKeySequence
 
 from app_meta import APP_VERSION

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import numpy as np
 import plotly.graph_objects as go
-from html import escape
 import json
 
 from core.qc.qc_rules import QCRules
@@ -15,10 +14,8 @@ from core.qc.qc_markers import (
     find_peak_near_bp_with_fallback,
     markers_for_entry,
 )
-import core.assay_config as assay_config
 from core.assay_config import (
     CHANNEL_COLORS,
-    DEFAULT_TRACE_COLOR,
     merged_analysis_attr,
     reference_shade_rgba,
 )
@@ -238,7 +235,6 @@ def _baseline_correct_trace_for_display(
 
 
 def build_interactive_peak_plot_for_entry_qc(entry: dict, rules: QCRules) -> str | None:
-    import plotly.graph_objects as go
     import uuid
 
     fsa = entry["fsa"]

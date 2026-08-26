@@ -7,7 +7,7 @@ from pathlib import Path
 
 from core.qc.qc_rules import QCRules
 from core.qc.qc_html import build_qc_html
-from core.qc.qc_excel import update_excel_trends, apply_pk_excel_styling
+from core.qc.qc_excel import update_excel_trends  # noqa: F401 – brukes i main()
 from core.pipeline import run_pipeline
 from core.assay_config import DEFAULT_FSA_DIR, OUTDIR_NAME
 from datetime import datetime

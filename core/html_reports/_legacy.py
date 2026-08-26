@@ -5,9 +5,6 @@ Builds per-patient DIT HTML reports with embedded interactive Plotly figures.
 """
 from __future__ import annotations
 
-import re
-import uuid
-import json
 import os
 import tempfile
 import time
@@ -44,10 +41,7 @@ from fraggler.fraggler import print_green, print_warning
 import core.assay_config as assay_config
 from core.html_reports._constants import (DIT_PATTERN, DIT_QC_CONTROL_IDS, REPORT_STYLE, D835_DIGEST_HEIGHT_MIN, D835_DIGEST_AREA_MIN)
 from core.assay_config import (
-    CHANNEL_COLORS,
-    DEFAULT_TRACE_COLOR,
     merged_analysis_attr,
-    OUTDIR_NAME,
 )
 from core.plotly_offline import local_plotly_tag as _local_plotly_tag
 from core.plotting_plotly import (
@@ -1600,7 +1594,7 @@ def _render_assay_block(
         if reference_assay.startswith("IGHV"):
             # Prøvetype (DNA/RNA) + aktivt referanseområde per fil.
             html_lines.append(_render_ighv_sample_type_line(e))
-            _render_ighv_peak_table(peaks or [], html_lines)
+            _render_ighv_peak_table(e.get("ighv_clonal_peaks") or [], html_lines)
             _render_ighv_qc_table(e.get("ighv_qc_rows") or {}, html_lines)
         # ML badge (clonality only) — inserts before the FLT3 summary
         # table so the dismiss buttons line up vertically. We also call

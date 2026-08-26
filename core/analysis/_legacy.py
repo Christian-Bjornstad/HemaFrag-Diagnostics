@@ -10,7 +10,6 @@ MIT-licensed components from `willros/fraggler`.
 from __future__ import annotations
 import hashlib
 import os
-import tempfile
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,10 +20,9 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from Bio import SeqIO
 from scipy import signal
 from scipy.interpolate import UnivariateSpline
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import r2_score
 
 import json
 from fraggler.fraggler import (
@@ -3238,11 +3236,15 @@ def _try_descending_low_end_completion(fsa: FsaFile, label: str, fsa_path: Path)
         if not candidates_in_window:
             continue
 
-        def candidate_score(item: tuple[float, float]) -> tuple[float, float, float]:
+        def candidate_score(
+            item: tuple[float, float],
+            _target_time: float = target_time,
+            _median_anchor_intensity: float = median_anchor_intensity,
+        ) -> tuple[float, float, float]:
             candidate_time, intensity = item
-            distance_penalty = abs(candidate_time - target_time)
-            if median_anchor_intensity > 0:
-                relative_intensity = intensity / median_anchor_intensity
+            distance_penalty = abs(candidate_time - _target_time)
+            if _median_anchor_intensity > 0:
+                relative_intensity = intensity / _median_anchor_intensity
             else:
                 relative_intensity = 1.0
             weak_penalty = max(0.0, 0.22 - relative_intensity)
@@ -3375,11 +3377,15 @@ def _try_ascending_high_end_completion(fsa: FsaFile, label: str, fsa_path: Path)
         if not candidates_in_window:
             continue
 
-        def candidate_score(item: tuple[float, float]) -> tuple[float, float, float]:
+        def candidate_score(
+            item: tuple[float, float],
+            _target_time: float = target_time,
+            _median_anchor_intensity: float = median_anchor_intensity,
+        ) -> tuple[float, float, float]:
             candidate_time, intensity = item
-            distance_penalty = abs(candidate_time - target_time)
-            if median_anchor_intensity > 0:
-                relative_intensity = intensity / median_anchor_intensity
+            distance_penalty = abs(candidate_time - _target_time)
+            if _median_anchor_intensity > 0:
+                relative_intensity = intensity / _median_anchor_intensity
             else:
                 relative_intensity = 1.0
             weak_penalty = max(0.0, 0.30 - relative_intensity)
@@ -3576,11 +3582,15 @@ def _try_complete_missing_steps_by_prediction(fsa: FsaFile, label: str, fsa_path
         if not candidates_in_window:
             continue
 
-        def candidate_score(item: tuple[float, float]) -> tuple[float, float, float]:
+        def candidate_score(
+            item: tuple[float, float],
+            _target_time: float = target_time,
+            _median_anchor_intensity: float = median_anchor_intensity,
+        ) -> tuple[float, float, float]:
             candidate_time, intensity = item
-            distance_penalty = abs(candidate_time - target_time)
-            if median_anchor_intensity > 0:
-                relative_intensity = intensity / median_anchor_intensity
+            distance_penalty = abs(candidate_time - _target_time)
+            if _median_anchor_intensity > 0:
+                relative_intensity = intensity / _median_anchor_intensity
             else:
                 relative_intensity = 1.0
             weak_penalty = max(0.0, 0.28 - relative_intensity)
@@ -3708,11 +3718,15 @@ def _try_core_anchored_step_completion(fsa: FsaFile, label: str, fsa_path: Path)
         if not candidates_in_window:
             continue
 
-        def candidate_score(item: tuple[float, float]) -> tuple[float, float, float]:
+        def candidate_score(
+            item: tuple[float, float],
+            _target_time: float = target_time,
+            _median_anchor_intensity: float = median_anchor_intensity,
+        ) -> tuple[float, float, float]:
             candidate_time, intensity = item
-            distance_penalty = abs(candidate_time - target_time)
-            if median_anchor_intensity > 0:
-                relative_intensity = intensity / median_anchor_intensity
+            distance_penalty = abs(candidate_time - _target_time)
+            if _median_anchor_intensity > 0:
+                relative_intensity = intensity / _median_anchor_intensity
             else:
                 relative_intensity = 1.0
             weak_penalty = max(0.0, 0.30 - relative_intensity)

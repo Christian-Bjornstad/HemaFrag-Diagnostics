@@ -6,7 +6,6 @@ from __future__ import annotations
 from pathlib import Path
 from html import escape as html_escape
 from datetime import datetime
-from typing import Any
 
 import numpy as np
 
@@ -15,11 +14,8 @@ from core.qc.qc_rules import QCRules, normalize_assay_qc
 from core.qc.qc_markers import (
     control_id_from_filename,
     ladder_qc_grade,
-    worst_grade,
 )
 from core.qc.qc_plots import build_interactive_peak_plot_for_entry_qc
-from core.qc.qc_excel import update_excel_trends, apply_pk_excel_styling
-from core.html_reports import interpret_sl_quality
 import core.assay_config as master
 
 

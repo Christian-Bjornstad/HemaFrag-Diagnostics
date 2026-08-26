@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-import joblib
+import joblib  # noqa: F401 – eksplisitt modulattributt (tester monkeypatcher ml_model.joblib)
 import numpy as np
 import pandas as pd
 

@@ -46,7 +46,6 @@ from core.analyses.flt3.config import (
     ROX_LADDER as FLT3_ROX_LADDER,
 )
 from core.analyses.flt3.qc_tracker import (
-    FLT3_TRACKING_FILENAME,
     RUN_SHEET_COLUMNS,
     PEAK_SHEET_COLUMNS,
     build_tracking_base_row,

@@ -12,19 +12,15 @@ report what happened.
 """
 from __future__ import annotations
 
-import json
-import os
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,

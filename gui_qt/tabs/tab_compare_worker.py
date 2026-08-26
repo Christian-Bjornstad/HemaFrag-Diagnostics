@@ -102,7 +102,6 @@ class CompareWorker(QThread):
 
         try:
             from core.analyses.clonality.ladder_review_gate import (
-                collect_ladder_review_cases,
                 write_ladder_review_gate,
             )
 

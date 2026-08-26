@@ -12,7 +12,6 @@ the callables here only do CPU-bound or IO-bound work.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from gui_qt.ladder_utils import detect_fsa_for_ladder, load_adjustable_fsa
 from core.html_reports import extract_dit_from_name

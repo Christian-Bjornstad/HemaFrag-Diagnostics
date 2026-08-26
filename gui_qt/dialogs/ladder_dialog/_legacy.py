@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
     QFrame,
-    QGridLayout,
     QHeaderView,
     QHBoxLayout,
     QLabel,

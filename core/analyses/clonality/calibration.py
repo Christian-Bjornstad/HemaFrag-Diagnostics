@@ -30,16 +30,13 @@ Triggering conditions (independently enforce), per entry:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from config import APP_SETTINGS
 
 from core.analyses.clonality.ml_model import ClonalityModelStore
-from core.analyses.clonality.ml_training import (
-    ANNOTATION_CLASSES_ORDER,
-)
 
 
 # Sentinel: load_calibrated_pipeline returns this when model absent.
@@ -308,7 +305,7 @@ def predict_with_rejection(
     )
 
 
-def _estimator_input(estimator: Any, row: "pd.DataFrame") -> "pd.DataFrame | np.ndarray":
+def _estimator_input(estimator: Any, row: object) -> object:
     """Use named columns when sklearn recorded them, else preserve legacy arrays."""
     import numpy as np
 

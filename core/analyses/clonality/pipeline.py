@@ -8,13 +8,11 @@ analysis flow.
 from __future__ import annotations
 
 import os
-import re
 import sys
 import __main__
 import threading
 import time
 from pathlib import Path
-from collections import defaultdict
 from datetime import datetime
 
 import numpy as np
@@ -24,7 +22,6 @@ from fraggler.fraggler import print_green, print_warning
 
 from config import resolve_analysis_excel_output_path
 from core.analyses.clonality.config import (
-    ASSAY_CONFIG,
     LIZ_LADDER,
     ROX_LADDER,
     SL_TARGET_FRAGMENTS_BP,
@@ -51,10 +48,6 @@ from core.analysis import (
     compute_ladder_qc_metrics,
     compute_sl_area_metrics,
 )
-from core.plotting_plotly import (
-    compute_group_ymax_for_entries,
-    build_interactive_assay_batch_plot_html,
-)
 from core.plotting_mpl import compute_zoom_ymax
 from core.html_reports import (
     extract_dit_from_name,
@@ -65,7 +58,6 @@ from core.analyses.shared_pipeline import (
     normalize_pipeline_paths,
     scan_fsa_files,
 )
-from core.utils import strip_stage_prefix
 
 
 def _scan_files(fsa_dir: Path, mode: str = "all") -> list[Path]:
@@ -1103,20 +1095,28 @@ def _analyze_files(
             stop_event = threading.Event()
             file_started = time.monotonic()
 
-            def _heartbeat() -> None:
+            # Bind loop variables (path/index) as defaults: this thread may
+            # outlive the loop iteration that created it.
+            def _heartbeat(
+                _stop=stop_event,
+                _started=file_started,
+                _name=path.name,
+                _idx=index,
+                _total=total_files,
+            ) -> None:
                 elapsed = 0
-                while not stop_event.wait(30.0):
-                    elapsed = int(time.monotonic() - file_started)
+                while not _stop.wait(30.0):
+                    elapsed = int(time.monotonic() - _started)
                     print_warning(
-                        f"[ANALYZE] Slow file: {path.name} still running after {elapsed}s "
-                        f"({index}/{total_files})."
+                        f"[ANALYZE] Slow file: {_name} still running after {elapsed}s "
+                        f"({_idx}/{_total})."
                     )
                     _emit_progress(
                         progress_callback,
                         phase="analyze",
-                        file_name=path.name,
-                        files_done=index - 1,
-                        files_total=total_files,
+                        file_name=_name,
+                        files_done=_idx - 1,
+                        files_total=_total,
                         note="slow_file" if elapsed >= 30 else "heartbeat",
                     )
 

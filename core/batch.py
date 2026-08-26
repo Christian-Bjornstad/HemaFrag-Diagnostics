@@ -7,7 +7,6 @@ Compatible with Python 3.10+.
 """
 from __future__ import annotations
 
-import os
 import re
 import time
 import yaml
@@ -736,7 +735,6 @@ def run_batch_jobs(
                             )
                         if active_analysis == "clonality":
                             from core.analyses.clonality.tracking_excel import (
-                                CLONALITY_TRACKING_FILENAME,
                                 update_clonality_tracking_workbook,
                             )
 
@@ -829,7 +827,6 @@ def run_batch_jobs(
                             log(f"[BATCH] Deferred {len(qc_entries)} tracking entries from QC job {job_name}.")
                         else:
                             from core.analyses.clonality.tracking_excel import (
-                                CLONALITY_TRACKING_FILENAME,
                                 update_clonality_tracking_workbook,
                             )
 
@@ -909,7 +906,6 @@ def run_batch_jobs(
                             )
                         if active_analysis == "clonality":
                             from core.analyses.clonality.tracking_excel import (
-                                CLONALITY_TRACKING_FILENAME,
                                 update_clonality_tracking_workbook,
                             )
 
@@ -1119,7 +1115,6 @@ def run_batch_jobs(
                 )
             if active_analysis == "clonality" and not defer_tracking_workbook_refresh:
                 from core.analyses.clonality.tracking_excel import (
-                    CLONALITY_TRACKING_FILENAME,
                     update_clonality_tracking_workbook,
                 )
 
@@ -1142,7 +1137,6 @@ def run_batch_jobs(
     ):
         if active_analysis == "clonality" and not defer_tracking_workbook_refresh:
             from core.analyses.clonality.tracking_excel import (
-                CLONALITY_TRACKING_FILENAME,
                 update_clonality_tracking_workbook,
             )
 

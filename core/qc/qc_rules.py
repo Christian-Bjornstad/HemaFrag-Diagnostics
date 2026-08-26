@@ -84,8 +84,6 @@ class QCRules:
     min_sl_total_area: float = 1e4
 
 
-from core.utils import CONTROL_PREFIX_RE
 
 RUN_CODE_RE = re.compile(r"_([A-Za-z0-9]{6,})\\.fsa$", re.IGNORECASE)
 
-from pathlib import Path

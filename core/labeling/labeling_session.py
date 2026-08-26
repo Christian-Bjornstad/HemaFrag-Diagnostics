@@ -153,8 +153,8 @@ class LabelingSession:
 
         self.samples = []
         for idx, row in df.iterrows():
-            def _str(col):
-                v = row.get(col, "")
+            def _str(col, _row=row):
+                v = _row.get(col, "")
                 return str(v) if pd.notna(v) else ""
             assay = _str("Assay")
             units = interpretation_units_for_assay(assay)
