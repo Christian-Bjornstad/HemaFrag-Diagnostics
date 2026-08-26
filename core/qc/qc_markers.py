@@ -12,7 +12,7 @@ import numpy as np
 from core.qc.qc_rules import QCRules, normalize_assay_qc
 from core.baseline import estimate_running_baseline
 from core.area import compute_peak_area_gaussian
-from core.utils import strip_stage_prefix, CONTROL_PREFIX_RE
+from core.utils import strip_stage_prefix, CONTROL_PREFIX_RE, NORWEGIAN_CONTROL_ALIASES
 
 
 def parse_run_code_from_filename(name: str) -> str | None:
@@ -96,7 +96,12 @@ def html_escape(s: str) -> str:
 def control_id_from_filename(filename: str) -> str:
     clean_name = strip_stage_prefix(filename or "")
     m = CONTROL_PREFIX_RE.search(clean_name)
-    return m.group(1).upper() if m else "UNKNOWN"
+    if not m:
+        return "UNKNOWN"
+    ctrl = m.group(1).upper()
+    # Norske navn ("Positiv_kontroll"/"Negativ kontroll") -> PK/NK
+    compact = re.sub(r"[\s_\-]+", "", ctrl)
+    return NORWEGIAN_CONTROL_ALIASES.get(compact, ctrl)
 
 
 def worst_grade(a: str, b: str) -> str:
@@ -372,6 +377,19 @@ def markers_for_entry(entry: dict, rules: QCRules) -> list[dict]:
                 {"name": "TCRgB_PK_DATA2_115", "kind": "sample", "expected_bp": 115.0, "channel": "DATA2", "window_bp": sample_window_bp},
                 {"name": "TCRgB_PK_LIZ_Ladder_200", "kind": "ladder", "expected_bp": 200.0, "channel": ladder_channel, "window_bp": wL},
             ]
+
+    # ---------------- IGHV-mikser: PK + ROX-ladder ved 300 ----------------
+    # Mix 1: PK ~535–550 bp i DATA1; Mix 2: PK ~357–358 bp i DATA1.
+    if assay == "IGHV Mix 1":
+        return [
+            {"name": "IGHVM1_PK_DATA1_542", "kind": "sample", "expected_bp": 542.0, "channel": "DATA1", "window_bp": sample_window_bp},
+            {"name": "IGHVM1_ROX_Ladder_300", "kind": "ladder", "expected_bp": 300.0, "channel": ladder_channel, "window_bp": wL},
+        ]
+    if assay == "IGHV Mix 2":
+        return [
+            {"name": "IGHVM2_PK_DATA1_357", "kind": "sample", "expected_bp": 357.0, "channel": "DATA1", "window_bp": sample_window_bp},
+            {"name": "IGHVM2_ROX_Ladder_300", "kind": "ladder", "expected_bp": 300.0, "channel": ladder_channel, "window_bp": wL},
+        ]
 
     return []
 # ======================================================================

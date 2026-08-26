@@ -5,10 +5,20 @@ from __future__ import annotations
 import re
 
 # Centralized Regex for Control identification
+# "Positiv_kontroll"/"Negativ_kontroll" (norsk) mappes videre til PK/NK
+# i control_id_from_filename() — her godtar vi dem som kontroller.
 CONTROL_PREFIX_RE = re.compile(
-    r"^(PK1|PK2|PK|NK|RK|DIT|KTR|NTC|IVS[-_]?0000|IVS[-_]?P001)([_\-]|(?=\.fsa)|$)",
+    r"^(PK1|PK2|PK|NK|RK|DIT|KTR|NTC|IVS[-_]?0000|IVS[-_]?P001"
+    r"|Positiv[\s_-]*kontroll|Negativ[\s_-]*kontroll)"
+    r"([_\-\s]|(?=\.fsa)|$)",
     re.IGNORECASE,
 )
+# Norske kontrollnavn -> intern kortform (PK/NK); nøkler sammenlignes
+# uten skilletegn ("positiv-kontroll"/"Positiv Kontroll" == POSITIVKONTROLL)
+NORWEGIAN_CONTROL_ALIASES = {
+    "POSITIVKONTROLL": "PK",
+    "NEGATIVKONTROLL": "NK",
+}
 WATER_RE = re.compile(
     r"^(v(?:ann)?|water|h2o|mq|milliq|milli[-_ ]?q)(?:[_\-\s.]|(?=\d)|(?=\.fsa)|$)",
     re.IGNORECASE,

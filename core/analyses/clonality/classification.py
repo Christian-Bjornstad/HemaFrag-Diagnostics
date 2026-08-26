@@ -32,12 +32,15 @@ TCRB_PATTERNS = {
 }
 
 IGHV_PATTERNS = {
-    # Filnavn som "...IGHV_Mix1_..." / "ighv mix 2 ..." / "..._IGHV1_..."
+    # Filnavn som "...IGHV_Mix1_..." / "ighv mix 2 ..." / "..._IGHVM1_..."
+    # M1/M2-variantene dekker korte former som IGHV_M1, IGHVM1, IGHV-M2.
     "IGHV Mix 1": re.compile(
-        r"(?<![a-z])igh[\s_-]*v(?:[\s_-]*mix)?[\s_-]*1(?![a-z0-9])", re.IGNORECASE
+        r"(?<![a-z])(?:igh[\s_-]*v[\s_-]*(?:mix|m)?[\s_-]*|ighv)[\s_-]*(?:mix|m)?[\s_-]*1(?![a-z0-9])",
+        re.IGNORECASE,
     ),
     "IGHV Mix 2": re.compile(
-        r"(?<![a-z])igh[\s_-]*v(?:[\s_-]*mix)?[\s_-]*2(?![a-z0-9])", re.IGNORECASE
+        r"(?<![a-z])(?:igh[\s_-]*v[\s_-]*(?:mix|m)?[\s_-]*|ighv)[\s_-]*(?:mix|m)?[\s_-]*2(?![a-z0-9])",
+        re.IGNORECASE,
     ),
 }
 
