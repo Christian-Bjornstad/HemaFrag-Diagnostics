@@ -282,8 +282,15 @@ class TabCompare(QWidget):
         self.progress.setValue(0)
         self.btn_run.setEnabled(True)
         self.btn_scan.setEnabled(True)
-        self.status_label.setText(message)
-        QMessageBox.critical(self, "Compare", message)
+        self.status_label.setText(message.splitlines()[0] if message else message)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("Compare — feil")
+        box.setText(message.splitlines()[0] if message else "Ukjent feil.")
+        if len(message.splitlines()) > 1:
+            # Traceback attached: show it in an expandable, copyable detail area.
+            box.setDetailedText(message)
+        box.exec()
 
     def _on_ladder_review_needed(self, payload: dict) -> None:
         """Ladder fit failed/review needed — offer handoff to Ladder Studio."""

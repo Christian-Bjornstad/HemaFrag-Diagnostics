@@ -8,6 +8,7 @@ GUI can hand off to Ladder Studio (same gate as Batch Run).
 """
 from __future__ import annotations
 
+import traceback
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -39,7 +40,7 @@ class CompareWorker(QThread):
                 if result is None:
                     self.failed.emit(
                         f"Kunne ikke analysere fil {idx}/{len(self._paths)} ({name}). "
-                        "Sjekk at det er en gyldig FSA-fil for aktiv analyse."
+                        "Se loggfanen for detaljer."
                     )
                     return
                 if isinstance(result.get("analysis_status"), str) and result[
@@ -83,16 +84,27 @@ class CompareWorker(QThread):
                     self.ladder_review_needed.emit(payload)
 
         except Exception as ex:  # pragma: no cover - defensive UI guard
-            self.failed.emit(f"{type(ex).__name__}: {ex}")
+            from core.log import print_warning
+
+            tb = traceback.format_exc()
+            print_warning(f"[COMPARE] Uventet feil i sammenligning:\n{tb}")
+            self.failed.emit(f"{type(ex).__name__}: {ex}\n\n{tb}")
 
     # ------------------------------------------------------------- helpers
     @staticmethod
     def _analyze_one(path: Path) -> dict | None:
         from core.analyses.clonality.pipeline import _analyze_single_file
+        from core.log import print_warning
 
         try:
             return _analyze_single_file(path)
         except Exception:
+            # Keep the full traceback — the generic "could not analyze" dialog
+            # used to swallow this entirely.
+            print_warning(
+                f"[COMPARE] Analyse feilet for {path.name}:\n"
+                + traceback.format_exc()
+            )
             return None
 
     def _build_review_payload(self, review_entries: list[dict]) -> dict | None:
