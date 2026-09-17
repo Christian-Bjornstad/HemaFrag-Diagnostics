@@ -448,6 +448,7 @@ def run_batch_jobs(
     skip_html_reports: bool = False,
     preserve_deferred_entries: bool = False,
     parent_run_manifest_path: Path | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """
     Run all generated jobs.
@@ -484,8 +485,6 @@ def run_batch_jobs(
         ladder_peak_window_bp=ladder_window,
     )
     
-    from concurrent.futures import ThreadPoolExecutor
-
     total = len(jobs)
     log(f"[BATCH] Starting batch run of {total} jobs.")
 
@@ -545,8 +544,14 @@ def run_batch_jobs(
     all_collected_entries_by_job: dict[int, list[Any]] = {}
     qc_report_entries_by_job: dict[int, list[Any]] = {}
     deferred_tracking_entries_by_job: dict[int, list[Any]] | None = {} if defer_tracking_workbook_refresh else None
-    failed_jobs = []
-    completed_jobs = []
+    failed_jobs: list[str] = []
+    failed_job_indexes: list[int] = []
+    completed_jobs: list[str] = []
+    completed_job_indexes: list[int] = []
+    cancelled_jobs: list[str] = []
+    cancelled_job_indexes: list[int] = []
+    unprocessed_jobs: list[str] = []
+    unprocessed_job_indexes: list[int] = []
     aggregation_failed = False
     
     # Thread safety locks
@@ -586,6 +591,7 @@ def run_batch_jobs(
         job_name: str,
         phase: str,
         *,
+        job_index: int | None = None,
         file_name: str = "",
         files_done: int | None = None,
         files_total: int | None = None,
@@ -599,6 +605,7 @@ def run_batch_jobs(
         payload = {
             "folder_name": folder_name,
             "job_name": job_name,
+            "job_index": job_index,
             "phase": phase,
             "file_name": file_name,
             "files_done": None if files_done is None else int(files_done),
@@ -659,6 +666,7 @@ def run_batch_jobs(
         _emit_progress(
             job_name,
             "job_start",
+            job_index=i,
             files_done=0,
             files_total=job_file_total,
             note="job_started",
@@ -676,6 +684,7 @@ def run_batch_jobs(
                 _emit_progress(
                     job_name,
                     event.get("phase", "analyze"),
+                    job_index=i,
                     file_name=str(event.get("file_name", "") or ""),
                     files_done=int(event.get("files_done", 0) or 0),
                     files_total=int(event.get("files_total", job_file_total) or job_file_total),
@@ -954,6 +963,7 @@ def run_batch_jobs(
                     
             with data_lock:
                 completed_jobs.append(job_name)
+                completed_job_indexes.append(i)
             with callback_lock:
                 if update_callback:
                     # Honest status: in aggregated mode DIT reports + tracking
@@ -967,6 +977,7 @@ def run_batch_jobs(
             _emit_progress(
                 job_name,
                 "done",
+                job_index=i,
                 files_done=job_file_total,
                 files_total=job_file_total,
                 note="job_complete",
@@ -978,12 +989,14 @@ def run_batch_jobs(
             job_status = "failed"
             with data_lock:
                 failed_jobs.append(job_name)
+                failed_job_indexes.append(i)
             with callback_lock:
                 if update_callback:
                     update_callback(i + 1, total, job_name, f"error: {e}")
             _emit_progress(
                 job_name,
                 "failed",
+                job_index=i,
                 files_done=job_file_total,
                 files_total=job_file_total,
                 note=str(e),
@@ -994,8 +1007,10 @@ def run_batch_jobs(
         finally:
             log(f"[BATCH] Job {job_name} finished in {time.monotonic() - started:.1f}s ({job_status}).")
 
-    # Perform multi-threaded patient processing
-    # Max workers = 3 (modest to prevent over-subscription of child Pool processes)
+    # Keep only a bounded set of futures in flight. Submitting the whole batch
+    # up front makes Stop ineffective because the executor already owns every
+    # job. Active jobs finish at their safe job boundary; no thread is killed.
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
     from core.concurrency import concurrency_environment, resolve_concurrency_plan
 
     concurrency_plan = resolve_concurrency_plan(
@@ -1003,28 +1018,60 @@ def run_batch_jobs(
         task_count=len(jobs),
     )
     max_patient_workers = concurrency_plan.outer_workers
-    
+    cancellation = cancel_event or threading.Event()
+    next_job_index = 0
+
     try:
         with concurrency_environment(concurrency_plan):
             with ThreadPoolExecutor(max_workers=max_patient_workers) as executor:
-                futures = [
-                    executor.submit(process_job, i, job)
-                    for i, job in enumerate(jobs)
-                ]
-                from concurrent.futures import as_completed
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as ex:
-                        if not continue_on_error:
-                            raise
-                        log(f"[BATCH] Worker future failed: {ex}")
+                running: dict[Any, tuple[int, dict[str, Any]]] = {}
+                while running or next_job_index < total:
+                    while (
+                        not cancellation.is_set()
+                        and next_job_index < total
+                        and len(running) < max_patient_workers
+                    ):
+                        job_index = next_job_index
+                        job = jobs[job_index]
+                        future = executor.submit(process_job, job_index, job)
+                        running[future] = (job_index, job)
+                        next_job_index += 1
+
+                    if not running:
+                        break
+
+                    done, _pending = wait(
+                        tuple(running),
+                        return_when=FIRST_COMPLETED,
+                    )
+                    for future in done:
+                        _job_index, _job = running.pop(future)
+                        try:
+                            future.result()
+                        except Exception as ex:
+                            if not continue_on_error:
+                                raise
+                            log(f"[BATCH] Worker future failed: {ex}")
+
+                if cancellation.is_set() and next_job_index < total:
+                    remaining = list(
+                        enumerate(
+                            jobs[next_job_index:],
+                            start=next_job_index,
+                        )
+                    )
+                    unprocessed_jobs.extend(
+                        str(job.get("name") or f"job_{index + 1}")
+                        for index, job in remaining
+                    )
+                    unprocessed_job_indexes.extend(index for index, _job in remaining)
+                    cancelled_jobs.extend(unprocessed_jobs)
+                    cancelled_job_indexes.extend(unprocessed_job_indexes)
     except Exception as ex:
         if not continue_on_error:
             log(f"[BATCH] Batch execution halted after error: {ex}")
         else:
-            log(f"[BATCH] Batch execution completed with some errors.")
-                
+            log("[BATCH] Batch execution completed with some errors.")
     # --- CROSS-FOLDER DIT AGGREGATION ---
     all_collected_entries = _materialize_entries(all_collected_entries_by_job)
     qc_report_entries = _materialize_entries(qc_report_entries_by_job)
@@ -1032,6 +1079,9 @@ def run_batch_jobs(
     deferred_tracking_entries = _materialize_entries(deferred_tracking_entries_by_job)
     ladder_review_gate: dict[str, Any] | None = None
     block_dit_for_ladder_review = False
+    run_cancelled = bool(cancelled_job_indexes) or bool(
+        cancellation.is_set() and aggregate_dit_reports and total > 0
+    )
 
     if (
         active_analysis in {"clonality", "flt3"}
@@ -1088,6 +1138,12 @@ def run_batch_jobs(
                 )
         except Exception as e:
             log(f"[WARN] Failed to write ladder review gate artifact: {e}")
+    # Stop may be requested after the last job finishes while review artifacts
+    # are being written. Re-check at the final publication boundary.
+    run_cancelled = run_cancelled or bool(
+        cancellation.is_set() and aggregate_dit_reports and total > 0
+    )
+
 
     if (
         aggregate_dit_reports
@@ -1095,6 +1151,7 @@ def run_batch_jobs(
         and not defer_dit_html_reports
         and not skip_html_reports
         and not block_dit_for_ladder_review
+        and not run_cancelled
     ):
         log("\n[BATCH] Final step: Building aggregated DIT HTML reports...")
 
@@ -1132,8 +1189,16 @@ def run_batch_jobs(
             aggregation_failed = True
             failed_jobs.append("DIT aggregation")
             log(f"[ERROR] Failed to build aggregated DIT reports: {e}")
-    elif aggregate_dit_reports and all_collected_entries and (
-        defer_dit_html_reports or skip_html_reports or block_dit_for_ladder_review
+    elif run_cancelled and aggregate_dit_reports:
+        log(
+            "[BATCH] Final aggregate reports were not published because the batch "
+            "was cancelled before every selected job was processed."
+        )
+    elif (
+        aggregate_dit_reports
+        and all_collected_entries
+        and not run_cancelled
+        and (defer_dit_html_reports or skip_html_reports or block_dit_for_ladder_review)
     ):
         if active_analysis == "clonality" and not defer_tracking_workbook_refresh:
             from core.analyses.clonality.tracking_excel import (
@@ -1157,7 +1222,7 @@ def run_batch_jobs(
         log("[BATCH] Aggregated DIT reports were streamed job-by-job to reduce memory pressure.")
 
     learning_annotation_seed: dict[str, str] | None = None
-    if active_analysis == "clonality" and dit_report_entries:
+    if active_analysis == "clonality" and dit_report_entries and not run_cancelled:
         try:
             from config import APP_SETTINGS
             from core.analyses.clonality.interpretation import (
@@ -1183,21 +1248,43 @@ def run_batch_jobs(
         except Exception as exc:
             log(f"[WARN] Failed to write clonality learning annotation seed: {exc}")
 
-    if aggregation_failed:
+    if run_cancelled:
+        log(
+            f"[BATCH] Batch cancelled: {len(completed_jobs)} completed, "
+            f"{len(failed_jobs)} failed, {len(unprocessed_jobs)} not started."
+        )
+    elif aggregation_failed:
         log("[BATCH] Batch run complete with aggregation errors.")
     else:
         log("[BATCH] Batch run complete.")
     if update_callback:
-        update_callback(total, total, "Done", "done")
+        if run_cancelled:
+            update_callback(
+                len(completed_jobs) + len(failed_jobs),
+                total,
+                "Batch",
+                "cancelled",
+            )
+        else:
+            update_callback(total, total, "Done", "done")
     result_payload = {
         "total_jobs": total,
         "completed_jobs": completed_jobs,
         "failed_jobs": failed_jobs,
+        "completed_job_indexes": completed_job_indexes,
+        "failed_job_indexes": failed_job_indexes,
+        "cancelled": run_cancelled,
+        "cancellation_requested": cancellation.is_set(),
+        "cancelled_jobs": cancelled_jobs,
+        "unprocessed_jobs": unprocessed_jobs,
+        "cancelled_job_indexes": cancelled_job_indexes,
+        "unprocessed_job_indexes": unprocessed_job_indexes,
         "collected_entries": deferred_tracking_entries if defer_tracking_workbook_refresh else all_collected_entries,
         "dit_report_entries": dit_report_entries,
         "qc_report_entries": qc_report_entries,
         "ladder_review_gate": ladder_review_gate,
         "dit_reports_blocked": block_dit_for_ladder_review,
+        "final_reports_skipped_reason": "cancelled" if run_cancelled else "",
         "learning_annotation_seed": learning_annotation_seed,
     }
     if run_manifest is not None:

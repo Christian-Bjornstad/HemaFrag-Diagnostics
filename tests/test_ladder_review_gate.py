@@ -81,6 +81,30 @@ class LadderReviewGateTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["full_path"], "/tmp/review.fsa")
         self.assertEqual(rows[0]["reason_codes"], "poor_linear_liz_fit")
+    def test_review_queue_excludes_generic_failures_without_ladder_review_evidence(self) -> None:
+        rows = collect_ladder_review_cases(
+            [
+                {
+                    "file_name": "analysis_failed.fsa",
+                    "analysis_status": "failed",
+                    "ladder_qc_status": "ok",
+                    "ladder_review_required": False,
+                },
+                {
+                    "file_name": "manual_ladder_needed.fsa",
+                    "analysis_status": "failed",
+                    "ladder_qc_status": "ok",
+                    "ladder_review_required": True,
+                    "ladder_review_reason": "operator_correction_required",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [row["file"] for row in rows],
+            ["manual_ladder_needed.fsa"],
+        )
+
 
     def test_write_gate_and_count_unresolved(self) -> None:
         with tempfile.TemporaryDirectory() as td:

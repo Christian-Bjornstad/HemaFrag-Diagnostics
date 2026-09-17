@@ -256,10 +256,19 @@ class BatchRunManifest:
         if not name or not phase:
             return
         with self._lock:
-            indexes = self._job_indexes_by_name.get(name, [])
-            if not indexes:
-                return
-            job = self.payload["jobs"][indexes[0]]
+            raw_index = event.get("job_index")
+            index = (
+                int(raw_index)
+                if isinstance(raw_index, int)
+                and 0 <= raw_index < len(self.payload.get("jobs", []))
+                else None
+            )
+            if index is None:
+                indexes = self._job_indexes_by_name.get(name, [])
+                if not indexes:
+                    return
+                index = indexes[0]
+            job = self.payload["jobs"][index]
             previous_phase = str(job.get("last_phase") or "")
             now = _utc_now()
             job["last_phase"] = phase
@@ -297,6 +306,29 @@ class BatchRunManifest:
         with self._lock:
             completed = {str(value) for value in result.get("completed_jobs") or []}
             failed = {str(value) for value in result.get("failed_jobs") or []}
+            cancelled = {str(value) for value in result.get("cancelled_jobs") or []}
+            unprocessed = {str(value) for value in result.get("unprocessed_jobs") or []}
+            completed_indexes = {
+                int(value) for value in result.get("completed_job_indexes") or []
+            }
+            failed_indexes = {
+                int(value) for value in result.get("failed_job_indexes") or []
+            }
+            cancelled_indexes = {
+                int(value) for value in result.get("cancelled_job_indexes") or []
+            }
+            unprocessed_indexes = {
+                int(value) for value in result.get("unprocessed_job_indexes") or []
+            }
+            indexed_states = any(
+                key in result
+                for key in (
+                    "completed_job_indexes",
+                    "failed_job_indexes",
+                    "cancelled_job_indexes",
+                    "unprocessed_job_indexes",
+                )
+            )
             result_entries = list(result.get("dit_report_entries") or [])
             entries_by_path: dict[Path, Mapping[str, Any]] = {}
             for entry in result_entries:
@@ -310,8 +342,22 @@ class BatchRunManifest:
                 if raw_path:
                     entries_by_path[Path(str(raw_path)).expanduser().resolve()] = entry
             for job in self.payload.get("jobs", []):
+                index = int(job.get("index") or 0)
                 name = str(job.get("name") or "")
-                if name in failed:
+                if indexed_states:
+                    if index in unprocessed_indexes:
+                        job["status"] = "unprocessed"
+                    elif index in cancelled_indexes:
+                        job["status"] = "cancelled"
+                    elif index in failed_indexes:
+                        job["status"] = "failed"
+                    elif index in completed_indexes:
+                        job["status"] = "completed"
+                elif name in unprocessed:
+                    job["status"] = "unprocessed"
+                elif name in cancelled:
+                    job["status"] = "cancelled"
+                elif name in failed:
                     job["status"] = "failed"
                 elif name in completed:
                     job["status"] = "completed"
@@ -358,8 +404,18 @@ class BatchRunManifest:
             artifacts = _output_records(aggregate_output_dir)
             self.payload["counts"].update(
                 {
-                    "completed_jobs": len(completed),
-                    "failed_jobs": len(failed),
+                    "completed_jobs": (
+                        len(completed_indexes) if indexed_states else len(completed)
+                    ),
+                    "failed_jobs": (
+                        len(failed_indexes) if indexed_states else len(failed)
+                    ),
+                    "cancelled_jobs": (
+                        len(cancelled_indexes) if indexed_states else len(cancelled)
+                    ),
+                    "unprocessed_jobs": (
+                        len(unprocessed_indexes) if indexed_states else len(unprocessed)
+                    ),
                     "dit_entries": len(dit_entries),
                     "qc_entries": len(qc_entries),
                     "patient_entries": max(0, len(dit_entries) - len(qc_entries)),
@@ -395,7 +451,23 @@ class BatchRunManifest:
                 },
                 "artifacts": artifacts,
             }
-            if failed:
+            if bool(result.get("cancelled")):
+                self.payload["status"] = (
+                    "cancelled_with_errors"
+                    if (failed_indexes if indexed_states else failed)
+                    else "cancelled"
+                )
+                self.payload["cancellation"] = {
+                    "requested": bool(result.get("cancellation_requested")),
+                    "cancelled_jobs": list(result.get("cancelled_jobs") or []),
+                    "cancelled_job_indexes": sorted(cancelled_indexes),
+                    "unprocessed_jobs": list(result.get("unprocessed_jobs") or []),
+                    "unprocessed_job_indexes": sorted(unprocessed_indexes),
+                    "final_reports_skipped_reason": str(
+                        result.get("final_reports_skipped_reason") or ""
+                    ),
+                }
+            elif failed:
                 self.payload["status"] = "completed_with_errors"
             elif bool(result.get("dit_reports_blocked")):
                 self.payload["status"] = "awaiting_ladder_review"

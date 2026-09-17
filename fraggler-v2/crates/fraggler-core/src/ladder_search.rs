@@ -53,6 +53,14 @@ pub struct SearchDiagnostics {
     pub best_score: Option<f64>,
     pub runner_up_score: Option<f64>,
     pub score_margin: Option<f64>,
+    #[serde(default)]
+    pub incumbent_score: Option<f64>,
+    #[serde(default)]
+    pub selected_over_incumbent_improvement: Option<f64>,
+    #[serde(default)]
+    pub minimum_required_improvement: Option<f64>,
+    #[serde(default)]
+    pub selection_changed: bool,
     pub rescue_triggers: Vec<String>,
     pub watchdog_reached: bool,
 }
@@ -68,9 +76,28 @@ impl SearchDiagnostics {
             best_score: None,
             runner_up_score: None,
             score_margin: None,
+            incumbent_score: None,
+            selected_over_incumbent_improvement: None,
+            minimum_required_improvement: None,
+            selection_changed: false,
             rescue_triggers: Vec::new(),
             watchdog_reached: false,
         }
+    }
+    fn record_arbitration(
+        &mut self,
+        incumbent: &SearchCandidate,
+        selected: &SearchCandidate,
+        runner_up_score: Option<f64>,
+        minimum_required_improvement: f64,
+    ) {
+        self.incumbent_score = Some(incumbent.score);
+        self.best_score = Some(selected.score);
+        self.runner_up_score = runner_up_score;
+        self.score_margin = runner_up_score.map(|score| score - selected.score);
+        self.selected_over_incumbent_improvement = Some(incumbent.score - selected.score);
+        self.minimum_required_improvement = Some(minimum_required_improvement);
+        self.selection_changed = selected.scan_indices != incumbent.scan_indices;
     }
 }
 
@@ -240,9 +267,7 @@ pub fn liz_local_rescue_candidates(
     let mut diagnostics = SearchDiagnostics::empty(budget.fit_tier, budget.expansion_limit);
     diagnostics.expansions_used = expansions;
     diagnostics.complete_candidate_count = candidates.len();
-    diagnostics.best_score = Some(selected.score);
-    diagnostics.runner_up_score = runner_up;
-    diagnostics.score_margin = runner_up.map(|score| score - selected.score);
+    diagnostics.record_arbitration(&current, &selected, runner_up, 0.05);
     Some(SearchOutcome {
         candidate: selected,
         diagnostics,
@@ -369,9 +394,7 @@ pub fn rox_local_rescue_candidates(
     let mut diagnostics = SearchDiagnostics::empty(budget.fit_tier, budget.expansion_limit);
     diagnostics.expansions_used = expansions;
     diagnostics.complete_candidate_count = candidates.len();
-    diagnostics.best_score = Some(selected.score);
-    diagnostics.runner_up_score = runner_up;
-    diagnostics.score_margin = runner_up.map(|score| score - selected.score);
+    diagnostics.record_arbitration(&current, &selected, runner_up, 0.01);
     Some(SearchOutcome {
         candidate: selected,
         diagnostics,
@@ -491,9 +514,7 @@ pub fn deep_rescue_candidates(
     diagnostics.expansions_used = expansions;
     diagnostics.elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
     diagnostics.complete_candidate_count = candidates.len();
-    diagnostics.best_score = Some(selected.score);
-    diagnostics.runner_up_score = runner_up;
-    diagnostics.score_margin = runner_up.map(|score| score - selected.score);
+    diagnostics.record_arbitration(&current, &selected, runner_up, 0.10);
     Some(SearchOutcome {
         candidate: selected,
         diagnostics,
@@ -596,6 +617,17 @@ mod tests {
         let outcome = liz_local_rescue_candidates(&input, SearchBudget::tier_one()).unwrap();
         assert_eq!(outcome.candidate.scan_indices[0], 1544);
         assert_eq!(&outcome.candidate.scan_indices[1..], &current[1..]);
+        assert!(outcome.diagnostics.selection_changed);
+        assert!(
+            outcome
+                .diagnostics
+                .selected_over_incumbent_improvement
+                .is_some_and(|improvement| improvement > 0.05)
+        );
+        assert_eq!(
+            outcome.diagnostics.minimum_required_improvement,
+            Some(0.05)
+        );
     }
 
     #[test]
@@ -660,6 +692,29 @@ mod tests {
         let current = candidate(FitTier::Fast, &[10, 20], 2.0);
         let rescue = candidate(FitTier::Rescue2s, &[10, 21], 2.0);
         assert_eq!(arbiter_select_candidate(&current, &[rescue], 0.1), current);
+    }
+
+    #[test]
+    fn rescue_diagnostics_explain_a_guarded_non_promotion() {
+        let expected_bp = vec![50.0, 100.0, 150.0];
+        let current_scans = vec![100, 200, 300];
+        let peaks = current_scans
+            .iter()
+            .copied()
+            .chain(std::iter::once(301))
+            .map(|scan| evidence(scan, 1000.0, 950.0))
+            .collect();
+        let input = LadderRescueInput::new(expected_bp, current_scans.clone(), peaks);
+
+        let outcome = rox_local_rescue_candidates(&input, SearchBudget::tier_one()).unwrap();
+
+        assert_eq!(outcome.candidate.scan_indices, current_scans);
+        assert!(!outcome.diagnostics.selection_changed);
+        assert_eq!(outcome.diagnostics.minimum_required_improvement, Some(0.01));
+        assert_eq!(
+            outcome.diagnostics.selected_over_incumbent_improvement,
+            Some(0.0)
+        );
     }
 
     #[test]

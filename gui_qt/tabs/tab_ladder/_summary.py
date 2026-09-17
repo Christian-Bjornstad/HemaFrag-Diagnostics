@@ -126,7 +126,7 @@ def manual_adjustment_consumption(
     )
     entry_claims_consumed = bool(
         provenance.get("manual_adjustment_consumed")
-        or strategy == "manual_adjustment"
+        or strategy in {"manual_adjustment", "manual_partial"}
     )
     analyzed_adjustment_hash = str(
         provenance.get("manual_adjustment_sha256") or ""

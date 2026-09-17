@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import math
+import uuid
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeySequence, QShortcut
@@ -49,6 +50,44 @@ from gui_qt.dialogs.ladder_dialog._constants import (
     CHECK_MAX_ABS_RESIDUAL,
 )
 
+
+
+def sample_raw_trace_at_x(trace_values, requested_x: float) -> tuple[float, float]:
+    """Clamp an operator-selected x and linearly sample the raw trace there."""
+    trace = np.asarray(trace_values, dtype=float)
+    if trace.size == 0:
+        raise ValueError("No size-standard trace available.")
+    scan_x = min(max(float(requested_x), 0.0), float(trace.size - 1))
+    left = int(math.floor(scan_x))
+    right = int(math.ceil(scan_x))
+    if left == right:
+        intensity = float(trace[left])
+    else:
+        fraction = scan_x - left
+        intensity = float(trace[left] * (1.0 - fraction) + trace[right] * fraction)
+    return scan_x, intensity
+
+
+def colliding_candidate_indices(
+    candidates: pd.DataFrame,
+    scan_x: float,
+    *,
+    tolerance: float = 0.5,
+) -> list[int]:
+    """Return every visible marker close enough to require an explicit choice."""
+    if candidates.empty or "time" not in candidates:
+        return []
+    differences = (candidates["time"].astype(float) - float(scan_x)).abs()
+    return [
+        int(index)
+        for index in differences[differences <= float(tolerance)]
+        .sort_values(kind="stable")
+        .index
+    ]
+
+
+def _new_manual_marker_id() -> str:
+    return f"manual-{uuid.uuid4().hex}"
 
 
 class LadderAdjustmentDialog(QDialog):
@@ -138,6 +177,55 @@ class LadderAdjustmentDialog(QDialog):
         if not df.empty:
             df = df.sort_values("time").reset_index(drop=True)
             df["index"] = np.arange(len(df))
+            saved_markers = [
+                marker
+                for marker in (
+                    getattr(self.fsa, "manual_ladder_markers", None) or []
+                )
+                if isinstance(marker, dict) and marker.get("marker_id")
+            ]
+            marker_ids: list[str] = []
+            requested_values: list[float] = []
+            used_saved_ids: set[str] = set()
+            source_identity = str(
+                getattr(self.fsa, "file", None)
+                or getattr(self.fsa, "file_name", "")
+                or "ladder"
+            )
+            for ordinal, candidate in df.iterrows():
+                scan_x = float(candidate["time"])
+                source_kind = str(candidate.get("source") or "auto")
+                if source_kind == "manual":
+                    source_kind = "manual_exact"
+                    df.at[ordinal, "source"] = source_kind
+                matched = next(
+                    (
+                        marker
+                        for marker in saved_markers
+                        if str(marker["marker_id"]) not in used_saved_ids
+                        and math.isclose(
+                            float(marker.get("scan_x", float("nan"))),
+                            scan_x,
+                            abs_tol=1e-9,
+                        )
+                    ),
+                    None,
+                )
+                if matched is not None:
+                    marker_id = str(matched["marker_id"])
+                    requested_x = float(matched.get("requested_x", scan_x))
+                    used_saved_ids.add(marker_id)
+                else:
+                    token = (
+                        f"{source_identity}|{source_kind}|"
+                        f"{format(scan_x, '.17g')}|{ordinal}"
+                    )
+                    marker_id = f"candidate-{uuid.uuid5(uuid.NAMESPACE_URL, token).hex}"
+                    requested_x = scan_x
+                marker_ids.append(marker_id)
+                requested_values.append(requested_x)
+            df["marker_id"] = marker_ids
+            df["requested_x"] = requested_values
         return df
 
     def _init_ui(self):
@@ -401,7 +489,7 @@ class LadderAdjustmentDialog(QDialog):
         summary_header.addLayout(title_stack, stretch=2)
 
         help_label = QLabel(
-            "Left click assigns nearest candidate. Wheel/drag zooms and pans. Shortcuts: Ctrl+Shift+A add, Ctrl+N next, Ctrl+Return preview."
+            "Left click assigns a detected marker. Exact Marker mode places the chosen raw-trace x without snapping. Wheel/drag zooms and pans."
         )
         help_label.setWordWrap(True)
         help_label.setStyleSheet("color: #475569; font-weight: 650;")
@@ -509,10 +597,13 @@ class LadderAdjustmentDialog(QDialog):
         self.btn_y_300.clicked.connect(lambda: self._set_forced_ymax(300.0))
         self.btn_y_1000 = QPushButton("Y 1000")
         self.btn_y_1000.clicked.connect(lambda: self._set_forced_ymax(1000.0))
-        self.btn_trace_add_peak = QPushButton("Trace Assign")
+        self.btn_trace_add_peak = QPushButton("Exact Marker")
         self.btn_trace_add_peak.setObjectName("ModeButton")
         self.btn_trace_add_peak.setCheckable(True)
-        self.btn_trace_add_peak.setToolTip("Keep this on, then click the trace to add/assign peaks without switching tabs.")
+        self.btn_trace_add_peak.setToolTip(
+            "Place and assign a stable marker at the exact raw-trace x. "
+            "Nearby detected markers require an explicit choice."
+        )
         self.btn_trace_add_peak.toggled.connect(self._toggle_add_peak_mode)
         self.btn_trace_next_missing = QPushButton("Next Missing")
         self.btn_trace_next_missing.clicked.connect(self._select_next_missing_step)
@@ -650,7 +741,7 @@ class LadderAdjustmentDialog(QDialog):
         candidates_layout.addWidget(self.candidate_table)
 
         candidate_btns_top = QHBoxLayout()
-        self.btn_add_peak = QPushButton("Add Peaks From Trace")
+        self.btn_add_peak = QPushButton("Place Exact Marker")
         self.btn_add_peak.setObjectName("ModeButton")
         self.btn_add_peak.setCheckable(True)
         self.btn_add_peak.toggled.connect(self._toggle_add_peak_mode)
@@ -895,7 +986,9 @@ class LadderAdjustmentDialog(QDialog):
         self.meta_labels["expected_count"].setText(str(len(self.ladder_steps)))
         manual_count = 0
         if "source" in self.candidates.columns:
-            manual_count = int(self.candidates["source"].astype(str).eq("manual").sum())
+            manual_count = int(
+                self.candidates["source"].astype(str).str.startswith("manual").sum()
+            )
         candidate_text = str(len(self.candidates))
         if manual_count:
             candidate_text += f" ({manual_count} manual)"
@@ -1076,7 +1169,7 @@ class LadderAdjustmentDialog(QDialog):
             assigned_text = f"{self.ladder_steps[assigned_step]:.0f} bp" if assigned_step is not None else "Free"
             source = str(cand.get("source", "auto"))
             row_label = str(row)
-            if source == "manual":
+            if source.startswith("manual"):
                 row_label += " *"
 
             items = [
@@ -1088,7 +1181,7 @@ class LadderAdjustmentDialog(QDialog):
             ]
             if assigned_step is not None:
                 items[4].setForeground(Qt.GlobalColor.darkGreen)
-            if source == "manual":
+            if source.startswith("manual"):
                 items[0].setForeground(Qt.GlobalColor.darkBlue)
                 items[1].setForeground(Qt.GlobalColor.darkBlue)
                 items[3].setForeground(Qt.GlobalColor.darkBlue)
@@ -1096,6 +1189,14 @@ class LadderAdjustmentDialog(QDialog):
                 items[0].setForeground(Qt.GlobalColor.darkGreen)
                 items[1].setForeground(Qt.GlobalColor.darkGreen)
                 items[3].setForeground(Qt.GlobalColor.darkGreen)
+            marker_id = str(cand.get("marker_id") or "")
+            marker_tip = (
+                f"Marker identity: {marker_id}\n"
+                f"Exact raw-trace x: {float(cand['time']):.6f}\n"
+                f"Source: {source}"
+            )
+            for item in items:
+                item.setToolTip(marker_tip)
             for col, item in enumerate(items):
                 self.candidate_table.setItem(row, col, item)
         if selected_candidate is not None and 0 <= selected_candidate < self.candidate_table.rowCount():
@@ -1103,47 +1204,72 @@ class LadderAdjustmentDialog(QDialog):
 
     def _build_adjustment_payload(self) -> dict:
         mapping_times: dict[int, float] = {}
+        marker_id_by_step: dict[int, str] = {}
+        markers: list[dict] = []
+        for row, candidate in self.candidates.iterrows():
+            scan_x = float(candidate["time"])
+            source_kind = str(candidate.get("source") or "auto")
+            marker_id = str(candidate.get("marker_id") or "").strip()
+            if not marker_id:
+                token = (
+                    f"{source_kind}|{format(scan_x, '.17g')}|{int(row)}"
+                )
+                marker_id = f"candidate-{uuid.uuid5(uuid.NAMESPACE_URL, token).hex}"
+            intensity = float(candidate.get("intensity", 0.0) or 0.0)
+            markers.append(
+                {
+                    "marker_id": marker_id,
+                    "scan_x": scan_x,
+                    "requested_x": float(candidate.get("requested_x", scan_x)),
+                    "intensity": intensity,
+                    "source_kind": source_kind,
+                    "candidate_index": int(row),
+                }
+            )
         for step_idx, cand_idx in self.mapping.items():
-            if 0 <= cand_idx < len(self.candidates):
-                mapping_times[int(step_idx)] = float(self.candidates.iloc[cand_idx]["time"])
-        payload = {
+            if 0 <= cand_idx < len(markers):
+                marker = markers[cand_idx]
+                mapping_times[int(step_idx)] = float(marker["scan_x"])
+                marker_id_by_step[int(step_idx)] = str(marker["marker_id"])
+        missing_step_indices = self._missing_step_indices()
+        return {
             "mapping": dict(self.mapping),
             "mapping_times": mapping_times,
             "manual_candidates": list(self._manual_candidate_times),
+            "markers": markers,
+            "marker_id_by_step": marker_id_by_step,
+            "expected_ladder_steps": [
+                float(value) for value in self.ladder_steps
+            ],
+            "mapped_step_indices": sorted(int(value) for value in self.mapping),
+            "missing_step_indices": sorted(int(value) for value in missing_step_indices),
+            "partial_mapping": bool(missing_step_indices),
         }
-        if self._missing_step_indices():
-            payload["partial_mapping"] = True
-        return payload
 
-    def _candidate_time_exists(self, peak_time: float, tolerance: float = 2.0) -> int | None:
-        if self.candidates.empty:
-            return None
-        diff = (self.candidates["time"].astype(float) - float(peak_time)).abs()
-        matches = diff[diff <= tolerance]
-        if matches.empty:
-            return None
-        return int(matches.index[0])
+    def _candidate_time_exists(
+        self,
+        peak_time: float,
+        tolerance: float = 0.5,
+    ) -> int | None:
+        collisions = colliding_candidate_indices(
+            self.candidates,
+            peak_time,
+            tolerance=tolerance,
+        )
+        return collisions[0] if collisions else None
 
-    def _find_local_peak_time(self, x_value: float, search_radius: int = 18) -> tuple[float, float]:
-        trace = np.asarray(self.fsa.size_standard, dtype=float)
-        if trace.size == 0:
-            raise ValueError("No size-standard trace available.")
-        center = int(round(float(x_value)))
-        lo = max(center - search_radius, 0)
-        hi = min(center + search_radius + 1, trace.size)
-        if lo >= hi:
-            raise ValueError("Could not inspect the selected ladder region.")
-        window = trace[lo:hi]
-        local_index = int(np.argmax(window))
-        peak_index = lo + local_index
-        return float(peak_index), float(trace[peak_index])
-
-    def _insert_manual_candidate(self, peak_time: float, intensity: float) -> int:
-        existing_idx = self._candidate_time_exists(peak_time)
-        if existing_idx is not None:
-            return existing_idx
-
-        if not any(math.isclose(float(existing), float(peak_time), abs_tol=1e-6) for existing in self._manual_candidate_times):
+    def _insert_manual_candidate(
+        self,
+        peak_time: float,
+        intensity: float,
+        *,
+        requested_x: float | None = None,
+        marker_id: str | None = None,
+    ) -> int:
+        if not any(
+            math.isclose(float(existing), float(peak_time), abs_tol=1e-9)
+            for existing in self._manual_candidate_times
+        ):
             self._manual_candidate_times.append(float(peak_time))
             self._manual_candidate_times.sort()
 
@@ -1152,17 +1278,86 @@ class LadderAdjustmentDialog(QDialog):
                 {
                     "index": len(self.candidates),
                     "time": float(peak_time),
+                    "requested_x": float(
+                        peak_time if requested_x is None else requested_x
+                    ),
                     "intensity": float(intensity),
-                    "source": "manual",
+                    "source": "manual_exact",
+                    "marker_id": marker_id or _new_manual_marker_id(),
                 }
             ]
         )
-        self.candidates = pd.concat([self.candidates, manual_row], ignore_index=True)
+        if self.candidates.empty:
+            self.candidates = manual_row
+        else:
+            self.candidates = pd.concat([self.candidates, manual_row], ignore_index=True)
         return int(self.candidates.index[-1])
 
-    def _add_manual_peak_from_plot(self, x_value: float, assign_to_step: int | None = None) -> None:
-        peak_time, intensity = self._find_local_peak_time(x_value)
-        cand_idx = self._insert_manual_candidate(peak_time, intensity)
+    def _choose_trace_collision(
+        self,
+        collision_indices: list[int],
+    ) -> tuple[str, int | None]:
+        """Require an explicit operator decision when an exact marker collides."""
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Question)
+        message.setWindowTitle("Marker Collision")
+        message.setText(
+            "A marker already exists at or near this raw-trace position."
+        )
+        message.setInformativeText(
+            "Place a separate exact marker, use one named existing marker, or cancel."
+        )
+        separate_button = message.addButton(
+            "Place Separate Marker",
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        existing_buttons: dict[object, int] = {}
+        for candidate_index in collision_indices:
+            candidate = self.candidates.iloc[candidate_index]
+            marker_id = str(candidate.get("marker_id") or "")
+            label = (
+                f"Use {candidate.get('source', 'existing')} "
+                f"@ {float(candidate['time']):.3f} "
+                f"({marker_id[-8:]})"
+            )
+            button = message.addButton(label, QMessageBox.ButtonRole.AcceptRole)
+            existing_buttons[button] = candidate_index
+        cancel_button = message.addButton(
+            QMessageBox.StandardButton.Cancel
+        )
+        message.exec()
+        clicked = message.clickedButton()
+        if clicked == separate_button:
+            return "separate", None
+        if clicked == cancel_button or clicked is None:
+            return "cancel", None
+        return "existing", existing_buttons.get(clicked)
+
+    def _add_manual_peak_from_plot(
+        self,
+        x_value: float,
+        assign_to_step: int | None = None,
+    ) -> None:
+        peak_time, intensity = sample_raw_trace_at_x(
+            self.fsa.size_standard,
+            x_value,
+        )
+        collisions = colliding_candidate_indices(self.candidates, peak_time)
+        if collisions:
+            action, existing_index = self._choose_trace_collision(collisions)
+            if action == "cancel":
+                return
+            if action == "existing" and existing_index is not None:
+                if assign_to_step is not None:
+                    self._assign_candidate_to_step(assign_to_step, existing_index)
+                else:
+                    self.candidate_table.selectRow(existing_index)
+                return
+        cand_idx = self._insert_manual_candidate(
+            peak_time,
+            intensity,
+            requested_x=float(x_value),
+        )
         if assign_to_step is not None:
             self._assign_candidate_to_step(assign_to_step, cand_idx)
             return
@@ -1310,7 +1505,8 @@ class LadderAdjustmentDialog(QDialog):
         if missing_count:
             return (
                 "check",
-                f"{missing_count} ladder step(s) interpolated/extrapolated from placed peaks.",
+                f"{missing_count} expected ladder step(s) remain explicitly missing; "
+                "only observed anchors are fitted.",
             )
         if r2 < PASS_R2 or max_abs > PASS_MAX_ABS_RESIDUAL:
             return "check", "Fit is usable, but one or more residuals still need review."
@@ -1473,7 +1669,7 @@ class LadderAdjustmentDialog(QDialog):
         x_value: float,
         y_value: float | None = None,
         *,
-        max_time_delta: float = 45.0,
+        max_time_delta: float = 3.0,
     ) -> int | None:
         if self.candidates.empty:
             return None
@@ -1494,7 +1690,7 @@ class LadderAdjustmentDialog(QDialog):
             y_diffs = np.abs(intensities[indices] - float(y_value))
             score = (time_diffs / x_span) + (y_diffs / y_span) * 0.55
             best_pos = int(np.argmin(score))
-            if float(time_diffs[best_pos]) <= max_time_delta or float(score[best_pos]) <= 0.035:
+            if float(time_diffs[best_pos]) <= max_time_delta:
                 return int(indices[best_pos])
             return None
         best_pos = int(np.argmin(time_diffs))
@@ -1508,11 +1704,10 @@ class LadderAdjustmentDialog(QDialog):
             if step_idx is None:
                 QMessageBox.information(self, "No Step Selected", "Select a ladder step first, then add the missing peak from the plot.")
                 return
-            cand_idx = cand_idx if cand_idx is not None else self._nearest_candidate_from_position(x_value, y_value)
-            if cand_idx is not None:
-                self._assign_candidate_to_step(step_idx, cand_idx)
-                return
-            self._add_manual_peak_from_plot(float(x_value), assign_to_step=step_idx)
+            self._add_manual_peak_from_plot(
+                float(x_value),
+                assign_to_step=step_idx,
+            )
             return
 
         if self.candidates.empty:
@@ -1530,13 +1725,10 @@ class LadderAdjustmentDialog(QDialog):
             self._assign_candidate_to_step(step_idx, cand_idx)
             return
 
-        peak_time, _intensity = self._find_local_peak_time(float(x_value))
-        existing_idx = self._candidate_time_exists(peak_time, tolerance=3.0)
-        if existing_idx is not None:
-            self._assign_candidate_to_step(step_idx, existing_idx)
-            return
-
-        self.stats_label.setText("No nearby candidate found. Turn on Add Peaks From Trace to create a manual peak here.")
+        self.stats_label.setText(
+            "No detected marker is within 3 scans. Turn on Exact Trace Marker "
+            "to place a marker at the chosen raw-trace x."
+        )
         self.stats_label.setStyleSheet("color: #d97706; font-weight: 700;")
 
     def _on_pg_mouse_clicked(self, event):
@@ -1548,7 +1740,11 @@ class LadderAdjustmentDialog(QDialog):
         view_pos = self.pg_plot.getPlotItem().vb.mapSceneToView(scene_pos)
         x_value = float(view_pos.x())
         y_value = float(view_pos.y())
-        cand_idx = self._nearest_candidate_from_position(x_value, y_value)
+        cand_idx = (
+            None
+            if self._add_peak_mode
+            else self._nearest_candidate_from_position(x_value, y_value)
+        )
         self._handle_trace_click(x_value, y_value, cand_idx=cand_idx)
         event.accept()
 
@@ -1632,7 +1828,7 @@ class LadderAdjustmentDialog(QDialog):
             times = self.candidates["time"].to_numpy(dtype=float)
             intensities = self.candidates["intensity"].to_numpy(dtype=float)
             source_values = self.candidates["source"].astype(str) if "source" in self.candidates.columns else pd.Series(["auto"] * len(self.candidates))
-            manual_mask = source_values.eq("manual").to_numpy(dtype=bool)
+            manual_mask = source_values.str.startswith("manual").to_numpy(dtype=bool)
             model_mask = source_values.eq("model_selected").to_numpy(dtype=bool)
             auto_mask = ~(manual_mask | model_mask)
             if np.any(auto_mask):
@@ -1737,7 +1933,7 @@ class LadderAdjustmentDialog(QDialog):
             times = self.candidates["time"].to_numpy(dtype=float)
             intensities = self.candidates["intensity"].to_numpy(dtype=float)
             source_values = self.candidates["source"].astype(str) if "source" in self.candidates.columns else pd.Series(["auto"] * len(self.candidates))
-            manual_mask = source_values.eq("manual").to_numpy(dtype=bool)
+            manual_mask = source_values.str.startswith("manual").to_numpy(dtype=bool)
             model_mask = source_values.eq("model_selected").to_numpy(dtype=bool)
             auto_mask = ~(manual_mask | model_mask)
             if np.any(auto_mask):
@@ -1897,7 +2093,7 @@ class LadderAdjustmentDialog(QDialog):
                 return
             direction = "high -> low" if self._missing_order == "descending" else "low -> high"
             self.stats_label.setText(
-                f"Add-peaks mode ({direction}): click the trace to place {self.ladder_steps[step_idx]:.0f} bp at the local maximum. Mode stays on for the next missing peak."
+                f"Exact-marker mode ({direction}): click the raw trace to place {self.ladder_steps[step_idx]:.0f} bp at that exact x. Nearby markers require an explicit collision choice."
             )
             self.stats_label.setStyleSheet("color: #0f766e; font-weight: 700;")
         else:
@@ -1909,12 +2105,38 @@ class LadderAdjustmentDialog(QDialog):
         if cand_idx < 0 or cand_idx >= len(self.candidates):
             return
 
-        # Enforce one candidate per ladder step and one ladder step per candidate.
-        for other_step, other_cand in list(self.mapping.items()):
-            if other_step == step_idx:
-                continue
-            if other_cand == cand_idx:
-                del self.mapping[other_step]
+        displaced_steps = [
+            other_step
+            for other_step, other_cand in self.mapping.items()
+            if other_step != step_idx and other_cand == cand_idx
+        ]
+        replacing = step_idx in self.mapping and self.mapping[step_idx] != cand_idx
+        if displaced_steps or replacing:
+            details = []
+            if replacing:
+                details.append(
+                    f"replace the current {self.ladder_steps[step_idx]:.0f} bp assignment"
+                )
+            if displaced_steps:
+                details.append(
+                    "remove this marker from "
+                    + ", ".join(
+                        f"{self.ladder_steps[index]:.0f} bp"
+                        for index in displaced_steps
+                    )
+                )
+            answer = QMessageBox.question(
+                self,
+                "Confirm Marker Reassignment",
+                "This assignment will " + " and ".join(details) + ". Continue?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        for other_step in displaced_steps:
+            del self.mapping[other_step]
         self.mapping[step_idx] = cand_idx
         self._refresh_preview_state(show_errors=False)
         self._refresh_all()
@@ -1970,8 +2192,16 @@ class LadderAdjustmentDialog(QDialog):
         if event.button != 1 or self._toolbar_is_active():
             return
 
-        cand_idx = self._nearest_candidate_from_event(event)
-        self._handle_trace_click(float(event.xdata), float(event.ydata) if event.ydata is not None else None, cand_idx=cand_idx)
+        cand_idx = (
+            None
+            if self._add_peak_mode
+            else self._nearest_candidate_from_event(event)
+        )
+        self._handle_trace_click(
+            float(event.xdata),
+            float(event.ydata) if event.ydata is not None else None,
+            cand_idx=cand_idx,
+        )
 
     def _on_plot_motion(self, event):
         if not self._is_panning or self._pan_start is None or event.inaxes != self.ax:
@@ -2018,10 +2248,18 @@ class LadderAdjustmentDialog(QDialog):
         step_idx = self._selected_step_row()
         cand_idx = self._selected_candidate_row()
         if step_idx is None:
-            QMessageBox.information(self, "No Step Selected", "Select a ladder step first.")
+            QMessageBox.information(
+                self,
+                "No Step Selected",
+                "Select a ladder step first.",
+            )
             return
         if cand_idx is None:
-            QMessageBox.information(self, "No Candidate Selected", "Select a candidate peak first.")
+            QMessageBox.information(
+                self,
+                "No Candidate Selected",
+                "Select a candidate marker first.",
+            )
             return
         self._assign_candidate_to_step(step_idx, cand_idx)
 
@@ -2065,11 +2303,11 @@ class LadderAdjustmentDialog(QDialog):
 
     def _on_apply(self):
         self._review_action = "apply"
-        if len(self.mapping) < 2:
+        if len(self.mapping) < 3:
             QMessageBox.warning(
                 self,
                 "No Mapping",
-                "Map at least two ladder steps before applying (the rest is interpolated).",
+                "Map at least three observed ladder anchors before applying.",
             )
             return
         missing_steps = self._missing_step_indices()
@@ -2080,10 +2318,11 @@ class LadderAdjustmentDialog(QDialog):
             answer = QMessageBox.question(
                 self,
                 "Incomplete Ladder Mapping",
-                "Not all ladder steps are assigned. The remaining steps will be "
-                "interpolated/extrapolated from the peaks you have placed.\n\n"
+                "Not all ladder steps are assigned. Only the observed anchors you "
+                "placed will be used to fit the sizing model; missing steps remain "
+                "explicit and this file remains marked as a reviewed partial fit.\n\n"
                 f"Missing: {missing_text}\n\n"
-                "Save this adjustment anyway?",
+                "Save this partial adjustment anyway?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -2119,4 +2358,5 @@ class LadderAdjustmentDialog(QDialog):
             "linear_mean": self.review_context.get("linear_mean"),
             "linear_r2": self.review_context.get("linear_r2"),
             "after_qc": dict(self._preview_metrics or {}),
+            "partial_mapping": bool(self._missing_step_indices()),
         }

@@ -1464,7 +1464,10 @@ def _flt3_short_trace_missing_steps(
     assay: str,
     analysis_type: str | None,
 ) -> tuple[list[float], float]:
-    if getattr(fsa, "ladder_fit_strategy", "") == "manual_adjustment":
+    if getattr(fsa, "ladder_fit_strategy", "") in {
+        "manual_adjustment",
+        "manual_partial",
+    }:
         return [], float("nan")
 
     template_key = _resolved_flt3_template_key(fsa, assay, analysis_type)
@@ -3654,7 +3657,7 @@ def _should_attempt_flt3_template_rescue(
         return False
 
     strategy = str(getattr(fsa, "ladder_fit_strategy", "") or "")
-    if strategy == "manual_adjustment":
+    if strategy in {"manual_adjustment", "manual_partial"}:
         return False
 
     if bool(getattr(fsa, "ladder_review_required", False)):
@@ -6007,10 +6010,16 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         )
         or poor_gs500rox_linear_fit
     )
-    if ladder_fit_strategy == "manual_adjustment":
-        ladder_qc_status = "manual_adjustment"
-    elif ladder_review_required:
+    if ladder_review_required:
         ladder_qc_status = "review_required"
+    elif ladder_fit_strategy == "manual_partial":
+        ladder_qc_status = (
+            "manual_partial_reviewed"
+            if getattr(fsa, "manual_ladder_partial_approved", False)
+            else "review_required"
+        )
+    elif ladder_fit_strategy == "manual_adjustment":
+        ladder_qc_status = "manual_adjustment"
     elif float(metrics.get("r2", float("nan"))) > FLT3_LADDER_QC_THRESHOLD:
         ladder_qc_status = "ok"
     else:
@@ -6247,7 +6256,11 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
             audit_records.append(_candidate_audit_record(path, meta, "rejected", reason))
             continue
 
-        acceptable = entry["ladder_qc_status"] in {"ok", "manual_adjustment"} and entry["peak_qc_pass"]
+        acceptable = entry["ladder_qc_status"] in {
+            "ok",
+            "manual_adjustment",
+            "manual_partial_reviewed",
+        } and entry["peak_qc_pass"]
         candidate_reason = "qc_pass"
         if not acceptable:
             if entry["ladder_qc_status"] != "ok":

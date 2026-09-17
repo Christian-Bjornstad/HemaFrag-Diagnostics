@@ -868,7 +868,14 @@ def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
 
 def _ladder_status_payload(entry: dict) -> tuple[str, str, str]:
     status = str(entry.get("ladder_qc_status", "unknown"))
-    if status == "manual_adjustment":
+    if status == "manual_partial_reviewed":
+        label = "Manual partial"
+        css = "warning"
+        note = str(
+            entry.get("ladder_fit_note")
+            or "Operator-approved partial ladder fit; missing anchors were not fabricated."
+        )
+    elif status == "manual_adjustment":
         label = "Manual"
         css = "manual"
         note = str(entry.get("ladder_fit_note") or "Manual ladder correction was used.")

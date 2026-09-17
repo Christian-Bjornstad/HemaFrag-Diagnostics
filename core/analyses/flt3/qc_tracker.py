@@ -334,7 +334,8 @@ def build_tracking_base_row(entry: dict) -> dict:
         "LadderQC": str(entry.get("ladder_qc_status") or ""),
         "LadderFitStrategy": str(entry.get("ladder_fit_strategy") or ""),
         "ManualAdjustmentUsed": (
-            str(entry.get("ladder_fit_strategy") or "") == "manual_adjustment"
+            str(entry.get("ladder_fit_strategy") or "")
+            in {"manual_adjustment", "manual_partial"}
         ),
         "RustPreviewPositiveCall": bool(entry.get("rust_preview_positive_call", False)),
         "RustPreviewWTBP": rust_preview_wt_bp,

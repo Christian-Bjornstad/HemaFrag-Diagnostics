@@ -34,22 +34,45 @@ function toggleComment(btn) {
 window.PeakManager = {
     plots: {},
     registerPlot: function(id, plotObj) { this.plots[id] = plotObj; },
+    _readPeakData: function() {
+        try {
+            var tag = document.getElementById('peak-data');
+            return tag ? JSON.parse(tag.textContent || '{}') : {};
+        } catch (e) {
+            return {};
+        }
+    },
+    _normalizePeakPayload: function(payload) {
+        if (Array.isArray(payload)) return {peaks: payload.slice()};
+        if (payload && typeof payload === 'object') {
+            return {peaks: Array.isArray(payload.peaks) ? payload.peaks.slice() : []};
+        }
+        return {peaks: []};
+    },
     getAllPeaks: function() {
         var all = {};
         for (var id in this.plots) {
-            if (Object.prototype.hasOwnProperty.call(this.plots, id)) {
-                all[id] = this.plots[id].getPeaks();
-            }
+            if (!Object.prototype.hasOwnProperty.call(this.plots, id)) continue;
+            all[id] = this.plots[id].getPeaks();
         }
         return all;
     },
-    getInitialPeaksForPlot: function(id) {
-        try {
-            var data = JSON.parse(document.getElementById('peak-data').textContent || '{}');
-            return data[id] || [];
-        } catch (e) {
-            return [];
+    getAllPeakData: function() {
+        var all = {};
+        for (var id in this.plots) {
+            if (!Object.prototype.hasOwnProperty.call(this.plots, id)) continue;
+            var plot = this.plots[id];
+            all[id] = (plot && typeof plot.getPeakData === 'function')
+                ? plot.getPeakData()
+                : plot.getPeaks();
         }
+        return all;
+    },
+    getInitialPeakDataForPlot: function(id) {
+        return this._normalizePeakPayload(this._readPeakData()[id]);
+    },
+    getInitialPeaksForPlot: function(id) {
+        return this.getInitialPeakDataForPlot(id).peaks;
     },
     downloadUpdatedHtml: function() {
         var tas = document.querySelectorAll('textarea.report-comment');
@@ -63,7 +86,7 @@ window.PeakManager = {
             }
         }
 
-        var allPeaks = this.getAllPeaks();
+        var allPeaks = this.getAllPeakData();
         var allPlotStates = (window.ReportPlotManager && window.ReportPlotManager.getAllStates)
             ? window.ReportPlotManager.getAllStates()
             : {};
@@ -103,6 +126,7 @@ def _render_summary_table(entries: list[dict]) -> str:
         status_label = {
             "ok": "<span class='status-badge ok'>OK</span>",
             "manual_adjustment": "<span class='status-badge manual'>Manual</span>",
+            "manual_partial_reviewed": "<span class='status-badge warning'>Manual partial</span>",
             "review_required": "<span class='status-badge warning'>Warning</span>",
             "ladder_qc_failed": "<span class='status-badge failed'>Failed</span>",
         }.get(status, "<span class='status-badge unknown'>Unknown</span>")

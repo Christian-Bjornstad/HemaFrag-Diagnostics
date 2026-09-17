@@ -8,7 +8,7 @@ from typing import Any
 from app_meta import APP_VERSION
 
 
-ANALYSIS_PROVENANCE_SCHEMA = "hemafrag_analysis_provenance_v1"
+ANALYSIS_PROVENANCE_SCHEMA = "hemafrag_analysis_provenance_v2"
 
 
 def _sha256_file(path: Path) -> str:
@@ -41,6 +41,7 @@ def build_analysis_provenance(entry: dict[str, Any]) -> dict[str, object]:
 
     adjustment_hash = ""
     adjustment_schema = ""
+    adjustment_payload: dict[str, Any] = {}
     if source is not None:
         from core.ladder_adjustment_store import load_ladder_adjustment_record
 
@@ -57,9 +58,15 @@ def build_analysis_provenance(entry: dict[str, Any]) -> dict[str, object]:
             adjustment_hash = str(record.get("payload_sha256") or "")
             payload = record.get("payload")
             if isinstance(payload, dict):
-                adjustment_schema = str(payload.get("schema_version") or "legacy")
+                from core.ladder_adjustment_io import normalize_ladder_adjustment_payload
 
-    if strategy == "manual_adjustment":
+                adjustment_payload = normalize_ladder_adjustment_payload(payload) or {}
+                adjustment_schema = str(
+                    adjustment_payload.get("schema_version") or "legacy"
+                )
+
+    manual_strategy = strategy in {"manual_adjustment", "manual_partial"}
+    if manual_strategy:
         engine = "manual"
     elif getattr(fsa, "rust_detected_ladder", None):
         engine = "rust"
@@ -105,9 +112,38 @@ def build_analysis_provenance(entry: dict[str, Any]) -> dict[str, object]:
             or getattr(fsa, "rust_selected_strong_baseline_anchor_count", 0)
             or 0
         ),
-        "manual_adjustment_consumed": strategy == "manual_adjustment",
+        "manual_adjustment_consumed": manual_strategy,
         "manual_adjustment_schema": adjustment_schema,
         "manual_adjustment_sha256": adjustment_hash,
+        "manual_adjustment_partial": bool(
+            strategy == "manual_partial"
+            or adjustment_payload.get("partial_mapping")
+        ),
+        "manual_adjustment_mapped_step_indices": [
+            int(value)
+            for value in (
+                getattr(fsa, "manual_ladder_mapped_step_indices", None)
+                or adjustment_payload.get("mapped_step_indices")
+                or []
+            )
+        ],
+        "manual_adjustment_missing_step_indices": [
+            int(value)
+            for value in (
+                getattr(fsa, "manual_ladder_missing_step_indices", None)
+                or adjustment_payload.get("missing_step_indices")
+                or []
+            )
+        ],
+        "manual_adjustment_marker_ids": sorted(
+            str(value)
+            for value in dict(
+                getattr(fsa, "manual_ladder_marker_id_by_step", None)
+                or adjustment_payload.get("marker_id_by_step")
+                or {}
+            ).values()
+            if str(value)
+        ),
     }
 
 

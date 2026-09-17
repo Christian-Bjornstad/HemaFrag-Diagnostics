@@ -20,6 +20,7 @@ from core.assay_config import (
     reference_shade_rgba,
 )
 from core.baseline import estimate_running_baseline
+from core.plotting_plotly._legacy import TRACE_MARKER_RUNTIME_JS
 
 
 def _assay_reference_ranges() -> dict:
@@ -533,6 +534,7 @@ def build_interactive_peak_plot_for_entry_qc(entry: dict, rules: QCRules) -> str
     html_fragment = f"""
 <div id="{div_id}" class="peak-editor-block"></div>
 <script type="text/javascript">
+{TRACE_MARKER_RUNTIME_JS}
 (function() {{
   var fig = {fig_json};
   var gd = document.getElementById("{div_id}");
@@ -604,6 +606,28 @@ def build_interactive_peak_plot_for_entry_qc(entry: dict, rules: QCRules) -> str
     var baseAnnots = (g.layout.annotations || []).slice();
 
     var peaks = [];
+    var initialPeakData = (window.PeakManager && window.PeakManager.getInitialPeakDataForPlot)
+      ? window.PeakManager.getInitialPeakDataForPlot("{div_id}")
+      : null;
+    if (initialPeakData && Array.isArray(initialPeakData.peaks)) {{
+      peaks = initialPeakData.peaks.slice();
+    }} else if (window.PeakManager && window.PeakManager.getInitialPeaksForPlot) {{
+      peaks = window.PeakManager.getInitialPeaksForPlot("{div_id}");
+    }}
+    peaks = (Array.isArray(peaks) ? peaks : []).map(function(peak, index) {{
+      var normalized = window.HemaFragTraceMarkers.normalize(
+        peak,
+        index,
+        {{ prefix: "{div_id}", source_kind: "detected" }}
+      );
+      normalized.x = Number(normalized.x);
+      normalized.y = Number(normalized.y);
+      normalized.area = Number(normalized.area) || 0.0;
+      normalized.active = normalized.active !== false;
+      return normalized;
+    }}).filter(function(peak) {{
+      return Number.isFinite(peak.x) && Number.isFinite(peak.y);
+    }});
 
     function nearestPeakIdx(xClick) {{
       if (!peaks.length) return -1;
@@ -615,6 +639,15 @@ def build_interactive_peak_plot_for_entry_qc(entry: dict, rules: QCRules) -> str
       }}
       return bestIdx;
     }}
+
+    function registerPeakState() {{
+      if (!window.PeakManager) return;
+      window.PeakManager.registerPlot("{div_id}", {{
+        getPeaks: function() {{ return peaks; }},
+        getPeakData: function() {{ return {{ peaks: peaks }}; }}
+      }});
+    }}
+    registerPeakState();
 
     function rebuild() {{
       var xs = peaks.map(function(p) {{ return p.x; }});
@@ -649,33 +682,65 @@ def build_interactive_peak_plot_for_entry_qc(entry: dict, rules: QCRules) -> str
         shapes: baseShapes,
         annotations: baseAnnots.concat(ann)
       }});
+      registerPeakState();
     }}
 
     gd.on("plotly_click", function(ev) {{
       if (!ev.points || !ev.points.length) return;
       var pt = ev.points[0];
-      var xVal = pt.x;
-      var yVal = pt.y;
-      var isShift = ev.event && ev.event.shiftKey;
+      var xVal = Number(pt.x);
+      var yVal = Number(pt.y);
+      var sampleIndex = Number.isFinite(Number(pt.pointNumber))
+        ? Number(pt.pointNumber)
+        : null;
+      var isShift = !!(ev.event && ev.event.shiftKey);
 
       if (isShift) {{
         var idxDel = nearestPeakIdx(xVal);
-        if (idxDel >= 0) {{
+        var deleteDistance = idxDel >= 0
+          ? Math.abs(peaks[idxDel].x - xVal)
+          : Infinity;
+        if (
+          idxDel >= 0
+          && window.HemaFragTraceMarkers.confirmDelete(
+            peaks[idxDel],
+            deleteDistance,
+            0.4
+          )
+        ) {{
           peaks.splice(idxDel, 1);
           rebuild();
         }}
         return;
       }}
 
-      var idx = nearestPeakIdx(xVal);
-      if (idx >= 0 && Math.abs(peaks[idx].x - xVal) < 0.4) {{
-        peaks[idx].active = !peaks[idx].active;
+      var collisionChoice = window.HemaFragTraceMarkers.chooseCollision(
+        peaks,
+        window.HemaFragTraceMarkers.collisionIndices(peaks, xVal, null, 0.4),
+        xVal
+      );
+      if (collisionChoice.action === "cancel") return;
+      if (collisionChoice.action === "use") {{
+        peaks[collisionChoice.index].active = true;
         rebuild();
         return;
       }}
 
       var area = computeGaussianArea(xVal, pt.curveNumber || 0);
-      peaks.push({{ x: xVal, y: yVal, active: true, area: area }});
+      peaks.push(window.HemaFragTraceMarkers.normalize(
+        {{
+          x: xVal,
+          y: yVal,
+          active: true,
+          area: area,
+          marker_id: window.HemaFragTraceMarkers.newMarkerId("{div_id}"),
+          source_kind: "manual_exact",
+          requested_x: xVal,
+          sample_index: sampleIndex
+        }},
+        peaks.length,
+        {{ prefix: "{div_id}", source_kind: "manual_exact", sample_index: sampleIndex }}
+      ));
       rebuild();
     }});
   }});

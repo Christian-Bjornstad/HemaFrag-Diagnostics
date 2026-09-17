@@ -50,6 +50,105 @@ from core.plot_cache import (
 
 FLT3_NEGATIVE_CONTROL_YMIN = 250.0
 
+TRACE_MARKER_RUNTIME_JS = r"""
+window.HemaFragTraceMarkers = window.HemaFragTraceMarkers || (function() {
+  var sequence = 0;
+  function markerId(peak, prefix, index) {
+    if (peak && peak.marker_id) return String(peak.marker_id);
+    if (peak && peak.peak_id) return String(peak.peak_id);
+    var x = Number(peak && peak.x);
+    var channel = String((peak && peak.source_channel) || "AUTO");
+    return String(prefix || "marker") + "-legacy-" +
+      (Number.isFinite(x) ? x.toPrecision(15) : "nan") + "-" +
+      channel + "-" + String(index || 0);
+  }
+  function newMarkerId(prefix) {
+    sequence += 1;
+    return String(prefix || "marker") + "-manual-" +
+      Date.now().toString(36) + "-" + sequence.toString(36);
+  }
+  function normalize(peak, index, defaults) {
+    defaults = defaults || {};
+    var marker = Object.assign({}, peak || {});
+    marker.marker_id = markerId(marker, defaults.prefix, index);
+    marker.peak_id = marker.marker_id;
+    marker.source_kind = String(
+      marker.source_kind || defaults.source_kind || "detected"
+    );
+    marker.requested_x = Number.isFinite(Number(marker.requested_x))
+      ? Number(marker.requested_x)
+      : Number(marker.x);
+    marker.sample_index = Number.isFinite(Number(marker.sample_index))
+      ? Number(marker.sample_index)
+      : (Number.isFinite(Number(defaults.sample_index))
+          ? Number(defaults.sample_index)
+          : null);
+    return marker;
+  }
+  function collisionIndices(peaks, x, channel, tolerance) {
+    var matches = [];
+    var limit = Number.isFinite(Number(tolerance)) ? Number(tolerance) : 0.4;
+    for (var i = 0; i < peaks.length; i++) {
+      var peak = peaks[i];
+      if (channel && peak.source_channel && peak.source_channel !== channel) continue;
+      var distance = Math.abs(Number(peak.x) - Number(x));
+      if (Number.isFinite(distance) && distance <= limit) {
+        matches.push({ index: i, distance: distance });
+      }
+    }
+    matches.sort(function(a, b) {
+      return (a.distance - b.distance) || (a.index - b.index);
+    });
+    return matches.map(function(item) { return item.index; });
+  }
+  function chooseCollision(peaks, indices, x) {
+    if (!indices.length) return { action: "new", index: -1 };
+    var lines = indices.map(function(index, ordinal) {
+      var peak = peaks[index];
+      return String(ordinal + 1) + ": " + String(peak.marker_id) +
+        " @ " + Number(peak.x).toFixed(4) +
+        " [" + String(peak.source_kind || "existing") + "]";
+    });
+    var choice = window.prompt(
+      "Marker collision near x=" + Number(x).toFixed(4) + ".\\n" +
+      lines.join("\\n") +
+      "\\nType NEW to place a separate marker, a number to use that marker, or CANCEL.",
+      "CANCEL"
+    );
+    if (choice === null) return { action: "cancel", index: -1 };
+    var normalized = String(choice).trim().toUpperCase();
+    if (normalized === "NEW") return { action: "new", index: -1 };
+    if (normalized === "" || normalized === "CANCEL") {
+      return { action: "cancel", index: -1 };
+    }
+    var selected = Number(normalized);
+    if (Number.isInteger(selected) && selected >= 1 && selected <= indices.length) {
+      return { action: "use", index: indices[selected - 1] };
+    }
+    window.alert("No marker was changed. Enter NEW, a listed number, or CANCEL.");
+    return { action: "cancel", index: -1 };
+  }
+  function confirmDelete(peak, distance, maxDistance) {
+    var limit = Number.isFinite(Number(maxDistance)) ? Number(maxDistance) : 0.4;
+    if (!peak || !Number.isFinite(distance) || distance > limit) {
+      window.alert("No marker is close enough to delete.");
+      return false;
+    }
+    return window.confirm(
+      "Delete marker " + String(peak.marker_id) +
+      " @ " + Number(peak.x).toFixed(4) + "?"
+    );
+  }
+  return {
+    normalize: normalize,
+    newMarkerId: newMarkerId,
+    collisionIndices: collisionIndices,
+    chooseCollision: chooseCollision,
+    confirmDelete: confirmDelete
+  };
+})();
+"""
+
 
 def _flt3_peak_id(row: pd.Series, index: int) -> str:
     """Build a stable peak id for persisted FLT3 manual selections."""
@@ -676,6 +775,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
 </div>
 {manual_panel_html}
 <script type="text/javascript">
+{TRACE_MARKER_RUNTIME_JS}
 (function() {{
   var fig = {fig_json};
   var initialPeaks = {initial_peaks_json};
@@ -695,7 +795,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
   var expectedWtBp = {json.dumps(data.get("wt_bp"))};
   var expectedMutBp = {json.dumps(data.get("mut_bp"))};
   var plotFileName = {json.dumps(data.get("file_name", ""))};
-  var overviewIdPrefix = "overview_" + plotFileName.replace(/\./g, "_").replace(/ /g, "_");
+  var overviewIdPrefix = "overview_" + plotFileName.replace(/\\./g, "_").replace(/ /g, "_");
   var initialPlotState = (window.ReportPlotManager && window.ReportPlotManager.getInitialStateForPlot)
     ? window.ReportPlotManager.getInitialStateForPlot(divId)
     : null;
@@ -918,20 +1018,21 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
     }}
 
     function makePeakId(p, idx) {{
+      if (p && p.marker_id) return String(p.marker_id);
       if (p && p.peak_id) return String(p.peak_id);
-      var xKey = Number.isFinite(Number(p && p.x)) ? Math.round(Number(p.x) * 10) : 0;
-      var yKey = Number.isFinite(Number(p && p.y)) ? Math.round(Number(p.y)) : 0;
-      var areaKey = Number.isFinite(Number(p && p.area)) ? Math.round(Number(p.area)) : 0;
-      var channelKey = normalizeSourceChannel(p && p.source_channel, Number(p && p.curve_number)) || "AUTO";
-      return "flt3_pk_" + xKey + "_" + yKey + "_" + areaKey + "_" + channelKey + "_" + idx;
+      return window.HemaFragTraceMarkers.normalize(
+        p || {{}},
+        idx,
+        {{ prefix: divId, source_kind: "detected" }}
+      ).marker_id;
     }}
 
     function peakIdFor(peak, idx) {{
       if (!peak) return "";
-      if (!peak.peak_id) {{
-        peak.peak_id = makePeakId(peak, idx);
-      }}
-      return String(peak.peak_id);
+      var markerId = makePeakId(peak, idx);
+      peak.marker_id = markerId;
+      peak.peak_id = markerId;
+      return markerId;
     }}
 
     function ensurePeakIds() {{
@@ -957,17 +1058,25 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
         else if (sourceChannel === "DATA1") area = blueArea;
         else area = computePeakAreaForChannel(x, sourceChannel || manualTraceChannels[0] || null);
       }}
-      return {{
-        x: x,
-        y: y,
-        area: area,
-        active: !(p && p.active === false),
-        peak_id: makePeakId(p, idx),
-        blue_area: blueArea,
-        green_area: greenArea,
-        source_channel: sourceChannel,
-        curve_number: Number(p && p.curve_number)
-      }};
+      return window.HemaFragTraceMarkers.normalize(
+        {{
+          x: x,
+          y: y,
+          area: area,
+          active: !(p && p.active === false),
+          marker_id: p && (p.marker_id || p.peak_id),
+          peak_id: p && p.peak_id,
+          source_kind: p && p.source_kind,
+          requested_x: p && p.requested_x,
+          sample_index: p && p.sample_index,
+          blue_area: blueArea,
+          green_area: greenArea,
+          source_channel: sourceChannel,
+          curve_number: Number(p && p.curve_number)
+        }},
+        idx,
+        {{ prefix: divId, source_kind: "detected" }}
+      );
     }}
 
     function cloneSelection(selection) {{
@@ -1450,8 +1559,12 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
     gd.on("plotly_click", function(ev) {{
       if (!ev.points || !ev.points.length) return;
       var pt = ev.points[0];
-      var xVal = pt.x;
+      var requestedX = Number(pt.x);
+      var xVal = requestedX;
       var yVal = pt.y;
+      var sampleIndex = Number.isFinite(Number(pt.pointNumber))
+        ? Number(pt.pointNumber)
+        : null;
       var isShift = !!(ev.event && ev.event.shiftKey);
       var requestedChannel = manualClickChannel === "AUTO" ? normalizeSourceChannel(null, pt.curveNumber) : manualClickChannel;
       if (!requestedChannel && manualTraceChannels.length === 1) {{
@@ -1468,7 +1581,17 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
 
       if (isShift) {{
         var idxDel = nearestPeakIdx(xVal, requestedChannel);
-        if (idxDel >= 0) {{
+        var deleteDistance = idxDel >= 0
+          ? Math.abs(Number(peaks[idxDel].x) - Number(xVal))
+          : Infinity;
+        if (
+          idxDel >= 0
+          && window.HemaFragTraceMarkers.confirmDelete(
+            peaks[idxDel],
+            deleteDistance,
+            0.4
+          )
+        ) {{
           var removedPeakId = peaks[idxDel].peak_id;
           peaks.splice(idxDel, 1);
           manualSelection.mutant_peak_ids = manualSelection.mutant_peak_ids.filter(function(id) {{ return id !== removedPeakId; }});
@@ -1479,13 +1602,20 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
         return;
       }}
 
-      var idx = nearestPeakIdx(xVal, requestedChannel);
-      if (idx >= 0 && Math.abs(peaks[idx].x - xVal) < 0.4) {{
-        peaks[idx].active = !peaks[idx].active;
-        if (!peaks[idx].active) {{
-          manualSelection.mutant_peak_ids = manualSelection.mutant_peak_ids.filter(function(id) {{ return id !== peaks[idx].peak_id; }});
-          manualSelection.enabled = manualSelection.mutant_peak_ids.length > 0;
-        }}
+      var collisions = window.HemaFragTraceMarkers.collisionIndices(
+        peaks,
+        xVal,
+        requestedChannel,
+        0.4
+      );
+      var collisionChoice = window.HemaFragTraceMarkers.chooseCollision(
+        peaks,
+        collisions,
+        xVal
+      );
+      if (collisionChoice.action === "cancel") return;
+      if (collisionChoice.action === "use") {{
+        peaks[collisionChoice.index].active = true;
         redrawPeaks();
         return;
       }}
@@ -1494,17 +1624,24 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
       var blueArea = computePeakAreaForChannel(xVal, "DATA1");
       var greenArea = computePeakAreaForChannel(xVal, "DATA2");
       var peakArea = sourceChannel ? computePeakAreaForChannel(xVal, sourceChannel) : computePeakArea(xVal, pt.curveNumber);
-      var newPeak = {{
-        x: xVal,
-        y: yVal,
-        area: peakArea,
-        blue_area: blueArea,
-        green_area: greenArea,
-        source_channel: sourceChannel,
-        curve_number: pt.curveNumber,
-        active: true
-      }};
-      newPeak.peak_id = makePeakId(newPeak, peaks.length);
+      var newPeak = window.HemaFragTraceMarkers.normalize(
+        {{
+          x: xVal,
+          y: yVal,
+          area: peakArea,
+          blue_area: blueArea,
+          green_area: greenArea,
+          source_channel: sourceChannel,
+          curve_number: pt.curveNumber,
+          active: true,
+          marker_id: window.HemaFragTraceMarkers.newMarkerId(divId),
+          source_kind: "manual_exact",
+          requested_x: requestedX,
+          sample_index: sampleIndex
+        }},
+        peaks.length,
+        {{ prefix: divId, source_kind: "manual_exact", sample_index: sampleIndex }}
+      );
       peaks.push(newPeak);
       redrawPeaks();
     }});
@@ -1837,8 +1974,8 @@ def build_interactive_assay_batch_plot_html(
             "<tbody></tbody></table></div>"
         )
         html_parts.append(
-            "<p class='small'>Klikk på tracen for å legge til peaks. "
-            "Shift+klikk for å slette nærmeste peak.</p>"
+            "<p class='small'>Klikk på tracen for å plassere en ny markør ved valgt x. "
+            "Kollisjoner krever eksplisitt valg. Shift+klikk sletter bare en nær markør etter bekreftelse.</p>"
         )
         # Skjult JSON-buffer – ikke synlig, men lar vi stå for evt. senere bruk
         html_parts.append(
@@ -1854,6 +1991,7 @@ def build_interactive_assay_batch_plot_html(
         # JS for akkurat denne editoren – synka med PeakManager
         html_parts.append(f"""
 <script type="text/javascript">
+{TRACE_MARKER_RUNTIME_JS}
 (function() {{
   var fig = {fig_json};
   var divId = "{div_id}";
@@ -1955,16 +2093,24 @@ def build_interactive_assay_batch_plot_html(
       return total;
     }}
 
-    function normalizePeak(p) {{
+    function normalizePeak(p, idx) {{
       var x = Number(p && p.x);
       var y = Number(p && p.y);
       var area = Number(p && p.area);
-      return {{
-        x: x,
-        y: y,
-        area: Number.isFinite(area) ? area : computePeakArea(x, primaryTraceIndex),
-        active: !(p && p.active === false)
-      }};
+      return window.HemaFragTraceMarkers.normalize(
+        {{
+          x: x,
+          y: y,
+          area: Number.isFinite(area) ? area : computePeakArea(x, primaryTraceIndex),
+          active: !(p && p.active === false),
+          marker_id: p && (p.marker_id || p.peak_id),
+          source_kind: p && p.source_kind,
+          requested_x: p && p.requested_x,
+          sample_index: p && p.sample_index
+        }},
+        idx,
+        {{ prefix: divId, source_kind: "detected" }}
+      );
     }}
 
     var peaks = [];
@@ -1976,7 +2122,9 @@ def build_interactive_assay_batch_plot_html(
     }} else if (window.PeakManager) {{
       peaks = window.PeakManager.getInitialPeaksForPlot(divId);
     }}
-    peaks = (Array.isArray(peaks) ? peaks : []).map(normalizePeak).filter(function(p) {{
+    peaks = (Array.isArray(peaks) ? peaks : []).map(function(peak, index) {{
+      return normalizePeak(peak, index);
+    }}).filter(function(p) {{
       return Number.isFinite(p.x) && Number.isFinite(p.y);
     }});
 
@@ -2005,7 +2153,7 @@ def build_interactive_assay_batch_plot_html(
       }}, [1]); // peaks-trace er index 1
 
       var arr = peaks.map(function(p) {{
-        return {{ x: p.x, y: p.y, area: p.area, active: p.active }};
+        return Object.assign({{}}, p);
       }});
       var pre = document.getElementById(divId + "_peaks_json");
       if (pre) {{
@@ -2049,27 +2197,52 @@ def build_interactive_assay_batch_plot_html(
     gd.on("plotly_click", function(ev) {{
       if (!ev || !ev.points || !ev.points.length) return;
       var pt = ev.points[0];
-      var xVal = pt.x;
-      var yVal = pt.y;
+      var xVal = Number(pt.x);
+      var yVal = Number(pt.y);
+      var sampleIndex = Number.isFinite(Number(pt.pointNumber))
+        ? Number(pt.pointNumber)
+        : null;
       var isShift = !!(ev.event && ev.event.shiftKey);
 
       if (isShift) {{
         var idx = findNearestPeakIdx(xVal);
-        if (idx >= 0) {{
+        var distance = idx >= 0 ? Math.abs(peaks[idx].x - xVal) : Infinity;
+        if (
+          idx >= 0
+          && window.HemaFragTraceMarkers.confirmDelete(peaks[idx], distance, 0.4)
+        ) {{
           peaks.splice(idx, 1);
           redrawPeaks();
         }}
         return;
       }}
 
-      var idx = findNearestPeakIdx(xVal);
-      if (idx >= 0 && Math.abs(peaks[idx].x - xVal) < 0.4) {{
-        peaks[idx].active = !peaks[idx].active;
+      var collisionChoice = window.HemaFragTraceMarkers.chooseCollision(
+        peaks,
+        window.HemaFragTraceMarkers.collisionIndices(peaks, xVal, null, 0.4),
+        xVal
+      );
+      if (collisionChoice.action === "cancel") return;
+      if (collisionChoice.action === "use") {{
+        peaks[collisionChoice.index].active = true;
         redrawPeaks();
         return;
       }}
 
-      peaks.push({{ x: xVal, y: yVal, area: computePeakArea(xVal, pt.curveNumber), active: true }});
+      peaks.push(window.HemaFragTraceMarkers.normalize(
+        {{
+          x: xVal,
+          y: yVal,
+          area: computePeakArea(xVal, pt.curveNumber),
+          active: true,
+          marker_id: window.HemaFragTraceMarkers.newMarkerId(divId),
+          source_kind: "manual_exact",
+          requested_x: xVal,
+          sample_index: sampleIndex
+        }},
+        peaks.length,
+        {{ prefix: divId, source_kind: "manual_exact", sample_index: sampleIndex }}
+      ));
       redrawPeaks();
     }});
   }});

@@ -794,7 +794,13 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
         ladder_quadratic_mean_residual_bp = metrics["quadratic_trend_mean_abs_error_bp"]
         ladder_quadratic_max_residual_bp = metrics["quadratic_trend_max_abs_error_bp"]
         ladder_max_curvature = metrics["max_curvature"]
-        if ladder_fit_strategy == "manual_adjustment":
+        if ladder_fit_strategy == "manual_partial":
+            ladder_qc_status = (
+                "manual_partial_reviewed"
+                if getattr(fsa, "manual_ladder_partial_approved", False)
+                else "review_required"
+            )
+        elif ladder_fit_strategy == "manual_adjustment":
             ladder_qc_status = "manual_adjustment"
         elif bool(getattr(fsa, "ladder_missing_signal", False)):
             ladder_qc_status = "missing_ladder"

@@ -65,3 +65,69 @@ def test_ladder_editor_exposes_grouped_controls_and_scrollable_qc(qapp, monkeypa
     assert qc_scroll.horizontalScrollBarPolicy().name == "ScrollBarAlwaysOff"
     assert dialog.findChild(QWidget, "LadderActionBar") is not None
     dialog.close()
+
+
+def test_ladder_editor_round_trips_distinct_exact_markers_in_partial_payload(
+    qapp,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        LadderAdjustmentDialog,
+        "_get_candidates",
+        lambda self: pd.DataFrame(
+            columns=[
+                "index",
+                "time",
+                "requested_x",
+                "intensity",
+                "source",
+                "marker_id",
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        LadderAdjustmentDialog,
+        "_suggest_auto",
+        lambda self, store_initial: None,
+    )
+    monkeypatch.setattr(
+        LadderAdjustmentDialog,
+        "_refresh_preview_state",
+        lambda self, show_errors: None,
+    )
+    monkeypatch.setattr(LadderAdjustmentDialog, "_refresh_all", lambda self: None)
+    monkeypatch.setattr(LadderAdjustmentDialog, "_focus_initial_step", lambda self: None)
+
+    dialog = LadderAdjustmentDialog(_fake_fsa())
+    first = dialog._insert_manual_candidate(
+        100.25,
+        120.0,
+        requested_x=100.25,
+    )
+    second = dialog._insert_manual_candidate(
+        100.25,
+        121.0,
+        requested_x=100.25,
+    )
+    third = dialog._insert_manual_candidate(
+        260.75,
+        200.0,
+        requested_x=260.75,
+    )
+    dialog._assign_candidate_to_step(0, first)
+    dialog._assign_candidate_to_step(1, second)
+    dialog._assign_candidate_to_step(2, third)
+
+    dialog.show()
+    qapp.processEvents()
+    payload = dialog._build_adjustment_payload()
+
+    assert payload["partial_mapping"] is True
+    assert payload["mapping_times"] == {0: 100.25, 1: 100.25, 2: 260.75}
+    assert len(set(payload["marker_id_by_step"].values())) == 3
+    assert [marker["requested_x"] for marker in payload["markers"]] == [
+        100.25,
+        100.25,
+        260.75,
+    ]
+    dialog.close()

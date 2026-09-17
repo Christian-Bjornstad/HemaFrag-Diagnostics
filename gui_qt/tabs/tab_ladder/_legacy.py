@@ -709,9 +709,11 @@ class TabLadder(QWidget):
                             "linear_r2": review_payload.get("linear_r2"),
                         },
                         after_qc=dict(review_payload.get("after_qc") or {}),
+                        partial_approved=bool(adjustment.get("partial_mapping")),
                     )
                     if load_ladder_adjustment(fsa) is None:
                         raise RuntimeError(f"Saved adjustment could not be loaded from {saved_path}.")
+                    review_payload["adjustment_path"] = str(saved_path)
                 except Exception as exc:
                     self._set_status(
                         f"Could not save ladder adjustment for {self._current_file.name}: {exc}",
@@ -735,6 +737,10 @@ class TabLadder(QWidget):
                         cached_preview.file_name = cache_key.name
                     except Exception:
                         pass
+                    if bool(adjustment.get("partial_mapping")):
+                        cached_preview.manual_ladder_partial_approved = True
+                        cached_preview.ladder_review_required = False
+                        cached_preview.ladder_qc_status = "manual_partial_reviewed"
                     self._review_runtime_cache[cache_key] = {
                         "fsa": cached_preview,
                         "meta": copy.deepcopy(self._current_meta or {}),
@@ -1560,13 +1566,20 @@ class TabLadder(QWidget):
 
         action = str(review_payload.get("action", "apply") or "apply")
         comment = str(review_payload.get("comment", "") or "").strip()
-        label = "manual_adjusted" if action != "note_only" else "reviewed_no_change"
+        if action == "note_only":
+            label = "reviewed_no_change"
+        elif bool(review_payload.get("partial_mapping")):
+            label = "manual_partial_adjusted"
+        else:
+            label = "manual_adjusted"
         annotation = {
             "label": label,
             "label_note": comment,
             "reviewed_at_utc": datetime.now(timezone.utc).isoformat(),
             "adjustment_path": (
-                str(self._current_file.with_suffix(".ladder_adj.json")) if label == "manual_adjusted" else ""
+                str(review_payload.get("adjustment_path") or "")
+                if label in {"manual_adjusted", "manual_partial_adjusted"}
+                else ""
             ),
             "action": action,
             "linear_max": review_payload.get("linear_max"),
@@ -1867,7 +1880,14 @@ class TabLadder(QWidget):
         fit_note = str(getattr(fsa, "ladder_fit_note", ""))
         review_required = bool(getattr(fsa, "ladder_review_required", bool(missing_steps)))
 
-        if getattr(fsa, "ladder_fit_strategy", "") == "manual_adjustment":
+        strategy_value = str(getattr(fsa, "ladder_fit_strategy", "") or "")
+        if strategy_value == "manual_partial":
+            review_state = (
+                "Operator-approved partial · missing anchors remain visible"
+                if getattr(fsa, "manual_ladder_partial_approved", False)
+                else "Unapproved partial · review required"
+            )
+        elif strategy_value == "manual_adjustment":
             review_state = "Manual correction active"
         elif review_required:
             review_state = "Usable but incomplete"

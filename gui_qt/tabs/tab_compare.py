@@ -149,6 +149,26 @@ class TabCompare(QWidget):
             if p.is_file() and p not in files:
                 files.append(p)
         return files
+    def load_files(self, paths: list[Path], *, select_all: bool = False) -> None:
+        """Load an explicit file cohort supplied by another manifest-backed workflow."""
+        unique: list[Path] = []
+        seen: set[Path] = set()
+        for raw_path in paths:
+            path = Path(raw_path).expanduser()
+            try:
+                key = path.resolve()
+            except Exception:
+                key = path
+            if key in seen or not path.is_file() or path.suffix.lower() != ".fsa":
+                continue
+            seen.add(key)
+            unique.append(path)
+        self.input_dir.clear()
+        self.input_files.setText("; ".join(str(path) for path in unique))
+        self._on_scan()
+        if select_all and unique:
+            self._set_all_patients_checked(True)
+
 
     # ----------------------------------------------------------------- scan
     def _on_scan(self) -> None:
@@ -182,8 +202,6 @@ class TabCompare(QWidget):
                 child.setCheckState(0, Qt.CheckState.Unchecked)
                 child.setData(0, Qt.ItemDataRole.UserRole, str(f))
                 patient_item.addChild(child)
-            # Checking/unchecking a patient toggles all its children
-            patient_item.itemChanged.connect = None  # placeholder; handled globally below
             self.tree.addTopLevelItem(patient_item)
 
         total = sum(len(v) for k, v in groups.items() if not (exclude_qc and k == "QC"))

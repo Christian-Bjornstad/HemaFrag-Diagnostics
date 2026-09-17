@@ -435,7 +435,8 @@ def _build_run_row(entry: dict) -> dict:
         "LadderQC": entry.get("ladder_qc_status") or "",
         "LadderFitStrategy": entry.get("ladder_fit_strategy") or "",
         "ManualAdjustmentUsed": (
-            str(entry.get("ladder_fit_strategy") or "") == "manual_adjustment"
+            str(entry.get("ladder_fit_strategy") or "")
+            in {"manual_adjustment", "manual_partial"}
         ),
         "LadderExpectedStepCount": int(entry.get("ladder_expected_step_count", 0) or 0),
         "LadderFittedStepCount": int(entry.get("ladder_fitted_step_count", 0) or 0),

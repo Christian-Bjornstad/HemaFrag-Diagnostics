@@ -137,7 +137,13 @@ def _analyze_files(fsa_files: list[Path]) -> tuple[list[dict], int]:
         ladder_strategy = str(getattr(fsa, "ladder_fit_strategy", "auto_full"))
         ladder_missing = list(map(float, getattr(fsa, "ladder_missing_expected_steps", [])))
         ladder_status = str(getattr(fsa, "ladder_qc_status", "ok") or "ok")
-        if ladder_strategy == "manual_adjustment":
+        if ladder_strategy == "manual_partial":
+            ladder_status = (
+                "manual_partial_reviewed"
+                if getattr(fsa, "manual_ladder_partial_approved", False)
+                else "review_required"
+            )
+        elif ladder_strategy == "manual_adjustment":
             ladder_status = "manual_adjustment"
         elif bool(getattr(fsa, "ladder_missing_signal", False)):
             ladder_status = "missing_ladder"

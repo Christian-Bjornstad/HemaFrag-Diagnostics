@@ -251,9 +251,13 @@ def _set_ladder_fit_metadata(fsa: FsaFile, strategy: str, note: str | None = Non
     _set_ladder_fit_profile(fsa, getattr(fsa, "ladder_fit_profile", None), analysis_id=str(getattr(fsa, "analysis_id", "") or ""))
     fsa.ladder_fit_strategy = strategy
     fsa.ladder_missing_expected_steps = _missing_expected_ladder_steps(fsa)
-    fsa.ladder_review_required = bool(fsa.ladder_missing_expected_steps) or bool(
-        getattr(fsa, "rust_guardrail_review_required", False)
+    partial_approved = bool(
+        strategy == "manual_partial"
+        and getattr(fsa, "manual_ladder_partial_approved", False)
     )
+    fsa.ladder_review_required = (
+        bool(fsa.ladder_missing_expected_steps) and not partial_approved
+    ) or bool(getattr(fsa, "rust_guardrail_review_required", False))
     fsa.ladder_expected_step_count = int(len(_get_expected_ladder_steps(fsa)))
     fsa.ladder_fitted_step_count = int(len(getattr(fsa, "ladder_steps", [])))
     if note is None:
@@ -306,12 +310,18 @@ def _persist_ladder_qc_metadata(
 
     if status is None:
         strategy = str(getattr(fsa, "ladder_fit_strategy", "") or "")
-        if strategy == "manual_adjustment":
-            status = "manual_adjustment"
-        elif bool(getattr(fsa, "ladder_missing_signal", False)):
+        if bool(getattr(fsa, "ladder_missing_signal", False)):
             status = "missing_ladder"
+        elif strategy == "manual_partial":
+            status = (
+                "manual_partial_reviewed"
+                if getattr(fsa, "manual_ladder_partial_approved", False)
+                else "review_required"
+            )
         elif bool(getattr(fsa, "ladder_review_required", False)):
             status = "review_required"
+        elif strategy == "manual_adjustment":
+            status = "manual_adjustment"
         elif np.isfinite(r2):
             status = "ok"
         else:
@@ -3781,275 +3791,15 @@ def _try_core_anchored_step_completion(fsa: FsaFile, label: str, fsa_path: Path)
 # ==================== ANALYSEFUNKSJONER ===========================
 # ==================================================================
 
-LADDER_ADJUSTMENT_SCHEMA_V2 = "hemafrag_ladder_adjustment_v2"
-LADDER_ADJUSTMENT_SCHEMA_LEGACY = "legacy"
-
-
-def _ladder_adjustment_file_hash(path: Path) -> str | None:
-    if not path.is_file():
-        return None
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _normalize_ladder_adjustment_payload(adjustment: dict | None) -> dict | None:
-    """Normalizes legacy and enriched ladder adjustment payloads."""
-    if not adjustment:
-        return None
-
-    if "mapping" in adjustment or "mapping_times" in adjustment or "manual_candidates" in adjustment:
-        mapping_raw = adjustment.get("mapping", {})
-        mapping_times_raw = adjustment.get("mapping_times", {})
-        manual_candidates_raw = adjustment.get("manual_candidates", [])
-        normalized = {
-            "mapping": {int(k): int(v) for k, v in mapping_raw.items()},
-            "mapping_times": {int(k): float(v) for k, v in mapping_times_raw.items()},
-            "manual_candidates": [float(v) for v in manual_candidates_raw],
-        }
-        if adjustment.get("schema_version"):
-            normalized["schema_version"] = str(adjustment["schema_version"])
-        else:
-            normalized["schema_version"] = LADDER_ADJUSTMENT_SCHEMA_LEGACY
-        for key in ("source", "analysis", "selected_peaks", "review", "validation"):
-            value = adjustment.get(key)
-            if isinstance(value, (dict, list)):
-                normalized[key] = copy.deepcopy(value)
-        return normalized
-
-    return {
-        "schema_version": LADDER_ADJUSTMENT_SCHEMA_LEGACY,
-        "mapping": {int(k): int(v) for k, v in adjustment.items()},
-        "mapping_times": {},
-        "manual_candidates": [],
-    }
-
-
-def save_ladder_adjustment(
-    fsa: FsaFile,
-    adjustment: dict[int, int] | dict,
-    *,
-    manual_candidates: list[float] | None = None,
-    mapping_times: dict[int, float] | None = None,
-    operator: str = "",
-    comment: str = "",
-    before_qc: dict[str, Any] | None = None,
-    after_qc: dict[str, Any] | None = None,
-) -> Path:
-    """Save and verify a manual ladder mapping in the internal adjustment store."""
-    source_path = Path(fsa.file).resolve()
-    try:
-        if manual_candidates is not None or mapping_times is not None:
-            payload = {
-                "mapping": {int(k): int(v) for k, v in adjustment.items()},
-                "mapping_times": {int(k): float(v) for k, v in (mapping_times or {}).items()},
-                "manual_candidates": [float(v) for v in (manual_candidates or [])],
-            }
-        else:
-            payload = _normalize_ladder_adjustment_payload(adjustment) or {
-                "mapping": {},
-                "mapping_times": {},
-                "manual_candidates": [],
-            }
-        mapping_payload = _normalize_ladder_adjustment_payload(payload)
-        if mapping_payload is None or not (
-            mapping_payload["mapping"] or mapping_payload["mapping_times"]
-        ):
-            raise ValueError("Ladder adjustment has no persisted peak mapping.")
-
-        expected_steps_raw = getattr(fsa, "expected_ladder_steps", None)
-        if expected_steps_raw is None or len(expected_steps_raw) == 0:
-            expected_steps_raw = getattr(fsa, "ladder_steps", None)
-        expected_steps = np.asarray(
-            [] if expected_steps_raw is None else expected_steps_raw,
-            dtype=float,
-        )
-        selected_peaks = []
-        for step_index, candidate_index in sorted(mapping_payload["mapping"].items()):
-            observed_time = mapping_payload["mapping_times"].get(step_index)
-            selected_peaks.append(
-                {
-                    "step_index": int(step_index),
-                    "candidate_index": int(candidate_index),
-                    "expected_bp": (
-                        float(expected_steps[step_index])
-                        if 0 <= step_index < expected_steps.size
-                        else None
-                    ),
-                    "observed_time": (
-                        float(observed_time) if observed_time is not None else None
-                    ),
-                }
-            )
-        try:
-            from app_meta import APP_VERSION
-        except Exception:
-            APP_VERSION = "unknown"
-        normalized = {
-            "schema_version": LADDER_ADJUSTMENT_SCHEMA_V2,
-            "source": {
-                "file_name": source_path.name,
-                "sha256": _ladder_adjustment_file_hash(source_path),
-            },
-            "analysis": {
-                "analysis_id": str(getattr(fsa, "analysis_id", "") or ""),
-                "assay": str(
-                    getattr(fsa, "assay", "")
-                    or getattr(fsa, "assay_name", "")
-                    or ""
-                ),
-                "ladder": str(getattr(fsa, "ladder", "") or ""),
-                "size_standard_channel": str(
-                    getattr(fsa, "rust_size_standard_channel", "")
-                    or getattr(fsa, "size_standard_channel", "")
-                    or ""
-                ),
-            },
-            "mapping": mapping_payload["mapping"],
-            "mapping_times": mapping_payload["mapping_times"],
-            "manual_candidates": mapping_payload["manual_candidates"],
-            "selected_peaks": selected_peaks,
-            "review": {
-                "operator": str(operator or ""),
-                "comment": str(comment or ""),
-                "saved_at_utc": datetime.now(timezone.utc).isoformat(),
-                "app_version": str(APP_VERSION),
-                "before_qc": copy.deepcopy(before_qc or {}),
-                "after_qc": copy.deepcopy(after_qc or {}),
-            },
-            "validation": {
-                "save_verified": True,
-            },
-        }
-        from core.ladder_adjustment_store import (
-            load_ladder_adjustment_record,
-            save_ladder_adjustment_record,
-        )
-
-        database_path = save_ladder_adjustment_record(
-            source_path,
-            normalized,
-            ladder=str(getattr(fsa, "ladder", "") or ""),
-            size_standard_channel=str(
-                getattr(fsa, "rust_size_standard_channel", "")
-                or getattr(fsa, "size_standard_channel", "")
-                or ""
-            ),
-        )
-        verified = load_ladder_adjustment_record(
-            source_path,
-            ladder=str(getattr(fsa, "ladder", "") or ""),
-            size_standard_channel=str(
-                getattr(fsa, "rust_size_standard_channel", "")
-                or getattr(fsa, "size_standard_channel", "")
-                or ""
-            ),
-        )
-        if (
-            verified is None
-            or _normalize_ladder_adjustment_payload(verified.get("payload"))
-            != normalized
-        ):
-            raise OSError("Saved ladder adjustment could not be verified.")
-        legacy_path = source_path.with_suffix(".ladder_adj.json")
-        legacy_path.unlink(missing_ok=True)
-        print_green("Saved ladder adjustment in the internal adjustment store.")
-        return database_path
-    except Exception as e:
-        print_warning(f"Could not save ladder adjustment: {e}")
-        raise RuntimeError(f"Could not save ladder adjustment: {e}") from e
-
-
-def load_ladder_adjustment(fsa: FsaFile) -> dict | None:
-    """Load a manual mapping from the internal store or migrate a legacy sidecar."""
-    from core.ladder_adjustment_store import (
-        load_ladder_adjustment_record,
-        save_ladder_adjustment_record,
-    )
-
-    source_path = Path(fsa.file).expanduser()
-    ladder = str(getattr(fsa, "ladder", "") or "")
-    channel = str(
-        getattr(fsa, "rust_size_standard_channel", "")
-        or getattr(fsa, "size_standard_channel", "")
-        or ""
-    )
-    stored = load_ladder_adjustment_record(
-        source_path,
-        ladder=ladder,
-        size_standard_channel=channel,
-    )
-    if stored is not None:
-        return _normalize_ladder_adjustment_payload(stored.get("payload"))
-
-    candidate_files: list[Path] = [Path(fsa.file)]
-    try:
-        resolved = Path(fsa.file).resolve()
-    except Exception:
-        resolved = None
-    if resolved is not None and resolved not in candidate_files:
-        candidate_files.append(resolved)
-
-    for candidate_file in candidate_files:
-        adj_path = candidate_file.with_suffix(".ladder_adj.json")
-        if not adj_path.exists():
-            continue
-        try:
-            payload = json.loads(
-                adj_path.read_text(encoding="utf-8", errors="replace")
-            )
-            if isinstance(payload, dict):
-                normalized = _normalize_ladder_adjustment_payload(payload)
-                source = normalized.get("source", {}) if normalized else {}
-                expected_hash = str(source.get("sha256") or "")
-                current_hash = _ladder_adjustment_file_hash(candidate_file)
-                if expected_hash and current_hash and expected_hash != current_hash:
-                    print_warning(
-                        f"Ignoring ladder adjustment {adj_path.name}: source FSA hash does not match."
-                    )
-                    continue
-                analysis = normalized.get("analysis", {}) if normalized else {}
-                expected_ladder = str(analysis.get("ladder") or "").strip().upper()
-                current_ladder = str(getattr(fsa, "ladder", "") or "").strip().upper()
-                if (
-                    expected_ladder
-                    and current_ladder
-                    and expected_ladder != current_ladder
-                ):
-                    print_warning(
-                        f"Ignoring ladder adjustment {adj_path.name}: ladder identity does not match."
-                    )
-                    continue
-                expected_channel = str(
-                    analysis.get("size_standard_channel") or ""
-                ).strip().upper()
-                current_channel = str(
-                    getattr(fsa, "rust_size_standard_channel", "")
-                    or getattr(fsa, "size_standard_channel", "")
-                    or ""
-                ).strip().upper()
-                if (
-                    expected_channel
-                    and current_channel
-                    and expected_channel != current_channel
-                ):
-                    print_warning(
-                        f"Ignoring ladder adjustment {adj_path.name}: size-standard channel does not match."
-                    )
-                    continue
-                save_ladder_adjustment_record(
-                    candidate_file,
-                    payload,
-                    ladder=ladder,
-                    size_standard_channel=channel,
-                )
-                adj_path.unlink(missing_ok=True)
-                return normalized
-        except Exception as e:
-            print_warning(f"Could not load ladder adjustment {adj_path.name}: {e}")
-    return None
+from core.ladder_adjustment_io import (
+    LADDER_ADJUSTMENT_SCHEMA_LEGACY,
+    LADDER_ADJUSTMENT_SCHEMA_V2,
+    LADDER_ADJUSTMENT_SCHEMA_V3,
+    ladder_adjustment_file_hash as _ladder_adjustment_file_hash,
+    load_ladder_adjustment,
+    normalize_ladder_adjustment_payload as _normalize_ladder_adjustment_payload,
+    save_ladder_adjustment,
+)
 
 
 def _try_apply_saved_ladder_adjustment(fsa: FsaFile, adjustment: dict | None, label: str) -> FsaFile | None:
@@ -4058,10 +3808,17 @@ def _try_apply_saved_ladder_adjustment(fsa: FsaFile, adjustment: dict | None, la
         return None
     try:
         print_green(f"[{label}] Applying manual ladder adjustment for {fsa.file_name}")
+        adjusted = apply_manual_ladder_mapping(fsa, adjustment)
+        partial = bool(getattr(adjusted, "manual_ladder_partial", False))
         return _set_ladder_fit_metadata(
-            apply_manual_ladder_mapping(fsa, adjustment),
-            "manual_adjustment",
-            "Manual ladder adjustment applied from saved sidecar.",
+            adjusted,
+            "manual_partial" if partial else "manual_adjustment",
+            (
+                "Manual partial ladder adjustment applied from internal storage; "
+                "only explicitly observed anchors were fitted."
+                if partial
+                else "Manual ladder adjustment applied from internal storage."
+            ),
         )
     except Exception as exc:
         print_warning(
@@ -5060,11 +4817,7 @@ def get_ladder_candidates(fsa: FsaFile) -> pd.DataFrame:
 
 
 def apply_manual_ladder_mapping(fsa: FsaFile, adjustment: dict[int, int] | dict) -> FsaFile:
-    """
-    Applies a manual mapping of ladder steps to candidate peak indices.
-    
-    mapping: {ladder_step_index: candidate_peak_index}
-    """
+    """Fit a manual ladder mapping from explicitly observed anchors only."""
     payload = _normalize_ladder_adjustment_payload(adjustment)
     if payload is None:
         raise ValueError("No ladder adjustment payload provided.")
@@ -5072,97 +4825,122 @@ def apply_manual_ladder_mapping(fsa: FsaFile, adjustment: dict[int, int] | dict)
     mapping = payload["mapping"]
     mapping_times = payload["mapping_times"]
     manual_candidates = payload["manual_candidates"]
-    ladder_steps = _get_expected_ladder_steps(fsa)
-    current_ladder_steps = np.asarray(getattr(fsa, "ladder_steps", ladder_steps), dtype=float)
-    ss_peaks = fsa.size_standard_peaks
+    expected_steps = _get_expected_ladder_steps(fsa)
+    if expected_steps.size < 3:
+        raise ValueError("Manual ladder mapping requires at least three expected steps.")
+    ss_peaks_raw = getattr(fsa, "size_standard_peaks", None)
+    ss_peaks = (
+        np.asarray(ss_peaks_raw, dtype=float)
+        if ss_peaks_raw is not None
+        else np.asarray([], dtype=float)
+    )
 
-    if ss_peaks is None:
-        seed_peaks: list[float] = []
-        current = getattr(fsa, "best_size_standard", None)
-        if current is not None:
-            seed_peaks.extend(float(v) for v in np.asarray(current, dtype=float) if np.isfinite(v))
-        seed_peaks.extend(float(v) for v in manual_candidates if np.isfinite(float(v)))
-        seed_peaks.extend(float(v) for v in mapping_times.values() if np.isfinite(float(v)))
-        if not seed_peaks:
-            raise ValueError("No size standard peaks found in FsaFile.")
-        fsa.size_standard_peaks = np.asarray(sorted(set(seed_peaks)), dtype=float)
-        ss_peaks = fsa.size_standard_peaks
-
-    if manual_candidates:
-        merged = list(np.asarray(ss_peaks, dtype=float))
-        for time_value in manual_candidates:
-            if not any(abs(float(existing) - float(time_value)) <= 1e-6 for existing in merged):
-                merged.append(float(time_value))
-        merged.sort()
-        fsa.size_standard_peaks = np.asarray(merged, dtype=float)
-        ss_peaks = fsa.size_standard_peaks
-    fsa.manual_ladder_candidates = [float(v) for v in manual_candidates]
-    
-    selected_peaks = np.full(len(ladder_steps), np.nan, dtype=float)
-    current = getattr(fsa, "best_size_standard", None)
-    if current is not None and len(current) == len(current_ladder_steps):
-        current = np.asarray(current, dtype=float)
-        step_map = _map_step_indices(current_ladder_steps, ladder_steps)
-        for current_idx, full_idx in step_map.items():
-            selected_peaks[full_idx] = current[current_idx]
-
+    resolved_by_step: dict[int, float] = {}
     for step_idx, peak_time in mapping_times.items():
-        if step_idx < 0 or step_idx >= len(ladder_steps):
-            continue
-        selected_peaks[step_idx] = float(peak_time)
-
+        if step_idx < 0 or step_idx >= len(expected_steps):
+            raise ValueError(f"Mapped ladder step index {step_idx} is out of range.")
+        resolved_by_step[int(step_idx)] = float(peak_time)
     for step_idx, peak_idx in mapping.items():
-        if step_idx < 0 or step_idx >= len(ladder_steps):
+        if step_idx in resolved_by_step:
             continue
-        if step_idx in mapping_times:
-            continue
+        if step_idx < 0 or step_idx >= len(expected_steps):
+            raise ValueError(f"Mapped ladder step index {step_idx} is out of range.")
         if peak_idx < 0 or peak_idx >= len(ss_peaks):
-            continue
-        selected_peaks[step_idx] = ss_peaks[peak_idx]
-
-    missing = np.isnan(selected_peaks)
-    if np.any(missing):
-        # Partial mapping: interpoler/ekstrapoler manglende stige-ankre fra de
-        # tilordnede (lineært i tid mellom nabotopper). Brukes når skannet
-        # ikke dekker hele stigen — brukeren har godkjent delvis kartlegging.
-        mapped_idx = np.flatnonzero(~missing)
-        if mapped_idx.size < 2:
             raise ValueError(
-                "Manual ladder mapping needs at least two assigned ladder steps to interpolate the rest."
+                f"Candidate index {peak_idx} for ladder step {step_idx} is out of range."
             )
-        filled = selected_peaks.copy()
-        missing_idx = np.flatnonzero(missing)
-        # Interiør: standard lineær interpolasjon mellom nabotopper.
-        interior = missing_idx[(missing_idx > mapped_idx[0]) & (missing_idx < mapped_idx[-1])]
-        filled[interior] = np.interp(interior, mapped_idx, selected_peaks[mapped_idx])
-        # Kanter: ekstrapoler med stigningstallet fra de ytterste ankerne
-        # (np.interp klemmer ved kantene og gir flat/lik verdier der).
-        left = missing_idx[missing_idx < mapped_idx[0]]
-        if left.size:
-            slope = (
-                selected_peaks[mapped_idx[1]] - selected_peaks[mapped_idx[0]]
-            ) / (mapped_idx[1] - mapped_idx[0])
-            filled[left] = selected_peaks[mapped_idx[0]] + slope * (left - mapped_idx[0])
-        right = missing_idx[missing_idx > mapped_idx[-1]]
-        if right.size:
-            slope = (
-                selected_peaks[mapped_idx[-1]] - selected_peaks[mapped_idx[-2]]
-            ) / (mapped_idx[-1] - mapped_idx[-2])
-            filled[right] = selected_peaks[mapped_idx[-1]] + slope * (right - mapped_idx[-1])
-        selected_peaks = filled
+        resolved_by_step[int(step_idx)] = float(ss_peaks[peak_idx])
 
+    if len(resolved_by_step) < 3:
+        raise ValueError(
+            "Manual ladder mapping needs at least three explicitly assigned ladder steps."
+        )
+    marker_id_by_step = {
+        int(key): str(value)
+        for key, value in dict(payload.get("marker_id_by_step") or {}).items()
+        if int(key) in resolved_by_step and str(value)
+    }
+    assigned_marker_ids = list(marker_id_by_step.values())
+    if len(assigned_marker_ids) != len(set(assigned_marker_ids)):
+        raise ValueError("One marker cannot be assigned to multiple ladder steps.")
+
+    mapped_step_indices = np.asarray(sorted(resolved_by_step), dtype=int)
+    selected_peaks = np.asarray(
+        [resolved_by_step[int(index)] for index in mapped_step_indices],
+        dtype=float,
+    )
+    selected_steps = expected_steps[mapped_step_indices]
+    raw_trace = np.asarray(getattr(fsa, "size_standard", []), dtype=float)
+    if raw_trace.size == 0:
+        raise ValueError("No size-standard trace is available for manual ladder mapping.")
+    if not np.isfinite(selected_peaks).all():
+        raise ValueError("Selected ladder peak times must be finite.")
+    if np.any(selected_peaks < 0) or np.any(selected_peaks > raw_trace.size - 1):
+        raise ValueError("Selected ladder peak times must lie inside the raw trace.")
+    if np.any(np.diff(selected_steps) <= 0):
+        raise ValueError("Selected ladder steps must be strictly increasing in base pairs.")
     if np.any(np.diff(selected_peaks) <= 0):
         raise ValueError("Selected ladder peaks must be strictly increasing in time.")
 
-    fsa.expected_ladder_steps = ladder_steps.copy()
-    fsa.ladder_steps = ladder_steps.copy()
-    fsa.best_size_standard = selected_peaks
+    missing_step_indices = [
+        index
+        for index in range(len(expected_steps))
+        if index not in set(mapped_step_indices.tolist())
+    ]
+    merged_candidates = [float(value) for value in ss_peaks if np.isfinite(value)]
+    for time_value in manual_candidates:
+        value = float(time_value)
+        if np.isfinite(value) and not any(
+            math.isclose(existing, value, abs_tol=1e-9)
+            for existing in merged_candidates
+        ):
+            merged_candidates.append(value)
+    if merged_candidates:
+        fsa.size_standard_peaks = np.asarray(sorted(merged_candidates), dtype=float)
+    fsa.manual_ladder_candidates = [float(value) for value in manual_candidates]
+    fsa.manual_ladder_markers = copy.deepcopy(payload.get("markers") or [])
+    fsa.manual_ladder_marker_id_by_step = marker_id_by_step
+    fsa.manual_ladder_mapped_step_indices = mapped_step_indices.tolist()
+    fsa.manual_ladder_missing_step_indices = missing_step_indices
+    partial_approved = bool(
+        missing_step_indices
+        and isinstance(payload.get("review"), dict)
+        and payload["review"].get("partial_approved")
+    )
+    fsa.manual_ladder_partial_approved = partial_approved
+    fsa.manual_ladder_partial = bool(missing_step_indices)
 
-    # Re-run fitting
+    fsa.expected_ladder_steps = expected_steps.copy()
+    fsa.ladder_steps = selected_steps.copy()
+    fsa.best_size_standard = selected_peaks.copy()
     fsa = fit_size_standard_to_ladder(fsa)
     if not getattr(fsa, "fitted_to_model", False):
         raise ValueError("Manual ladder mapping did not produce a valid fit.")
 
+    fitted = getattr(fsa, "sample_data_with_basepairs", None)
+    if fitted is None or "basepairs" not in fitted:
+        raise ValueError("Manual ladder mapping did not produce a usable sizing domain.")
+    predicted = np.asarray(fitted["basepairs"], dtype=float)
+    if not np.isfinite(predicted).all() or np.any(np.diff(predicted) <= 0):
+        raise ValueError(
+            "Manual ladder mapping produced a non-monotonic sizing domain."
+        )
+
+    strategy = "manual_partial" if missing_step_indices else "manual_adjustment"
+    fsa.ladder_fit_strategy = strategy
+    fsa.ladder_missing_expected_steps = [
+        float(expected_steps[index]) for index in missing_step_indices
+    ]
+    fsa.ladder_expected_step_count = int(len(expected_steps))
+    fsa.ladder_fitted_step_count = int(len(selected_steps))
+    fsa.ladder_review_required = bool(missing_step_indices) and not partial_approved
+    fsa.ladder_qc_status = (
+        "manual_partial_reviewed"
+        if missing_step_indices and partial_approved
+        else "review_required"
+        if missing_step_indices
+        else "manual_adjustment"
+    )
     return fsa
 
 
