@@ -2,6 +2,8 @@
 
 Dato: 2026-09-19. Dette er utviklingsbehov, ikke en påstand om at eksisterende manifest-, QC-, ML- eller rapportfunksjoner mangler helt. Skill bekreftede hull fra områder som trenger mer verifikasjon.
 
+Oppdatert etter implementering: S01–S10 og S12–S13 er levert, og den foreldreløse Archive-wrapperen er fjernet. Se `execution-log.md` for testbevis. De tre «Nå»-radene nedenfor beskriver opprinnelig leveransegrunnlag; gjenværende arbeid der er fysisk/faglig validering og ekstern CI. S11b (avklaring/flytting av forskningsfaner) er fortsatt åpen. Compare-worker er fjernet, og den observerte Archive-klippingen ved laptopbredde er rettet; generell worker-livssyklus og høy-DPI-validering gjenstår.
+
 ## Neste nødvendige leveranser
 
 | Prioritet | Behov | Nåværende grunnlag / hull | Ferdig når |

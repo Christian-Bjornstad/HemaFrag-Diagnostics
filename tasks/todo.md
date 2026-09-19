@@ -1,6 +1,7 @@
 # Utføringsliste for GPT-5.6 Sol
 
-Les `plan.md` først. Status per 2026-09-19: alle implementeringsoppgaver er åpne.
+Les `plan.md` først. Status per 2026-09-19: implementeringen av S01–S10 og S12–S13 er levert; S11a/c er gjennomført, S11b avventer avklaring av manuell forskningsbruk.
+Se `execution-log.md` for faktisk verifikasjon og gjenværende begrensninger. Avkrysningspunktene nedenfor er den opprinnelige, detaljerte akseptanselisten, ikke en påstand om at all manuell/faglig validering er fullført.
 S = liten oppgave, M = middels. Filoversiktene er startpunkter, ikke anledning til å endre hele filene.
 
 ## S01 — Beskytt aktiv kjøring mot analyse- og settingsbytte (M)
