@@ -6,6 +6,8 @@ Oppdatert etter implementering: S01–S10 og S12–S13 er levert, og den foreldr
 
 ## Neste nødvendige leveranser
 
+Ny prioritering etter andre review: rett stale Excel-verdier og falsk ferdigstatus, fjern ML/labeling fullstendig, og rett de konkrete scan-/metadata-/lagringsfeilene i `review-robustness-2026-09-19.md`. ML/trening/labeling er avviklingsmål, ikke framtidige produktutvidelser. Bevaring av ukjent manuell bruk er ikke lenger grunn til å holde disse funksjonene; brukerbeslutningen er eksplisitt. FLT3-valideringsverktøy vurderes fortsatt separat.
+
 | Prioritet | Behov | Nåværende grunnlag / hull | Ferdig når |
 |---|---|---|---|
 | Nå | Stabil kjørings- og settingsflyt | Bekreftede R01–R04/R07 | S01–S05 oppfylt |

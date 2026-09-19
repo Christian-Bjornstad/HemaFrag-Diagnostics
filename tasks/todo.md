@@ -4,6 +4,22 @@ Les `plan.md` først. Status per 2026-09-19: implementeringen av S01–S10 og S1
 Se `execution-log.md` for faktisk verifikasjon og gjenværende begrensninger. Avkrysningspunktene nedenfor er den opprinnelige, detaljerte akseptanselisten, ikke en påstand om at all manuell/faglig validering er fullført.
 S = liten oppgave, M = middels. Filoversiktene er startpunkter, ikke anledning til å endre hele filene.
 
+## Ny kø — robusthet og full ML-/labelingavvikling
+
+Detaljer, filer, avhengigheter og testkommandoer ligger i `robustness-plan-2026-09-19.md` og `../docs/superpowers/plans/2026-09-19-remove-ml-labeling.md`. De gamle S-punktene beholdes som opprinnelig akseptansehistorikk.
+
+- [ ] R01: Tøm utgåtte genererte Excel-verdier.
+- [ ] R04: Vis rapport-/aggregasjonsfeil som feil, ikke «Batch complete».
+- [ ] M01–M02: Fjern ML/labeling fra GUI og runtime.
+- [ ] M03: Frikoble tracking uten å miste historiske kolonner.
+- [ ] M04–M06: Fjern config, annotation-hjelpere, scripts og forskningsmotorer i fokuserte commits.
+- [ ] M07: Dokumentasjon, referanse-/dependency-audit og samlet verifikasjon.
+- [ ] R03: Sikker review-bundle-lagring med konsistens/recovery.
+- [ ] R05–R06: Eierstyrte metadata-, scan-, load- og rerun-operasjoner.
+- [ ] R02: Beslutning om filidentitet og krasjsikker workbook-publisering.
+- [ ] R07: Undersøk avslutning og lag separat snapshot-migreringsplan.
+- [ ] R08: Samlet feilinjeksjon, CI og faktisk driftsvalidering.
+
 ## S01 — Beskytt aktiv kjøring mot analyse- og settingsbytte (M)
 
 Funn: R01. Avhengigheter: ingen. Filer: `gui_qt/main_window.py`, `gui_qt/tabs/tab_batch/_legacy.py`, `gui_qt/tabs/tab_archive_runner.py`, ny `tests/test_active_operation_navigation.py`, eventuelt `gui_qt/tabs/tab_ladder/_legacy.py` for rerun-status.

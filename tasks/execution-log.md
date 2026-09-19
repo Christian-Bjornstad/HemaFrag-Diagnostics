@@ -49,3 +49,16 @@ S11b er ikke gjennomført: faktisk manuell bruk av forskningsflatene er ukjent. 
 - CI-konfigurasjonen er oppdatert; ekstern CI-status må verifiseres på PR. Branch-push alene utløser ikke workflowen som er begrenset til main/PR.
 - Endelig `python -m pytest -q`: **908 bestått, 3 skipped, 5 warnings** på 81,89 sekunder (Windows/Python 3.12). Tre warnings er forventet feilinjeksjon i settings, to gjelder sklearn/pandas.
 - `python -m compileall -q qt_app.py core gui_qt` og `git diff --check`: bestått. Ingen påstand om at ekstern CI eller alle støttede Python-/OS-kombinasjoner er kjørt lokalt.
+
+## Andre reviewrunde — ML-avvikling og robusthet
+
+Brukeren har godkjent full fjerning av ML/trening/labeling og gjennomgått avviklingsdesignet (commit `dae2ada`). Utføringsplanen er skrevet for Sol + orkestrator; produktendringene venter på gjennomgang av planen. Tidligere S11-forbehold om mulig ML-/labelingbruk er erstattet av eksplisitt avviklingsbeslutning.
+
+Uavhengig Sol-review og hovedagentens gjennomgang ga B01–B08 i `review-robustness-2026-09-19.md`. To små, ikke-muterte diagnostiske reproduksjoner er kjørt:
+
+- Faktisk `upsert_frame` i en workbook i minnet: gammel verdi 42 forblir 42 etter ny None. Forventet tom celle.
+- Faktisk `TabBatch._on_run_finished` med mocked view og DIT aggregation-feil: gir `Batch complete.` / `success`.
+
+Øvrige funn har statisk kontrollflytbevis og konkrete regresjonstestplaner, ikke påstått runtime-reproduksjon. Ingen pasientdata, brukerinnstillinger eller arbeidsbøker ble skrevet. Denne runden endrer bare review-/design-/plandokumentasjon; hele testsuiten kjøres ikke på nytt for uendret produktkode. `git diff --check` kontrolleres før dokumentasjonscommit.
+
+Planen er selvreviewet og sjekket av Sol: HTML-badges/ML-decision-log er lagt til eksplisitt (M02b), blandede integrasjonstester oppdateres i samme commit som GUI-modulene fjernes, og `ml_training` slettes etter modulene som importerer den. Dermed unngår planen kjente røde mellomcommits og gjenværende aktiv ML-presentasjon.

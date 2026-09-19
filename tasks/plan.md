@@ -3,6 +3,17 @@
 Grunnlag: review `review-2026-09-19.md`, commit `1c7c51e`, 2026-09-19.
 Oppgavestatus og akseptansekriterier ligger i `todo.md`. Videre utviklingsbehov ligger i `roadmap.md`.
 
+## Videreføring 2026-09-19 etter første leveranse
+
+Brukeren har nå besluttet full avvikling av ML/trening/labeling, inkludert forskningsscripts og egne tester, med bevaring av brukerdata og regelbasert analyse. Dette erstatter tidligere S11-idé om å beholde ML/labeling som utviklerverktøy. Tidligere oppgaver/resultater nedenfor bevares som historikk.
+
+- Ny robusthetsreview: `review-robustness-2026-09-19.md` (B01–B08).
+- Prioritert robusthetsplan: `robustness-plan-2026-09-19.md` (R01–R08).
+- Godkjent avviklingsdesign: `../docs/superpowers/specs/2026-09-19-remove-ml-labeling-design.md`.
+- Utføringsplan til gjennomgang: `../docs/superpowers/plans/2026-09-19-remove-ml-labeling.md` (M01–M07).
+
+Ingen av de nye M-/R-oppgavene er implementert ennå. Fjerningen krever frikobling fra pipeline, tracking og gammel YAML, ikke bare sletting av faner.
+
 ## Mål og avgrensning
 
 En operatør skal kunne velge analyse, kjøre filer, rette ladder, lagre innstillinger og gjenoppta arbeid uten skjult kontekstbytte eller misvisende status. Fjern den ubrukte Compare-flyten og gjør Settings enklere. Behold analysealgoritmer, rapportberegninger og Rust-first-standardene under denne oppryddingen.
