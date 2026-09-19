@@ -199,7 +199,7 @@ class TabBatch(QWidget):
         
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(18)
+        main_layout.setSpacing(12)
         
         # Header
         header = QVBoxLayout()
@@ -221,16 +221,23 @@ class TabBatch(QWidget):
         # 2. Folders / Files Card
         f_card = QWidget()
         f_card.setObjectName("Card")
+        self.input_card = f_card
         f_layout = QVBoxLayout(f_card)
         f_layout.setSpacing(12)
         
+        input_header = QHBoxLayout()
         l_ftitle = QLabel("INPUT SOURCES")
         l_ftitle.setObjectName("CardTitle")
+        self.source_count_lbl = QLabel("0 sources")
+        self.source_count_lbl.setObjectName("MutedText")
+        input_header.addWidget(l_ftitle)
+        input_header.addStretch()
+        input_header.addWidget(self.source_count_lbl)
 
         row1 = QHBoxLayout()
         row1.setSpacing(10)
         self.folder_list = QListWidget()
-        self.folder_list.setMaximumHeight(100)
+        self.folder_list.setMaximumHeight(72)
         self.folder_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.folder_list.setAcceptDrops(True)
         self.folder_list.setAlternatingRowColors(True)
@@ -298,7 +305,7 @@ class TabBatch(QWidget):
         # og vises i HTML-rapporten — ingen GUI-velger lenger.
         row3.addStretch()
 
-        f_layout.addWidget(l_ftitle)
+        f_layout.addLayout(input_header)
         f_layout.addLayout(row1)
         f_layout.addLayout(row2)
         f_layout.addLayout(row3)
@@ -321,9 +328,6 @@ class TabBatch(QWidget):
         self.btn_open_review_queue = QPushButton("Open Review Queue")
         self.btn_open_review_queue.setVisible(False)
         self.btn_open_review_queue.setEnabled(False)
-        self.btn_compare_review = QPushButton("Compare Review Files")
-        self.btn_compare_review.setVisible(False)
-        self.btn_compare_review.setEnabled(False)
         self.btn_open = QPushButton("Open Output")
         self.progress = QProgressBar()
         self.progress.setValue(0)
@@ -335,6 +339,7 @@ class TabBatch(QWidget):
         # 3. Jobs Table
         t_card = QWidget()
         t_card.setObjectName("Card")
+        self.queue_card = t_card
         t_layout = QVBoxLayout(t_card)
         t_title = QLabel("RUN QUEUE")
         t_title.setObjectName("CardTitle")
@@ -365,7 +370,7 @@ class TabBatch(QWidget):
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setAutoScroll(False)
-        self.table.setMinimumHeight(280)
+        self.table.setMinimumHeight(220)
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -382,7 +387,6 @@ class TabBatch(QWidget):
         self.btn_run_reviewed.clicked.connect(self.on_run_reviewed)
         self.btn_stop.clicked.connect(self.on_stop)
         self.btn_open_review_queue.clicked.connect(self.on_open_review_queue)
-        self.btn_compare_review.clicked.connect(self.on_compare_review_queue)
         self.btn_open.clicked.connect(self.on_open_output)
         self.output_base.textChanged.connect(self._refresh_dashboard)
         self.table.itemSelectionChanged.connect(self._refresh_dashboard)
@@ -393,9 +397,9 @@ class TabBatch(QWidget):
         
         # Add to main
         main_layout.addLayout(header)
-        main_layout.addWidget(self.dashboard_card)
         main_layout.addWidget(self.general_card)
         main_layout.addWidget(f_card)
+        main_layout.addWidget(self.dashboard_card)
         main_layout.addWidget(t_card, stretch=1)
 
         self.set_analysis(self._current_analysis_id, force_replace_inputs=True)
@@ -405,8 +409,8 @@ class TabBatch(QWidget):
         card = QWidget()
         card.setObjectName("Card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
 
         title = QLabel("General Workflow Controls")
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #0f172a;")
@@ -486,8 +490,8 @@ class TabBatch(QWidget):
         card.setObjectName("DashboardCard")
 
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
 
         header_row = QHBoxLayout()
         header_row.setSpacing(12)
@@ -495,45 +499,26 @@ class TabBatch(QWidget):
         self.dashboard_title = QLabel("Workflow")
         self.dashboard_title.setObjectName("DashboardTitle")
         header_row.addWidget(self.dashboard_title)
-        header_row.addStretch()
-
         self.status_badge = QLabel("READY")
         self.status_badge.setObjectName("WorkflowStatusBadge")
         self.status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_badge.setMinimumWidth(120)
         header_row.addWidget(self.status_badge, alignment=Qt.AlignmentFlag.AlignVCenter)
-        layout.addLayout(header_row)
-
-        actions_row = QHBoxLayout()
-        actions_row.setSpacing(10)
-        actions_row.addWidget(self.btn_scan)
-        actions_row.addWidget(self.btn_run)
-        actions_row.addWidget(self.btn_stop)
-        actions_row.addWidget(self.btn_open_review_queue)
-        actions_row.addWidget(self.btn_run_reviewed)
-        actions_row.addWidget(self.btn_compare_review)
-        actions_row.addWidget(self.btn_open)
-        actions_row.addStretch()
-        layout.addLayout(actions_row)
-
-        metrics_layout = QHBoxLayout()
-        metrics_layout.setSpacing(10)
-        self.metric_analysis = self._build_metric_card("Analysis")
-        self.metric_sources = self._build_metric_card("Inputs")
-        self.metric_jobs = self._build_metric_card("Queue")
-        self.metric_output = self._build_metric_card("Output")
-        for card_widget in (
-            self.metric_analysis["card"],
-            self.metric_sources["card"],
-            self.metric_jobs["card"],
-            self.metric_output["card"],
+        header_row.addSpacing(8)
+        for button in (
+            self.btn_scan,
+            self.btn_run,
+            self.btn_stop,
+            self.btn_open_review_queue,
+            self.btn_run_reviewed,
+            self.btn_open,
         ):
-            metrics_layout.addWidget(card_widget, stretch=1)
-        layout.addLayout(metrics_layout)
+            header_row.addWidget(button)
+        header_row.addStretch()
+        layout.addLayout(header_row)
 
         self.queue_summary_lbl = QLabel("")
         self.queue_summary_lbl.setObjectName("WorkflowSummaryText")
-        layout.addWidget(self.queue_summary_lbl)
         self.review_queue_lbl = QLabel("")
         self.review_queue_lbl.setObjectName("WorkflowSummaryText")
         self.review_queue_lbl.setWordWrap(True)
@@ -541,33 +526,14 @@ class TabBatch(QWidget):
         layout.addWidget(self.review_queue_lbl)
 
         status_block = QVBoxLayout()
-        status_block.setSpacing(8)
-        status_block.addWidget(self.status_lbl)
+        status_block.setSpacing(6)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.status_lbl, stretch=1)
+        status_row.addWidget(self.queue_summary_lbl)
+        status_block.addLayout(status_row)
         status_block.addWidget(self.progress)
         layout.addLayout(status_block)
         return card
-
-    def _build_metric_card(self, label_text: str) -> dict[str, QWidget | QLabel]:
-        card = QFrame()
-        card.setObjectName("DashboardMetricCard")
-
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(6)
-
-        label = QLabel(label_text)
-        label.setObjectName("DashboardMetricLabel")
-        value = QLabel("—")
-        value.setObjectName("DashboardMetricValue")
-        value.setWordWrap(True)
-        detail = QLabel("")
-        detail.setObjectName("DashboardMetricDetail")
-        detail.setWordWrap(True)
-
-        layout.addWidget(label)
-        layout.addWidget(value)
-        layout.addWidget(detail)
-        return {"card": card, "value": value, "detail": detail}
 
     def _restyle_widget(self, widget: QWidget) -> None:
         widget.style().unpolish(widget)
@@ -605,8 +571,6 @@ class TabBatch(QWidget):
         self.btn_run_reviewed.setText("Run Manual Fixes + Build DIT")
         self.btn_open_review_queue.setVisible(False)
         self.btn_open_review_queue.setEnabled(False)
-        self.btn_compare_review.setVisible(False)
-        self.btn_compare_review.setEnabled(False)
         self.review_queue_lbl.clear()
         self.review_queue_lbl.setVisible(False)
 
@@ -648,14 +612,6 @@ class TabBatch(QWidget):
         if selection_model is None:
             return 0
         return len(selection_model.selectedRows())
-
-    def _set_metric(self, metric: dict[str, QWidget | QLabel], value: str, detail: str = "", tooltip: str = "") -> None:
-        metric["value"].setText(value)
-        metric["detail"].setText(detail)
-        target_text = tooltip or detail or value
-        metric["card"].setToolTip(target_text)
-        metric["value"].setToolTip(target_text)
-        metric["detail"].setToolTip(target_text)
 
     @staticmethod
     def _resolve_cache_key(file_path: Path) -> Path:
@@ -762,8 +718,6 @@ class TabBatch(QWidget):
         has_queue = bool(paths)
         self.btn_open_review_queue.setVisible(has_queue)
         self.btn_open_review_queue.setEnabled(has_queue)
-        self.btn_compare_review.setVisible(has_queue)
-        self.btn_compare_review.setEnabled(len(paths) >= 2)
         self.review_queue_lbl.setVisible(has_queue)
         if not has_queue:
             self.review_queue_lbl.clear()
@@ -801,27 +755,6 @@ class TabBatch(QWidget):
                 window.on_sub_tab_clicked(self._current_analysis_id, 1)
             return
         self.on_open_output()
-
-    def on_compare_review_queue(self) -> None:
-        paths = [
-            path
-            for path in self._review_queue_paths(self._review_session_bundle_dir)
-            if path.is_file()
-        ]
-        if len(paths) < 2:
-            self._set_workflow_status(
-                "At least two reachable review files are needed for comparison.",
-                "warning",
-            )
-            return
-        window = self.window()
-        compare_tab = getattr(window, "tab_compare", None)
-        if compare_tab is None or not hasattr(compare_tab, "load_files"):
-            return
-        compare_tab.load_files(paths, select_all=True)
-        if hasattr(window, "stacked_widget") and hasattr(window, "tab_compare_idx"):
-            window.stacked_widget.setCurrentIndex(window.tab_compare_idx)
-
 
     @staticmethod
     def _carry_resolved_labels_to_gate(gate: dict, resolved_review_rows: dict[str, dict]) -> int:
@@ -961,38 +894,14 @@ class TabBatch(QWidget):
 
     def _refresh_dashboard(self) -> None:
         analysis_name = ANALYSIS_LABELS.get(self._current_analysis_id, self._current_analysis_id.capitalize())
-        self._set_metric(
-            self.metric_analysis,
-            analysis_name,
-            "",
-            tooltip=analysis_name,
-        )
-
         inputs_loaded = self.folder_list.count()
-        self._set_metric(
-            self.metric_sources,
-            str(inputs_loaded),
-            "",
+        self.source_count_lbl.setText(
+            f"{inputs_loaded} source" if inputs_loaded == 1 else f"{inputs_loaded} sources"
         )
 
         total_jobs = len(self._detected_jobs)
         selected_jobs = self._selected_row_count()
-        self._set_metric(
-            self.metric_jobs,
-            str(total_jobs),
-            "",
-            tooltip=f"{selected_jobs} selected for run" if total_jobs else "No queue yet.",
-        )
-
         output_path = self._resolve_output_path_str().strip()
-        output_display = "Auto" if not output_path else Path(output_path).expanduser().name
-        output_detail = "Uses saved/default output." if not output_path else output_path
-        self._set_metric(
-            self.metric_output,
-            output_display,
-            "",
-            tooltip=output_detail,
-        )
 
         counts = {"pending": 0, "running": 0, "success": 0, "error": 0, "collected": 0}
         for state in self._job_states.values():
@@ -1007,10 +916,15 @@ class TabBatch(QWidget):
             else:
                 counts["pending"] += 1
 
-        self.queue_summary_lbl.setText(
-            f"Pending {counts['pending']}   •   Running {counts['running']}   •   Collected {counts['collected']}   •   Complete {counts['success']}   •   Errors {counts['error']}"
-        )
-        self.dashboard_title.setText(f"{analysis_name} Workflow")
+        if total_jobs:
+            self.queue_summary_lbl.setText(
+                f"{total_jobs} jobs ({selected_jobs} selected)   •   Pending {counts['pending']}   •   Running {counts['running']}   •   Complete {counts['success']}   •   Errors {counts['error']}"
+            )
+        else:
+            self.queue_summary_lbl.setText("No jobs yet — add sources, choose an output, then select Find Jobs.")
+        output_tooltip = output_path or "Uses the saved output or first source folder."
+        self.queue_summary_lbl.setToolTip(output_tooltip)
+        self.dashboard_title.setText(analysis_name)
         
     def _build_general_selector_card(self, title: str, subtitle: str, field: QWidget) -> QWidget:
         card = QFrame()

@@ -16,8 +16,8 @@ from gui_qt.tabs.tab_labeling import TabLabeling
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_log import TabLog
 from gui_qt.tabs.tab_about import TabAbout
-from gui_qt.tabs.tab_compare import TabCompare
 from gui_qt.tabs.tab_settings import TabAnalysisSettings
+from gui_qt.tabs.tab_app_settings import TabAppSettings
 from gui_qt.widgets.brand_lockup import BrandLockup
 from config import APP_SETTINGS, get_analysis_settings, save_settings
 
@@ -144,7 +144,6 @@ class MainWindow(QMainWindow):
                 "Run",
                 "Ladder",
                 "Archive Runner",
-                "Compare",
                 "Log",
                 "Labeling",
                 "Settings",
@@ -158,7 +157,6 @@ class MainWindow(QMainWindow):
                 "Run",
                 "Ladder",
                 "Archive Runner",
-                "Compare",
                 "Log",
                 "Settings",
             ],
@@ -170,8 +168,6 @@ class MainWindow(QMainWindow):
             sub_buttons=[
                 "Run",
                 "Ladder",
-                "Archive Runner",
-                "Compare",
                 "Log",
                 "Settings",
             ],
@@ -186,6 +182,9 @@ class MainWindow(QMainWindow):
 
         self.btn_about = SidebarButton("About")
         self.btn_about.clicked.connect(self.on_about_clicked)
+        self.btn_app_settings = SidebarButton("App Settings")
+        self.btn_app_settings.clicked.connect(self._activate_settings)
+        sidebar_layout.addWidget(self.btn_app_settings)
         sidebar_layout.addWidget(self.btn_about)
         
         # --- Stacked Widget (Content) ---
@@ -198,7 +197,7 @@ class MainWindow(QMainWindow):
         self.tab_labeling = TabLabeling()
         self.tab_log = TabLog()
         self.tab_about = TabAbout()
-        self.tab_compare = TabCompare()
+        self.tab_app_settings = TabAppSettings()
         self.tab_settings_clonality = TabAnalysisSettings("clonality")
         self.tab_settings_flt3 = TabAnalysisSettings("flt3")
         self.tab_settings_general = TabAnalysisSettings("general")
@@ -207,6 +206,7 @@ class MainWindow(QMainWindow):
         self.tab_settings_clonality.settings_saved.connect(self._on_settings_saved)
         self.tab_settings_flt3.settings_saved.connect(self._on_settings_saved)
         self.tab_settings_general.settings_saved.connect(self._on_settings_saved)
+        self.tab_app_settings.settings_saved.connect(self._on_settings_saved)
         self.tab_archive_runner.ladderReviewRequested.connect(
             self._open_archive_ladder_review
         )
@@ -227,10 +227,10 @@ class MainWindow(QMainWindow):
         self.tab_labeling_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_labeling))
         self.tab_log_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
         self.tab_about_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))
+        self.tab_app_settings_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_app_settings))
         self.tab_settings_clonality_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_clonality))
         self.tab_settings_flt3_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_flt3))
         self.tab_settings_general_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_general))
-        self.tab_compare_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_compare))
 
         # Per-analysis sub-button → stack index. Scoped by analysis_id so a
         # single ``tab_run_idx`` index can be shared cleanly. Built from a
@@ -241,7 +241,6 @@ class MainWindow(QMainWindow):
                 "Run": self.tab_run_idx,
                 "Ladder": self.tab_ladder_idx,
                 "Archive Runner": self.tab_archive_idx,
-                "Compare": self.tab_compare_idx,
                 "Log": self.tab_log_idx,
                 "Labeling": self.tab_labeling_idx,
                 "Settings": self.tab_settings_clonality_idx,
@@ -250,15 +249,12 @@ class MainWindow(QMainWindow):
                 "Run": self.tab_run_idx,
                 "Ladder": self.tab_ladder_idx,
                 "Archive Runner": self.tab_archive_idx,
-                "Compare": self.tab_compare_idx,
                 "Log": self.tab_log_idx,
                 "Settings": self.tab_settings_flt3_idx,
             },
             "general": {
                 "Run": self.tab_run_idx,
                 "Ladder": self.tab_ladder_idx,
-                "Archive Runner": self.tab_archive_idx,
-                "Compare": self.tab_compare_idx,
                 "Log": self.tab_log_idx,
                 "Settings": self.tab_settings_general_idx,
             },
@@ -294,7 +290,7 @@ class MainWindow(QMainWindow):
 
     def _setup_shortcuts(self) -> None:
         """Alt+1..N activates each analysis group's Run tab.
-        Ctrl+, opens Settings for the current analysis.
+        Ctrl+, opens the single global App Settings page.
         Alt+letter jumps to named sub-tabs of the current group."""
         for i in range(min(len(self.groups), 9)):
             sc = QShortcut(QKeySequence(f"Alt+{i + 1}"), self)
@@ -352,28 +348,19 @@ class MainWindow(QMainWindow):
         self._activate_sub(index)
 
     def _activate_settings(self) -> None:
-        """Jump to the Settings page for the current analysis."""
+        """Jump to the single owner of global application settings."""
         if not self.settings_changes_allowed():
+            self.btn_app_settings.setChecked(False)
+            self._restore_sidebar_selection()
             return
-        active = APP_SETTINGS.get("active_analysis", "clonality")
-        group_map = {
-            "clonality": self.group_clonality,
-            "flt3": self.group_flt3,
-            "general": self.group_general,
-        }
-        group = group_map.get(active, self.group_clonality)
-        # Expand the group so the sidebar reflects the navigation
-        self.on_group_clicked(group)
-        sub_idx = len(group.sub_buttons) - 1
-        if 0 <= sub_idx < len(group.sub_buttons):
-            self.btn_about.setChecked(False)
-            for other_group in self.groups:
-                for button in other_group.sub_buttons:
-                    button.setChecked(button is group.sub_buttons[sub_idx])
-            self.on_sub_tab_clicked(group.internal_id, sub_idx)
+        self._clear_sidebar_selection()
+        self.btn_app_settings.setChecked(True)
+        self.tab_app_settings.refresh_from_settings()
+        self.stacked_widget.setCurrentIndex(self.tab_app_settings_idx)
 
     def _clear_sidebar_selection(self) -> None:
         self.btn_about.setChecked(False)
+        self.btn_app_settings.setChecked(False)
         for group in self.groups:
             for button in group.sub_buttons:
                 button.setChecked(False)
@@ -483,6 +470,7 @@ class MainWindow(QMainWindow):
             self._restore_sidebar_selection()
             return
         self.btn_about.setChecked(False)
+        self.btn_app_settings.setChecked(False)
         # Update active analysis in core
         new_ana = group.internal_id
         changed = self._activate_analysis(new_ana)
@@ -527,12 +515,19 @@ class MainWindow(QMainWindow):
             return
         page_idx = analysis_sub_map[label]
         self.btn_about.setChecked(False)
+        self.btn_app_settings.setChecked(False)
+        if label == "Settings":
+            {
+                "clonality": self.tab_settings_clonality,
+                "flt3": self.tab_settings_flt3,
+                "general": self.tab_settings_general,
+            }[analysis_id].refresh_from_settings()
         self.stacked_widget.setCurrentIndex(page_idx)
 
     def _on_settings_saved(self, analysis_id):
         if not self.settings_changes_allowed():
             return
-        if APP_SETTINGS.get("active_analysis") == analysis_id:
+        if analysis_id != "app" and APP_SETTINGS.get("active_analysis") == analysis_id:
             self.tab_run.set_analysis(analysis_id)
             self.tab_ladder.set_analysis(analysis_id)
             self.tab_archive_runner.set_analysis(analysis_id)

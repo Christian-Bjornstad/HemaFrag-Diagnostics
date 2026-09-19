@@ -94,7 +94,9 @@ class TabLadder(QWidget):
 
         main_layout.addWidget(self._build_source_card(), stretch=1)
 
-        self._empty_state = QLabel("Pick one .fsa file to inspect its ladder.")
+        self._empty_state = QLabel(
+            "No file selected. Scan a folder or open one .fsa file to inspect its ladder."
+        )
         self._empty_state.setObjectName("EmptyStateCard")
         self._empty_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self._empty_state)
@@ -148,6 +150,21 @@ class TabLadder(QWidget):
         row2.addWidget(self.file_filter, stretch=1)
         layout.addLayout(row2)
 
+        self.btn_toggle_review_bundle = QPushButton("Review bundle options…")
+        self.btn_toggle_review_bundle.setObjectName("SecondaryButton")
+        self.btn_toggle_review_bundle.setCheckable(True)
+        self.btn_toggle_review_bundle.setToolTip(
+            "Show optional controls for loading and rerunning a ladder review bundle."
+        )
+        self.btn_toggle_review_bundle.toggled.connect(
+            self._set_review_bundle_options_visible
+        )
+        layout.addWidget(self.btn_toggle_review_bundle, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        self.review_bundle_options = QWidget()
+        self.review_bundle_options.setObjectName("ReviewBundleOptions")
+        review_layout = QVBoxLayout(self.review_bundle_options)
+        review_layout.setContentsMargins(0, 0, 0, 0)
         row3 = QHBoxLayout()
         self.review_bundle_dir = QLineEdit()
         self.review_bundle_dir.setPlaceholderText("/optional/path/to/review bundle with ladder_review_cases.csv")
@@ -155,6 +172,10 @@ class TabLadder(QWidget):
         btn_browse_bundle.clicked.connect(self._choose_review_bundle)
         self.btn_load_bundle = QPushButton("Load Review Bundle")
         self.btn_load_bundle.clicked.connect(self._load_review_bundle)
+        self.btn_load_bundle.setEnabled(False)
+        self.review_bundle_dir.textChanged.connect(
+            lambda text: self.btn_load_bundle.setEnabled(bool(text.strip()))
+        )
         self.btn_rerun_review_bundle = QPushButton("Run Reviewed Files + Reports")
         self.btn_rerun_review_bundle.setToolTip(
             "Rerun files marked as manually adjusted or reviewed, then rebuild their reports."
@@ -166,11 +187,11 @@ class TabLadder(QWidget):
         row3.addWidget(btn_browse_bundle)
         row3.addWidget(self.btn_load_bundle)
         row3.addWidget(self.btn_rerun_review_bundle)
-        layout.addLayout(row3)
+        review_layout.addLayout(row3)
 
         self.review_progress_label = QLabel("Reviewed 0 / 0 — Remaining 0")
         self.review_progress_label.setObjectName("PageSubtitle")
-        layout.addWidget(self.review_progress_label)
+        review_layout.addWidget(self.review_progress_label)
 
         # Phase 12.3 — chip-strip overview above the file list.
         # One chip per loaded bundle case (reviewed/needs_review/
@@ -181,7 +202,9 @@ class TabLadder(QWidget):
         self._chip_strip = ChipStripOverview(parent=card)
         self._chip_strip.chipActivated.connect(self._on_chip_activated)
         self._chip_strip.chipLocateRequested.connect(self._on_locate_file)
-        layout.addWidget(self._chip_strip)
+        review_layout.addWidget(self._chip_strip)
+        self.review_bundle_options.setVisible(False)
+        layout.addWidget(self.review_bundle_options)
 
         self.file_list = QListWidget()
         self.file_list.setMinimumHeight(220)
@@ -191,6 +214,12 @@ class TabLadder(QWidget):
         layout.addWidget(self.file_list)
 
         return card
+
+    def _set_review_bundle_options_visible(self, visible: bool) -> None:
+        self.review_bundle_options.setVisible(visible)
+        self.btn_toggle_review_bundle.setText(
+            "Hide review bundle options" if visible else "Review bundle options…"
+        )
 
     def _build_details_card(self) -> QWidget:
         card = QWidget()
@@ -246,14 +275,9 @@ class TabLadder(QWidget):
         self.btn_open_file_folder = QPushButton("Open File Folder")
         self.btn_open_file_folder.clicked.connect(self._open_file_folder)
 
-        for btn in [
-            self.btn_refresh_meta,
-            self.btn_open_editor,
-            self.btn_exclude_missing_ladder,
-            self.btn_rerun_file,
-            self.btn_remove_adjustment,
-            self.btn_open_file_folder,
-        ]:
+        for btn in [self.btn_refresh_meta, self.btn_open_editor,
+                    self.btn_exclude_missing_ladder, self.btn_rerun_file,
+                    self.btn_remove_adjustment, self.btn_open_file_folder]:
             btn.setEnabled(False)
             actions.addWidget(btn)
         actions.addStretch()
@@ -448,6 +472,7 @@ class TabLadder(QWidget):
         self._set_review_runtime_cache(preloaded_entries or [], review_case_paths)
         self._recent_reviewed_files.clear()
         self._auto_open_review_editor_once = bool(auto_open_first)
+        self.btn_toggle_review_bundle.setChecked(True)
         self.review_bundle_dir.setText(str(bundle_path))
         self._load_review_bundle()
 
@@ -507,14 +532,10 @@ class TabLadder(QWidget):
             and not str(review_case.get("label") or "").strip()
             and not str(review_case.get("adjustment_path") or "").strip()
         )
-        for btn in [
-            self.btn_refresh_meta,
-            self.btn_open_editor,
-            self.btn_rerun_file,
-            self.btn_remove_adjustment,
-            self.btn_open_file_folder,
-        ]:
-            btn.setEnabled(enabled)
+        self.btn_refresh_meta.setEnabled(enabled)
+        self.btn_open_file_folder.setEnabled(enabled)
+        for btn in (self.btn_open_editor, self.btn_rerun_file, self.btn_remove_adjustment):
+            btn.setEnabled(False)
         self.btn_exclude_missing_ladder.setEnabled(exclusion_enabled)
 
         self._empty_state.setVisible(not enabled)
@@ -1611,10 +1632,10 @@ class TabLadder(QWidget):
         payload = load_ladder_adjustment(type("Dummy", (), {"file": file_path})())
         if not payload:
             return "None"
-        if bool(payload.get("partial_mapping")) and not bool(
-            (payload.get("review") or {}).get("partial_approved")
-        ):
-            return "Draft · needs at least 3 anchors"
+        partial = bool(payload.get("partial_mapping"))
+        partial_approved = bool((payload.get("review") or {}).get("partial_approved"))
+        if partial and not partial_approved:
+            return "Draft · 1–2 anchors · not eligible for rerun"
         cache_key = self._resolve_cache_key(file_path)
         consumption = self._manual_rerun_consumption_by_path.get(cache_key)
         if consumption is None:
@@ -1626,10 +1647,16 @@ class TabLadder(QWidget):
                     "consumed": persisted_status == "consumed",
                 }
         if consumption and consumption.get("consumed"):
-            return "Saved · consumed by successful rerun"
+            return "Applied · consumed by successful rerun"
         if consumption:
-            return "Saved · rerun did not consume"
-        return "Saved · not rerun yet"
+            return (
+                "Approved partial fit · rerun did not consume"
+                if partial_approved
+                else "Saved complete adjustment · rerun did not consume"
+            )
+        if partial_approved:
+            return "Approved partial fit · not rerun yet"
+        return "Saved complete adjustment · not rerun yet"
 
     def _save_review_bundle_annotation(self, review_case: dict, review_payload: dict) -> None:
         if self._review_bundle_dir is None or self._current_file is None:
@@ -1991,6 +2018,10 @@ class TabLadder(QWidget):
             ", ".join(f"{bp:.0f}" for bp in missing_steps) if missing_steps else "None"
         )
         self.btn_open_editor.setEnabled(True)
+        self.btn_rerun_file.setEnabled(True)
+        self.btn_remove_adjustment.setEnabled(
+            load_ladder_adjustment(self._current_fsa) is not None
+        )
         if result.get("from_cache"):
             self._set_status(f"Loaded cached run data for {file_path.name}.")
         else:

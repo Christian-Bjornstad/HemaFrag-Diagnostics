@@ -1022,10 +1022,11 @@ class LadderAdjustmentDialog(QDialog):
             btn_save_note.clicked.connect(self._on_save_note_only)
             bottom_layout.addWidget(btn_save_note)
 
-        btn_apply = QPushButton("Save Adjustment")
-        btn_apply.setObjectName("PrimaryButton")
-        btn_apply.clicked.connect(self._on_apply)
-        bottom_layout.addWidget(btn_apply)
+        self.btn_apply = QPushButton("Map an Anchor to Save")
+        self.btn_apply.setObjectName("PrimaryButton")
+        self.btn_apply.setEnabled(False)
+        self.btn_apply.clicked.connect(self._on_apply)
+        bottom_layout.addWidget(self.btn_apply)
 
         layout.addWidget(action_bar)
         if self._trace_backend == "matplotlib":
@@ -1062,6 +1063,7 @@ class LadderAdjustmentDialog(QDialog):
             self._shortcuts.append(shortcut)
 
     def _refresh_all(self):
+        self._sync_save_action()
         self._update_meta()
         self._update_match_table()
         self._update_candidate_table()
@@ -1069,6 +1071,24 @@ class LadderAdjustmentDialog(QDialog):
         self._plot_ladder()
         self._update_qc_panel()
         self._plot_residuals()
+
+    def _sync_save_action(self) -> None:
+        mapped = len(self.mapping)
+        self.btn_apply.setEnabled(mapped > 0)
+        if mapped == 0:
+            text = "Map an Anchor to Save"
+            tooltip = "Assign at least one observed anchor before saving."
+        elif mapped < 3:
+            text = f"Save Draft ({mapped} anchor{'s' if mapped != 1 else ''})"
+            tooltip = "One or two anchors are saved as an unapproved draft and cannot be rerun."
+        elif self._missing_step_indices():
+            text = "Review & Save Partial Fit"
+            tooltip = "Preview and explicitly approve this partial fit before rerunning."
+        else:
+            text = "Save Adjustment"
+            tooltip = "Save the complete reviewed ladder adjustment."
+        self.btn_apply.setText(text)
+        self.btn_apply.setToolTip(tooltip)
 
     def _update_meta(self):
         self.meta_labels["file"].setText(self.fsa.file_name)

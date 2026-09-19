@@ -109,6 +109,35 @@ def test_review_bundle_keeps_short_draft_unresolved():
     assert unregistered == [current]
 
 
+def test_adjustment_status_distinguishes_draft_approved_and_consumed(monkeypatch):
+    source = Path("sample.fsa")
+    tab = SimpleNamespace(
+        _resolve_cache_key=lambda path: Path(path),
+        _manual_rerun_consumption_by_path={},
+        _review_case_by_path={},
+    )
+    monkeypatch.setattr(
+        ladder_tab, "load_ladder_adjustment",
+        lambda _fsa: {"partial_mapping": True, "review": {"partial_approved": False}},
+    )
+    assert TabLadder._adjustment_status_for(tab, source) == (
+        "Draft · 1–2 anchors · not eligible for rerun"
+    )
+
+    monkeypatch.setattr(
+        ladder_tab, "load_ladder_adjustment",
+        lambda _fsa: {"partial_mapping": True, "review": {"partial_approved": True}},
+    )
+    assert TabLadder._adjustment_status_for(tab, source) == (
+        "Approved partial fit · not rerun yet"
+    )
+
+    tab._manual_rerun_consumption_by_path[source] = {"consumed": True}
+    assert TabLadder._adjustment_status_for(tab, source) == (
+        "Applied · consumed by successful rerun"
+    )
+
+
 def test_remove_adjustment_failure_keeps_review_and_cache(monkeypatch):
     statuses = []
     source = Path("sample.fsa")

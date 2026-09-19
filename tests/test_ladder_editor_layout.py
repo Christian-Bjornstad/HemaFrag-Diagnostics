@@ -4,9 +4,11 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QScrollArea, QWidget
 
 from gui_qt.dialogs.ladder_dialog import LadderAdjustmentDialog
+from gui_qt.tabs.tab_ladder import TabLadder
 
 
 @pytest.fixture(scope="session")
@@ -165,6 +167,58 @@ def test_ladder_editor_saves_two_anchor_mapping_as_unapproved_draft(
     assert dialog.get_review_payload()["partial_approved"] is False
     assert dialog.get_adjustment_payload()["mapping_times"] == {0: 100.0, 2: 300.0}
     dialog.close()
+
+
+def test_save_action_names_draft_partial_and_complete_states(qapp, monkeypatch):
+    monkeypatch.setattr(
+        LadderAdjustmentDialog, "_get_candidates",
+        lambda self: pd.DataFrame(columns=["index", "time", "intensity", "source"]),
+    )
+    monkeypatch.setattr(LadderAdjustmentDialog, "_suggest_auto", lambda self, store_initial: None)
+    monkeypatch.setattr(LadderAdjustmentDialog, "_refresh_preview_state", lambda self, show_errors: None)
+    monkeypatch.setattr(LadderAdjustmentDialog, "_focus_initial_step", lambda self: None)
+    dialog = LadderAdjustmentDialog(_fake_fsa())
+
+    dialog.mapping = {0: 0, 2: 1}
+    dialog._sync_save_action()
+    assert dialog.btn_apply.text() == "Save Draft (2 anchors)"
+    assert "cannot be rerun" in dialog.btn_apply.toolTip()
+
+    dialog.mapping = {0: 0, 2: 1, 4: 2}
+    dialog._sync_save_action()
+    assert dialog.btn_apply.text() == "Review & Save Partial Fit"
+
+    dialog.mapping = {index: index for index in range(len(dialog.ladder_steps))}
+    dialog._sync_save_action()
+    assert dialog.btn_apply.text() == "Save Adjustment"
+    dialog.close()
+
+
+@pytest.mark.parametrize("width,height", [(1280, 720), (1366, 768)])
+def test_ladder_page_keeps_optional_review_controls_collapsed_at_laptop_sizes(
+    qapp, width, height
+):
+    previous_font = qapp.font()
+    qapp.setFont(QFont("Segoe UI", 9))
+    tab = TabLadder()
+    tab.resize(width, height)
+    tab.show()
+    qapp.processEvents()
+
+    assert not tab.review_bundle_options.isVisible()
+    assert tab.btn_toggle_review_bundle.isVisible()
+    assert not tab.btn_load_bundle.isEnabled()
+    assert not tab.btn_open_editor.isEnabled()
+    assert not tab.btn_rerun_file.isEnabled()
+    assert not tab.btn_remove_adjustment.isEnabled()
+    assert tab.status_lbl.geometry().bottom() <= tab.rect().bottom()
+
+    tab.btn_toggle_review_bundle.click()
+    qapp.processEvents()
+    assert tab.review_bundle_options.isVisible()
+    assert not tab.btn_load_bundle.isEnabled()
+    tab.close()
+    qapp.setFont(previous_font)
 
 
 def test_ladder_editor_approves_previewed_partial_mapping_with_three_anchors(

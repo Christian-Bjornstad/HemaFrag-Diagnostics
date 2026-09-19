@@ -229,8 +229,8 @@ class TabArchiveRunner(QWidget):
         form.addRow("", self.chk_refresh_each_folder)
         form.addRow("", self.chk_cleanup_staging)
         rust_note = QLabel(
-            "Archive runs follow the global setting in Settings: "
-            "\"Use high performance Rust engine (BETA)\"."
+            "Archive runs use the Rust-first analysis workflow. "
+            "Engine availability is shown in App Settings."
         )
         rust_note.setWordWrap(True)
         rust_note.setObjectName("MutedText")
@@ -293,7 +293,7 @@ class TabArchiveRunner(QWidget):
         header_row.addWidget(self.status_badge)
         layout.addLayout(header_row)
 
-        action_row = QHBoxLayout()
+        action_row = QGridLayout()
         self.btn_run = QPushButton("Run Yearly Backfill")
         self.btn_run.setObjectName("PrimaryButton")
         self.btn_run.clicked.connect(self.on_run_yearly)
@@ -313,16 +313,15 @@ class TabArchiveRunner(QWidget):
         self.btn_refresh_workbook.setToolTip(
             "Rebuild the yearly workbook from month outputs after ladder corrections or reruns."
         )
-        for button in (
+        for index, button in enumerate((
             self.btn_run,
             self.btn_combine,
             self.btn_review_ladders,
             self.btn_refresh_workbook,
             self.btn_open_run,
             self.btn_open_workbook,
-        ):
-            action_row.addWidget(button)
-        action_row.addStretch()
+        )):
+            action_row.addWidget(button, index // 3, index % 3)
         layout.addLayout(action_row)
 
         self.status_lbl = QLabel("Ready")
@@ -769,41 +768,6 @@ class TabArchiveRunner(QWidget):
         worker.signals.finished.connect(self._on_worker_finished)
         self._active_worker = worker
         self.threadpool.start(worker)
-
-    def _run_yearly_job(
-        self,
-        *,
-        year_label: str,
-        input_root: Path,
-        output_root: Path,
-        run_name: str | None,
-        months: list[str],
-        max_workers: int,
-        folder_workers: int,
-        resume_existing: bool,
-        include_sl: bool,
-        refresh_each_folder: bool,
-        cleanup_staging_root: bool,
-        bridge,
-    ) -> dict[str, object]:
-        runner = self._runner()
-        if runner is None:
-            raise RuntimeError(self._archive_support_message())
-        return runner(
-            year_label=year_label,
-            input_root=input_root,
-            output_root=output_root,
-            run_name=run_name,
-            months=months,
-            max_workers=max_workers,
-            folder_workers=folder_workers,
-            resume_existing=resume_existing,
-            include_sl=include_sl,
-            refresh_each_folder=refresh_each_folder,
-            cleanup_staging_root=cleanup_staging_root,
-            progress_callback=lambda payload: bridge.progress.emit(payload),
-            status_callback=lambda message: bridge.status.emit(message),
-        )
 
     def on_build_combined_workbook(self) -> None:
         combiner = self._combiner()

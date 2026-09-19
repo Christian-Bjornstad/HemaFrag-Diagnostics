@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
@@ -15,7 +16,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QWidget,
-    QDoubleSpinBox,
+    QGroupBox,
 )
 
 import config
@@ -36,6 +37,7 @@ class TabAnalysisSettings(QWidget):
         super().__init__(parent)
         self.analysis_id = analysis_id
         self.analysis_label = ANALYSIS_LABELS.get(analysis_id, analysis_id.capitalize())
+        self._refreshing = False
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -50,21 +52,33 @@ class TabAnalysisSettings(QWidget):
         subtitle.setObjectName("PageSubtitle")
         header.addWidget(title)
         header.addWidget(subtitle)
+        self.dirty_lbl = QLabel("")
+        self.dirty_lbl.setAccessibleName("Unsaved changes status")
+        header.addWidget(self.dirty_lbl)
+        self.status_lbl = QLabel("")
+        self.status_lbl.setAccessibleName("Profile save status")
+        self.status_lbl.setWordWrap(True)
+        header.addWidget(self.status_lbl)
+        self.btn_save_top = QPushButton(f"Save {self.analysis_label} Profile")
+        self.btn_save_top.setObjectName("PrimaryButton")
+        self.btn_save_top.clicked.connect(self.save)
+        header.addWidget(self.btn_save_top)
         main_layout.addLayout(header)
 
         self.paths_card = self._build_paths_card()
         self.run_card = self._build_run_card()
         self.interpretation_card = self._build_interpretation_card()
-        self.shared_card = self._build_shared_card()
+        self.save_card = self._build_save_card()
 
         main_layout.addWidget(self.paths_card)
         main_layout.addWidget(self.run_card)
         if self.analysis_id == "clonality":
             main_layout.addWidget(self.interpretation_card)
-        main_layout.addWidget(self.shared_card)
+        main_layout.addWidget(self.save_card)
         main_layout.addStretch()
 
         self.refresh_from_settings()
+        self._connect_dirty_signals()
 
     def _build_paths_card(self) -> QWidget:
         card = QWidget()
@@ -148,9 +162,13 @@ class TabAnalysisSettings(QWidget):
         return card
 
     def _build_interpretation_card(self) -> QWidget:
-        card = QWidget()
+        card = QGroupBox("Advanced interpretation and learning")
         card.setObjectName("Card")
-        layout = QFormLayout(card)
+        card.setCheckable(True)
+        outer = QVBoxLayout(card)
+        self.advanced_content = QWidget()
+        layout = QFormLayout(self.advanced_content)
+        outer.addWidget(self.advanced_content)
 
         layout.addRow(QLabel("<b>Clonality Interpretation Assistance</b>"))
 
@@ -199,59 +217,32 @@ class TabAnalysisSettings(QWidget):
         learning_note.setWordWrap(True)
         learning_note.setStyleSheet("color: #64748b;")
         layout.addRow("", learning_note)
+        card.toggled.connect(self.advanced_content.setVisible)
+        card.setChecked(False)
+        self.advanced_content.setVisible(False)
         return card
 
-    def _build_shared_card(self) -> QWidget:
+    def _build_save_card(self) -> QWidget:
         card = QWidget()
         card.setObjectName("Card")
         layout = QFormLayout(card)
 
-        layout.addRow(QLabel("<b>Shared App Settings & Engine</b>"))
-
-        self.author = QLineEdit()
-        layout.addRow("Author (for PDF templates):", self.author)
-
-        self.d_min_r2_ok = QDoubleSpinBox()
-        self.d_min_r2_ok.setRange(0, 1)
-        self.d_min_r2_ok.setSingleStep(0.001)
-        self.d_min_r2_ok.setDecimals(3)
-        layout.addRow("Min R² (OK):", self.d_min_r2_ok)
-
-        self.d_min_r2_warn = QDoubleSpinBox()
-        self.d_min_r2_warn.setRange(0, 1)
-        self.d_min_r2_warn.setSingleStep(0.001)
-        self.d_min_r2_warn.setDecimals(3)
-        layout.addRow("Min R² (WARN):", self.d_min_r2_warn)
-
-        self.chk_use_rust_engine = QCheckBox("Use high performance Rust engine (BETA)")
-        layout.addRow("", self.chk_use_rust_engine)
-
-        self.engine_note = QLabel(
-            "When enabled, HemaFrag uses the integrated Rust ladder-fitting engine. "
-            "Turn it off to force the legacy Python ladder-fit path."
-        )
-        self.engine_note.setWordWrap(True)
-        self.engine_note.setStyleSheet("color: #2563eb;")
-        layout.addRow("", self.engine_note)
-
-        btn_save = QPushButton(f"Save {self.analysis_label} Settings")
+        btn_save = QPushButton(f"Save {self.analysis_label} Profile")
         btn_save.setObjectName("PrimaryButton")
         btn_save.clicked.connect(self.save)
         layout.addRow("", btn_save)
 
-        self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color: #22c55e; font-weight: 500;")
-        layout.addRow("", self.status_lbl)
         return card
 
     def refresh_from_settings(self) -> None:
+        if self.is_dirty():
+            return
+        self._refreshing = True
         analysis_settings = get_analysis_settings(self.analysis_id)
         batch_settings = analysis_settings.get("batch", {})
         pipeline_settings = analysis_settings.get("pipeline", {})
         interpretation_settings = analysis_settings.get("interpretation", {})
         learning_settings = analysis_settings.get("learning", {})
-        general_settings = APP_SETTINGS.get("general", {})
-        qc_settings = APP_SETTINGS.get("qc", {})
         self.default_input.setText(batch_settings.get("base_input_dir", str(Path.home())))
         self.default_output.setText(batch_settings.get("output_base", str(Path.home())))
         self.tracking_excel_path.setText(batch_settings.get("tracking_excel_path", ""))
@@ -274,10 +265,8 @@ class TabAnalysisSettings(QWidget):
         if self.analysis_id == "clonality":
             self._refresh_ml_status()
 
-        self.author.setText(general_settings.get("author", "OUS"))
-        self.d_min_r2_ok.setValue(float(qc_settings.get("min_r2_ok", 0.995)))
-        self.d_min_r2_warn.setValue(float(qc_settings.get("min_r2_warn", 0.990)))
-        self.chk_use_rust_engine.setChecked(bool(APP_SETTINGS.get("engine", {}).get("use_rust", True)))
+        self._refreshing = False
+        self._set_dirty(False)
 
     def save(self) -> bool:
         window = self.window()
@@ -315,10 +304,11 @@ class TabAnalysisSettings(QWidget):
             proposed.setdefault("batch", {}).update(batch_settings)
             proposed.setdefault("pipeline", {}).update(pipeline_settings)
 
-        proposed.setdefault("general", {})["author"] = self.author.text().strip()
-        proposed.setdefault("qc", {})["min_r2_ok"] = self.d_min_r2_ok.value()
-        proposed.setdefault("qc", {})["min_r2_warn"] = self.d_min_r2_warn.value()
-        proposed.setdefault("engine", {})["use_rust"] = self.chk_use_rust_engine.isChecked()
+        error = self._validation_error()
+        if error:
+            self.status_lbl.setText(error)
+            self.status_lbl.setStyleSheet("color: #b91c1c; font-weight: 500;")
+            return False
 
         if not save_settings(proposed):
             self.status_lbl.setText(config.LAST_SETTINGS_SAVE_ERROR or "Failed to save settings.")
@@ -329,7 +319,45 @@ class TabAnalysisSettings(QWidget):
         self.settings_saved.emit(self.analysis_id)
         self.status_lbl.setText(f"{self.analysis_label} settings saved.")
         self.status_lbl.setStyleSheet("color: #15803d; font-weight: 500;")
+        self._set_dirty(False)
         return True
+
+    def is_dirty(self) -> bool:
+        return self.dirty_lbl.text() != ""
+
+    def _set_dirty(self, dirty: bool = True) -> None:
+        if self._refreshing:
+            return
+        self.dirty_lbl.setText("Unsaved profile changes" if dirty else "")
+        self.dirty_lbl.setStyleSheet("color: #b45309; font-weight: 500;")
+
+    def _connect_dirty_signals(self) -> None:
+        for widget in self.findChildren(QLineEdit):
+            widget.textChanged.connect(lambda _value: self._set_dirty())
+        for widget in self.findChildren(QCheckBox):
+            widget.toggled.connect(lambda _value: self._set_dirty())
+        self.mode_combo.currentTextChanged.connect(lambda _value: self._set_dirty())
+
+    def _validation_error(self) -> str | None:
+        if self.chk_agg_pat.isChecked():
+            try:
+                re.compile(self.patient_regex.text().strip())
+            except re.error as exc:
+                message = f"Patient ID Regex is invalid: {exc}"
+                self.patient_regex.setToolTip(message)
+                self.patient_regex.setFocus()
+                return message
+        for label, field in (
+            ("Tracking Excel File", self.tracking_excel_path),
+            ("Master Tracking Excel File", self.global_tracking_excel_path),
+        ):
+            value = field.text().strip()
+            if value and Path(value).suffix and Path(value).suffix.lower() != ".xlsx":
+                message = f"{label} must use the .xlsx file type."
+                field.setToolTip(message)
+                field.setFocus()
+                return message
+        return None
 
     def _browse_dir(self, line_edit: QLineEdit) -> None:
         folder = QFileDialog.getExistingDirectory(
