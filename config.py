@@ -20,7 +20,9 @@ from typing import Any, Dict, Mapping
 # ============================================================
 
 LEGACY_SETTINGS_PATH = Path.home() / ".fraggler_gui.yaml"
-SETTINGS_PATH = Path.home() / ".hemafrag_gui.yaml"
+SETTINGS_PATH = Path(
+    os.environ.get("HEMAFRAG_SETTINGS_PATH") or Path.home() / ".hemafrag_gui.yaml"
+).expanduser()
 _LOG = logging.getLogger(__name__)
 
 LAST_SETTINGS_LOAD_ERROR: str | None = None
@@ -701,7 +703,12 @@ def load_settings(
     LAST_SETTINGS_LOAD_ERROR = None
 
     resolved_settings_path = settings_path
-    if settings_path == SETTINGS_PATH and not settings_path.exists() and LEGACY_SETTINGS_PATH.exists():
+    if (
+        not os.environ.get("HEMAFRAG_SETTINGS_PATH")
+        and settings_path == SETTINGS_PATH
+        and not settings_path.exists()
+        and LEGACY_SETTINGS_PATH.exists()
+    ):
         resolved_settings_path = LEGACY_SETTINGS_PATH
 
     # 1) Load from YAML if exists

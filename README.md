@@ -10,7 +10,7 @@
 
 <p align="center">
   <img alt="HemaFrag version 1.2.0" src="https://img.shields.io/badge/HemaFrag-v1.2.0-2563eb">
-  <img alt="Python 3.11, 3.12, and 3.14" src="https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.14-3776AB?logo=python&amp;logoColor=white">
+  <img alt="Python 3.12 through 3.14" src="https://img.shields.io/badge/Python-3.12–3.14-3776AB?logo=python&amp;logoColor=white">
   <img alt="PyQt6 desktop interface" src="https://img.shields.io/badge/Desktop-PyQt6-41CD52?logo=qt&amp;logoColor=white">
   <img alt="Rust accelerated" src="https://img.shields.io/badge/Engine-Rust-CE422B?logo=rust&amp;logoColor=white">
 </p>

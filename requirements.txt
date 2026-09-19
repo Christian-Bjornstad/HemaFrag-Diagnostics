@@ -1,8 +1,8 @@
-# HemaFrag Diagnostics -- runtime deps for Python 3.11 / 3.12 / 3.14.6
+# HemaFrag Diagnostics -- runtime deps for Python >=3.12,<3.15
 #
 # Floor pins (lower bound only). Lets pip pick a single matrix that
 # works on:
-#   - Python 3.11 / 3.12 (this dev machine)
+#   - Python 3.12 (development / CI)
 #   - Python 3.14.6 (the work computer)
 #
 # Last validated:

@@ -7,19 +7,47 @@ on:
 
 jobs:
   python:
-    name: Python checks
-    runs-on: macos-latest
+    name: Python ${{ matrix.python }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.14"
+          - os: macos-latest
+            python: "3.12"
+    env:
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install Python dependencies
-        run: python3 -m pip install -r requirements.txt pytest
+        run: python -m pip install -r requirements.txt pytest
+      - name: Install Windows native engine
+        if: runner.os == 'Windows'
+        run: python -m pip install wheels/fraggler_kernels-0.1.2-cp310-abi3-win_amd64.whl
+      - name: Verify Windows native engine
+        if: runner.os == 'Windows'
+        run: python -c "import fraggler_native; assert fraggler_native.is_available(); print(fraggler_native.version)"
       - name: Compile application modules
-        run: python3 -m compileall -q qt_app.py gui_qt core
+        run: python -m compileall -q qt_app.py gui_qt core
       - name: Run unit tests
-        run: python3 -m unittest tests/test_ladder_review_gate.py tests/test_water_filter.py
+        run: python -m pytest -q --junitxml=test-results.xml
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.os }}-${{ matrix.python }}
+          path: test-results.xml
 
   rust:
     name: Rust checks
