@@ -10,6 +10,7 @@ import yaml
 import copy
 import logging
 import os
+import tempfile
 import warnings
 from pathlib import Path
 from typing import Any, Dict, Mapping
@@ -719,20 +720,36 @@ def load_settings(
     return settings
 
 
-def save_settings(settings: Dict[str, Any], settings_path: Path | None = None) -> None:
-    """Persist settings to YAML."""
+def save_settings(settings: Dict[str, Any], settings_path: Path | None = None) -> bool:
+    """Persist settings atomically; return whether the replacement succeeded."""
     global LAST_SETTINGS_SAVE_ERROR
     settings_path = settings_path or SETTINGS_PATH
     LAST_SETTINGS_SAVE_ERROR = None
+    temporary_path: Path | None = None
     try:
         payload = copy.deepcopy(settings)
         payload = _migrate_legacy_settings(payload)
         payload["default_output"] = payload.get("general", {}).get("default_output", "")
         settings_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(settings_path, "w", encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=settings_path.parent,
+            prefix=f".{settings_path.name}.", suffix=".tmp", delete=False,
+        ) as f:
+            temporary_path = Path(f.name)
             yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, settings_path)
+        return True
     except Exception as exc:
         LAST_SETTINGS_SAVE_ERROR = _report_settings_issue("Failed to save", settings_path, exc)
+        return False
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                _LOG.warning("Could not remove temporary settings file %s", temporary_path)
 
 
 # Singleton — imported by other modules

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
@@ -17,6 +18,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
 )
 
+import config
 from config import APP_SETTINGS, get_analysis_settings, save_settings
 
 
@@ -277,8 +279,16 @@ class TabAnalysisSettings(QWidget):
         self.d_min_r2_warn.setValue(float(qc_settings.get("min_r2_warn", 0.990)))
         self.chk_use_rust_engine.setChecked(bool(APP_SETTINGS.get("engine", {}).get("use_rust", True)))
 
-    def save(self) -> None:
-        analyses = APP_SETTINGS.setdefault("analyses", {})
+    def save(self) -> bool:
+        window = self.window()
+        changes_allowed = getattr(window, "settings_changes_allowed", None)
+        if callable(changes_allowed) and not changes_allowed():
+            self.status_lbl.setText("Settings cannot be saved while an operation is running.")
+            self.status_lbl.setStyleSheet("color: #b45309; font-weight: 500;")
+            return False
+
+        proposed = copy.deepcopy(APP_SETTINGS)
+        analyses = proposed.setdefault("analyses", {})
         profile = analyses.setdefault(self.analysis_id, {})
         batch_settings = profile.setdefault("batch", {})
         pipeline_settings = profile.setdefault("pipeline", {})
@@ -301,18 +311,25 @@ class TabAnalysisSettings(QWidget):
             learning_settings["enabled"] = self.chk_clonality_learning.isChecked()
             learning_settings["output_dir"] = self.clonality_learning_output_dir.text().strip()
 
-        if APP_SETTINGS.get("active_analysis") == self.analysis_id:
-            APP_SETTINGS.setdefault("batch", {}).update(batch_settings)
-            APP_SETTINGS.setdefault("pipeline", {}).update(pipeline_settings)
+        if proposed.get("active_analysis") == self.analysis_id:
+            proposed.setdefault("batch", {}).update(batch_settings)
+            proposed.setdefault("pipeline", {}).update(pipeline_settings)
 
-        APP_SETTINGS.setdefault("general", {})["author"] = self.author.text().strip()
-        APP_SETTINGS.setdefault("qc", {})["min_r2_ok"] = self.d_min_r2_ok.value()
-        APP_SETTINGS.setdefault("qc", {})["min_r2_warn"] = self.d_min_r2_warn.value()
-        APP_SETTINGS.setdefault("engine", {})["use_rust"] = self.chk_use_rust_engine.isChecked()
+        proposed.setdefault("general", {})["author"] = self.author.text().strip()
+        proposed.setdefault("qc", {})["min_r2_ok"] = self.d_min_r2_ok.value()
+        proposed.setdefault("qc", {})["min_r2_warn"] = self.d_min_r2_warn.value()
+        proposed.setdefault("engine", {})["use_rust"] = self.chk_use_rust_engine.isChecked()
 
-        save_settings(APP_SETTINGS)
+        if not save_settings(proposed):
+            self.status_lbl.setText(config.LAST_SETTINGS_SAVE_ERROR or "Failed to save settings.")
+            self.status_lbl.setStyleSheet("color: #b91c1c; font-weight: 500;")
+            return False
+        APP_SETTINGS.clear()
+        APP_SETTINGS.update(proposed)
         self.settings_saved.emit(self.analysis_id)
         self.status_lbl.setText(f"{self.analysis_label} settings saved.")
+        self.status_lbl.setStyleSheet("color: #15803d; font-weight: 500;")
+        return True
 
     def _browse_dir(self, line_edit: QLineEdit) -> None:
         folder = QFileDialog.getExistingDirectory(
