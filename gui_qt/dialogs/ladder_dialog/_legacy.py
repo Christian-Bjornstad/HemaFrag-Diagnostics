@@ -91,12 +91,22 @@ def _new_manual_marker_id() -> str:
 
 
 class LadderAdjustmentDialog(QDialog):
-    def __init__(self, fsa, parent=None, *, review_context: dict | None = None, review_comment: str = ""):
+    def __init__(
+        self,
+        fsa,
+        parent=None,
+        *,
+        review_context: dict | None = None,
+        review_comment: str = "",
+        initial_adjustment: dict | None = None,
+    ):
         super().__init__(parent)
         self.fsa = fsa
         self.review_context = review_context or {}
         self._initial_review_comment = review_comment
+        self._initial_adjustment = copy.deepcopy(initial_adjustment or {})
         self._review_action = "apply"
+        self._partial_approved = False
         self.setWindowTitle(f"Ladder Adjustment - {fsa.file_name}")
         screen = QApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else None
@@ -117,7 +127,10 @@ class LadderAdjustmentDialog(QDialog):
         self.candidates = self._get_candidates().reset_index(drop=True)
         self.mapping: dict[int, int] = {}
         self._initial_mapping: dict[int, int] = {}
-        self._manual_candidate_times: list[float] = []
+        self._manual_candidate_times: list[float] = [
+            float(value)
+            for value in self._initial_adjustment.get("manual_candidates", [])
+        ]
         self._add_peak_mode = False
         self._preview_fsa = None
         self._preview_metrics: dict | None = None
@@ -138,7 +151,10 @@ class LadderAdjustmentDialog(QDialog):
         self._shortcuts = []
 
         self._init_ui()
-        self._suggest_auto(store_initial=True)
+        if self._initial_adjustment:
+            self._restore_initial_adjustment()
+        else:
+            self._suggest_auto(store_initial=True)
         self._refresh_preview_state(show_errors=False)
         self._refresh_all()
         self._focus_initial_step()
@@ -174,19 +190,25 @@ class LadderAdjustmentDialog(QDialog):
             )
         if rows:
             df = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
+        saved_markers = [
+            marker
+            for marker in self._initial_adjustment.get("markers", [])
+            if isinstance(marker, dict) and marker.get("marker_id")
+        ]
+        used_saved_ids: set[str] = set()
         if not df.empty:
             df = df.sort_values("time").reset_index(drop=True)
             df["index"] = np.arange(len(df))
-            saved_markers = [
-                marker
-                for marker in (
-                    getattr(self.fsa, "manual_ladder_markers", None) or []
-                )
-                if isinstance(marker, dict) and marker.get("marker_id")
-            ]
+            if not saved_markers:
+                saved_markers = [
+                    marker
+                    for marker in (
+                        getattr(self.fsa, "manual_ladder_markers", None) or []
+                    )
+                    if isinstance(marker, dict) and marker.get("marker_id")
+                ]
             marker_ids: list[str] = []
             requested_values: list[float] = []
-            used_saved_ids: set[str] = set()
             source_identity = str(
                 getattr(self.fsa, "file", None)
                 or getattr(self.fsa, "file_name", "")
@@ -226,7 +248,75 @@ class LadderAdjustmentDialog(QDialog):
                 requested_values.append(requested_x)
             df["marker_id"] = marker_ids
             df["requested_x"] = requested_values
+        missing_saved_rows = []
+        for marker in saved_markers:
+            marker_id = str(marker["marker_id"])
+            if marker_id in used_saved_ids:
+                continue
+            scan_x = float(marker.get("scan_x", marker.get("requested_x", 0.0)))
+            if not np.isfinite(scan_x):
+                continue
+            intensity = marker.get("intensity")
+            if intensity is None and trace.size:
+                _, intensity = sample_raw_trace_at_x(trace, scan_x)
+            missing_saved_rows.append(
+                {
+                    "index": len(df) + len(missing_saved_rows),
+                    "time": scan_x,
+                    "requested_x": float(marker.get("requested_x", scan_x)),
+                    "intensity": float(intensity or 0.0),
+                    "source": str(marker.get("source_kind") or "manual_exact"),
+                    "marker_id": marker_id,
+                }
+            )
+        if missing_saved_rows:
+            df = pd.concat([df, pd.DataFrame(missing_saved_rows)], ignore_index=True)
+            df = df.sort_values("time", kind="stable").reset_index(drop=True)
+            df["index"] = np.arange(len(df))
         return df
+
+    def _restore_initial_adjustment(self) -> None:
+        marker_rows = {
+            str(candidate.get("marker_id") or ""): int(row)
+            for row, candidate in self.candidates.iterrows()
+            if str(candidate.get("marker_id") or "")
+        }
+        marker_id_by_step = {
+            int(step): str(marker_id)
+            for step, marker_id in dict(
+                self._initial_adjustment.get("marker_id_by_step") or {}
+            ).items()
+        }
+        mapping_times = {
+            int(step): float(scan_x)
+            for step, scan_x in dict(
+                self._initial_adjustment.get("mapping_times") or {}
+            ).items()
+        }
+        restored: dict[int, int] = {}
+        for step_idx, marker_id in marker_id_by_step.items():
+            candidate_index = marker_rows.get(marker_id)
+            if candidate_index is not None:
+                restored[step_idx] = candidate_index
+        if not self.candidates.empty:
+            candidate_times = self.candidates["time"].to_numpy(dtype=float)
+            for step_idx, scan_x in mapping_times.items():
+                if step_idx in restored:
+                    continue
+                matches = np.where(np.isclose(candidate_times, scan_x, atol=1e-9))[0]
+                if matches.size:
+                    restored[step_idx] = int(matches[0])
+        for step_idx, candidate_index in dict(
+            self._initial_adjustment.get("mapping") or {}
+        ).items():
+            step = int(step_idx)
+            candidate = int(candidate_index)
+            if step not in restored and 0 <= candidate < len(self.candidates):
+                restored[step] = candidate
+        self.mapping = restored
+        self._initial_mapping = dict(restored)
+        self._missing_order = self._recommended_missing_order()
+        self._sync_missing_order_button()
 
     def _init_ui(self):
         self.setObjectName("LadderDialog")
@@ -1524,8 +1614,8 @@ class LadderAdjustmentDialog(QDialog):
             self._fit_grade, self._fit_reason = self._grade_preview_state()
             return
 
-        # Delvis kartlegging er tillatt: manglende trinn interpoleres i
-        # apply_manual_ladder_mapping, sa previewen kjores uansett.
+        # Partial mappings preview only the explicitly observed anchors;
+        # missing ladder steps remain absent from the fitted model.
         from core.analysis import apply_manual_ladder_mapping, compute_ladder_qc_metrics
 
         try:
@@ -1669,7 +1759,7 @@ class LadderAdjustmentDialog(QDialog):
         x_value: float,
         y_value: float | None = None,
         *,
-        max_time_delta: float = 3.0,
+        max_time_delta: float = 45.0,
     ) -> int | None:
         if self.candidates.empty:
             return None
@@ -1690,7 +1780,10 @@ class LadderAdjustmentDialog(QDialog):
             y_diffs = np.abs(intensities[indices] - float(y_value))
             score = (time_diffs / x_span) + (y_diffs / y_span) * 0.55
             best_pos = int(np.argmin(score))
-            if float(time_diffs[best_pos]) <= max_time_delta:
+            if (
+                float(time_diffs[best_pos]) <= max_time_delta
+                and float(score[best_pos]) <= 0.035
+            ):
                 return int(indices[best_pos])
             return None
         best_pos = int(np.argmin(time_diffs))
@@ -2303,12 +2396,17 @@ class LadderAdjustmentDialog(QDialog):
 
     def _on_apply(self):
         self._review_action = "apply"
-        if len(self.mapping) < 3:
+        self._partial_approved = False
+        if not self.mapping:
             QMessageBox.warning(
                 self,
                 "No Mapping",
-                "Map at least three observed ladder anchors before applying.",
+                "Map at least one observed ladder anchor before saving.",
             )
+            return
+        if len(self.mapping) < 3:
+            self._review_action = "save_draft"
+            self.accept()
             return
         missing_steps = self._missing_step_indices()
         if missing_steps:
@@ -2323,10 +2421,10 @@ class LadderAdjustmentDialog(QDialog):
                 "explicit and this file remains marked as a reviewed partial fit.\n\n"
                 f"Missing: {missing_text}\n\n"
                 "Save this partial adjustment anyway?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
             )
-            if answer != QMessageBox.Yes:
+            if answer != QMessageBox.StandardButton.Yes:
                 return
 
         self._refresh_preview_state(show_errors=True)
@@ -2338,6 +2436,7 @@ class LadderAdjustmentDialog(QDialog):
                 "This ladder correction could not be previewed successfully yet. Fix the fit before saving.",
             )
             return
+        self._partial_approved = bool(missing_steps)
         self.accept()
 
     def _on_save_note_only(self):
@@ -2359,4 +2458,5 @@ class LadderAdjustmentDialog(QDialog):
             "linear_r2": self.review_context.get("linear_r2"),
             "after_qc": dict(self._preview_metrics or {}),
             "partial_mapping": bool(self._missing_step_indices()),
+            "partial_approved": bool(self._partial_approved),
         }

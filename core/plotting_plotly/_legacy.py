@@ -130,14 +130,7 @@ window.HemaFragTraceMarkers = window.HemaFragTraceMarkers || (function() {
   }
   function confirmDelete(peak, distance, maxDistance) {
     var limit = Number.isFinite(Number(maxDistance)) ? Number(maxDistance) : 0.4;
-    if (!peak || !Number.isFinite(distance) || distance > limit) {
-      window.alert("No marker is close enough to delete.");
-      return false;
-    }
-    return window.confirm(
-      "Delete marker " + String(peak.marker_id) +
-      " @ " + Number(peak.x).toFixed(4) + "?"
-    );
+    return !!peak && Number.isFinite(distance) && distance <= limit;
   }
   return {
     normalize: normalize,

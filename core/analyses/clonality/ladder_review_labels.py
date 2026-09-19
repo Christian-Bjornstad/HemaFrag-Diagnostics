@@ -16,6 +16,7 @@ class ReviewLabelPolicy:
 REVIEW_LABEL_POLICIES = {
     "manual_adjusted": ReviewLabelPolicy(True, True, True, True),
     "manual_partial_adjusted": ReviewLabelPolicy(True, True, True, False),
+    "manual_partial_draft": ReviewLabelPolicy(False, False, False, False),
     "reviewed_no_change": ReviewLabelPolicy(True, True, True, True),
     "excluded_missing_ladder_signal": ReviewLabelPolicy(True, False, False, False),
 }

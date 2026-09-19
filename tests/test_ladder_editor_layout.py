@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
-from PyQt6.QtWidgets import QApplication, QScrollArea, QWidget
+from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QScrollArea, QWidget
 
 from gui_qt.dialogs.ladder_dialog import LadderAdjustmentDialog
 
@@ -130,4 +130,144 @@ def test_ladder_editor_round_trips_distinct_exact_markers_in_partial_payload(
         100.25,
         260.75,
     ]
+    dialog.close()
+
+
+def test_ladder_editor_saves_two_anchor_mapping_as_unapproved_draft(
+    qapp,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        LadderAdjustmentDialog,
+        "_get_candidates",
+        lambda self: pd.DataFrame(
+            {
+                "index": [0, 1],
+                "time": [100.0, 300.0],
+                "requested_x": [100.0, 300.0],
+                "intensity": [120.0, 180.0],
+                "source": ["auto", "auto"],
+                "marker_id": ["detected-a", "detected-b"],
+            }
+        ),
+    )
+    monkeypatch.setattr(LadderAdjustmentDialog, "_suggest_auto", lambda self, store_initial: None)
+    monkeypatch.setattr(LadderAdjustmentDialog, "_refresh_all", lambda self: None)
+    monkeypatch.setattr(LadderAdjustmentDialog, "_focus_initial_step", lambda self: None)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: None)
+
+    dialog = LadderAdjustmentDialog(_fake_fsa())
+    dialog.mapping = {0: 0, 2: 1}
+    dialog._on_apply()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert dialog.get_review_payload()["action"] == "save_draft"
+    assert dialog.get_review_payload()["partial_approved"] is False
+    assert dialog.get_adjustment_payload()["mapping_times"] == {0: 100.0, 2: 300.0}
+    dialog.close()
+
+
+def test_ladder_editor_approves_previewed_partial_mapping_with_three_anchors(
+    qapp,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        LadderAdjustmentDialog,
+        "_get_candidates",
+        lambda self: pd.DataFrame(
+            {
+                "index": [0, 1, 2],
+                "time": [100.0, 300.0, 500.0],
+                "requested_x": [100.0, 300.0, 500.0],
+                "intensity": [120.0, 180.0, 160.0],
+                "source": ["auto", "auto", "auto"],
+                "marker_id": ["detected-a", "detected-b", "detected-c"],
+            }
+        ),
+    )
+    monkeypatch.setattr(LadderAdjustmentDialog, "_suggest_auto", lambda self, store_initial: None)
+    monkeypatch.setattr(LadderAdjustmentDialog, "_refresh_all", lambda self: None)
+    monkeypatch.setattr(LadderAdjustmentDialog, "_focus_initial_step", lambda self: None)
+    monkeypatch.setattr(
+        LadderAdjustmentDialog,
+        "_refresh_preview_state",
+        lambda self, show_errors: setattr(self, "_preview_metrics", {"r2": 0.999}),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    dialog = LadderAdjustmentDialog(_fake_fsa())
+    dialog.mapping = {0: 0, 2: 1, 4: 2}
+    dialog._on_apply()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert dialog.get_review_payload()["action"] == "apply"
+    assert dialog.get_review_payload()["partial_approved"] is True
+    dialog.close()
+
+
+def test_nearest_candidate_hit_area_scales_with_visible_trace():
+    dialog = LadderAdjustmentDialog.__new__(LadderAdjustmentDialog)
+    dialog.candidates = pd.DataFrame(
+        {
+            "time": [100.0, 700.0],
+            "intensity": [80.0, 20.0],
+        }
+    )
+    dialog._trace_current_limits = lambda: ((0.0, 1000.0), (0.0, 100.0))
+
+    assert dialog._nearest_candidate_from_position(108.0, 80.0) == 0
+    assert dialog._nearest_candidate_from_position(108.0, 0.0) is None
+
+
+def test_ladder_editor_restores_saved_draft_mapping(qapp, monkeypatch):
+    draft = {
+        "mapping": {0: 0, 2: 1},
+        "mapping_times": {0: 100.25, 2: 300.75},
+        "manual_candidates": [100.25, 300.75],
+        "markers": [
+            {
+                "marker_id": "draft-a",
+                "scan_x": 100.25,
+                "requested_x": 100.25,
+                "intensity": 120.0,
+                "source_kind": "manual_exact",
+            },
+            {
+                "marker_id": "draft-b",
+                "scan_x": 300.75,
+                "requested_x": 300.75,
+                "intensity": 180.0,
+                "source_kind": "manual_exact",
+            },
+        ],
+        "marker_id_by_step": {0: "draft-a", 2: "draft-b"},
+        "partial_mapping": True,
+        "review": {"partial_approved": False},
+    }
+    monkeypatch.setattr(
+        LadderAdjustmentDialog,
+        "_get_candidates",
+        lambda self: pd.DataFrame(
+            {
+                "index": [0, 1],
+                "time": [100.25, 300.75],
+                "requested_x": [100.25, 300.75],
+                "intensity": [120.0, 180.0],
+                "source": ["manual_exact", "manual_exact"],
+                "marker_id": ["draft-a", "draft-b"],
+            }
+        ),
+    )
+    monkeypatch.setattr(LadderAdjustmentDialog, "_refresh_preview_state", lambda self, show_errors: None)
+    monkeypatch.setattr(LadderAdjustmentDialog, "_refresh_all", lambda self: None)
+    monkeypatch.setattr(LadderAdjustmentDialog, "_focus_initial_step", lambda self: None)
+
+    dialog = LadderAdjustmentDialog(_fake_fsa(), initial_adjustment=draft)
+
+    assert dialog.mapping == {0: 0, 2: 1}
+    assert dialog._manual_candidate_times == [100.25, 300.75]
     dialog.close()

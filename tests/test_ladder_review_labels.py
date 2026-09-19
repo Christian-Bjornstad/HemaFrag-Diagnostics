@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from core.analyses.clonality.ladder_review_labels import (
-    REVIEW_LABEL_POLICIES,
     RERUNNABLE_LABELS,
     RESOLVED_LABELS,
+    REVIEW_LABEL_POLICIES,
     is_review_fitting_eligible,
     is_review_ml_eligible,
     is_review_rerunnable,
@@ -27,3 +27,13 @@ def test_policy_lookup_normalizes_whitespace_and_case():
     assert policy == REVIEW_LABEL_POLICIES["excluded_missing_ladder_signal"]
     assert "excluded_missing_ladder_signal" in RESOLVED_LABELS
     assert "excluded_missing_ladder_signal" not in RERUNNABLE_LABELS
+
+
+def test_partial_draft_remains_unresolved_and_cannot_be_rerun():
+    label = "manual_partial_draft"
+
+    assert label in REVIEW_LABEL_POLICIES
+    assert not is_review_resolved(label)
+    assert not is_review_rerunnable(label)
+    assert not is_review_fitting_eligible(label)
+    assert not is_review_ml_eligible(label)

@@ -149,6 +149,31 @@ def test_fewer_than_three_explicit_anchors_are_rejected():
         )
 
 
+def test_saved_two_anchor_draft_is_not_applied_to_analysis(monkeypatch):
+    import core.analysis._legacy as analysis
+
+    calls = []
+    fsa = _FakeFsa([50.0, 100.0, 150.0], [100.0, 200.0])
+    monkeypatch.setattr(
+        analysis,
+        "apply_manual_ladder_mapping",
+        lambda current_fsa, adjustment: calls.append(adjustment) or current_fsa,
+    )
+
+    result = analysis._try_apply_saved_ladder_adjustment(
+        fsa,
+        {
+            "mapping": {},
+            "mapping_times": {0: 100.0, 1: 200.0},
+            "review": {"partial_approved": False},
+        },
+        "ROX",
+    )
+
+    assert result is None
+    assert calls == []
+
+
 def test_non_increasing_observed_anchors_are_rejected():
     import core.analysis._legacy as analysis
 

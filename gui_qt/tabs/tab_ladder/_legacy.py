@@ -685,11 +685,13 @@ class TabLadder(QWidget):
         review_comment = ""
         if review_case:
             review_comment = str(review_case.get("label_note", "") or "")
+        initial_adjustment = load_ladder_adjustment(fsa)
         dialog = _open_ladder_adjustment_dialog(
             fsa,
             self,
             review_context=review_case,
             review_comment=review_comment,
+            initial_adjustment=initial_adjustment,
         )
         if dialog.exec():
             review_payload = dialog.get_review_payload()
@@ -709,7 +711,9 @@ class TabLadder(QWidget):
                             "linear_r2": review_payload.get("linear_r2"),
                         },
                         after_qc=dict(review_payload.get("after_qc") or {}),
-                        partial_approved=bool(adjustment.get("partial_mapping")),
+                        partial_approved=bool(
+                            review_payload.get("partial_approved", False)
+                        ),
                     )
                     if load_ladder_adjustment(fsa) is None:
                         raise RuntimeError(f"Saved adjustment could not be loaded from {saved_path}.")
@@ -737,7 +741,10 @@ class TabLadder(QWidget):
                         cached_preview.file_name = cache_key.name
                     except Exception:
                         pass
-                    if bool(adjustment.get("partial_mapping")):
+                    if bool(
+                        adjustment.get("partial_mapping")
+                        and review_payload.get("partial_approved", False)
+                    ):
                         cached_preview.manual_ladder_partial_approved = True
                         cached_preview.ladder_review_required = False
                         cached_preview.ladder_qc_status = "manual_partial_reviewed"
@@ -748,6 +755,11 @@ class TabLadder(QWidget):
             if review_case and self._review_bundle_dir is not None:
                 self._save_review_bundle_annotation(review_case, review_payload)
             self._refresh_current_metadata()
+            if review_payload.get("action") == "save_draft":
+                self._set_status(
+                    f"Saved ladder draft for {self._current_file.name}. Add at least 3 anchors before rerunning."
+                )
+                return
             if review_payload.get("action") == "note_only":
                 self._set_status(f"Saved review note for {self._current_file.name}.")
                 if self._is_run_tab_owned_review():
@@ -1544,6 +1556,10 @@ class TabLadder(QWidget):
         payload = load_ladder_adjustment(type("Dummy", (), {"file": file_path})())
         if not payload:
             return "None"
+        if bool(payload.get("partial_mapping")) and not bool(
+            (payload.get("review") or {}).get("partial_approved")
+        ):
+            return "Draft · needs at least 3 anchors"
         cache_key = self._resolve_cache_key(file_path)
         consumption = self._manual_rerun_consumption_by_path.get(cache_key)
         if consumption is None:
@@ -1568,6 +1584,8 @@ class TabLadder(QWidget):
         comment = str(review_payload.get("comment", "") or "").strip()
         if action == "note_only":
             label = "reviewed_no_change"
+        elif action == "save_draft":
+            label = "manual_partial_draft"
         elif bool(review_payload.get("partial_mapping")):
             label = "manual_partial_adjusted"
         else:
@@ -1578,7 +1596,12 @@ class TabLadder(QWidget):
             "reviewed_at_utc": datetime.now(timezone.utc).isoformat(),
             "adjustment_path": (
                 str(review_payload.get("adjustment_path") or "")
-                if label in {"manual_adjusted", "manual_partial_adjusted"}
+                if label
+                in {
+                    "manual_adjusted",
+                    "manual_partial_adjusted",
+                    "manual_partial_draft",
+                }
                 else ""
             ),
             "action": action,
@@ -1604,10 +1627,15 @@ class TabLadder(QWidget):
             except Exception:
                 continue
         self._sync_chip_strip()
-        self._recent_reviewed_files.add(cache_key)
         tab_run = self._run_tab_for_review()
-        if tab_run is not None and hasattr(tab_run, "register_ladder_review_update"):
-            tab_run.register_ladder_review_update(cache_key)
+        if is_review_resolved(label):
+            self._recent_reviewed_files.add(cache_key)
+            if tab_run is not None and hasattr(tab_run, "register_ladder_review_update"):
+                tab_run.register_ladder_review_update(cache_key)
+        else:
+            self._recent_reviewed_files.discard(cache_key)
+            if tab_run is not None and hasattr(tab_run, "unregister_ladder_review_update"):
+                tab_run.unregister_ladder_review_update(cache_key)
         self._rebuild_file_list()
         self._select_file(self._current_file)
         self._refresh_review_bundle_run_button()

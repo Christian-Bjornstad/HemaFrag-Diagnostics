@@ -3806,6 +3806,16 @@ def _try_apply_saved_ladder_adjustment(fsa: FsaFile, adjustment: dict | None, la
     """Applies a saved ladder adjustment if valid, otherwise warns and falls back to auto-fit."""
     if not adjustment:
         return None
+    normalized = _normalize_ladder_adjustment_payload(adjustment)
+    if normalized is None:
+        return None
+    mapped_steps = set(normalized["mapping"]) | set(normalized["mapping_times"])
+    if len(mapped_steps) < 3:
+        print_green(
+            f"[{label}] Keeping saved ladder draft for {fsa.file_name}; "
+            "at least three anchors are required before it can be applied."
+        )
+        return None
     try:
         print_green(f"[{label}] Applying manual ladder adjustment for {fsa.file_name}")
         adjusted = apply_manual_ladder_mapping(fsa, adjustment)
