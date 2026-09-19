@@ -137,8 +137,10 @@ class TabArchiveRunner(QWidget):
         header.addWidget(self.subtitle)
         layout.addLayout(header)
 
-        layout.addWidget(self._build_settings_card())
-        layout.addWidget(self._build_month_card())
+        self._settings_card = self._build_settings_card()
+        self._month_card = self._build_month_card()
+        layout.addWidget(self._settings_card)
+        layout.addWidget(self._month_card)
         layout.addWidget(self._build_dashboard_card())
         layout.addWidget(self._build_output_card())
 
@@ -534,6 +536,8 @@ class TabArchiveRunner(QWidget):
         self.btn_open_workbook.setEnabled(has_workbook)
 
     def _set_busy(self, busy: bool) -> None:
+        self._settings_card.setEnabled(not busy)
+        self._month_card.setEnabled(not busy)
         self.btn_run.setEnabled(not busy)
         self.btn_combine.setEnabled(not busy and self._current_run_root is not None and self._current_run_root.exists())
         self.btn_refresh_workbook.setEnabled(

@@ -623,6 +623,9 @@ class TabBatch(QWidget):
             self.table,
             self.input_scope_combo,
             self.output_base,
+            self.general_ladder_combo,
+            self.general_primary_combo,
+            *self._general_trace_checkboxes.values(),
         ):
             widget.setEnabled(not busy)
         if not busy:
@@ -1186,12 +1189,16 @@ class TabBatch(QWidget):
     def _on_general_runtime_changed(self, *_args) -> None:
         if not self._is_general_analysis() or not self._general_controls_ready:
             return
+        if self._active_run_cancel_event is not None or getattr(self, "_review_finalize_active", False):
+            return
         preferred = self.general_primary_combo.currentData() or self.general_primary_combo.currentText()
         self._refresh_general_primary_combo(preferred=str(preferred) if preferred else None)
         self._persist_general_runtime_settings()
 
     def _on_general_trace_toggled(self, *_args) -> None:
         if not self._is_general_analysis() or not self._general_controls_ready:
+            return
+        if self._active_run_cancel_event is not None or getattr(self, "_review_finalize_active", False):
             return
         selected = self._selected_general_trace_channels(fallback=False)
         if not selected:
@@ -1204,6 +1211,8 @@ class TabBatch(QWidget):
 
     def _on_input_scope_changed(self, *_args) -> None:
         if self._is_general_analysis():
+            return
+        if self._active_run_cancel_event is not None or getattr(self, "_review_finalize_active", False):
             return
         profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(self._current_analysis_id, {})
         batch_settings = profile.setdefault("batch", {})
@@ -1644,6 +1653,7 @@ class TabBatch(QWidget):
 
         self._review_finalize_request_id += 1
         request_id = self._review_finalize_request_id
+        self._review_finalize_active = True
         self.btn_scan.setEnabled(False)
         self.btn_run.setEnabled(False)
         self.btn_run_reviewed.setEnabled(False)
@@ -1947,6 +1957,7 @@ class TabBatch(QWidget):
     def _on_review_finalize_finished(self, request_id: int, payload: dict) -> None:
         if request_id != self._review_finalize_request_id:
             return
+        self._review_finalize_active = False
 
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
@@ -2000,6 +2011,7 @@ class TabBatch(QWidget):
     def _on_review_finalize_error(self, request_id: int, err_tuple) -> None:
         if request_id != self._review_finalize_request_id:
             return
+        self._review_finalize_active = False
         self.btn_scan.setEnabled(True)
         self.btn_run.setEnabled(True)
         self._refresh_review_finalize_button()

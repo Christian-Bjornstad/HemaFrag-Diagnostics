@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThreadPool, QTimer, pyqtSignal
 
 from config import APP_SETTINGS, get_analysis_settings
-from core.ladder_adjustment_io import load_ladder_adjustment, save_ladder_adjustment
+from core.ladder_adjustment_io import deactivate_ladder_adjustment, load_ladder_adjustment, save_ladder_adjustment
 from core.analyses.clonality.ladder_review_labels import (
     is_review_rerunnable,
     is_review_resolved,
@@ -76,6 +76,8 @@ class TabLadder(QWidget):
         self._single_rerun_request_id = 0
         self._review_bundle_rerun_request_id = 0
         self._metadata_loading = False
+        self._single_rerun_active = False
+        self._review_bundle_rerun_active = False
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -901,26 +903,73 @@ class TabLadder(QWidget):
             f"The review case remains unresolved.\n\n{err_tuple[1]}",
         )
 
+    def is_operation_active(self) -> bool:
+        return self._single_rerun_active or self._review_bundle_rerun_active
+
     def _remove_saved_adjustment(self) -> None:
         if not self._current_file:
             return
-
-        adj_path = self._current_file.with_suffix(".ladder_adj.json")
-        if not adj_path.exists():
+        if self.is_operation_active():
+            self._set_status("Wait for the active ladder rerun before removing an adjustment.", error=True)
+            return
+        if self._current_fsa is None or self._metadata_loading:
+            self._set_status("Load the selected file's ladder metadata before removing its adjustment.", error=True)
+            return
+        fsa = self._current_fsa
+        try:
+            existing = load_ladder_adjustment(fsa)
+        except Exception as exc:
+            self._set_status(f"Could not inspect ladder adjustment: {exc}", error=True)
+            return
+        if existing is None:
             QMessageBox.information(self, "No Adjustment", "There is no saved ladder adjustment for this file.")
             return
 
         reply = QMessageBox.question(
             self,
             "Remove Adjustment",
-            f"Delete the saved ladder adjustment for {self._current_file.name}?",
+            f"Deactivate the saved ladder adjustment for {self._current_file.name}? Identical source copies share this adjustment.",
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        adj_path.unlink(missing_ok=True)
+        try:
+            deactivate_ladder_adjustment(fsa)
+        except Exception as exc:
+            self._set_status(f"Could not remove ladder adjustment for {self._current_file.name}: {exc}", error=True)
+            QMessageBox.critical(self, "Adjustment Not Removed", str(exc))
+            return
+        cache_key = self._resolve_cache_key(self._current_file)
+        self._review_runtime_cache.pop(cache_key, None)
+        self._manual_rerun_consumption_by_path.pop(cache_key, None)
+        self._recent_reviewed_files.discard(cache_key)
+        self._review_session_entries_by_path.pop(cache_key, None)
+        review_case = self._review_case_by_path.get(cache_key)
+        review_error = None
+        if review_case is not None:
+            if self._review_bundle_dir is not None:
+                try:
+                    self._save_review_bundle_annotation_worker(
+                        self._review_bundle_dir, cache_key,
+                        {"label": "", "label_note": "", "adjustment_path": "", "rerun_status": ""},
+                    )
+                except Exception as exc:
+                    review_error = exc
+            for row in (review_case, *self._review_bundle_cases):
+                if row is review_case or self._resolve_cache_key(Path(str(row.get("full_path") or ""))) == cache_key:
+                    for field in ("label", "label_note", "adjustment_path", "rerun_status"):
+                        row[field] = ""
+        tab_run = self._run_tab_for_review()
+        if tab_run is not None and hasattr(tab_run, "unregister_ladder_review_update"):
+            tab_run.unregister_ladder_review_update(cache_key)
+        self._sync_chip_strip()
+        self._rebuild_file_list()
+        self._refresh_review_bundle_run_button()
         self._refresh_current_metadata()
-        self._set_status(f"Removed saved ladder adjustment for {self._current_file.name}.")
+        if review_error is not None:
+            self._set_status(f"Adjustment deactivated, but review state could not be saved: {review_error}", error=True)
+        else:
+            self._set_status(f"Removed saved ladder adjustment for {self._current_file.name}.")
 
     def _open_file_folder(self) -> None:
         if self._current_file:
@@ -1000,6 +1049,7 @@ class TabLadder(QWidget):
 
         self._single_rerun_request_id += 1
         request_id = self._single_rerun_request_id
+        self._single_rerun_active = True
         for btn in (self.btn_rerun_file, self.btn_open_editor, self.btn_refresh_meta):
             btn.setEnabled(False)
         self._set_status(f"Running single-file reports for {file_path.name}...")
@@ -1197,6 +1247,7 @@ class TabLadder(QWidget):
 
         self._review_bundle_rerun_request_id += 1
         request_id = self._review_bundle_rerun_request_id
+        self._review_bundle_rerun_active = True
         for btn in (
             self.btn_rerun_review_bundle,
             self.btn_load_bundle,
@@ -1265,6 +1316,7 @@ class TabLadder(QWidget):
     def _on_single_rerun_finished(self, request_id: int, payload: dict) -> None:
         if request_id != self._single_rerun_request_id:
             return
+        self._single_rerun_active = False
         self.btn_rerun_file.setEnabled(self._current_file is not None)
         self.btn_open_editor.setEnabled(self._current_file is not None and not self._metadata_loading)
         self.btn_refresh_meta.setEnabled(self._current_file is not None)
@@ -1347,6 +1399,7 @@ class TabLadder(QWidget):
     def _on_single_rerun_error(self, request_id: int, err_tuple) -> None:
         if request_id != self._single_rerun_request_id:
             return
+        self._single_rerun_active = False
         self.btn_rerun_file.setEnabled(self._current_file is not None)
         self.btn_open_editor.setEnabled(self._current_file is not None and not self._metadata_loading)
         self.btn_refresh_meta.setEnabled(self._current_file is not None)
@@ -1356,6 +1409,7 @@ class TabLadder(QWidget):
     def _on_review_bundle_rerun_finished(self, request_id: int, payload: dict) -> None:
         if request_id != self._review_bundle_rerun_request_id:
             return
+        self._review_bundle_rerun_active = False
 
         self.btn_load_bundle.setEnabled(True)
         self.btn_rerun_file.setEnabled(self._current_file is not None)
@@ -1502,6 +1556,7 @@ class TabLadder(QWidget):
     def _on_review_bundle_rerun_error(self, request_id: int, err_tuple) -> None:
         if request_id != self._review_bundle_rerun_request_id:
             return
+        self._review_bundle_rerun_active = False
         self.btn_load_bundle.setEnabled(True)
         self.btn_rerun_file.setEnabled(self._current_file is not None)
         self.btn_open_editor.setEnabled(self._current_file is not None and not self._metadata_loading)

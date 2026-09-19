@@ -456,6 +456,7 @@ def save_ladder_adjustment(
 def load_ladder_adjustment(fsa: "FsaFile") -> dict | None:
     """Load a manual mapping from the internal store or migrate a legacy sidecar."""
     from core.ladder_adjustment_store import (
+        is_ladder_adjustment_deactivated,
         load_ladder_adjustment_record,
         save_ladder_adjustment_record,
     )
@@ -474,6 +475,10 @@ def load_ladder_adjustment(fsa: "FsaFile") -> dict | None:
     )
     if stored is not None:
         return normalize_ladder_adjustment_payload(stored.get("payload"))
+    if is_ladder_adjustment_deactivated(
+        source_path, ladder=ladder, size_standard_channel=channel
+    ):
+        return None
 
     candidate_files: list[Path] = [Path(fsa.file)]
     try:
@@ -541,3 +546,22 @@ def load_ladder_adjustment(fsa: "FsaFile") -> dict | None:
         except Exception as e:
             _print_warning(f"Could not load ladder adjustment {adj_path.name}: {e}")
     return None
+
+
+def deactivate_ladder_adjustment(fsa: "FsaFile") -> None:
+    """Deactivate this source-content, ladder and channel without touching the FSA.
+
+    The legacy sidecar is retained for audit, but the tombstone prevents its
+    reimport. Identical source copies intentionally share the content identity.
+    """
+    from core.ladder_adjustment_store import deactivate_ladder_adjustment_record
+
+    deactivate_ladder_adjustment_record(
+        Path(fsa.file),
+        ladder=str(getattr(fsa, "ladder", "") or ""),
+        size_standard_channel=str(
+            getattr(fsa, "rust_size_standard_channel", "")
+            or getattr(fsa, "size_standard_channel", "")
+            or ""
+        ),
+    )

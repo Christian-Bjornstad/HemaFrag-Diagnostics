@@ -72,7 +72,56 @@ def _connect(path: Path) -> sqlite3.Connection:
         )
         """
     )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS ladder_adjustment_deactivations (
+            source_key TEXT NOT NULL,
+            ladder TEXT NOT NULL,
+            size_standard_channel TEXT NOT NULL,
+            PRIMARY KEY (source_key, ladder, size_standard_channel)
+        )"""
+    )
     return connection
+
+
+def deactivate_ladder_adjustment_record(
+    source_path: Path, *, ladder: str = "", size_standard_channel: str = ""
+) -> None:
+    """Deactivate one exact identity, including any legacy sidecar for that identity.
+
+    Byte-identical source copies share a hash identity and are deactivated together.
+    A later explicit save reactivates the identity.
+    """
+    source_key, _ = _source_key(source_path)
+    identity = (source_key, _normalize_identity(ladder), _normalize_identity(size_standard_channel))
+    with _STORE_LOCK:
+        with closing(_connect(resolve_ladder_adjustment_db_path())) as connection:
+            with connection:
+                connection.execute(
+                    "DELETE FROM ladder_adjustments WHERE source_key = ? AND ladder = ? AND size_standard_channel = ?",
+                    identity,
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO ladder_adjustment_deactivations VALUES (?, ?, ?)",
+                    identity,
+                )
+
+
+def is_ladder_adjustment_deactivated(
+    source_path: Path, *, ladder: str = "", size_standard_channel: str = ""
+) -> bool:
+    database_path = resolve_ladder_adjustment_db_path()
+    if not database_path.is_file():
+        return False
+    source_key, _ = _source_key(source_path)
+    with _STORE_LOCK:
+        with closing(_connect(database_path)) as connection:
+            return connection.execute(
+                """SELECT 1 FROM ladder_adjustment_deactivations
+                   WHERE source_key = ? AND (? = '' OR ladder = ?)
+                     AND (? = '' OR size_standard_channel = ?)""",
+                (source_key, _normalize_identity(ladder), _normalize_identity(ladder),
+                 _normalize_identity(size_standard_channel), _normalize_identity(size_standard_channel)),
+            ).fetchone() is not None
 
 
 def save_ladder_adjustment_record(
@@ -127,6 +176,10 @@ def save_ladder_adjustment_record(
                     saved_at,
                 ),
             )
+            connection.execute(
+                "DELETE FROM ladder_adjustment_deactivations WHERE source_key = ? AND ladder = ? AND size_standard_channel = ?",
+                (source_key, ladder_key, channel_key),
+            )
             connection.commit()
     return database_path
 
@@ -152,11 +205,22 @@ def load_ladder_adjustment_record(
     channel_key = _normalize_identity(size_standard_channel)
     with _STORE_LOCK:
         with closing(_connect(database_path)) as connection:
+            if connection.execute(
+                "SELECT 1 FROM ladder_adjustment_deactivations WHERE source_key = ? AND ladder = ? AND size_standard_channel = ?",
+                (source_key, ladder_key, channel_key),
+            ).fetchone():
+                return None
             row = connection.execute(
                 """
                 SELECT payload_json, payload_sha256, saved_at_utc
                 FROM ladder_adjustments
                 WHERE source_key = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ladder_adjustment_deactivations AS d
+                      WHERE d.source_key = ladder_adjustments.source_key
+                        AND d.ladder = ladder_adjustments.ladder
+                        AND d.size_standard_channel = ladder_adjustments.size_standard_channel
+                  )
                   AND (
                       ? = ''
                       OR ladder = ?
@@ -199,6 +263,8 @@ def load_ladder_adjustment_record(
 __all__ = [
     "DEFAULT_LADDER_ADJUSTMENT_DB",
     "LADDER_ADJUSTMENT_DB_ENV",
+    "deactivate_ladder_adjustment_record",
+    "is_ladder_adjustment_deactivated",
     "load_ladder_adjustment_record",
     "resolve_ladder_adjustment_db_path",
     "save_ladder_adjustment_record",

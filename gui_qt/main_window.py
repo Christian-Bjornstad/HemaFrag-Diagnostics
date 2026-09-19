@@ -353,6 +353,8 @@ class MainWindow(QMainWindow):
 
     def _activate_settings(self) -> None:
         """Jump to the Settings page for the current analysis."""
+        if not self.settings_changes_allowed():
+            return
         active = APP_SETTINGS.get("active_analysis", "clonality")
         group_map = {
             "clonality": self.group_clonality,
@@ -386,6 +388,9 @@ class MainWindow(QMainWindow):
         analysis_id: str,
         bundle_path: str,
     ) -> None:
+        if self.active_operation() is not None:
+            self._blocked_operation_message()
+            return
         self._activate_analysis(analysis_id)
         self.tab_run.set_analysis(analysis_id)
         self.tab_ladder.set_analysis(analysis_id)
@@ -415,6 +420,8 @@ class MainWindow(QMainWindow):
 
     def _activate_analysis(self, analysis_id: str) -> bool:
         """Switch the active analysis and persist the related settings."""
+        if not self._navigation_allowed(analysis_id, None):
+            return False
         if APP_SETTINGS.get("active_analysis") == analysis_id:
             return False
 
@@ -425,8 +432,56 @@ class MainWindow(QMainWindow):
         save_settings(APP_SETTINGS)
         print(f"[UI] Analysis switched to: {analysis_id}")
         return True
+
+    def active_operation(self) -> str | None:
+        """Return the worker-backed operation currently protecting UI context."""
+        if self.tab_run._active_run_cancel_event is not None or getattr(self.tab_run, "_review_finalize_active", False):
+            return "Run"
+        if self.tab_archive_runner._active_worker is not None:
+            return "Archive Runner"
+        if self.tab_ladder.is_operation_active():
+            return "ladder rerun"
+        return None
+
+    def _blocked_operation_message(self) -> None:
+        operation = self.active_operation()
+        self.statusBar().showMessage(
+            f"{operation} is active. Wait for it to finish or stop it before changing analysis or settings.",
+            8000,
+        )
+
+    def settings_changes_allowed(self) -> bool:
+        """Settings pages call this immediately before applying or saving edits."""
+        if self.active_operation() is not None:
+            self._blocked_operation_message()
+            return False
+        return True
+
+    def _navigation_allowed(self, analysis_id: str, label: str | None) -> bool:
+        if self.active_operation() is None:
+            return True
+        if analysis_id != APP_SETTINGS.get("active_analysis") or label == "Settings":
+            self._blocked_operation_message()
+            self._restore_sidebar_selection()
+            return False
+        return True
+
+    def _restore_sidebar_selection(self) -> None:
+        active = APP_SETTINGS.get("active_analysis")
+        current_page = self.stacked_widget.currentIndex()
+        for group in self.groups:
+            for label, button in zip(group.sub_button_labels, group.sub_buttons):
+                target = self._sub_button_map.get(group.internal_id, {}).get(label)
+                button.setChecked(group.internal_id == active and target == current_page)
+            group.header.setChecked(group.internal_id == active)
         
     def on_group_clicked(self, group):
+        # A same-group header click normally redirects to Run. Keep the current
+        # progress/review page intact while a worker is active.
+        if self.active_operation() is not None:
+            self._blocked_operation_message()
+            self._restore_sidebar_selection()
+            return
         self.btn_about.setChecked(False)
         # Update active analysis in core
         new_ana = group.internal_id
@@ -447,6 +502,15 @@ class MainWindow(QMainWindow):
                 self.on_sub_tab_clicked(g.internal_id, 0)
             
     def on_sub_tab_clicked(self, analysis_id, tab_idx):
+        group_lookup = {
+            "clonality": self.group_clonality,
+            "flt3": self.group_flt3,
+            "general": self.group_general,
+        }
+        group = group_lookup.get(analysis_id)
+        label = group.sub_button_labels[tab_idx] if group is not None and 0 <= tab_idx < len(group.sub_button_labels) else None
+        if not self._navigation_allowed(analysis_id, label):
+            return
         # Ensure we are on the right analysis
         changed = self._activate_analysis(analysis_id)
         if changed or getattr(self.tab_run, "_current_analysis_id", None) != analysis_id:
@@ -457,15 +521,8 @@ class MainWindow(QMainWindow):
             self.tab_archive_runner.set_analysis(analysis_id)
 
         analysis_sub_map = self._sub_button_map.get(analysis_id, {})
-        group_lookup = {
-            "clonality": self.group_clonality,
-            "flt3": self.group_flt3,
-            "general": self.group_general,
-        }
-        group = group_lookup.get(analysis_id)
         if group is None:
             return
-        label = group.sub_button_labels[tab_idx] if 0 <= tab_idx < len(group.sub_button_labels) else None
         if label is None or label not in analysis_sub_map:
             return
         page_idx = analysis_sub_map[label]
@@ -473,6 +530,8 @@ class MainWindow(QMainWindow):
         self.stacked_widget.setCurrentIndex(page_idx)
 
     def _on_settings_saved(self, analysis_id):
+        if not self.settings_changes_allowed():
+            return
         if APP_SETTINGS.get("active_analysis") == analysis_id:
             self.tab_run.set_analysis(analysis_id)
             self.tab_ladder.set_analysis(analysis_id)
