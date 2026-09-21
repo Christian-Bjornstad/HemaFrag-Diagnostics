@@ -1848,6 +1848,8 @@ class TabBatch(QWidget):
         total_jobs = int(result.get("total_jobs") or 0)
         completed_count = len(completed_indexes)
         failed_count = len(failed_indexes)
+        failed_jobs = list(result.get("failed_jobs") or [])
+        output_failures = failed_jobs[failed_count:]
         unprocessed_count = len(unprocessed_indexes)
         self.progress.setRange(0, max(total_jobs, 1))
         self.progress.setValue(completed_count + failed_count)
@@ -1858,9 +1860,21 @@ class TabBatch(QWidget):
                 "Completed outputs and provenance were preserved.",
                 "warning",
             )
+        elif failed_count and output_failures:
+            self._set_workflow_status(
+                f"Batch finished with {failed_count} failed job(s); "
+                f"output/report error(s): {', '.join(map(str, output_failures))}.",
+                "error",
+            )
         elif failed_count:
             self._set_workflow_status(
                 f"Batch finished with {failed_count} failed job(s).",
+                "error",
+            )
+        elif output_failures:
+            self._set_workflow_status(
+                f"Batch finished with output/report error(s): "
+                f"{', '.join(map(str, output_failures))}.",
                 "error",
             )
         else:
