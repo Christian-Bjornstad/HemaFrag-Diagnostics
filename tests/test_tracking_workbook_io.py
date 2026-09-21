@@ -3,12 +3,44 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
-from openpyxl import load_workbook
+import pytest
+from openpyxl import Workbook, load_workbook
 
 from core.tracking_workbook_io import (
     publish_workbook_contents,
+    upsert_frame,
     write_tracking_frames,
 )
+
+
+@pytest.mark.parametrize("missing_value", [None, float("nan"), pd.NA])
+def test_upsert_clears_missing_generated_values_without_touching_falsy_values_or_user_formulas(
+    missing_value,
+):
+    workbook = Workbook()
+    upsert_frame(
+        workbook,
+        "Runs",
+        pd.DataFrame([{"ID": "A", "Value": 42, "Zero": 1, "Flag": True}]),
+        key_columns=["ID"],
+    )
+    sheet = workbook["Runs"]
+    sheet["E1"] = "UserFormula"
+    sheet["E2"] = "=B2+C2"
+
+    upsert_frame(
+        workbook,
+        "Runs",
+        pd.DataFrame(
+            [{"ID": "A", "Value": missing_value, "Zero": 0, "Flag": False}]
+        ),
+        key_columns=["ID"],
+    )
+
+    assert sheet["B2"].value is None
+    assert sheet["C2"].value == 0
+    assert sheet["D2"].value is False
+    assert sheet["E2"].value == "=B2+C2"
 
 
 def test_tracking_rows_upsert_and_extend_user_formula_columns(tmp_path):

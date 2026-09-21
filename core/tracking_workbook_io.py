@@ -145,7 +145,7 @@ def upsert_frame(
             if key is not None:
                 existing[key] = row
         for column in columns:
-            ws.cell(row, headers[column], _excel_value(record.get(column)))
+            ws.cell(row, headers[column]).value = _excel_value(record.get(column))
     _refresh_table(ws)
 
 
