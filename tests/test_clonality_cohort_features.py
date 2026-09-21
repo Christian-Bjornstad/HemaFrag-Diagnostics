@@ -6,7 +6,6 @@ from core.analyses.clonality.cohort_features import (
     enrich_entries_with_cohort_context,
     enrich_feature_frame_with_cohort_context,
 )
-from core.analyses.clonality.pipeline import _attach_batch_context_and_ml
 
 
 def _row(
@@ -111,38 +110,3 @@ def test_entry_enrichment_updates_runtime_and_rule_feature_maps():
             ]
             == 1
         )
-
-
-def test_batch_pipeline_attaches_ml_after_context(monkeypatch):
-    entries = [
-        {
-            "file_name": "first.fsa",
-            "dit": "DIT-1",
-            "assay": "FR1",
-            "source_run_dir": "run-a",
-            "features": {"dominant_peak_basepairs": 325.0},
-        },
-        {
-            "file_name": "second.fsa",
-            "dit": "DIT-1",
-            "assay": "FR1",
-            "source_run_dir": "run-a",
-            "features": {"dominant_peak_basepairs": 326.0},
-        },
-    ]
-    observed = []
-
-    def attach(entry):
-        observed.append(entry["features"]["cohort_same_assay_replicate_count"])
-        entry["ml_attached"] = True
-        return entry
-
-    monkeypatch.setattr(
-        "core.analyses.clonality.pipeline.attach_ml_prediction_if_enabled",
-        attach,
-    )
-
-    result = _attach_batch_context_and_ml(entries)
-
-    assert observed == [1, 1]
-    assert all(entry["ml_attached"] for entry in result)

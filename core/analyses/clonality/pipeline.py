@@ -35,10 +35,6 @@ from core.analyses.clonality.tracking_excel import (
     update_clonality_tracking_workbook,
 )
 from core.analyses.clonality.interpretation import attach_interpretation_if_enabled
-from core.analyses.clonality.cohort_features import (
-    enrich_entries_with_cohort_context,
-)
-from core.analyses.clonality.ml_runtime import attach_ml_prediction_if_enabled
 from core.analysis import (
     LADDER_FIT_PROFILE_CLONALITY_LIZ500,
     LADDER_FIT_PROFILE_CLONALITY_ROX400HD,
@@ -1190,7 +1186,6 @@ def _analyze_files(
             results = [_analyze_single_file(p) for p in fsa_files]
 
     entries = [r for r in results if r is not None]
-    entries = _attach_batch_context_and_ml(entries)
     skipped = len(fsa_files) - len(entries)
 
     try:
@@ -1203,22 +1198,6 @@ def _analyze_files(
 
     print_green(f"[MASTER] Totalt {len(entries)} filer analysert. {skipped} skippet.")
     return entries, skipped
-
-
-def _attach_batch_context_and_ml(entries: list[dict]) -> list[dict]:
-    """Attach same-run patient context before invoking eligible ML models."""
-    regular = [
-        entry for entry in entries
-        if entry.get("analysis_status") != "ladder_review_only"
-    ]
-    enriched_regular = iter(enrich_entries_with_cohort_context(regular))
-    result: list[dict] = []
-    for entry in entries:
-        if entry.get("analysis_status") == "ladder_review_only":
-            result.append(entry)
-        else:
-            result.append(attach_ml_prediction_if_enabled(next(enriched_regular)))
-    return result
 
 
 def run_pipeline(

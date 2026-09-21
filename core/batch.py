@@ -1221,33 +1221,6 @@ def run_batch_jobs(
     elif aggregate_dit_reports and stream_aggregated_dit:
         log("[BATCH] Aggregated DIT reports were streamed job-by-job to reduce memory pressure.")
 
-    learning_annotation_seed: dict[str, str] | None = None
-    if active_analysis == "clonality" and dit_report_entries and not run_cancelled:
-        try:
-            from config import APP_SETTINGS
-            from core.analyses.clonality.interpretation import (
-                learning_mode_enabled,
-                learning_output_dir,
-                write_learning_annotation_seed,
-            )
-
-            if learning_mode_enabled():
-                configured_dir = learning_output_dir()
-                target_dir = Path(configured_dir).expanduser() if configured_dir else Path(agg_outdir or output_base) / "clonality_learning_annotations"
-                annotator = str(APP_SETTINGS.get("general", {}).get("author", "") or "")
-                learning_annotation_seed = write_learning_annotation_seed(
-                    dit_report_entries,
-                    target_dir,
-                    annotator=annotator,
-                    source="batch_run",
-                )
-                log(
-                    "[BATCH] Wrote clonality learning annotation seed "
-                    f"({learning_annotation_seed.get('rows')} rows): {learning_annotation_seed.get('json')}"
-                )
-        except Exception as exc:
-            log(f"[WARN] Failed to write clonality learning annotation seed: {exc}")
-
     if run_cancelled:
         log(
             f"[BATCH] Batch cancelled: {len(completed_jobs)} completed, "
@@ -1285,7 +1258,6 @@ def run_batch_jobs(
         "ladder_review_gate": ladder_review_gate,
         "dit_reports_blocked": block_dit_for_ladder_review,
         "final_reports_skipped_reason": "cancelled" if run_cancelled else "",
-        "learning_annotation_seed": learning_annotation_seed,
     }
     if run_manifest is not None:
         try:
