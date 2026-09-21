@@ -33,7 +33,6 @@ def test_analysis_groups_keep_exact_navigation_contract(qapp):
         "Ladder",
         "Archive Runner",
         "Log",
-        "Labeling",
         "Settings",
     ]
     assert window.group_flt3.sub_button_labels == [
@@ -49,6 +48,9 @@ def test_analysis_groups_keep_exact_navigation_contract(qapp):
         "Log",
         "Settings",
     ]
+    assert not hasattr(window, "tab_labeling")
+    assert all("Labeling" not in group.sub_button_labels for group in window.groups)
+    assert "Ladder" in window.group_clonality.sub_button_labels
     assert not hasattr(window, "tab_ml_training")
 
 
@@ -59,8 +61,8 @@ def test_semantic_shortcuts_do_not_depend_on_clonality_positions(qapp, monkeypat
     window = MainWindow()
 
     window.on_group_clicked(window.group_clonality)
-    window._activate_sub_label("Labeling")
-    assert window.stacked_widget.currentIndex() == window.tab_labeling_idx
+    window._activate_sub_label("Ladder")
+    assert window.stacked_widget.currentIndex() == window.tab_ladder_idx
 
     window.on_group_clicked(window.group_flt3)
     window._activate_sub_label("Settings")

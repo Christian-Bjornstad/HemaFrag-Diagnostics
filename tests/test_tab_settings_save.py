@@ -1,4 +1,4 @@
-"""Settings tab save round-trip — exercise the ML model path slot."""
+"""Settings tab save round-trips for active profile controls."""
 from __future__ import annotations
 
 import copy
@@ -144,10 +144,17 @@ def test_advanced_profile_fields_are_collapsible(isolated_settings):
     from gui_qt.tabs.tab_settings import TabAnalysisSettings
 
     tab = TabAnalysisSettings("clonality")
+    assert tab.interpretation_card.title() == "Rule-based interpretation"
+    assert tab.chk_clonality_interpretation.text() == "Enable rule-based interpretation"
     assert tab.interpretation_card.isCheckable()
     assert not tab.interpretation_card.isChecked()
     assert tab.advanced_content.isHidden()
-    assert not tab.clonality_model_path.isVisible()
+    assert not hasattr(tab, "clonality_model_path")
+    assert not hasattr(tab, "_ml_status_label")
+    assert not hasattr(tab, "chk_clonality_learning")
+    assert not hasattr(tab, "clonality_learning_output_dir")
+    assert not hasattr(tab, "_browse_clonality_model_path")
+    assert not hasattr(tab, "_refresh_ml_status")
     tab.interpretation_card.setChecked(True)
     assert not tab.advanced_content.isHidden()
 
@@ -161,13 +168,24 @@ def test_disabled_patient_grouping_ignores_unused_invalid_regex(isolated_setting
     assert tab.save() is True
 
 
-def test_ml_model_path_round_trip(tmp_path, isolated_settings):
+def test_rule_based_interpretation_round_trip(isolated_settings):
     from gui_qt.tabs.tab_settings import TabAnalysisSettings
 
     _app, target = isolated_settings
+    profile = APP_SETTINGS["analyses"]["clonality"]
+    profile["interpretation"]["enabled"] = False
+    profile["interpretation"]["model_path"] = "C:/legacy-models"
+    profile["learning"] = {"enabled": True, "output_dir": "C:/legacy-learning"}
+
     tab = TabAnalysisSettings("clonality")
     tab.chk_clonality_interpretation.setChecked(True)
-    tab.clonality_model_path.setText(str(tmp_path))
     assert tab.save() is True
+
     reloaded = config.load_settings(target)
-    assert reloaded["analyses"]["clonality"]["interpretation"]["model_path"] == str(tmp_path)
+    saved_profile = reloaded["analyses"]["clonality"]
+    assert saved_profile["interpretation"]["enabled"] is True
+    assert saved_profile["interpretation"]["model_path"] == "C:/legacy-models"
+    assert saved_profile["learning"] == {
+        "enabled": True,
+        "output_dir": "C:/legacy-learning",
+    }

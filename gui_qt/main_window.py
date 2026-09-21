@@ -12,7 +12,6 @@ from app_meta import APP_VERSION
 from gui_qt.styles import VIBRANT_PRO_QSS
 from gui_qt.tabs.tab_batch import TabBatch
 from gui_qt.tabs.tab_archive_runner import TabArchiveRunner
-from gui_qt.tabs.tab_labeling import TabLabeling
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_log import TabLog
 from gui_qt.tabs.tab_about import TabAbout
@@ -145,7 +144,6 @@ class MainWindow(QMainWindow):
                 "Ladder",
                 "Archive Runner",
                 "Log",
-                "Labeling",
                 "Settings",
             ],
         )
@@ -194,7 +192,6 @@ class MainWindow(QMainWindow):
         self.tab_run = TabBatch()
         self.tab_ladder = TabLadder()
         self.tab_archive_runner = TabArchiveRunner()
-        self.tab_labeling = TabLabeling()
         self.tab_log = TabLog()
         self.tab_about = TabAbout()
         self.tab_app_settings = TabAppSettings()
@@ -224,7 +221,6 @@ class MainWindow(QMainWindow):
         self.tab_run_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_run))
         self.tab_ladder_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ladder))
         self.tab_archive_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))
-        self.tab_labeling_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_labeling))
         self.tab_log_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
         self.tab_about_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))
         self.tab_app_settings_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_app_settings))
@@ -242,7 +238,6 @@ class MainWindow(QMainWindow):
                 "Ladder": self.tab_ladder_idx,
                 "Archive Runner": self.tab_archive_idx,
                 "Log": self.tab_log_idx,
-                "Labeling": self.tab_labeling_idx,
                 "Settings": self.tab_settings_clonality_idx,
             },
             "flt3": {
@@ -302,7 +297,6 @@ class MainWindow(QMainWindow):
             ("L", "Ladder"),
             ("A", "Archive Runner"),
             ("G", "Log"),
-            ("B", "Labeling"),
             ("S", "Settings"),
         ):
             sc = QShortcut(QKeySequence(f"Alt+{letter}"), self)
