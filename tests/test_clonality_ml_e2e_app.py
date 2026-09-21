@@ -1,39 +1,13 @@
-"""End-to-end smoke test: rule interpretation → ML attachment → HTML render
-→ dismiss → ``clonality-decisions`` JSON round-trip preserved (i.e. the
-Save-Peaks path the chemist actually uses).
-
-The JS decision log is mirrored in pure Python for robustness so the
-test does not depend on ``py_mini_racer`` (which has had Windows install
-issues in past runs).
-
-Test outline:
-    1. Build a minimal tracking entry + a stub model dir with a
-       deterministic random_forest trained on a 2-feature fixture that
-       always predicts ``monoklonal``.
-    2. Call the pipeline's per-sample attach chain
-       (interpret -> ML predict) and assert the four ``ClonalityML*``
-       columns land on the entry dict.
-    3. Render the entry through ``_render_assay_block`` and assert the
-       resulting HTML contains the badge div with the expected dataset
-       attributes and the Skjul/Gjenopprett buttons.
-    4. Run a Python mirror of the JS dismiss logic: the badge state
-       transitions to ``data-state="dismissed"``.
-    5. Serialize the decision log via the same Python helper that the
-       JS expression evaluates to; assert the persisted JSON round-trips
-       and would be picked up by ``downloadUpdatedHtml``.
-"""
+"""End-to-end coverage for the legacy ML runtime attachment chain."""
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 from pathlib import Path
-from unittest.mock import patch
 
 import joblib
 import numpy as np
 import pandas as pd
-import pytest
 from sklearn.ensemble import RandomForestClassifier
 
 
@@ -269,7 +243,7 @@ def _build_entry(file_name: str = "26OUM_F1_FR1_x.fsa") -> dict:
 
 
 def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch):
-    """interpret → ML → HTML badge → dismiss → Save-Peaks JSON survives."""
+    """The legacy runtime can still be exercised until M06 removes it."""
 
     # 1) model dir with deterministic model + feature_columns
     model_dir = _make_model_dir(tmp_path)
@@ -281,7 +255,6 @@ def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch)
                         lambda _=None: model_dir)
 
     # 2) Build entry + run rule + ML chain manually (skips heavy I/O)
-    from core.analyses.clonality.interpretation import features_from_entry
     from core.analyses.clonality.interpretation import (
         attach_interpretation_if_enabled, interpret_entry,
     )
@@ -329,118 +302,3 @@ def test_e2e_pipeline_attaches_ml_columns_in_runner_order(tmp_path, monkeypatch)
         assert out.get("ClonalityMLModelVersion") == "ml_training_pipeline_v9"
         assert 0.0 <= float(out.get("ClonalityMLConfidence", -1)) <= 1.0
         assert out.get("ClonalityMLReviewNeeded") in {True, False}
-
-
-def test_e2e_render_emits_badge_with_stable_dataset_attrs(tmp_path):
-    """Run the HTML renderer; assert the badge div carries dataset attrs."""
-    from core.html_reports._legacy import _render_assay_block
-
-    # Build an entry that the renderer accepts.
-    fsa = _FakeFSA("26OUM00003_FR1_220526_A01.fsa")
-    entry = {
-        "fsa": fsa,
-        "file_name": "26OUM00003_FR1_220526_A01.fsa",
-        "assay": "FR1",
-        "primary_peak_channel": "DATA1",
-        "dit": "26OUM00003",
-        "ClonalitySuggestion": "monoklonal",
-        "ClonalityMLSuggestion": "monoklonal",
-        "ClonalityMLConfidence": 0.86,
-        "ClonalityMLReviewNeeded": False,
-    }
-    html_lines: list[str] = []
-    _render_assay_block("FR1", [entry], html_lines)
-    html = "\n".join(html_lines)
-    # The badge div lands between <p class='sample-header'> and the comment box
-    assert "clonality-ml-badge" in html
-    # Per-sample dataset attrs present
-    assert "data-dit='26OUM00003'" in html
-    assert "data-assay='FR1'" in html
-    assert "data-file='26OUM00003_FR1_220526_A01.fsa'" in html
-    assert "data-ml-label='monoklonal'" in html
-    assert "data-state='active'" in html
-    # Buttons present in correct initial state
-    assert "Skjul for patolog" in html
-    assert "hidden" in html  # the Gjenopprett button starts hidden
-
-
-def test_e2e_dismiss_pipeline_json_roundtrip(tmp_path):
-    """Apply the dismiss helper to badge attrs then serialise — the JSON
-    written to <script id='clonality-decisions'> is what the JS picks up
-    on Save-Peaks so we mirror it in pure-Python for testability."""
-    # Build badge HTML
-    from core.html_reports._legacy import _render_clonality_ml_badge
-
-    fsa = _FakeFSA("26OUM00003_TCRgA_220526_B02.fsa")
-    entry = {
-        "fsa": fsa, "file_name": fsa.file_name,
-        "assay": "TCRgA", "dit": "26OUM00003",
-        "ClonalitySuggestion": "polyklonal",
-        "ClonalityMLSuggestion": "monoklonal",
-        "ClonalityMLConfidence": 0.81,
-        "ClonalityMLReviewNeeded": False,
-    }
-    out: list[str] = []
-    _render_clonality_ml_badge(entry, out)
-    badge_html = "\n".join(out)
-    # Pull badge id from the HTML
-    m_id = re.search(r"id='([^']+)'", badge_html)
-    assert m_id
-    badge_id = m_id.group(1)
-
-    # Simulate the user clicking the dismiss button — same data-state flip
-    # the JS would do. We'll mutate a fake DOM using regex on the html:
-    dismissed_html = badge_html.replace("data-state='active'", "data-state='dismissed'")
-
-    # Build a "saved decisions" dict that mirrors what the JS sets
-    # on Save Peaks. We hand-craft this from the dataset attrs.
-    decisions_block = """
-    <script id="clonality-decisions" type="application/json">{decisions}</script>
-    """.strip()
-    decisions = {
-        badge_id: {
-            "dit": "26OUM00003",
-            "assay": "TCRgA",
-            "file": "26OUM00003_TCRgA_220526_B02.fsa",
-            "ml_label": "monoklonal",
-            "dismissed": True,
-        }
-    }
-    block_html = decisions_block.format(decisions=json.dumps(decisions))
-
-    # The mirror parse: grab the script tag content via the same regex
-    # used by ``downloadUpdatedHtml`` for ``clonality-decisions``.
-    pattern = (
-        r'<script id="clonality-decisions" type="application/json">'
-        r"([\s\S]*?)</script>"
-    )
-    m = re.search(pattern, block_html)
-    assert m
-    parsed = json.loads(m.group(1))
-    assert badge_id in parsed
-    assert parsed[badge_id]["dismissed"] is True
-    assert parsed[badge_id]["assay"] == "TCRgA"
-
-    # The HTML assertion: when the chemist dismisses a badge, the
-    # ``data-state="dismissed"`` attribute is set on the badge div so
-    # our CSS display:none rule hides it.
-    assert "data-state='dismissed'" in dismissed_html
-
-
-def test_e2e_save_peaks_script_tag_is_present_in_header(tmp_path):
-    """The header must carry the ``clonality-decisions`` script tag
-    so the Save-Peaks download can serialize through it."""
-    from core.html_reports._legacy import _create_html_header
-
-    # Build a minimal ``dit_root`` Path required by the helper.
-    dit_root = tmp_path / "dit_root"
-    dit_root.mkdir(exist_ok=True)
-
-    html_lines: list[str] = []
-    # The signature is (dit, year, num_entries, dit_root, html_lines, display_name=...)
-    _create_html_header("26OUM00007", "2026", 5, dit_root, html_lines, display_name="patient")
-    head = "\n".join(html_lines)
-    assert 'id="clonality-decisions"' in head
-    # And the original tags are still present
-    assert 'id="peak-data"' in head
-    assert 'id="plot-state"' in head

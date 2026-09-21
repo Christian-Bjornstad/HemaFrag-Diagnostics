@@ -602,7 +602,6 @@ def _create_html_header(
     html_lines.append(REPORT_STYLE)
     html_lines.append('<script id="peak-data" type="application/json">{}</script>')
     html_lines.append('<script id="plot-state" type="application/json">{}</script>')
-    html_lines.append('<script id="clonality-decisions" type="application/json">{}</script>')
     html_lines.append(r"""
 <script>
 // Toggle comment boxes
@@ -694,102 +693,18 @@ window.PeakManager = {
         var currentHtml = document.documentElement.outerHTML;
         var peakDataStr = JSON.stringify(allPeaks);
         var plotStateStr = JSON.stringify(allPlotStates);
-        var decisionsStr = (window.ClonalityDecisionLog && window.ClonalityDecisionLog.serializeDecisions)
-            ? JSON.stringify(window.ClonalityDecisionLog.serializeDecisions())
-            : '{}';
         var pattern = /<script id="peak-data" type="application\/json">[\s\S]*?<\/script>/;
         var newTag = '<script id="peak-data" type="application/json">\n' + peakDataStr + '\n<\/script>';
         var plotPattern = /<script id="plot-state" type="application\/json">[\s\S]*?<\/script>/;
         var newPlotTag = '<script id="plot-state" type="application/json">\n' + plotStateStr + '\n<\/script>';
-        var decisionsPattern = /<script id="clonality-decisions" type="application\/json">[\s\S]*?<\/script>/;
-        var newDecisionsTag = '<script id="clonality-decisions" type="application/json">\n' + decisionsStr + '\n<\/script>';
         var updatedHtml = currentHtml
             .replace(pattern, newTag)
-            .replace(plotPattern, newPlotTag)
-            .replace(decisionsPattern, newDecisionsTag);
+            .replace(plotPattern, newPlotTag);
         var blob = new Blob(['<!DOCTYPE html>\n' + updatedHtml], {type: 'text/html'});
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a'); a.href = url; a.download = document.title + '.html'; a.click(); URL.revokeObjectURL(url);
     }
 };
-
-// Clonality ML badge dismissal — chemist-presses-button to hide a
-// single ML badge from the printed page.  Restore is the inverse.
-window.ClonalityDecisionLog = {
-    _store: {},
-    _readSaved: function() {
-        try {
-            var tag = document.getElementById('clonality-decisions');
-            var saved = tag ? JSON.parse(tag.textContent || '{}') : {};
-            return (saved && typeof saved === 'object') ? saved : {};
-        } catch(e) { return {}; }
-    },
-    applySaved: function() {
-        var saved = this._readSaved();
-        var nodes = document.querySelectorAll('.clonality-ml-badge');
-        for (var i = 0; i < nodes.length; i++) {
-            var node = nodes[i];
-            var id = node.id;
-            if (!id) continue;
-            var entry = saved[id];
-            if (entry && entry.dismissed) {
-                node.dataset.state = 'dismissed';
-                var dismissBtn = node.querySelector('.ml-dismiss');
-                var restoreBtn = node.querySelector('.ml-restore');
-                if (dismissBtn) dismissBtn.hidden = true;
-                if (restoreBtn) restoreBtn.hidden = false;
-            }
-        }
-    },
-    dismiss: function(btn) {
-        var badge = btn.closest('.clonality-ml-badge');
-        if (!badge) return;
-        badge.dataset.state = 'dismissed';
-        var dismissBtn = badge.querySelector('.ml-dismiss');
-        var restoreBtn = badge.querySelector('.ml-restore');
-        if (dismissBtn) dismissBtn.hidden = true;
-        if (restoreBtn) restoreBtn.hidden = false;
-    },
-    restore: function(btn) {
-        var badge = btn.closest('.clonality-ml-badge');
-        if (!badge) return;
-        badge.dataset.state = 'active';
-        var dismissBtn = badge.querySelector('.ml-dismiss');
-        var restoreBtn = badge.querySelector('.ml-restore');
-        if (dismissBtn) dismissBtn.hidden = false;
-        if (restoreBtn) restoreBtn.hidden = true;
-    },
-    serializeDecisions: function() {
-        var decisions = {};
-        var nodes = document.querySelectorAll('.clonality-ml-badge');
-        for (var i = 0; i < nodes.length; i++) {
-            var node = nodes[i];
-            if (!node.id) continue;
-            decisions[node.id] = {
-                dit: node.dataset.dit || '',
-                assay: node.dataset.assay || '',
-                file: node.dataset.file || '',
-                ml_label: node.dataset.mlLabel || '',
-                dismissed: node.dataset.state === 'dismissed'
-            };
-        }
-        return decisions;
-    }
-};
-
-// On load, reapply any previously-saved dismissal state
-(function() {
-    function ready() {
-        if (window.ClonalityDecisionLog) {
-            window.ClonalityDecisionLog.applySaved();
-        }
-    }
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', ready);
-    } else {
-        ready();
-    }
-})();
 
 function printReport() { window.print(); }
 </script>
@@ -1298,153 +1213,6 @@ def _build_flt3_summary_table(e: dict) -> str:
     return ""
 
 
-def _clonality_ml_label_for_entry(entry: dict) -> str:
-    """Return the ML suggestion label for an entry, or '' if absent.
-
-    Pure helper — no HTML, no I/O. Used by the badge renderer and
-    by the JS dismissal serialiser so they share a single source
-    of truth for what counts as 'present'.
-    """
-    label = str(entry.get("ClonalityMLSuggestion") or "").strip()
-    return label
-
-
-def _clonality_ml_confidence_for_entry(entry: dict) -> str:
-    raw = entry.get("ClonalityMLConfidence", "")
-    if raw in (None, "", 0):
-        return ""
-    try:
-        return f"{float(raw):.2f}"
-    except (TypeError, ValueError):
-        return ""
-
-
-def _clonality_ml_threshold_for_entry(entry: dict) -> str:
-    raw = entry.get("ClonalityMLThreshold", "")
-    if raw in (None, ""):
-        return ""
-    try:
-        return f"{float(raw):.2f}"
-    except (TypeError, ValueError):
-        return ""
-
-
-def _render_clonality_ml_badge(entry: dict, html_lines: list[str]) -> None:
-    """Render a dismissible ML badge for a single sample.
-
-    No-op when ``entry['ClonalityMLSuggestion']`` is empty. Otherwise
-    the badge carries:
-        - the label (e.g. "monoklonal") and confidence
-        - a "Skjul for patolog" button that hides the badge from the
-          pathologist's view without re-running the pipeline
-        - a hidden "Gjenopprett" button that pops back when dismissed
-        - dataset attributes the JS uses to persist dismissal state
-          when the chemist presses Save Peaks.
-
-    ID is keyed on identity_key + assay + file_name so re-running
-    the same sample lands on the same badge after the chart re-render.
-    """
-    label = _clonality_ml_label_for_entry(entry)
-    if not label:
-        return
-    confidence = _clonality_ml_confidence_for_entry(entry)
-    threshold = _clonality_ml_threshold_for_entry(entry)
-    review_needed = entry.get("ClonalityMLReviewNeeded", False)
-    evidence = str(entry.get("ClonalityMLEvidence") or "").strip()
-    rule_label = str(entry.get("ClonalitySuggestion") or "").strip()
-    identity_key = (
-        str(entry.get("dit") or entry.get("DIT") or "")
-        or str(getattr(entry.get("fsa"), "file_name", "") or entry.get("file_name") or "")
-    )
-    assay = str(entry.get("assay") or "")
-    file_name = str(getattr(entry.get("fsa"), "file_name", "") or entry.get("file_name") or "")
-    import hashlib
-    badge_id_src = f"{identity_key}|{assay}|{file_name}".encode("utf-8")
-    badge_id = "ml-" + hashlib.md5(badge_id_src).hexdigest()[:16]
-    rule_gloss = (
-        f"<span class='ml-rule-gloss'>regel: {escape(rule_label or 'ukjent')}</span>"
-        if rule_label
-        else ""
-    )
-    review_gloss = (
-        "<span class='ml-review-tag ml-review-flagged' "
-        f"title='{escape(evidence or 'Lav konfidens eller uenighet med regellaget')}'"
-        ">&#9888; vurder</span>"
-        if review_needed
-        else ""
-    )
-    confidence_text = f" ({confidence})" if confidence else ""
-    threshold_gloss = (
-        f"<span class='ml-rule-gloss'>grense: {escape(threshold)}</span>"
-        if threshold
-        else ""
-    )
-    html_lines.append(
-        f"<div class='clonality-ml-badge' "
-        f"id='{badge_id}' data-state='active' "
-        f"data-dit='{escape(identity_key)}' data-assay='{escape(assay)}' "
-        f"data-file='{escape(file_name)}' data-ml-label='{escape(label)}' "
-        f"data-ml-review='{1 if review_needed else 0}'>"
-        f"<span class='ml-badge-label'>ML: <strong>{escape(label)}</strong>"
-        f"{escape(confidence_text)}</span>"
-        f"{review_gloss}"
-        f"{rule_gloss}"
-        f"{threshold_gloss}"
-        f"<button class='ml-dismiss no-print' type='button' "
-        f"onclick='ClonalityDecisionLog.dismiss(this)'>Skjul for patolog</button>"
-        f"<button class='ml-restore no-print' type='button' hidden "
-        f"onclick='ClonalityDecisionLog.restore(this)'>Gjenopprett</button>"
-        f"</div>"
-    )
-
-
-def _render_clonality_channel_ml_results(
-    entry: dict,
-    html_lines: list[str],
-) -> None:
-    """Render independent channel-level technical suggestions in shadow mode."""
-    results = entry.get("ClonalityMLChannelResults")
-    if not isinstance(results, list) or not results:
-        return
-    rows = []
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        channel = str(result.get("channel") or "")
-        target = str(result.get("target_name") or channel)
-        label = str(result.get("label") or "")
-        if not label:
-            continue
-        try:
-            confidence = f"{float(result.get('confidence')):.2f}"
-        except (TypeError, ValueError):
-            confidence = ""
-        status = (
-            "Vurder"
-            if bool(result.get("review_needed", False))
-            else "Akseptert skyggeforslag"
-        )
-        rows.append(
-            "<tr>"
-            f"<td>{escape(channel)}</td>"
-            f"<td>{escape(target)}</td>"
-            f"<td><strong>{escape(label)}</strong></td>"
-            f"<td>{escape(confidence)}</td>"
-            f"<td>{escape(status)}</td>"
-            "</tr>"
-        )
-    if not rows:
-        return
-    html_lines.append(
-        "<div class='clonality-channel-ml' style='margin:8px 0 14px;'>"
-        "<table style='width:100%;border:1px solid #e2e8f0;'>"
-        "<tr><th>Kanal</th><th>Teknisk mal</th><th>ML-forslag</th>"
-        "<th>Konfidens</th><th>Status</th></tr>"
-        + "".join(rows)
-        + "</table></div>"
-    )
-
-
 def _render_ighv_peak_table(peaks: list[dict], html_lines: list[str]) -> None:
     """IGHV-topptabell: alle detekterte topper i referanseområdet."""
     if not peaks:
@@ -1603,13 +1371,6 @@ def _render_assay_block(
             html_lines.append(_render_ighv_sample_type_line(e))
             _render_ighv_peak_table(e.get("ighv_clonal_peaks") or [], html_lines)
             _render_ighv_qc_table(e.get("ighv_qc_rows") or {}, html_lines)
-        # ML badge (clonality only) — inserts before the FLT3 summary
-        # table so the dismiss buttons line up vertically. We also call
-        # this for FLT3 entries; they just won't render anything since
-        # the entry has no ClonalityML* keys.
-        _render_clonality_channel_ml_results(e, html_lines)
-        _render_clonality_ml_badge(e, html_lines)
-
         if reference_assay in {"FLT3-ITD", "FLT3-D835", "NPM1"}:
             html_lines.append(_build_flt3_summary_table(e))
 
