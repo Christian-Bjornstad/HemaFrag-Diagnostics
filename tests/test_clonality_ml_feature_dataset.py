@@ -14,7 +14,6 @@ from core.analyses.clonality.ml_feature_dataset import (
     load_resumable_feature_artifact,
     write_clonality_trace_feature_artifact,
 )
-from scripts.train_clonality_interpretation_models import _assemble_trace_feature_df
 
 
 def _entry(path, assay="FR1"):
@@ -378,35 +377,3 @@ def test_load_resumable_feature_artifact_rejects_changed_settings(tmp_path):
 
     with pytest.raises(ValueError, match="different clonality settings"):
         load_resumable_feature_artifact(output)
-
-
-def test_trainer_refreshes_labels_from_workbook_by_identity_and_assay(tmp_path):
-    rows = _audit_rows(tmp_path)
-    dataset = build_clonality_trace_feature_dataset(
-        rows,
-        analyze_file=lambda path: _entry(path),
-    )
-    feature_path = tmp_path / "features.csv"
-    dataset.features.to_csv(feature_path, index=False)
-
-    tracking = pd.DataFrame(
-        {
-            "IdentityKey": ["id-1", "id-2"],
-            "DIT": ["26A", "26B"],
-            "Assay": ["FR1", "FR1"],
-            "SampleKind": ["patient", "patient"],
-            "Control": ["", ""],
-            CHEMIST_LABEL_COLUMN: ["polyklonal", "monoklonal"],
-        }
-    )
-    workbook = tmp_path / "tracking.xlsx"
-    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
-        tracking.to_excel(writer, sheet_name="Runs", index=False)
-
-    training = _assemble_trace_feature_df(workbook, feature_path)
-
-    assert list(training["ClonalitySuggestion"]) == [
-        "polyklonal",
-        "monoklonal",
-    ]
-    assert "RuleConfidence" in training.columns

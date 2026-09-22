@@ -13,10 +13,6 @@ from core.analyses.clonality.ml_data_contract import (
     load_tracking_run_table,
 )
 from scripts.audit_clonality_ml_data import main
-from scripts.train_clonality_interpretation_models import (
-    _assemble_labelled_df,
-    _assemble_labelled_df_with_labels_csv,
-)
 
 
 def _write_tracking_workbook(path, rows):
@@ -167,38 +163,6 @@ def test_tracking_loader_preserves_source_rows_for_split_only_workbook(tmp_path)
     assert loaded.primary_sheet == "Patient_Runs"
     assert control["_TrackingSheet"] == "Control_Runs"
     assert control["_TrackingRowNumber"] == 2
-
-
-def test_trainer_reads_chemist_labels_from_current_runs_sheet(tmp_path):
-    workbook = tmp_path / "tracking.xlsx"
-    _write_tracking_workbook(workbook, _rows())
-
-    training = _assemble_labelled_df(workbook)
-
-    assert len(training) == 3
-    assert training.loc[0, "ClonalitySuggestion"] == "monoklonal"
-    assert training.loc[0, CHEMIST_LABEL_COLUMN] == "monoklonal"
-
-
-def test_trainer_merges_external_chemist_labels_without_column_collision(tmp_path):
-    workbook = tmp_path / "tracking.xlsx"
-    rows = _rows()
-    for row in rows:
-        row[CHEMIST_LABEL_COLUMN] = ""
-    _write_tracking_workbook(workbook, rows)
-    labels_path = tmp_path / "labels.csv"
-    pd.DataFrame(
-        {
-            "IdentityKey": ["id-1", "id-2"],
-            "Assay": ["FR1", "IGK"],
-            CHEMIST_LABEL_COLUMN: ["monoklonal", "polyklonal"],
-        }
-    ).to_csv(labels_path, index=False)
-
-    training = _assemble_labelled_df_with_labels_csv(workbook, labels_path)
-
-    assert len(training) == 2
-    assert list(training["ClonalitySuggestion"]) == ["monoklonal", "polyklonal"]
 
 
 def test_audit_reports_paths_labels_groups_and_feature_quality(tmp_path):

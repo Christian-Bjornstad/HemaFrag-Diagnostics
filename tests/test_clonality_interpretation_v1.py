@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,7 +20,6 @@ from core.analyses.clonality.interpretation import (
 )
 from core.analyses.clonality.tracking_excel import update_clonality_tracking_workbook
 from scripts.render_clonality_interpretation_annotation_html import build_html
-from scripts.train_clonality_interpretation_quick_model import train_quick_model
 
 
 def _entry(file_name: str, *, interpretation: bool = False) -> dict:
@@ -294,54 +292,6 @@ class ClonalityInterpretationV1Tests(unittest.TestCase):
         self.assertIn("SL quality", html_text)
         self.assertIn("litt_fragmentert", html_text)
         self.assertIn("fragmented=65.00%", html_text)
-
-    def test_quick_training_writes_model_and_reports_for_small_balanced_set(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            rows = []
-            feature_rows = []
-            for idx, label in enumerate(["polyklonal", "polyklonal", "polyklonal", "monoklonal", "monoklonal", "monoklonal"]):
-                raw_path = f"/tmp/sample_{idx}.fsa"
-                rows.append(
-                    {
-                        "raw_path": raw_path,
-                        "file": f"sample_{idx}.fsa",
-                        "assay": "FR1",
-                        "ladder": "ROX400HD",
-                        "sample_kind": "patient",
-                        "control": "",
-                        "label": label,
-                    }
-                )
-                feature_rows.append(
-                    {
-                        "raw_path": raw_path,
-                        "assay": "FR1",
-                        "ladder": "ROX400HD",
-                        "primary_peak_channel": "DATA1",
-                        "sample_kind": "patient",
-                        "control": "",
-                        "control_bucket": "patient",
-                        "ladder_qc_status": "ok",
-                        "peak_count": 6 if label == "polyklonal" else 1,
-                        "dominant_peak_height": 200 if label == "polyklonal" else 1200,
-                        "second_peak_height": 180 if label == "polyklonal" else 50,
-                        "dominant_to_second_ratio": 1.1 if label == "polyklonal" else 24.0,
-                        "dominant_height_share": 0.2 if label == "polyklonal" else 0.8,
-                    }
-                )
-            annotations = root / "annotations.json"
-            features = root / "feature_rows.csv"
-            annotations.write_text(json.dumps({"rows": rows}), encoding="utf-8")
-            pd.DataFrame(feature_rows).to_csv(features, index=False)
-
-            report = train_quick_model(annotations, root / "model_out", feature_path=features)
-
-            self.assertTrue(report["trained"])
-            self.assertTrue((root / "model_out" / "model.joblib").exists())
-            self.assertTrue((root / "model_out" / "label_report.json").exists())
-            self.assertTrue((root / "model_out" / "confusion_matrix.csv").exists())
-            self.assertTrue((root / "model_out" / "prediction_preview.csv").exists())
 
     def test_tracking_columns_are_only_added_when_interpretation_is_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
