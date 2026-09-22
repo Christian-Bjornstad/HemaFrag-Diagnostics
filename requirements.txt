@@ -9,7 +9,7 @@
 #   - 3.12 venv install: 2026-07-09 (37/37 deps resolve)
 #   - cp314 + win_amd64 dry-run: 2026-07-09 (37/37 PASS, no sdist)
 
-# Scientific / data / ML core (HemaFrag must-haves)
+# Scientific / data analysis core (HemaFrag must-haves)
 numpy>=2.1,<3.0
 scipy>=1.13,<2.0
 pandas>=2.2,<3.0
@@ -20,8 +20,7 @@ pillow>=11
 openpyxl>=3.1.5
 xlsxwriter>=3.2
 
-# ML interpretability / auto-ML / viz extras
-joblib>=1.4
+# Scientific modeling / visualization extras
 lmfit>=1.3.4
 biopython>=1.84
 xarray>=2024

@@ -1,6 +1,6 @@
 # Utføringsliste for GPT-5.6 Sol
 
-Les `plan.md` først. Status per 2026-09-19: implementeringen av S01–S10 og S12–S13 er levert; S11a/c er gjennomført, S11b avventer avklaring av manuell forskningsbruk.
+Les `plan.md` først. Status per 2026-09-22: implementeringen av S01–S10 og S12–S13 er levert; ML-/trenings-/labelingfunksjonaliteten er avviklet. FLT3-valideringsverktøy vurderes separat.
 Se `execution-log.md` for faktisk verifikasjon og gjenværende begrensninger. Avkrysningspunktene nedenfor er den opprinnelige, detaljerte akseptanselisten, ikke en påstand om at all manuell/faglig validering er fullført.
 S = liten oppgave, M = middels. Filoversiktene er startpunkter, ikke anledning til å endre hele filene.
 
@@ -8,12 +8,12 @@ S = liten oppgave, M = middels. Filoversiktene er startpunkter, ikke anledning t
 
 Detaljer, filer, avhengigheter og testkommandoer ligger i `robustness-plan-2026-09-19.md` og `../docs/superpowers/plans/2026-09-19-remove-ml-labeling.md`. De gamle S-punktene beholdes som opprinnelig akseptansehistorikk.
 
-- [ ] R01: Tøm utgåtte genererte Excel-verdier.
-- [ ] R04: Vis rapport-/aggregasjonsfeil som feil, ikke «Batch complete».
-- [ ] M01–M02: Fjern ML/labeling fra GUI og runtime.
-- [ ] M03: Frikoble tracking uten å miste historiske kolonner.
-- [ ] M04–M06: Fjern config, annotation-hjelpere, scripts og forskningsmotorer i fokuserte commits.
-- [ ] M07: Dokumentasjon, referanse-/dependency-audit og samlet verifikasjon.
+- [x] R01: Tøm utgåtte genererte Excel-verdier.
+- [x] R04: Vis rapport-/aggregasjonsfeil som feil, ikke «Batch complete».
+- [x] M01–M02: Fjern ML/labeling fra GUI og runtime.
+- [x] M03: Frikoble tracking uten å miste historiske kolonner.
+- [x] M04–M06: Fjern config, annotation-hjelpere, scripts og forskningsmotorer i fokuserte commits.
+- [ ] M07: Dokumentasjon, referanse-/dependency-audit og samlet verifikasjon. Dokumentasjon/dependencies/importvern er ferdig; full suite og native smoke gjenstår i sluttgaten.
 - [ ] R03: Sikker review-bundle-lagring med konsistens/recovery.
 - [ ] R05–R06: Eierstyrte metadata-, scan-, load- og rerun-operasjoner.
 - [ ] R02: Beslutning om filidentitet og krasjsikker workbook-publisering.

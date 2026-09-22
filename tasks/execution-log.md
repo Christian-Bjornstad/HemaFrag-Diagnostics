@@ -62,3 +62,21 @@ Uavhengig Sol-review og hovedagentens gjennomgang ga B01–B08 i `review-robustn
 Øvrige funn har statisk kontrollflytbevis og konkrete regresjonstestplaner, ikke påstått runtime-reproduksjon. Ingen pasientdata, brukerinnstillinger eller arbeidsbøker ble skrevet. Denne runden endrer bare review-/design-/plandokumentasjon; hele testsuiten kjøres ikke på nytt for uendret produktkode. `git diff --check` kontrolleres før dokumentasjonscommit.
 
 Planen er selvreviewet og sjekket av Sol: HTML-badges/ML-decision-log er lagt til eksplisitt (M02b), blandede integrasjonstester oppdateres i samme commit som GUI-modulene fjernes, og `ml_training` slettes etter modulene som importerer den. Dermed unngår planen kjente røde mellomcommits og gjenværende aktiv ML-presentasjon.
+
+## M07 — dokumentasjon, dependency-audit og importvern
+
+Gjennomført 2026-09-22 etter at M01–M06 var integrert:
+
+- README beskriver bare aktive operatørflater. Labeling-fanen, ML-kandidatstatus og treningsverktøy er fjernet fra aktiv veiledning.
+- Den tidligere ML-guiden og de dedikerte ML-planene/designene er tydelig merket som historiske og superseded. De beholdes som beslutningshistorikk, ikke som aktiv backlog.
+- `joblib` har ingen direkte import i aktiv kode og er fjernet som direkte krav. `scikit-learn` beholdes fordi `core/analysis/_legacy.py` og `fraggler/fraggler.py` fortsatt bruker pakken til ladder-fitting og R².
+- Startup-importtesten avviser alle `core.analyses.clonality.ml_*`-moduler og hele `core.labeling`-navnerommet. Den importerer config, aktiv clonality-pakke, pipeline, batch, MainWindow og `qt_app` med både gammel ML/learning-YAML og ny YAML.
+- 18 rene ML-/labeling-testmoduler er fjernet siden avviklingsplanens grunncommit. Dette er slettet dekning for slettede funksjoner, ikke ny dekning for gjenværende produkt.
+
+Verifisering for denne deloppgaven:
+
+- Fokuserte retirement/settings/startup/navigation/package-tester: **32 bestått**, 2 forventede warnings fra injiserte settings-skrivefeil.
+- `python -m pytest --collect-only -q`: **691 tester samlet** uten importfeil.
+- `python -m compileall -q qt_app.py core gui_qt scripts`: bestått.
+- `git diff --check`: bestått; Git varslet kun om framtidig LF→CRLF-normalisering i `requirements.txt`.
+- Referansesøk i aktiv Python-kode finner slettede navn bare i eksplisitte fraværs-/importvern-tester. Full pytest og native wheel-smoke kjøres av orkestratorens sluttgate før M07 markeres komplett.

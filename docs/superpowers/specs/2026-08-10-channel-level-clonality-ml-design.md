@@ -1,8 +1,13 @@
 # Channel-Level Patient Clonality ML Design
 
+> **Historical design — retired 2026-09-22.** The approved retirement design
+> at `2026-09-19-remove-ml-labeling-design.md` supersedes this document. The
+> implementation, tabs, scripts, and active configuration described below no
+> longer exist.
+
 **Date:** 2026-08-10
 
-**Status:** Approved design; implementation planning pending
+**Status:** Superseded; retained as decision history
 
 **Raw data roots:** `D:\DATA\2024_DATA`, `D:\DATA\2025_data`, `D:\DATA\2026_data`
 

@@ -1,5 +1,9 @@
 # Ladder Round-Two Blind Review Design
 
+> **Status update 2026-09-22:** Ladder-reviewdelen forblir relevant. Alle
+> referanser nedenfor til ML-trening eller ML-eligibility er historiske og er
+> superseded av `2026-09-19-remove-ml-labeling-design.md`.
+
 ## Goal
 
 Create a second patient-clonality ladder review round that distinguishes genuine fitting failures, correct current fits, and files that cannot be fitted because no ladder was added. The round must provide enough trustworthy evidence to guide a later Rust ladder change without treating historical corrections as unquestioned truth.

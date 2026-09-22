@@ -1,5 +1,9 @@
 # Ladder Improvements Main Integration Plan
 
+> **Status update 2026-09-22:** Retained as ladder-integration history. Its
+> Labeling navigation requirement is superseded by
+> `../specs/2026-09-19-remove-ml-labeling-design.md`; Labeling is retired.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Integrate the complete validated historical ladder-fitting work into the current `main` line while preserving the merged Clinical Workbench UI and restoring the polished README.

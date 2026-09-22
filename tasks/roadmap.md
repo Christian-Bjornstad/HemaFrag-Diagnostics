@@ -1,12 +1,12 @@
 # Videre utvikling etter UI- og stabilitetsopprydding
 
-Dato: 2026-09-19. Dette er utviklingsbehov, ikke en påstand om at eksisterende manifest-, QC-, ML- eller rapportfunksjoner mangler helt. Skill bekreftede hull fra områder som trenger mer verifikasjon.
+Dato: 2026-09-19, oppdatert 2026-09-22. Dette er utviklingsbehov, ikke en påstand om at eksisterende manifest-, QC- eller rapportfunksjoner mangler helt. Skill bekreftede hull fra områder som trenger mer verifikasjon.
 
-Oppdatert etter implementering: S01–S10 og S12–S13 er levert, og den foreldreløse Archive-wrapperen er fjernet. Se `execution-log.md` for testbevis. De tre «Nå»-radene nedenfor beskriver opprinnelig leveransegrunnlag; gjenværende arbeid der er fysisk/faglig validering og ekstern CI. S11b (avklaring/flytting av forskningsfaner) er fortsatt åpen. Compare-worker er fjernet, og den observerte Archive-klippingen ved laptopbredde er rettet; generell worker-livssyklus og høy-DPI-validering gjenstår.
+Oppdatert etter implementering: S01–S10 og S12–S13 er levert, den foreldreløse Archive-wrapperen er fjernet, og ML-/trenings-/labeling-funksjonaliteten er avviklet. Se `execution-log.md` for testbevis. De tre «Nå»-radene nedenfor beskriver opprinnelig leveransegrunnlag; gjenværende arbeid der er fysisk/faglig validering og ekstern CI. Compare-worker er fjernet, og den observerte Archive-klippingen ved laptopbredde er rettet; generell worker-livssyklus og høy-DPI-validering gjenstår.
 
 ## Neste nødvendige leveranser
 
-Ny prioritering etter andre review: rett stale Excel-verdier og falsk ferdigstatus, fjern ML/labeling fullstendig, og rett de konkrete scan-/metadata-/lagringsfeilene i `review-robustness-2026-09-19.md`. ML/trening/labeling er avviklingsmål, ikke framtidige produktutvidelser. Bevaring av ukjent manuell bruk er ikke lenger grunn til å holde disse funksjonene; brukerbeslutningen er eksplisitt. FLT3-valideringsverktøy vurderes fortsatt separat.
+Ny prioritering etter andre review: stale Excel-verdier og falsk ferdigstatus er rettet, og ML/labeling er fjernet. Neste arbeid er de konkrete scan-/metadata-/lagringsfeilene i `review-robustness-2026-09-19.md`. ML/trening/labeling er ikke framtidige produktutvidelser. FLT3-valideringsverktøy vurderes fortsatt separat.
 
 | Prioritet | Behov | Nåværende grunnlag / hull | Ferdig når |
 |---|---|---|---|
@@ -19,7 +19,7 @@ Ny prioritering etter andre review: rett stale Excel-verdier og falsk ferdigstat
 | Neste | Backup og flytting av arbeidsoppsett | Settings og ladder-DB er lokale; full backup-/restoreflyt ikke verifisert | Dokumentert eksport/import og testet gjenoppretting på ny maskin uten å miste korrigeringsidentitet |
 | Neste | Reelle arbeidsflyttester | Mye unit-testdekning, men påviste UI-feil passerte | Midlertidig appmiljø tester kjør→review→lagre→gjenåpne→rerun→rapporter med feilinjeksjon |
 | Neste | Windows- og høy-DPI-validering | Offscreen ved 1366 × 768 viser klipping; fysisk DPI ikke prøvd | 100/125/150/200 %, laptop/ekstern skjerm, lange stier og keyboard-only kontrollert |
-| Senere | Avgrensning av forskningsverktøy | Flere testede UI-moduler uten produktinngang | Tydelig operatørprodukt og eksplisitt utvikler-/forskningsverktøy med egne innganger |
+| Senere | Avgrensning av gjenværende valideringsverktøy | FLT3-valideringsflaten har ingen produktinngang | Behold eller avvikle den etter dokumentert eier- og bruksavklaring |
 | Senere | Målrettet legacy-reduksjon | Store klasser/filer; fasader finnes, men mye ansvar ligger samlet | Ett ansvar flyttes og total kompleksitet reduseres per commit; offentlig importkontrakt og numerisk resultat bevares |
 | Senere | Reproduserbar installasjon | Pythonavhengigheter har intervaller, ingen komplett Python-lock funnet | Plattform-/Pythonspesifikk validert installasjonsliste med versjoner og reproduserbar wheel/install-smoke |
 
@@ -47,7 +47,7 @@ Akseptanse: operatøren ser hva som er lagret; eksakte markøridentiteter bevare
 
 Eksisterende Plan 13/15 har referanser og benchmarkarbeid. Oppdater dem på et godkjent privat utvalg med vanskelige ladders, manglende kanaler, lavt signal, delvis mapping, flere samtidige jobber og store rapporter. Hold rådata utenfor Git.
 
-Akseptanse: forventet resultat/eksplisitt reviewutfall per case, ingen forsvunne input, målt tid/minne på arbeids-PC og sammenlikning mot godkjent referanse. Nye fitting-/ML-standarder krever sin egen vurdering og skal ikke smugles inn i UI-opprydding.
+Akseptanse: forventet resultat/eksplisitt reviewutfall per case, ingen forsvunne input, målt tid/minne på arbeids-PC og sammenlikning mot godkjent referanse. Nye fitting-standarder eller andre klassifikasjonsmetoder krever sin egen vurdering og skal ikke smugles inn i UI-opprydding.
 
 ### D05 — Produkt- og vedlikeholdsdokumentasjon
 
@@ -58,7 +58,7 @@ Akseptanse: dokumentasjonen følger faktisk UI; en ny operatør kan fullføre en
 ## Ting som må undersøkes videre, uten å kalles bekreftede feil
 
 - Robusthet ved lukking av vinduet under Archive-/workerarbeid, prosesskrasj og gjenopptak etter omstart.
-- Tunge ML-statuskontroller ved hvert tastetrykk i modellstien og potensielt blokkerende nettverksmapper; profiler før optimalisering.
+- Potensielt blokkerende kontroller av nettverksmapper i settings; profiler før optimalisering.
 - HTML-escaping av filnavn/kommentarer, dependency-sårbarheter og data i logger: trenger separat målrettet sikkerhetsreview. Denne reviewen fant ikke grunnlag for å erklære disse områdene sikre eller sårbare.
 - Tilgjengelighet med skjermleser, kontrast i alle tilstander og fysisk tastaturnavigasjon ved høy DPI.
 - Hvilke Pythonavhengigheter som virkelig trengs i distribusjonen kontra utvikling/forskning. Kjør import-/packaging-audit før reduksjon.

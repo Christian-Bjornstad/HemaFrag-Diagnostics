@@ -1,8 +1,12 @@
 # Plan 14 - Channel-Level Clonality Interpretation and ML
 
+> **Historical plan — retired 2026-09-22.** Its ML/labeling implementation was
+> removed under `docs/superpowers/specs/2026-09-19-remove-ml-labeling-design.md`.
+> Manual ladder review and rule-based interpretation remain active.
+
 Date: 2026-07-29
 Branch: `codex/plan-14-channel-level-clonality`
-Status: engineering implementation complete; real-label pilot and model promotion pending
+Status: retired; retained as decision history
 
 ## Execution Summary
 

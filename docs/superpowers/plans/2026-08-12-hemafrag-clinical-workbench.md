@@ -1,5 +1,10 @@
 # HemaFrag Clinical Workbench Implementation Plan
 
+> **Status update 2026-09-22:** Retained as implementation history. Its
+> Labeling/ML Training instructions are superseded by
+> `../specs/2026-09-19-remove-ml-labeling-design.md`; both features are now
+> retired.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver the approved Clinical Workbench UI polish with reliable loading of the original HemaFrag identity, correct Clonality/FLT3/General navigation, a compact Ladder Editor, and a readable About page.

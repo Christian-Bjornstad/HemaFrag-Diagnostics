@@ -1,8 +1,15 @@
-# HemaFrag Clonality ML
+# Historical — HemaFrag Clonality ML
 
-This is the operator and developer guide for the real-FSA clonality ML
-pipeline. ML is a confidence-scored second opinion. The existing rule result
-remains the report source of truth.
+> [!CAUTION]
+> **Retired 2026-09-22.** This document is preserved only as design and
+> decision history. The ML training, prediction, labeling, model-promotion,
+> and learning-export code described below has been removed from the product.
+> Its commands, modules, tabs, and configuration examples are no longer
+> available and must not be used as current operator or developer guidance.
+> Manual ladder review and rule-based clonality interpretation remain active.
+
+The remainder of this file records the former operator and developer design
+for the real-FSA clonality ML pipeline as it existed before retirement.
 
 ## Safety Contract
 

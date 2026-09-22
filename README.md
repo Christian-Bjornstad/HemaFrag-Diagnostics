@@ -70,10 +70,7 @@ flowchart LR
 - patient and PK/RK/NK control grouping;
 - assay-specific peak analysis and interpretation;
 - DIT, QC, and tracking output;
-- in-app per-channel trace labeling backed by Excel-ready review data;
 - explicit review handling for weak or rejected ladder fits.
-
-ML models remain gated research candidates until their validation and promotion requirements pass. Candidate training does not silently replace the rule-based production result.
 
 ### FLT3
 
@@ -163,7 +160,6 @@ python qt_app.py
 | Ladder | Inspect review bundles, correct mappings, and rerun affected inputs |
 | Archive Runner | Recover and continue prior manifest-backed review work |
 | Log | Inspect application and analysis activity |
-| Labeling | Review FSA plots, assign per-channel chemist labels, and save to Excel |
 | Settings | Store analysis-specific paths and defaults, including master-sheet locations |
 | About | Review the application identity, version, notices, and licenses |
 
@@ -216,10 +212,10 @@ HemaFrag-Diagnostics/
 ├── gui_qt/            Primary PyQt6 desktop interface
 ├── assets/            Application icons and bundled report assets
 ├── packaging/         Cross-platform build and deployment tooling
-├── scripts/           Benchmarks, validation, training, and maintenance tools
+├── scripts/           Benchmarks, validation, and maintenance tools
 ├── tests/             Python regression and workflow tests
 ├── wheels/            Verified native wheel for the Windows source deployment
-├── docs/              Architecture, ML, and ladder-fitting documentation
+├── docs/              Architecture, decision history, and ladder-fitting documentation
 └── ObsidianVault/     Project memory, decisions, session log, and open items
 ```
 
@@ -241,7 +237,7 @@ The following stay outside version control:
 - [Architecture, risk, performance, and stability review](docs/plan15_architecture_risk_and_results.md)
 - [Clinical Workbench design](docs/superpowers/specs/2026-08-12-hemafrag-clinical-workbench-design.md)
 - [Clinical Workbench implementation plan](docs/superpowers/plans/2026-08-12-hemafrag-clinical-workbench.md)
-- [Clonality ML interpretation design](docs/ml-clonality-interpretation.md)
+- [Historical: retired Clonality ML interpretation design](docs/ml-clonality-interpretation.md)
 - [Rust ladder-fitting plan](docs/ladder-fitting-rust-plan.md)
 - [Desktop packaging guide](packaging/README.md)
 - [Windows source-transfer guide](packaging/WINDOWS_TRANSFER_README.md)

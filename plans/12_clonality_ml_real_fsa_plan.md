@@ -1,5 +1,10 @@
 # Clonality ML Real FSA Plan
 
+> **Historical plan — retired 2026-09-22.** The ML, labeling, and model
+> promotion work described here was removed under
+> `docs/superpowers/specs/2026-09-19-remove-ml-labeling-design.md`. Do not use
+> this file as current operator or implementation guidance.
+
 Date: 2026-07-26
 Baseline branch: `clonality-ml-phase-5-real-data-2026-07-11`
 

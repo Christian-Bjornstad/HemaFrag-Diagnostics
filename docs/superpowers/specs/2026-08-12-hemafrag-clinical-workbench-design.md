@@ -1,5 +1,9 @@
 # HemaFrag Clinical Workbench Design
 
+> **Status update 2026-09-22:** This remains historical UI decision context,
+> but its Labeling/ML Training scope is superseded by
+> `2026-09-19-remove-ml-labeling-design.md`; both features are now retired.
+
 **Date:** 2026-08-12
 **Status:** Approved
 **Branch:** `codex/ui-polish`

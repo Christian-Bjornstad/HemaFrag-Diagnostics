@@ -1,5 +1,9 @@
 # Avvikling av ML og labeling — Implementation Plan
 
+**Status 2026-09-22:** M01–M06 er implementert. M07s dokumentasjon,
+dependency-audit og importvern er gjennomført; orkestratorens fulle sluttgate
+gjenstår før planen markeres komplett.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fjern hele ML-/trenings-/labeling-funksjonaliteten uten å svekke aktiv analyse eller slette brukerdata.

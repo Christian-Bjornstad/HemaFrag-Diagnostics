@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from config import APP_SETTINGS
 
 
@@ -66,52 +68,84 @@ assert "learning" not in profile
     assert legacy_learning_dir.is_dir()
 
 
-def test_pipeline_and_batch_import_without_retired_model_runtime(tmp_path):
-    legacy_model_dir = tmp_path / "missing-models"
-    legacy_learning_dir = tmp_path / "legacy-learning"
+@pytest.mark.parametrize(
+    ("settings_yaml", "expected_enabled"),
+    (
+        (
+            """
+analyses:
+  clonality:
+    interpretation:
+      enabled: true
+      model_path: C:/retired/models
+      thresholds:
+        FR1: 0.99
+    learning:
+      enabled: true
+      output_dir: C:/retired/learning
+""".lstrip(),
+            True,
+        ),
+        (
+            """
+analyses:
+  clonality:
+    interpretation:
+      enabled: false
+""".lstrip(),
+            False,
+        ),
+    ),
+    ids=("legacy-yaml", "current-yaml"),
+)
+def test_app_startup_imports_without_retired_ml_or_labeling_modules(
+    tmp_path,
+    settings_yaml,
+    expected_enabled,
+):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(settings_yaml, encoding="utf-8")
     script = f"""
 import importlib.abc
 import sys
 
-import config
-
-profile = config.APP_SETTINGS.setdefault("analyses", {{}}).setdefault("clonality", {{}})
-profile["interpretation"] = {{
-    "enabled": True,
-    "model_path": {str(legacy_model_dir)!r},
-}}
-profile["learning"] = {{
-    "enabled": True,
-    "output_dir": {str(legacy_learning_dir)!r},
-}}
-
 class RejectRetiredImports(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname in {{
-            "core.analyses.clonality.ml_runtime",
-            "core.analyses.clonality.ml_model",
-            "core.analyses.clonality.ml_training",
-        }}:
+        if (
+            fullname.startswith("core.analyses.clonality.ml_")
+            or fullname == "core.labeling"
+            or fullname.startswith("core.labeling.")
+        ):
             raise AssertionError(fullname)
         return None
 
 sys.meta_path.insert(0, RejectRetiredImports())
+import config
+import core.analyses.clonality
 import core.analyses.clonality.pipeline
 import core.batch
+import gui_qt.main_window
+import qt_app
+
+profile = config.APP_SETTINGS["analyses"]["clonality"]
+assert profile["interpretation"] == {{"enabled": {expected_enabled!r}}}
+assert "learning" not in profile
 
 assert not any(
-    name in sys.modules
-    for name in (
-        "core.analyses.clonality.ml_runtime",
-        "core.analyses.clonality.ml_model",
-        "core.analyses.clonality.ml_training",
-    )
+    name.startswith("core.analyses.clonality.ml_")
+    or name == "core.labeling"
+    or name.startswith("core.labeling.")
+    for name in sys.modules
 )
 """
+    env = os.environ.copy()
+    env["HEMAFRAG_SETTINGS_PATH"] = str(settings_path)
+    env.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     completed = subprocess.run(
         [sys.executable, "-c", script],
         cwd=Path(__file__).resolve().parents[1],
+        env=env,
         capture_output=True,
         text=True,
         check=False,

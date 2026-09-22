@@ -1,5 +1,8 @@
 # Avvikling av ML og labeling
 
+**Status 2026-09-22:** Implementert; full sluttverifikasjon dokumenteres i
+`tasks/execution-log.md`.
+
 Brukerbeslutning 2026-09-19: fjern hele ML-/trenings-/labeling-funksjonaliteten, også tilhørende scripts og egne tester. Bevar brukerdata, manuell ladder-review og regelbasert analyse.
 
 ## Produktkontrakt

@@ -1,4 +1,9 @@
-# Clonality Interpretation Asset Map (Phase 0 / T-0.1)
+# Historical — Clonality Interpretation Asset Map (Phase 0 / T-0.1)
+
+> **Retired context (2026-09-22):** This inventory predates removal of the ML,
+> training, labeling, and learning-export subsystems. It is retained as design
+> history only; removed symbols and modules below are not active interfaces.
+> Current public modules are listed in `core/analyses/clonality/__init__.py`.
 
 > Reads top-down so a clinical chemist unfamiliar with the codebase can answer
 > "what function computes what feature and what rule path decides which

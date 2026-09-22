@@ -10,9 +10,9 @@ Brukeren har nå besluttet full avvikling av ML/trening/labeling, inkludert fors
 - Ny robusthetsreview: `review-robustness-2026-09-19.md` (B01–B08).
 - Prioritert robusthetsplan: `robustness-plan-2026-09-19.md` (R01–R08).
 - Godkjent avviklingsdesign: `../docs/superpowers/specs/2026-09-19-remove-ml-labeling-design.md`.
-- Utføringsplan til gjennomgang: `../docs/superpowers/plans/2026-09-19-remove-ml-labeling.md` (M01–M07).
+- Godkjent utføringsplan: `../docs/superpowers/plans/2026-09-19-remove-ml-labeling.md` (M01–M07).
 
-Ingen av de nye M-/R-oppgavene er implementert ennå. Fjerningen krever frikobling fra pipeline, tracking og gammel YAML, ikke bare sletting av faner.
+M01–M07, R01 og R04 er implementert. De gjenværende R-oppgavene står i `todo.md` og `roadmap.md`; historikken nedenfor beholdes som opprinnelig leveransegrunnlag.
 
 ## Mål og avgrensning
 
@@ -25,7 +25,7 @@ Dette er planleveransen brukeren ba om. Implementeringen er delt i små oppgaver
 1. Compare fjernes fra vanlig navigasjon og Run-handoff, basert på brukerens opplysning om at funksjonen ikke brukes. Rapportbyggere vurderes separat etter referansesjekk.
 2. Settings beholdes. Globale innstillinger får én eier, analyseprofiler beholder egne lagringsområder.
 3. Rust-status blir informasjon i standard-UI. Denne planen gjeninnfører ikke Python som generell standardmotor.
-4. General viser bare støttede verktøy. ML/trening/valideringsverktøy skilles fra den daglige operatørflyten.
+4. General viser bare støttede verktøy. ML-/trenings-/labelingfunksjonalitet er avviklet; FLT3-valideringsverktøy vurderes separat.
 5. Nåværende farger og komponentstil beholdes. Layout, tetthet, tilbakemeldinger og tilgjengelighet forbedres.
 6. Ingen stor omskriving av `_legacy.py`. Trekk ut ett avgrenset ansvar om gangen når en konkret oppgave trenger det.
 
