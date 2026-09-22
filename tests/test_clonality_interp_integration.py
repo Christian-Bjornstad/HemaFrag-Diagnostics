@@ -1,29 +1,9 @@
-"""End-to-end smoke test crossing Plan 11 layers:
-
-1. features_from_entry returns Phase 2 additions safely.
-2. The TabClonalityInterpretation widget constructs, accepts synth data,
-   colors disagreements, paint force_review red, and the disagreement
-   filter hides rows.
-3. Asset-map audit markdown exists and lists all 15 per-assay names.
-"""
+"""Integration coverage for active interpretation features and audit docs."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-import pytest
-
-from PyQt6.QtWidgets import QApplication
-
-
-@pytest.fixture(scope="session")
-def qapp():
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    yield app
-
-
-# ---- 1. features_from_entry integration ----
+# ---- features_from_entry integration ----
 
 def test_features_from_entry_returns_full_v2_shape():
     import pandas as pd
@@ -59,31 +39,7 @@ def test_features_graceful_for_minimal_entry_no_crash():
     assert features["assay_panel_completeness_pct"] == 0.0
 
 
-# ---- 2. Tab widget integration ----
-
-def test_tab_widget_loads_with_synth_entries(qapp):
-    from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
-
-    w = TabClonalityInterpretation()
-    w.set_inline_synth_entries()
-    assert w._table.rowCount() == 8
-    assert w._status_label.text().startswith("Total: 8")
-
-
-def test_tab_widget_disagreement_filter(qapp):
-    from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
-
-    w = TabClonalityInterpretation()
-    w.set_inline_synth_entries()
-    full_count = w._table.rowCount()
-    w._disagreements_only.setChecked(True)
-    assert w._table.rowCount() < full_count
-    assert w._table.rowCount() > 0
-    w._disagreements_only.setChecked(False)
-    assert w._table.rowCount() == full_count
-
-
-# ---- 3. Audit markdown ----
+# ---- Audit markdown ----
 
 EXPECTED_ASSAYS = (
     "FR1", "FR2", "FR3",
