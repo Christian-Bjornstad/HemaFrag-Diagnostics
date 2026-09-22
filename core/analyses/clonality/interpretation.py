@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import csv
-import json
 import math
-from collections import Counter
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -22,25 +18,6 @@ from core.utils import is_control_file, strip_stage_prefix
 
 ANNOTATION_SCHEMA_VERSION = "clonality_interpretation_v1"
 INTERPRETATION_RULE_VERSION = "clonality_interpretation_rules_v1"
-MODEL_VERSION = "clonality_interpretation_quick_model_v1"
-
-ANNOTATION_CLASSES = [
-    "polyklonal",
-    "monoklonal",
-    "bi_oligoklonal",
-    "irregulaer",
-    "pseudoklonal",
-    "intet_pcr_produkt_darlig_dna",
-    "qc_teknisk_fail",
-    "usikker_review",
-]
-
-CONTROL_FLAGS = [
-    "kontroll_ok",
-    "kontroll_avvik",
-    "kontaminasjon_mistenkt",
-    "svakt_signal",
-]
 
 TRACKING_COLUMNS = [
     "ClonalityInterpretationEnabled",
@@ -54,13 +31,6 @@ TRACKING_COLUMNS = [
     "ClonalityModelVersion",
 ]
 
-DEFAULT_SAMPLE_QUOTAS = {
-    "patient": 400,
-    "pk": 40,
-    "rk": 30,
-    "nk": 30,
-}
-
 NONSPECIFIC_PEAK_WINDOW_BP = 1.5
 
 
@@ -71,24 +41,6 @@ def interpretation_enabled(settings: dict[str, Any] | None = None) -> bool:
     if not isinstance(interpretation, dict):
         return False
     return bool(interpretation.get("enabled", False))
-
-
-def learning_mode_enabled(settings: dict[str, Any] | None = None) -> bool:
-    settings = settings or APP_SETTINGS
-    profile = settings.get("analyses", {}).get("clonality", {})
-    learning = profile.get("learning", {})
-    if not isinstance(learning, dict):
-        return False
-    return bool(learning.get("enabled", False))
-
-
-def learning_output_dir(settings: dict[str, Any] | None = None) -> str:
-    settings = settings or APP_SETTINGS
-    profile = settings.get("analyses", {}).get("clonality", {})
-    learning = profile.get("learning", {})
-    if not isinstance(learning, dict):
-        return ""
-    return str(learning.get("output_dir", "") or "")
 
 
 def sample_kind_for_file(path: Path | str) -> tuple[str, str, str]:
@@ -103,47 +55,6 @@ def sample_kind_for_file(path: Path | str) -> tuple[str, str, str]:
     if is_control_file(name):
         return "control", control if control != "UNKNOWN" else "", "control_other"
     return "patient", "", "patient"
-
-
-def sample_annotation_files(
-    files: Sequence[Path],
-    *,
-    limit: int = 500,
-    quotas: dict[str, int] | None = None,
-) -> tuple[list[Path], dict[str, Any]]:
-    quotas = dict(quotas or DEFAULT_SAMPLE_QUOTAS)
-    limit = max(0, int(limit or 0))
-    buckets: dict[str, list[Path]] = {"patient": [], "pk": [], "rk": [], "nk": [], "control_other": []}
-    for path in sorted({Path(p).expanduser() for p in files}):
-        _sample_kind, _control, bucket = sample_kind_for_file(path)
-        buckets.setdefault(bucket, []).append(path)
-
-    selected: list[Path] = []
-    selected_by_bucket: Counter[str] = Counter()
-    for bucket in ("patient", "pk", "rk", "nk"):
-        take = min(len(buckets.get(bucket, [])), int(quotas.get(bucket, 0)), max(0, limit - len(selected)))
-        selected.extend(buckets.get(bucket, [])[:take])
-        selected_by_bucket[bucket] += take
-
-    remaining_slots = max(0, limit - len(selected))
-    if remaining_slots:
-        already = set(selected)
-        leftovers: list[Path] = []
-        for bucket in ("patient", "pk", "rk", "nk", "control_other"):
-            leftovers.extend([p for p in buckets.get(bucket, []) if p not in already])
-        for path in sorted(leftovers)[:remaining_slots]:
-            selected.extend([path])
-            selected_by_bucket[sample_kind_for_file(path)[2]] += 1
-
-    summary = {
-        "limit": limit,
-        "requested_quotas": quotas,
-        "candidate_counts": {key: len(value) for key, value in sorted(buckets.items())},
-        "selected_counts": dict(selected_by_bucket),
-        "selected_total": len(selected),
-    }
-    return selected, summary
-
 
 
 def per_channel_trace_summary(entry: dict[str, Any]) -> dict[str, Any]:
@@ -471,110 +382,6 @@ def attach_interpretation_if_enabled(entry: dict[str, Any]) -> dict[str, Any]:
     for column in TRACKING_COLUMNS:
         entry[column] = result.get(column, "")
     return entry
-
-
-def annotation_export_rows_to_frame(payload: dict[str, Any]) -> pd.DataFrame:
-    rows = payload.get("rows", [])
-    if not isinstance(rows, list):
-        rows = []
-    return pd.DataFrame([row for row in rows if isinstance(row, dict)])
-
-
-def write_annotation_csv_from_json(json_path: Path, csv_path: Path) -> Path:
-    payload = json.loads(Path(json_path).read_text(encoding="utf-8"))
-    df = annotation_export_rows_to_frame(payload)
-    csv_path = Path(csv_path)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(csv_path, index=False)
-    return csv_path
-
-
-def write_learning_annotation_seed(
-    entries: Sequence[dict[str, Any]],
-    out_dir: Path,
-    *,
-    annotator: str = "",
-    source: str = "app_run",
-) -> dict[str, str]:
-    out_dir = Path(out_dir).expanduser()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    exported_at = utc_now_iso()
-    stamp = exported_at.replace(":", "").replace("-", "")[:15]
-    rows = []
-    for ordinal, entry in enumerate(entries, start=1):
-        if not isinstance(entry, dict):
-            continue
-        features = features_from_entry(entry)
-        interpretation = entry.get("clonality_interpretation") if isinstance(entry.get("clonality_interpretation"), dict) else {}
-        rows.append(
-            {
-                "ordinal": ordinal,
-                "raw_path": features.get("raw_path", ""),
-                "file": features.get("file", ""),
-                "assay": features.get("assay", ""),
-                "ladder": features.get("ladder", ""),
-                "sample_kind": features.get("sample_kind", ""),
-                "control": features.get("control", ""),
-                "run_date": features.get("run_date", ""),
-                "primary_peak_channel": features.get("primary_peak_channel", ""),
-                "ladder_qc_status": features.get("ladder_qc_status", ""),
-                "raw_peak_count": features.get("raw_peak_count", 0),
-                "peak_count": features.get("peak_count", 0),
-                "peak_count_in_interpretation_range": features.get("peak_count_in_interpretation_range", 0),
-                "peak_count_outside_interpretation_range": features.get("peak_count_outside_interpretation_range", 0),
-                "nonspecific_peak_count": features.get("nonspecific_peak_count", 0),
-                "nonspecific_peak_basepairs": features.get("nonspecific_peak_basepairs", ""),
-                "dominant_peak_basepairs": features.get("dominant_peak_basepairs", 0.0),
-                "dominant_peak_height": features.get("dominant_peak_height", 0.0),
-                "dominant_to_second_ratio": features.get("dominant_to_second_ratio", 0.0),
-                "dominant_height_share": features.get("dominant_height_share", 0.0),
-                "sl_fragmented_percent": features.get("sl_fragmented_percent", 0.0),
-                "sl_quality_class": features.get("sl_quality_class", ""),
-                "suggestion": interpretation.get("ClonalitySuggestion", ""),
-                "confidence": interpretation.get("ClonalityConfidence", ""),
-                "review_needed": interpretation.get("ClonalityReviewNeeded", ""),
-                "evidence": interpretation.get("ClonalityEvidence", ""),
-                "label": "",
-                "control_flags": [],
-                "note": "",
-                "source": source,
-                "annotation_schema_version": ANNOTATION_SCHEMA_VERSION,
-                "annotator": annotator,
-                "exported_at": exported_at,
-            }
-        )
-    payload = {
-        "annotation_schema_version": ANNOTATION_SCHEMA_VERSION,
-        "exported_at": exported_at,
-        "annotator": annotator,
-        "source": source,
-        "rows": rows,
-    }
-    json_path = out_dir / f"clonality_learning_annotations_{stamp}.json"
-    csv_path = out_dir / f"clonality_learning_annotations_{stamp}.csv"
-    json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    write_rows_csv(rows, csv_path)
-    return {"json": str(json_path), "csv": str(csv_path), "rows": str(len(rows))}
-
-
-def write_rows_csv(rows: Iterable[dict[str, Any]], path: Path) -> Path:
-    rows = list(rows)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    columns: list[str] = []
-    for row in rows:
-        for key in row:
-            if key not in columns:
-                columns.append(key)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-    return path
-
-
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def sl_quality_from_metrics(sl_metrics: dict[str, Any] | None) -> dict[str, Any]:

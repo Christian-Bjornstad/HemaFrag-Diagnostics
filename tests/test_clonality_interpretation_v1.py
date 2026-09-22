@@ -12,7 +12,6 @@ from core.analyses.clonality.interpretation import (
     TRACKING_COLUMNS,
     features_from_entry,
     interpret_entry,
-    sample_annotation_files,
     sl_quality_from_metrics,
 )
 from core.analyses.clonality.tracking_excel import update_clonality_tracking_workbook
@@ -57,27 +56,6 @@ class ClonalityInterpretationV1Tests(unittest.TestCase):
     def tearDown(self) -> None:
         APP_SETTINGS.clear()
         APP_SETTINGS.update(self._settings)
-
-    def test_sampling_includes_patient_pk_rk_and_nk_when_available(self) -> None:
-        files = [
-            *(Path(f"26OUM{i:05d}_FR1__220526_A01_H9TEST.fsa") for i in range(20)),
-            *(Path(f"PK_FR1__220526_E{i:02d}_H9TEST.fsa") for i in range(5)),
-            *(Path(f"RK_FR1__220526_F{i:02d}_H9TEST.fsa") for i in range(4)),
-            *(Path(f"NK_FR1__220526_G{i:02d}_H9TEST.fsa") for i in range(3)),
-        ]
-
-        selected, summary = sample_annotation_files(
-            files,
-            limit=16,
-            quotas={"patient": 8, "pk": 3, "rk": 3, "nk": 2},
-        )
-
-        names = {path.name for path in selected}
-        self.assertEqual(summary["selected_total"], 16)
-        self.assertTrue(any(name.startswith("26OUM") for name in names))
-        self.assertTrue(any(name.startswith("PK_") for name in names))
-        self.assertTrue(any(name.startswith("RK_") for name in names))
-        self.assertTrue(any(name.startswith("NK_") for name in names))
 
     def test_known_nonspecific_peaks_are_exposed_and_excluded_from_interpretation(self) -> None:
         entry = _entry("26OUM00001_DHJH_D__220526_A01_H9TEST01.fsa")
