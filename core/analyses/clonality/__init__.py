@@ -12,8 +12,6 @@ Public submodules:
 - `classification`        : control / QC classification
 - `config`                : assay-specific config tables
 - `ladder_review_gate`    : GS500ROX ladder review filtering gates
-- `candidate_artifacts`   : clonality candidate artifact I/O
-- `feature_artifacts`     : trace feature artifact I/O
 - `tracking_excel`        : per-run + global Excel workbook helpers
 - `tracking_dashboard`    : global dashboard workbook update helper
 - `scoring`               : shared scoring utilities
