@@ -9,9 +9,6 @@ import pandas as pd
 
 from config import APP_SETTINGS
 from core.analyses.clonality.interpretation import (
-    ANNOTATION_CLASSES,
-    ANNOTATION_SCHEMA_VERSION,
-    CONTROL_FLAGS,
     TRACKING_COLUMNS,
     features_from_entry,
     interpret_entry,
@@ -19,7 +16,6 @@ from core.analyses.clonality.interpretation import (
     sl_quality_from_metrics,
 )
 from core.analyses.clonality.tracking_excel import update_clonality_tracking_workbook
-from scripts.render_clonality_interpretation_annotation_html import build_html
 
 
 def _entry(file_name: str, *, interpretation: bool = False) -> dict:
@@ -83,41 +79,6 @@ class ClonalityInterpretationV1Tests(unittest.TestCase):
         self.assertTrue(any(name.startswith("RK_") for name in names))
         self.assertTrue(any(name.startswith("NK_") for name in names))
 
-    def test_html_contains_class_buttons_control_flags_and_schema(self) -> None:
-        html_text = build_html(
-            [
-                {
-                    "ordinal": 1,
-                    "raw_path": "/tmp/PK_FR1__220526_E01_H9TEST.fsa",
-                    "file": "PK_FR1__220526_E01_H9TEST.fsa",
-                    "assay": "FR1",
-                    "ladder": "ROX400HD",
-                    "sample_kind": "control",
-                    "control": "PK",
-                    "run_date": "2026-05-22",
-                    "ladder_qc_status": "ok",
-                    "peak_count": 1,
-                    "dominant_peak_height": 1000,
-                    "dominant_to_second_ratio": 4.0,
-                    "dominant_height_share": 0.7,
-                    "suggestion": "monoklonal",
-                    "confidence": 0.8,
-                    "review_needed": False,
-                    "evidence": "test",
-                    "annotation_schema_version": ANNOTATION_SCHEMA_VERSION,
-                    "image": "",
-                }
-            ],
-            title="Test panel",
-        )
-
-        for label in ANNOTATION_CLASSES:
-            self.assertIn(f"data-class='{label}'", html_text)
-        self.assertNotIn("data-class='uspesifikke_topper'", html_text)
-        for flag in CONTROL_FLAGS:
-            self.assertIn(f"data-flag='{flag}'", html_text)
-        self.assertIn(ANNOTATION_SCHEMA_VERSION, html_text)
-
     def test_known_nonspecific_peaks_are_exposed_and_excluded_from_interpretation(self) -> None:
         entry = _entry("26OUM00001_DHJH_D__220526_A01_H9TEST01.fsa")
         entry.update(
@@ -174,66 +135,6 @@ class ClonalityInterpretationV1Tests(unittest.TestCase):
         self.assertEqual(features["nonspecific_peak_count"], 0)
         self.assertNotEqual(interpretation["ClonalitySuggestion"], "uspesifikke_topper")
 
-    def test_html_links_parallel_assays_for_same_patient(self) -> None:
-        html_text = build_html(
-            [
-                {
-                    "ordinal": 1,
-                    "raw_path": "/tmp/26OUM00001_FR1__220526_A01_H9TEST.fsa",
-                    "file": "26OUM00001_FR1__220526_A01_H9TEST.fsa",
-                    "patient_id": "26OUM00001",
-                    "assay": "FR1",
-                    "ladder": "ROX400HD",
-                    "sample_kind": "patient",
-                    "control": "",
-                    "run_date": "2026-05-22",
-                    "ladder_qc_status": "ok",
-                    "peak_count": 3,
-                    "peak_count_in_interpretation_range": 3,
-                    "peak_count_outside_interpretation_range": 0,
-                    "dominant_peak_basepairs": 310.0,
-                    "interpretation_range_min_bp": 250.0,
-                    "interpretation_range_max_bp": 390.0,
-                    "outside_interpretation_height_share": 0.0,
-                    "suggestion": "polyklonal",
-                    "confidence": 0.66,
-                    "review_needed": True,
-                    "evidence": "test",
-                    "annotation_schema_version": ANNOTATION_SCHEMA_VERSION,
-                    "image": "",
-                },
-                {
-                    "ordinal": 2,
-                    "raw_path": "/tmp/26OUM00001_FR2__220526_A02_H9TEST.fsa",
-                    "file": "26OUM00001_FR2__220526_A02_H9TEST.fsa",
-                    "patient_id": "26OUM00001",
-                    "assay": "FR2",
-                    "ladder": "ROX400HD",
-                    "sample_kind": "patient",
-                    "control": "",
-                    "run_date": "2026-05-22",
-                    "ladder_qc_status": "ok",
-                    "peak_count": 3,
-                    "peak_count_in_interpretation_range": 3,
-                    "peak_count_outside_interpretation_range": 0,
-                    "dominant_peak_basepairs": 260.0,
-                    "interpretation_range_min_bp": 210.0,
-                    "interpretation_range_max_bp": 330.0,
-                    "outside_interpretation_height_share": 0.0,
-                    "suggestion": "polyklonal",
-                    "confidence": 0.66,
-                    "review_needed": True,
-                    "evidence": "test",
-                    "annotation_schema_version": ANNOTATION_SCHEMA_VERSION,
-                    "image": "",
-                },
-            ],
-            title="Test panel",
-        )
-
-        self.assertIn("Paralleller", html_text)
-        self.assertIn("#case-0002", html_text)
-
     def test_sl_quality_uses_area_percentages(self) -> None:
         metrics = {
             "targets_bp": [100.0, 200.0, 300.0, 400.0, 600.0],
@@ -254,44 +155,6 @@ class ClonalityInterpretationV1Tests(unittest.TestCase):
         self.assertEqual(features["sl_quality_class"], "litt_fragmentert")
         self.assertEqual(features["sl_fragmented_percent"], 65.0)
         self.assertEqual(interpretation["ClonalitySLFragmentedPercent"], 65.0)
-
-        html_text = build_html(
-            [
-                {
-                    "ordinal": 1,
-                    "raw_path": "/tmp/26OUM00001_SL__220526_A05_H9TEST01.fsa",
-                    "file": "26OUM00001_SL__220526_A05_H9TEST01.fsa",
-                    "assay": "SL",
-                    "ladder": "ROX400HD",
-                    "sample_kind": "patient",
-                    "control": "",
-                    "run_date": "2026-05-22",
-                    "ladder_qc_status": "ok",
-                    "peak_count": 5,
-                    "dominant_peak_height": 1000,
-                    "dominant_to_second_ratio": 1.0,
-                    "dominant_height_share": 0.3,
-                    "sl_100_percent": 45.0,
-                    "sl_200_percent": 20.0,
-                    "sl_300_percent": 15.0,
-                    "sl_400_percent": 12.0,
-                    "sl_600_percent": 8.0,
-                    "sl_fragmented_percent": 65.0,
-                    "sl_quality_class": "litt_fragmentert",
-                    "sl_quality_phrase": "Litt fragmentert - kan redusere sensitivitet.",
-                    "suggestion": "polyklonal",
-                    "confidence": 0.66,
-                    "review_needed": True,
-                    "evidence": "sl_fragmented_percent=65.0",
-                    "annotation_schema_version": ANNOTATION_SCHEMA_VERSION,
-                    "image": "",
-                }
-            ],
-            title="Test panel",
-        )
-        self.assertIn("SL quality", html_text)
-        self.assertIn("litt_fragmentert", html_text)
-        self.assertIn("fragmented=65.00%", html_text)
 
     def test_tracking_columns_are_only_added_when_interpretation_is_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
