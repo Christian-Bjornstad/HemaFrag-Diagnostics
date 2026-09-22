@@ -138,21 +138,6 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
             },
             "interpretation": {
                 "enabled": False,
-                "model_path": "",
-                "thresholds": {
-                    "FR1": 0.85, "FR2": 0.85, "FR3": 0.85,
-                    "TCRG-A": 0.75, "TCRG-B": 0.75,
-                    "TCRB-A": 0.75, "TCRB-B": 0.75, "TCRB-C": 0.75,
-                    "DHJH_D": 0.92, "DHJH_E": 0.92,
-                    "IGK": 0.92, "KDE": 0.92,
-                    "SL": 0.95, "IKZF1": 0.95,
-                    "Ktr-albumin": 0.92,
-                    "_default": 0.85,
-                },
-            },
-            "learning": {
-                "enabled": False,
-                "output_dir": "",
             },
         },
         "flt3": {
@@ -428,6 +413,12 @@ def _migrate_legacy_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
                 ),
             )
         if analysis_id == "clonality":
+            profile.pop("learning", None)
+            interpretation = profile.get("interpretation")
+            if isinstance(interpretation, dict):
+                interpretation.pop("model_path", None)
+                interpretation.pop("thresholds", None)
+
             archive_runner = profile.setdefault("archive_runner", {})
             if not isinstance(archive_runner.get("input_root"), str) or not archive_runner.get("input_root"):
                 archive_runner["input_root"] = profile_batch.get("base_input_dir", default_archive_runner.get("input_root", str(Path.home())))

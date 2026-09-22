@@ -35,3 +35,59 @@ def test_write_failure_preserves_old_yaml_and_removes_temp(tmp_path):
         assert config.save_settings(copy.deepcopy(config.DEFAULT_SETTINGS), target) is False
     assert "Previous" in target.read_text(encoding="utf-8")
     assert list(tmp_path.iterdir()) == [target]
+
+
+def test_legacy_ml_settings_are_removed_without_losing_active_profiles_or_files(tmp_path):
+    target = tmp_path / "settings.yaml"
+    legacy_model = tmp_path / "clonality-model.joblib"
+    legacy_model.write_bytes(b"historical model")
+    legacy_learning_dir = tmp_path / "learning-annotations"
+    legacy_learning_dir.mkdir()
+    legacy_annotation = legacy_learning_dir / "annotation.json"
+    legacy_annotation.write_text("{}", encoding="utf-8")
+    target.write_text(
+        f"""
+active_analysis: clonality
+analyses:
+  clonality:
+    batch:
+      tracking_excel_path: retained-clonality.xlsx
+    pipeline:
+      file_timeout_seconds: 321
+    interpretation:
+      enabled: true
+      model_path: {legacy_model.as_posix()}
+      thresholds:
+        FR1: 0.99
+    learning:
+      enabled: true
+      output_dir: {legacy_learning_dir.as_posix()}
+  flt3:
+    batch:
+      tracking_excel_path: retained-flt3.xlsx
+  general:
+    pipeline:
+      profile_id: retained-general-profile
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    loaded = config.load_settings(target, env={"HEMAFRAG_UNUSED_TEST": "1"})
+    clonality = loaded["analyses"]["clonality"]
+
+    assert clonality["interpretation"] == {"enabled": True}
+    assert "learning" not in clonality
+    assert clonality["batch"]["tracking_excel_path"] == "retained-clonality.xlsx"
+    assert clonality["pipeline"]["file_timeout_seconds"] == 321
+    assert loaded["analyses"]["flt3"]["batch"]["tracking_excel_path"] == "retained-flt3.xlsx"
+    assert loaded["analyses"]["general"]["pipeline"]["profile_id"] == "retained-general-profile"
+    assert legacy_model.read_bytes() == b"historical model"
+    assert legacy_annotation.read_text(encoding="utf-8") == "{}"
+
+    assert config.save_settings(loaded, target) is True
+    persisted = config.yaml.safe_load(target.read_text(encoding="utf-8"))
+    persisted_clonality = persisted["analyses"]["clonality"]
+    assert persisted_clonality["interpretation"] == {"enabled": True}
+    assert "learning" not in persisted_clonality
+    assert legacy_model.read_bytes() == b"historical model"
+    assert legacy_annotation.read_text(encoding="utf-8") == "{}"

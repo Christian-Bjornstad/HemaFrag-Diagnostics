@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,51 @@ RETIRED_ML_COLUMNS = (
     "ClonalityMLModelVersion",
     "ClonalityMLChannelResults",
 )
+
+
+def test_app_settings_normalizes_retired_ml_keys_from_legacy_yaml(tmp_path):
+    settings_path = tmp_path / "legacy-settings.yaml"
+    legacy_model = tmp_path / "legacy-model.joblib"
+    legacy_model.write_bytes(b"historical model")
+    legacy_learning_dir = tmp_path / "legacy-learning"
+    legacy_learning_dir.mkdir()
+    settings_path.write_text(
+        f"""
+analyses:
+  clonality:
+    interpretation:
+      enabled: true
+      model_path: {legacy_model.as_posix()}
+      thresholds:
+        FR1: 0.99
+    learning:
+      enabled: true
+      output_dir: {legacy_learning_dir.as_posix()}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    script = """
+import config
+
+profile = config.APP_SETTINGS["analyses"]["clonality"]
+assert profile["interpretation"] == {"enabled": True}
+assert "learning" not in profile
+"""
+    env = os.environ.copy()
+    env["HEMAFRAG_SETTINGS_PATH"] = str(settings_path)
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert legacy_model.read_bytes() == b"historical model"
+    assert legacy_learning_dir.is_dir()
 
 
 def test_pipeline_and_batch_import_without_retired_model_runtime(tmp_path):
