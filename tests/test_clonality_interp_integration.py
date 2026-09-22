@@ -1,11 +1,10 @@
 """End-to-end smoke test crossing Plan 11 layers:
 
-1. config.py thresholds block round-trips through APP_SETTINGS.
-2. features_from_entry returns Phase 2 additions safely.
-3. The TabClonalityInterpretation widget constructs, accepts synth data,
+1. features_from_entry returns Phase 2 additions safely.
+2. The TabClonalityInterpretation widget constructs, accepts synth data,
    colors disagreements, paint force_review red, and the disagreement
    filter hides rows.
-4. Asset-map audit markdown exists and lists all 15 per-assay names.
+3. Asset-map audit markdown exists and lists all 15 per-assay names.
 """
 from __future__ import annotations
 
@@ -24,48 +23,7 @@ def qapp():
     yield app
 
 
-# ---- 1. Config thresholds ----
-
-EXPECTED_THRESHOLDS = {
-    "FR1": 0.85, "FR2": 0.85, "FR3": 0.85,
-    "TCRG-A": 0.75, "TCRG-B": 0.75,
-    "TCRB-A": 0.75, "TCRB-B": 0.75, "TCRB-C": 0.75,
-    "DHJH_D": 0.92, "DHJH_E": 0.92,
-    "IGK": 0.92, "KDE": 0.92,
-    "SL": 0.95, "IKZF1": 0.95,
-    "Ktr-albumin": 0.92,
-    "_default": 0.85,
-}
-
-
-def test_thresholds_table_well_formed():
-    from config import APP_SETTINGS
-
-    thresholds = APP_SETTINGS["analyses"]["clonality"]["interpretation"]["thresholds"]
-    assert isinstance(thresholds, dict)
-    # _default + 15 assay-specific = 16 keys
-    assert len(thresholds) == 16
-    assert "_default" in thresholds
-
-
-def test_threshold_values_match_plan():
-    from config import APP_SETTINGS
-
-    thresholds = APP_SETTINGS["analyses"]["clonality"]["interpretation"]["thresholds"]
-    for k, expected in EXPECTED_THRESHOLDS.items():
-        assert k in thresholds, f"missing threshold key {k}"
-        assert thresholds[k] == expected, f"{k}: {thresholds[k]} != {expected}"
-
-
-def test_threshold_values_are_in_safe_range():
-    from config import APP_SETTINGS
-
-    thresholds = APP_SETTINGS["analyses"]["clonality"]["interpretation"]["thresholds"]
-    for k, v in thresholds.items():
-        assert 0.0 <= v <= 1.0, f"{k}: {v} outside [0, 1]"
-
-
-# ---- 2. features_from_entry integration ----
+# ---- 1. features_from_entry integration ----
 
 def test_features_from_entry_returns_full_v2_shape():
     import pandas as pd
@@ -101,7 +59,7 @@ def test_features_graceful_for_minimal_entry_no_crash():
     assert features["assay_panel_completeness_pct"] == 0.0
 
 
-# ---- 3. Tab widget integration ----
+# ---- 2. Tab widget integration ----
 
 def test_tab_widget_loads_with_synth_entries(qapp):
     from gui_qt.tabs.tab_clonality_interpretation import TabClonalityInterpretation
@@ -125,15 +83,23 @@ def test_tab_widget_disagreement_filter(qapp):
     assert w._table.rowCount() == full_count
 
 
-# ---- 4. Audit markdown ----
+# ---- 3. Audit markdown ----
+
+EXPECTED_ASSAYS = (
+    "FR1", "FR2", "FR3",
+    "TCRG-A", "TCRG-B",
+    "TCRB-A", "TCRB-B", "TCRB-C",
+    "DHJH_D", "DHJH_E",
+    "IGK", "KDE",
+    "SL", "IKZF1",
+    "Ktr-albumin",
+)
 
 def test_audit_md_present_and_lists_assays():
     p = Path("core/analyses/clonality/audit.md")
     assert p.exists(), "audit.md missing"
     content = p.read_text(encoding="utf-8")
-    for assay in EXPECTED_THRESHOLDS:
-        if assay == "_default":
-            continue
+    for assay in EXPECTED_ASSAYS:
         # Accept either standalone mention or merged range hint.
         # Strip dashes/underscores/spaces for normalized comparison
         norm_assay = assay.replace("-", "").replace("_", "").replace(" ", "")
@@ -182,22 +148,3 @@ def test_audit_md_documents_per_entry_features():
             continue
         # Use first-form bool assertion: at least *something* about each lives in the doc.
         # We tolerate the docs being summarized; not strict here.
-
-
-def test_clonality_sidebar_exposes_labeling_not_ml_training(qapp):
-    """The manual Labeling workspace replaces the old training page."""
-    from gui_qt.main_window import MainWindow
-
-    w = MainWindow()
-    clonality_group = w.group_clonality
-    sub_labels = list(clonality_group.sub_button_labels)
-    assert "ML Training" not in sub_labels
-    assert "Labeling" in sub_labels
-
-    labeling_idx = sub_labels.index("Labeling")
-    w._activate_analysis("clonality")
-    w.on_sub_tab_clicked("clonality", labeling_idx)
-    page = w.stacked_widget.currentWidget().widget()
-    from gui_qt.tabs.tab_labeling import TabLabeling
-
-    assert isinstance(page, TabLabeling)

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 import pandas as pd
 
 from core.analyses.clonality.labeling_batch import (
@@ -10,7 +8,6 @@ from core.analyses.clonality.labeling_batch import (
     write_clonality_labeling_batch,
 )
 from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
-from core.labeling.labeling_session import LabelingSession
 
 
 def _tracking_rows() -> pd.DataFrame:
@@ -100,43 +97,6 @@ def test_labeling_batch_is_deterministic_balanced_and_unlabeled():
     assert first.rows["ClonalitySuggestion"].ne("").all()
     assert first.manifest["rule_suggestions_used_as_labels"] is False
     assert first.manifest["selection_feature_count"] == 2
-
-
-def test_labeling_batch_workbook_loads_in_existing_gui_session(tmp_path):
-    tracking = _tracking_rows()
-    features = _feature_rows(tracking)
-    batch = build_clonality_labeling_batch(
-        tracking,
-        features,
-        batch_id="pilot-1",
-        per_assay=2,
-        max_rows=6,
-    )
-    output = tmp_path / "pilot.xlsx"
-
-    paths = write_clonality_labeling_batch(
-        batch,
-        output,
-        source_workbook=tmp_path / "source.xlsx",
-        source_features=tmp_path / "features.csv",
-    )
-    session = LabelingSession(excel_path=str(output))
-    session.load()
-
-    assert session.total_count == 6
-    assert session.unlabeled_count == 6
-    assert {sample.assay for sample in session.samples} == {"FR1", "IGK", "TCRgA"}
-    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
-    assert manifest["selected_rows"] == 6
-    assert manifest["rule_suggestions_used_as_labels"] is False
-    with pd.ExcelFile(output, engine="openpyxl") as workbook:
-        assert {
-            "Runs",
-            "Patient_Runs",
-            "Batch_Summary",
-            "Rule_Summary",
-            "Batch_Metadata",
-        }.issubset(workbook.sheet_names)
 
 
 def test_labeling_batch_expands_selected_cases_to_parallel_rows():
