@@ -183,9 +183,6 @@ def test_rule_based_interpretation_round_trip(isolated_settings):
 
     reloaded = config.load_settings(target)
     saved_profile = reloaded["analyses"]["clonality"]
-    assert saved_profile["interpretation"]["enabled"] is True
-    assert saved_profile["interpretation"]["model_path"] == "C:/legacy-models"
-    assert saved_profile["learning"] == {
-        "enabled": True,
-        "output_dir": "C:/legacy-learning",
-    }
+    assert saved_profile["interpretation"] == {"enabled": True}
+    assert "model_path" not in saved_profile["interpretation"]
+    assert "learning" not in saved_profile
