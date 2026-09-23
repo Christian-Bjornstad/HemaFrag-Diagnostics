@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -95,19 +96,19 @@ class RunContext:
     settings_snapshot: Mapping[str, Any]
     settings_fingerprint: str = field(init=False)
 
+    def settings_copy(self) -> dict[str, Any]:
+        """Return a mutable copy for legacy helpers that merge profile defaults."""
+        return _copy_settings_value(self.settings_snapshot)
+
     def __post_init__(self) -> None:
         supported_analyses = DEFAULT_SETTINGS.get("analyses", {})
         if self.analysis_id not in supported_analyses:
             raise ValueError(f"Unsupported analysis_id: {self.analysis_id!r}")
-        if not isinstance(self.run_id, str) or not self.run_id.strip():
-            raise ValueError("run_id must be a non-empty string")
-        if self.run_id != self.run_id.strip():
-            raise ValueError("run_id cannot contain surrounding whitespace")
+        if not isinstance(self.run_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", self.run_id) is None:
+            raise ValueError("run_id must be a safe manifest identifier")
         if self.parent_run_id is not None:
-            if not isinstance(self.parent_run_id, str) or not self.parent_run_id.strip():
-                raise ValueError("parent_run_id must be a non-empty string or None")
-            if self.parent_run_id != self.parent_run_id.strip():
-                raise ValueError("parent_run_id cannot contain surrounding whitespace")
+            if not isinstance(self.parent_run_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", self.parent_run_id) is None:
+                raise ValueError("parent_run_id must be a safe manifest identifier or None")
             if self.parent_run_id == self.run_id:
                 raise ValueError("parent_run_id cannot equal run_id")
         _validate_timestamp(self.created_at_utc)

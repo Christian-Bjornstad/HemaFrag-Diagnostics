@@ -97,6 +97,12 @@ def test_create_rejects_a_run_as_its_own_parent():
         )
 
 
+@pytest.mark.parametrize("run_id", ["../escape", "folder\\escape", "run:name", "..", "bad id"])
+def test_context_rejects_run_ids_that_are_unsafe_as_manifest_names(run_id):
+    with pytest.raises(ValueError, match="run_id"):
+        RunContext.create(analysis_id="clonality", settings={}, run_id=run_id)
+
+
 def test_create_rejects_a_snapshot_for_a_different_analysis():
     with pytest.raises(ValueError, match="active_analysis"):
         RunContext.create(
@@ -118,3 +124,17 @@ def test_context_fields_cannot_be_reassigned():
 
     with pytest.raises((AttributeError, TypeError)):
         context.analysis_id = "clonality"
+
+
+def test_settings_copy_is_mutable_without_changing_snapshot_or_fingerprint():
+    context = RunContext.create(
+        analysis_id="clonality",
+        settings={"active_analysis": "clonality", "analyses": {"clonality": {"batch": {"max_workers": 2}}}},
+    )
+    original_fingerprint = context.settings_fingerprint
+
+    copied = context.settings_copy()
+    copied["analyses"]["clonality"]["batch"]["max_workers"] = 8
+
+    assert context.settings_snapshot["analyses"]["clonality"]["batch"]["max_workers"] == 2
+    assert context.settings_fingerprint == original_fingerprint
