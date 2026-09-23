@@ -29,6 +29,7 @@ from core.analyses.clonality.ladder_review_labels import (
     is_review_resolved,
 )
 from gui_qt.worker import Worker
+from gui_qt.operation_coordinator import OperationStartRejected
 
 
 def _open_ladder_adjustment_dialog(*args, **kwargs):
@@ -54,6 +55,7 @@ class TabLadder(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.threadpool = QThreadPool.globalInstance()
+        self._operation_coordinator = None
         self._all_files: list[Path] = []
         self._current_file: Path | None = None
         self._current_meta: dict | None = None
@@ -118,6 +120,56 @@ class TabLadder(QWidget):
         main_layout.addWidget(self.status_lbl)
 
         self._load_defaults()
+
+    def set_operation_coordinator(self, coordinator) -> None:
+        """Attach the application worker lifecycle coordinator."""
+        self._operation_coordinator = coordinator
+
+    def _start_registered_worker(self, worker: Worker, *, kind: str, restore_ui,
+                                 critical_write: bool = False) -> bool:
+        handle = None
+        if self._operation_coordinator is not None:
+            try:
+                # These workers have no safe in-flight interruption boundary.
+                handle = self._operation_coordinator.register(kind, cancel=lambda: None)
+            except OperationStartRejected:
+                restore_ui()
+                self._set_status("Application is closing; Ladder work was not started.", error=True)
+                return False
+            worker.signals.finished.connect(handle.settle)
+            handle.mark_running()
+            if critical_write:
+                handle.mark_critical_write()
+        try:
+            self.threadpool.start(worker)
+        except Exception as exc:
+            if handle is not None:
+                handle.settle()
+            restore_ui()
+            self._set_status(f"Ladder work could not start: {exc}", error=True)
+            return False
+        return True
+
+    def _restore_single_rerun_ui(self) -> None:
+        self._single_rerun_active = False
+        self._set_rerun_context_locked(False)
+        self.btn_rerun_file.setEnabled(self._current_file is not None)
+        self.btn_open_editor.setEnabled(self._current_file is not None and not self._metadata_loading)
+        self.btn_refresh_meta.setEnabled(self._current_file is not None)
+
+    def _restore_bundle_rerun_ui(self) -> None:
+        self._review_bundle_rerun_active = False
+        self._set_rerun_context_locked(False)
+        self.btn_rerun_file.setEnabled(self._current_file is not None)
+        self.btn_open_editor.setEnabled(self._current_file is not None and not self._metadata_loading)
+        self.btn_refresh_meta.setEnabled(self._current_file is not None)
+        self._refresh_review_bundle_run_button()
+
+    def _restore_metadata_load_ui(self) -> None:
+        self._metadata_loading = False
+        self._metadata_request_context = None
+        self._pending_open_editor_after_metadata = False
+        self.btn_open_editor.setEnabled(self._current_file is not None)
 
     def _build_source_card(self) -> QWidget:
         card = QWidget()
@@ -466,7 +518,10 @@ class TabLadder(QWidget):
         worker = Worker(self._scan_fsa_files_worker, source)
         worker.signals.result.connect(lambda files, rid=request_id, src=source: self._on_scan_result(rid, src, files))
         worker.signals.error.connect(lambda err, rid=request_id: self._on_scan_error(rid, err))
-        self.threadpool.start(worker)
+        self._start_registered_worker(
+            worker, kind="Ladder source scan",
+            restore_ui=lambda: self._set_source_load_active(False),
+        )
 
     def _load_review_bundle(self) -> None:
         if self._reject_context_switch_during_rerun():
@@ -487,7 +542,10 @@ class TabLadder(QWidget):
         worker = Worker(self._load_review_bundle_worker, bundle_dir)
         worker.signals.result.connect(lambda result, rid=request_id: self._on_review_bundle_result(rid, result))
         worker.signals.error.connect(lambda err, rid=request_id: self._on_review_bundle_error(rid, err))
-        self.threadpool.start(worker)
+        self._start_registered_worker(
+            worker, kind="Ladder review-bundle load",
+            restore_ui=lambda: (self._set_source_load_active(False), self._refresh_review_bundle_run_button()),
+        )
 
     def load_review_bundle_from_path(
         self,
@@ -947,7 +1005,11 @@ class TabLadder(QWidget):
                 key, err
             )
         )
-        self.threadpool.start(worker)
+        self._start_registered_worker(
+            worker, kind="Ladder missing-ladder exclusion",
+            restore_ui=lambda: self.btn_exclude_missing_ladder.setEnabled(True),
+            critical_write=True,
+        )
 
     def _on_missing_ladder_exclusion_saved(
         self, cache_key: Path, annotation: dict
@@ -1232,7 +1294,11 @@ class TabLadder(QWidget):
         )
         worker.signals.result.connect(lambda result, rid=request_id: self._on_single_rerun_finished(rid, result))
         worker.signals.error.connect(lambda err, rid=request_id: self._on_single_rerun_error(rid, err))
-        self.threadpool.start(worker)
+        self._start_registered_worker(
+            worker, kind="Ladder single-file rerun",
+            restore_ui=self._restore_single_rerun_ui,
+            critical_write=True,
+        )
 
     @staticmethod
     def _single_file_rerun_worker(
@@ -1443,7 +1509,11 @@ class TabLadder(QWidget):
         )
         worker.signals.result.connect(lambda result, rid=request_id: self._on_review_bundle_rerun_finished(rid, result))
         worker.signals.error.connect(lambda err, rid=request_id: self._on_review_bundle_rerun_error(rid, err))
-        self.threadpool.start(worker)
+        self._start_registered_worker(
+            worker, kind="Ladder review-bundle rerun",
+            restore_ui=self._restore_bundle_rerun_ui,
+            critical_write=True,
+        )
 
     @staticmethod
     def _review_bundle_rerun_worker(
@@ -1755,7 +1825,10 @@ class TabLadder(QWidget):
         worker = Worker(self._find_report_matches_worker, self._current_file, root_text)
         worker.signals.result.connect(lambda result, rid=request_id: self._on_report_matches_result(rid, result))
         worker.signals.error.connect(lambda err, rid=request_id: self._on_report_matches_error(rid, err))
-        self.threadpool.start(worker)
+        self._start_registered_worker(
+            worker, kind="Ladder report search",
+            restore_ui=lambda: self.btn_find_reports.setEnabled(True),
+        )
 
     def _update_report_buttons(self) -> None:
         has_selection = bool(self.report_list.selectedItems())
@@ -1894,7 +1967,10 @@ class TabLadder(QWidget):
         worker.signals.error.connect(
             lambda err, ctx=context: self._on_metadata_error(ctx, err)
         )
-        self.threadpool.start(worker)
+        self._start_registered_worker(
+            worker, kind="Ladder metadata load",
+            restore_ui=self._restore_metadata_load_ui,
+        )
 
     @staticmethod
     def _scan_fsa_files_worker(source: Path) -> list[Path]:
