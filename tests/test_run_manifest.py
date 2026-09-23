@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from core.run_manifest import (
     RUN_MANIFEST_SCHEMA,
     BatchRunManifest,
@@ -13,6 +15,20 @@ from core.ladder_adjustment_store import (
     load_ladder_adjustment_record,
     save_ladder_adjustment_record,
 )
+
+
+def test_manifest_rejects_unsafe_explicit_run_id_before_writing(tmp_path):
+    with pytest.raises(ValueError, match="run_id"):
+        BatchRunManifest.create(
+            output_dir=tmp_path,
+            jobs=[],
+            analysis="clonality",
+            settings={},
+            execution={},
+            run_id="../escape",
+        )
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_run_manifest_preserves_jobs_adjustments_progress_and_outputs(

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import sys
 import tempfile
 import threading
@@ -32,12 +33,15 @@ def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
 
 
 def _fingerprint(payload: object) -> str:
+    def encode(value: object) -> object:
+        return dict(value) if isinstance(value, Mapping) else str(value)
+
     encoded = json.dumps(
         payload,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,
-        default=str,
+        default=encode,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -185,14 +189,19 @@ class BatchRunManifest:
         settings: Mapping[str, Any],
         execution: Mapping[str, Any],
         parent_manifest_path: Path | None = None,
+        run_id: str | None = None,
+        created_at_utc: str | None = None,
+        parent_run_id: str | None = None,
     ) -> "BatchRunManifest":
         output_dir = output_dir.resolve()
-        created_at = _utc_now()
-        run_id = (
+        created_at = created_at_utc if created_at_utc is not None else _utc_now()
+        run_id = run_id if run_id is not None else (
             datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
             + "_"
             + uuid.uuid4().hex[:8]
         )
+        if not isinstance(run_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", run_id) is None:
+            raise ValueError("run_id must be a safe manifest identifier")
         job_records: list[dict[str, Any]] = []
         input_count = 0
         for index, job in enumerate(jobs):
@@ -217,6 +226,7 @@ class BatchRunManifest:
             "updated_at_utc": created_at,
             "status": "running",
             "analysis": analysis,
+            "parent_run_id": parent_run_id,
             "parent_manifest_path": (
                 str(parent_manifest_path.resolve()) if parent_manifest_path else None
             ),

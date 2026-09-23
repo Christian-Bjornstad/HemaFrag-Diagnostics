@@ -12,11 +12,13 @@ import time
 import yaml
 import json
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Dict, List, Any
 from datetime import date, datetime
 
 from config import resolve_analysis_excel_output_path
+from core.run_context import RunContext
 from core.log import log
 from core.runner import run_pipeline_job, run_pipeline_job_collect, run_qc_job, run_dit_job
 
@@ -260,6 +262,7 @@ def generate_jobs(
     aggregate_patients: bool = True,
     patient_regex: str = r"\d{2}OUM\d{5}",
     run_date_filter: str = "all",
+    run_context: RunContext | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Generate a list of standard job dicts from a list of folders.
@@ -273,7 +276,11 @@ def generate_jobs(
 
     folders_to_scan = []
     folder_files: Dict[Path, List[Path]] = {}
-    active_analysis = APP_SETTINGS.get("active_analysis", "clonality")
+    active_analysis = (
+        run_context.analysis_id
+        if run_context is not None
+        else APP_SETTINGS.get("active_analysis", "clonality")
+    )
     for p in input_paths:
         if p.is_file():
             if p.suffix.lower() == ".yaml":
@@ -449,20 +456,27 @@ def run_batch_jobs(
     preserve_deferred_entries: bool = False,
     parent_run_manifest_path: Path | None = None,
     cancel_event: threading.Event | None = None,
+    run_context: RunContext | None = None,
 ) -> dict[str, Any]:
     """
     Run all generated jobs.
-    Reads QC parameters from APP_SETTINGS and uses explicit per-analysis batch flags.
+    Reads QC and analysis settings from the queued context when provided.
     """
     from config import APP_SETTINGS
     from core.qc.qc_rules import QCRules
     from core.assay_config import OUTDIR_NAME
-    s_qc = APP_SETTINGS.get("qc", {})
-    active_analysis = APP_SETTINGS.get("active_analysis", "clonality")
+    settings = run_context.settings_snapshot if run_context is not None else APP_SETTINGS
+    runner_context_kwargs = {"run_context": run_context} if run_context is not None else {}
+    s_qc = settings.get("qc", {})
+    active_analysis = (
+        run_context.analysis_id
+        if run_context is not None
+        else settings.get("active_analysis", "clonality")
+    )
     aggregate_dit_reports = bool(aggregate_dit_reports) and active_analysis != "general"
-    analysis_batch = APP_SETTINGS.get("analyses", {}).get(active_analysis, {}).get("batch", {})
+    analysis_batch = settings.get("analyses", {}).get(active_analysis, {}).get("batch", {})
     gate_settings = analysis_batch.get("ladder_review_gate", {})
-    if not isinstance(gate_settings, dict):
+    if not isinstance(gate_settings, Mapping):
         gate_settings = {}
     ladder_review_gate_enabled = bool(gate_settings.get("enabled", True))
     ladder_review_gate_blocks_dit = bool(gate_settings.get("block_dit_reports", False))
@@ -500,7 +514,7 @@ def run_batch_jobs(
             output_dir=agg_outdir or output_base,
             jobs=jobs,
             analysis=active_analysis,
-            settings=APP_SETTINGS,
+            settings=settings,
             execution={
                 "output_base": str(output_base),
                 "aggregate_output_dir": str(agg_outdir) if agg_outdir else None,
@@ -514,6 +528,13 @@ def run_batch_jobs(
                 "skip_html_reports": skip_html_reports,
             },
             parent_manifest_path=parent_run_manifest_path,
+            run_id=run_context.run_id if run_context is not None else None,
+            created_at_utc=(
+                run_context.created_at_utc if run_context is not None else None
+            ),
+            parent_run_id=(
+                run_context.parent_run_id if run_context is not None else None
+            ),
         )
         log(f"[BATCH] Run manifest: {run_manifest.path}")
     except Exception as exc:
@@ -522,6 +543,14 @@ def run_batch_jobs(
     def _clonality_tracking_path(default_dir: Path) -> Path:
         from core.analyses.clonality.tracking_excel import CLONALITY_TRACKING_FILENAME
 
+        if run_context is not None:
+            configured = str(analysis_batch.get("tracking_excel_path") or "").strip()
+            if not configured:
+                return tracking_excel_path or default_dir / CLONALITY_TRACKING_FILENAME
+            path = Path(configured).expanduser()
+            if configured.endswith(("/", "\\")) or path.suffix.lower() != ".xlsx":
+                path /= CLONALITY_TRACKING_FILENAME
+            return tracking_excel_path or path
         return tracking_excel_path or resolve_analysis_excel_output_path(
             "clonality",
             default_dir,
@@ -532,9 +561,18 @@ def run_batch_jobs(
         if active_analysis != "clonality" or not entries:
             return
         try:
-            from core.analyses.clonality.tracking_excel import update_global_clonality_tracking_workbook
+            from core.analyses.clonality.tracking_excel import (
+                update_clonality_tracking_workbook,
+                update_global_clonality_tracking_workbook,
+            )
 
-            global_path = update_global_clonality_tracking_workbook(entries)
+            if run_context is None:
+                global_path = update_global_clonality_tracking_workbook(entries)
+            else:
+                configured = str(analysis_batch.get("global_tracking_excel_path") or "").strip()
+                global_path = Path(configured).expanduser() if configured else None
+                if global_path is not None:
+                    update_clonality_tracking_workbook(global_path, entries)
             if global_path is not None:
                 log(f"[BATCH] Updated global clonality tracking workbook: {global_path}")
         except Exception as exc:
@@ -709,6 +747,7 @@ def run_batch_jobs(
                         chunk_files=(active_analysis != "flt3"),
                         tracking_excel_path=tracking_excel_path,
                         progress_callback=_job_progress,
+                        **runner_context_kwargs,
                     )
                     if stream_aggregated_dit and agg_outdir is not None:
                         from core.html_reports import build_dit_html_reports
@@ -799,6 +838,7 @@ def run_batch_jobs(
                         needle=assay_filter,
                         files=job_files,
                         tracking_excel_path=tracking_excel_path,
+                        **runner_context_kwargs,
                     )
             
             elif job_type == "qc":
@@ -821,6 +861,7 @@ def run_batch_jobs(
                         skip_html_reports=skip_html_reports,
                         update_qc_trends=False,
                         progress_callback=_job_progress,
+                        **runner_context_kwargs,
                     )
                     if qc_entries:
                         if (defer_dit_html_reports or skip_html_reports) and not preserve_deferred_entries:
@@ -866,6 +907,7 @@ def run_batch_jobs(
                         rules=qc_rules,
                         files=job_files,
                         skip_html_reports=skip_html_reports,
+                        **runner_context_kwargs,
                     )
                 
             elif job_type == "dit":
@@ -884,6 +926,7 @@ def run_batch_jobs(
                         chunk_files=(active_analysis != "flt3"),
                         tracking_excel_path=tracking_excel_path,
                         progress_callback=_job_progress,
+                        **runner_context_kwargs,
                     )
                     if stream_aggregated_dit and agg_outdir is not None:
                         from core.html_reports import build_dit_html_reports
@@ -955,7 +998,8 @@ def run_batch_jobs(
                         out_folder_name=resolved_out_folder,
                         scope=pipeline_scope,
                         needle=assay_filter,
-                        files=job_files
+                        files=job_files,
+                        **runner_context_kwargs,
                     )
             
             else:
