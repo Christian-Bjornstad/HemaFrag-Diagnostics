@@ -3,10 +3,10 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QStackedWidget, QPushButton, QFrame, QScrollArea,
-    QApplication,
+    QApplication, QMessageBox,
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QShortcut, QKeySequence
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QCloseEvent, QShortcut, QKeySequence
 
 from app_meta import APP_VERSION
 from gui_qt.styles import VIBRANT_PRO_QSS
@@ -18,6 +18,7 @@ from gui_qt.tabs.tab_about import TabAbout
 from gui_qt.tabs.tab_settings import TabAnalysisSettings
 from gui_qt.tabs.tab_app_settings import TabAppSettings
 from gui_qt.widgets.brand_lockup import BrandLockup
+from gui_qt.operation_coordinator import OperationCoordinator
 from config import APP_SETTINGS, get_analysis_settings, save_settings
 
 class SidebarButton(QPushButton):
@@ -108,6 +109,26 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"HemaFrag Diagnostics v{APP_VERSION}")
         self.setStyleSheet(VIBRANT_PRO_QSS)
+
+        # C1 owns only registered operations. Worker entry points are migrated
+        # separately, so this must not be treated as a global thread-pool count.
+        self.operation_coordinator = OperationCoordinator(self)
+        self._shutdown_requested = False
+        self._shutdown_ready = False
+        self._shutdown_waiting_for_user = False
+        self._shutdown_deadline_ms = 30_000
+        self._shutdown_prompt: QMessageBox | None = None
+        self._shutdown_deadline_timer = QTimer(self)
+        self._shutdown_deadline_timer.setSingleShot(True)
+        self._shutdown_deadline_timer.timeout.connect(
+            self._on_shutdown_deadline
+        )
+        self.operation_coordinator.operations_changed.connect(
+            self._update_shutdown_progress
+        )
+        self.operation_coordinator.drained.connect(
+            self._on_registered_operations_drained
+        )
         
         # Central widget
         central = QWidget()
@@ -282,6 +303,135 @@ class MainWindow(QMainWindow):
 
         # --- Keyboard shortcuts ---
         self._setup_shortcuts()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Drain registered work without blocking or terminating worker threads."""
+        active = self.operation_coordinator.active_handles()
+        if self._shutdown_ready or not active:
+            self._shutdown_deadline_timer.stop()
+            event.accept()
+            return
+
+        event.ignore()
+        if self._shutdown_requested:
+            self._update_shutdown_progress()
+            return
+
+        self._shutdown_requested = True
+        self._shutdown_waiting_for_user = False
+        self.operation_coordinator.begin_draining()
+        self._shutdown_deadline_timer.start(self._shutdown_deadline_ms)
+        self._update_shutdown_progress()
+
+    def cancel_pending_close(self) -> None:
+        """Keep the app open and allow new work after a delayed close attempt."""
+        self._shutdown_deadline_timer.stop()
+        self._shutdown_requested = False
+        self._shutdown_ready = False
+        self._shutdown_waiting_for_user = False
+        self.operation_coordinator.cancel_draining()
+        self._dismiss_shutdown_prompt()
+        self.statusBar().showMessage(
+            "Close cancelled. Registered operations may continue finishing.",
+            8000,
+        )
+
+    def _update_shutdown_progress(self) -> None:
+        if not self._shutdown_requested:
+            return
+        handles = self.operation_coordinator.active_handles()
+        if not handles:
+            return
+        kinds = ", ".join(dict.fromkeys(handle.kind for handle in handles))
+        if self._shutdown_waiting_for_user:
+            message = (
+                f"App remains open: {len(handles)} registered operation(s) "
+                f"still finishing ({kinds}). Choose Wait longer or Cancel close."
+            )
+        else:
+            message = (
+                f"Closing safely: waiting for {len(handles)} registered "
+                f"operation(s) ({kinds})."
+            )
+        self.statusBar().showMessage(message)
+
+    def _on_registered_operations_drained(self) -> None:
+        if not self._shutdown_requested:
+            return
+        self._shutdown_deadline_timer.stop()
+        if self._shutdown_waiting_for_user:
+            self.statusBar().showMessage(
+                "Registered operations finished. Choose Wait longer to close "
+                "or Cancel close to keep the app open."
+            )
+            return
+        self._shutdown_ready = True
+        QTimer.singleShot(0, self.close)
+
+    def _on_shutdown_deadline(self) -> None:
+        if not self._shutdown_requested:
+            return
+        self._shutdown_waiting_for_user = True
+        self._update_shutdown_progress()
+        self._show_shutdown_prompt()
+
+    def _show_shutdown_prompt(self) -> None:
+        if self._shutdown_prompt is not None:
+            return
+        prompt = QMessageBox(self)
+        prompt.setIcon(QMessageBox.Icon.Information)
+        prompt.setWindowTitle("Background work is still finishing")
+        prompt.setText("HemaFrag remains open while registered work finishes safely.")
+        prompt.setInformativeText(
+            "Wait longer and close automatically when it finishes, or cancel "
+            "this close attempt and keep using the app."
+        )
+        wait_button = prompt.addButton(
+            "Wait longer",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        cancel_button = prompt.addButton(
+            "Cancel close",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+
+        def on_clicked(button) -> None:
+            if button is wait_button:
+                self._resume_shutdown_wait()
+            elif button is cancel_button:
+                self.cancel_pending_close()
+
+        prompt.buttonClicked.connect(on_clicked)
+        prompt.finished.connect(
+            lambda _result: self._on_shutdown_prompt_finished(prompt)
+        )
+        self._shutdown_prompt = prompt
+        prompt.open()
+
+    def _resume_shutdown_wait(self) -> None:
+        self._shutdown_waiting_for_user = False
+        self._dismiss_shutdown_prompt()
+        if not self.operation_coordinator.active_handles():
+            self._shutdown_ready = True
+            QTimer.singleShot(0, self.close)
+            return
+        self._shutdown_deadline_timer.start(self._shutdown_deadline_ms)
+        self._update_shutdown_progress()
+
+    def _dismiss_shutdown_prompt(self) -> None:
+        prompt = self._shutdown_prompt
+        self._shutdown_prompt = None
+        if prompt is not None:
+            prompt.close()
+
+    def _on_shutdown_prompt_finished(self, prompt: QMessageBox) -> None:
+        if self._shutdown_prompt is not prompt:
+            return
+        self._shutdown_prompt = None
+        # Closing the prompt with its title-bar button or Escape means the
+        # conservative choice: keep the application open.
+        if self._shutdown_waiting_for_user:
+            self.cancel_pending_close()
 
     def _setup_shortcuts(self) -> None:
         """Alt+1..N activates each analysis group's Run tab.
