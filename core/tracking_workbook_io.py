@@ -1,9 +1,9 @@
 """Stable, formula-friendly writes for operator tracking workbooks."""
 from __future__ import annotations
 
+import ctypes
 import os
 import re
-import shutil
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -207,20 +207,70 @@ def write_tracking_frames(
         workbook.close()
 
 
-def publish_workbook_contents(staged_path: Path, destination: Path) -> None:
-    """Publish a validated workbook while retaining an existing file's identity."""
-    staged = Path(staged_path)
-    target = Path(destination)
-    if not target.exists():
+_IS_WINDOWS = os.name == "nt"
+_MOVEFILE_REPLACE_EXISTING = 0x1
+_MOVEFILE_WRITE_THROUGH = 0x8
+
+
+def _paths_refer_to_same_file(first: Path, second: Path) -> bool:
+    normalized_first = os.path.normcase(os.path.abspath(first))
+    normalized_second = os.path.normcase(os.path.abspath(second))
+    if normalized_first == normalized_second:
+        return True
+    try:
+        return os.path.samefile(first, second)
+    except OSError:
+        return False
+
+
+def _replace_staged_file(staged: Path, target: Path) -> None:
+    if not _IS_WINDOWS:
         os.replace(staged, target)
         return
-    with staged.open("rb") as source, target.open("r+b") as output:
-        output.seek(0)
-        shutil.copyfileobj(source, output, length=1024 * 1024)
-        output.truncate()
-        output.flush()
-        os.fsync(output.fileno())
-    staged.unlink()
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    move_file_ex = kernel32.MoveFileExW
+    move_file_ex.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    move_file_ex.restype = ctypes.c_int
+    flags = _MOVEFILE_REPLACE_EXISTING | _MOVEFILE_WRITE_THROUGH
+    if not move_file_ex(str(staged), str(target), flags):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _sync_parent_directory(path: Path) -> None:
+    if _IS_WINDOWS:
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path.parent, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def publish_workbook_contents(staged_path: Path, destination: Path) -> None:
+    """Atomically publish a same-directory staged workbook.
+
+    The staged bytes are synced before replacement. POSIX also syncs the parent
+    directory, while Windows requests ``MoveFileExW`` write-through. This is
+    intended to leave a complete old or new workbook after a process crash;
+    power-loss durability still depends on the operating system, filesystem,
+    and storage device honoring those sync requests. The destination's
+    filesystem identity can change. On Windows, a workbook locked by Excel
+    raises an OS error instead of falling back to an in-place overwrite.
+    """
+    staged = Path(staged_path)
+    target = Path(destination)
+    if _paths_refer_to_same_file(staged, target):
+        raise ValueError("staged path and destination must differ")
+    try:
+        with staged.open("r+b") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace_staged_file(staged, target)
+        _sync_parent_directory(target)
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 __all__ = [
