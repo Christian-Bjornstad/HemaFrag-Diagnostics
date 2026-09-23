@@ -4,6 +4,8 @@ import csv
 import json
 import subprocess
 import sys
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThreadPool, pyqtSignal
@@ -28,6 +30,10 @@ from PyQt6.QtWidgets import (
 
 from config import APP_SETTINGS, get_analysis_settings, save_settings
 from core.analyses.clonality.ladder_review_labels import is_review_resolved
+from gui_qt.operation_coordinator import (
+    OperationCoordinator,
+    OperationStartRejected,
+)
 from gui_qt.worker import Worker
 
 # The yearly-runner modules import pandas (~0.5 s). They are loaded lazily on
@@ -114,6 +120,7 @@ class TabArchiveRunner(QWidget):
         self._workflow_state = "ready"
         self._current_analysis_id = APP_SETTINGS.get("active_analysis", "clonality")
         self._active_worker: Worker | None = None
+        self._operation_coordinator: OperationCoordinator | None = None
         self._current_run_root: Path | None = None
         self._current_manifest_path: Path | None = None
         self._current_workbook_path: Path | None = None
@@ -146,6 +153,12 @@ class TabArchiveRunner(QWidget):
 
         self.refresh_from_settings()
         self.set_analysis(self._current_analysis_id)
+
+    def set_operation_coordinator(
+        self,
+        coordinator: OperationCoordinator | None,
+    ) -> None:
+        self._operation_coordinator = coordinator
 
     def _archive_support_available(self) -> bool:
         _ensure_archive_modules()
@@ -715,7 +728,6 @@ class TabArchiveRunner(QWidget):
         if not input_root.is_dir():
             raise FileNotFoundError(f"Input root not found: {input_root}")
         output_root = Path(self.output_root.text().strip()).expanduser()
-        output_root.mkdir(parents=True, exist_ok=True)
         months = self._selected_months()
         if not months:
             raise ValueError("Select at least one month.")
@@ -732,17 +744,26 @@ class TabArchiveRunner(QWidget):
             QMessageBox.warning(self, "Archive Runner", str(exc))
             return
 
-        self._current_run_root = None
-        self._current_manifest_path = None
-        self._current_workbook_path = None
-        self._refresh_output_labels()
-        self._rebuild_month_table()
-        self._persist_settings()
-        self._set_busy(True)
-        self.progress.setRange(0, max(len(months), 1))
-        self.progress.setValue(0)
-        self._set_workflow_status(f"Starting yearly run for {year_label}", "running")
+        previous_outputs = (
+            self._current_run_root,
+            self._current_manifest_path,
+            self._current_workbook_path,
+        )
 
+        def prepare() -> None:
+            output_root.mkdir(parents=True, exist_ok=True)
+            self._persist_settings()
+            self._current_run_root = None
+            self._current_manifest_path = None
+            self._current_workbook_path = None
+            self._refresh_output_labels()
+            self._rebuild_month_table()
+            self._set_busy(True)
+            self.progress.setRange(0, max(len(months), 1))
+            self.progress.setValue(0)
+            self._set_workflow_status(f"Starting yearly run for {year_label}", "running")
+
+        cancel_event = threading.Event()
         worker = Worker(
             runner,
             year_label=year_label,
@@ -758,6 +779,7 @@ class TabArchiveRunner(QWidget):
             resume_existing=self.chk_resume.isChecked(),
             use_rust=bool(APP_SETTINGS.get("engine", {}).get("use_rust", True)),
             skip_html_reports=not self.chk_generate_html.isChecked(),
+            cancel_event=cancel_event,
         )
         worker.kwargs["progress_callback"] = worker.signals.event.emit
         worker.kwargs["status_callback"] = worker.signals.status.emit
@@ -766,8 +788,21 @@ class TabArchiveRunner(QWidget):
         worker.signals.result.connect(self._on_runner_finished)
         worker.signals.error.connect(self._on_worker_error)
         worker.signals.finished.connect(self._on_worker_finished)
-        self._active_worker = worker
-        self.threadpool.start(worker)
+        started = self._start_registered_worker(
+            worker,
+            kind="Archive yearly",
+            cancel=cancel_event.set,
+            prepare=prepare,
+        )
+        if not started:
+            (
+                self._current_run_root,
+                self._current_manifest_path,
+                self._current_workbook_path,
+            ) = previous_outputs
+            self._rebuild_month_table()
+            self._refresh_output_labels()
+            self._refresh_action_buttons()
 
     def on_build_combined_workbook(self) -> None:
         combiner = self._combiner()
@@ -779,8 +814,10 @@ class TabArchiveRunner(QWidget):
             QMessageBox.warning(self, "Archive Runner", "No run root is available yet.")
             return
         year_label = self.year_input.text().strip()
-        self._set_busy(True)
-        self._set_workflow_status(f"Building combined workbook for {year_label}", "running")
+
+        def prepare() -> None:
+            self._set_busy(True)
+            self._set_workflow_status(f"Building combined workbook for {year_label}", "running")
 
         worker = Worker(
             combiner,
@@ -797,8 +834,57 @@ class TabArchiveRunner(QWidget):
         worker.signals.result.connect(self._on_combine_finished)
         worker.signals.error.connect(self._on_worker_error)
         worker.signals.finished.connect(self._on_worker_finished)
+        self._start_registered_worker(
+            worker,
+            kind="Archive combine",
+            cancel=lambda: None,
+            critical_write=True,
+            prepare=prepare,
+        )
+
+    def _start_registered_worker(
+        self,
+        worker: Worker,
+        *,
+        kind: str,
+        cancel: Callable[[], None],
+        critical_write: bool = False,
+        prepare: Callable[[], None] | None = None,
+    ) -> bool:
+        handle = None
+        if self._operation_coordinator is not None:
+            try:
+                handle = self._operation_coordinator.register(
+                    kind,
+                    cancel=cancel,
+                )
+            except OperationStartRejected:
+                self._active_worker = None
+                self._set_busy(False)
+                self._set_workflow_status(
+                    "Application shutdown is in progress; Archive work was not started.",
+                    "warning",
+                )
+                return False
+            worker.signals.finished.connect(handle.settle)
+
         self._active_worker = worker
-        self.threadpool.start(worker)
+        try:
+            if prepare is not None:
+                prepare()
+            if handle is not None:
+                handle.mark_running()
+                if critical_write:
+                    handle.mark_critical_write()
+            self.threadpool.start(worker)
+        except Exception as exc:
+            if handle is not None:
+                handle.settle()
+            self._active_worker = None
+            self._set_busy(False)
+            self._set_workflow_status(str(exc), "error")
+            return False
+        return True
 
     def on_open_run_folder(self) -> None:
         if self._current_run_root and self._current_run_root.exists():
@@ -914,13 +1000,23 @@ class TabArchiveRunner(QWidget):
             self._current_manifest_path = self._guess_manifest_path()
             self._current_workbook_path = self._guess_workbook_path()
             self._persist_settings()
-        self.progress.setValue(self.progress.maximum())
+        cancelled = (
+            isinstance(manifest, dict)
+            and str(manifest.get("status") or "") == "cancelled"
+        )
+        if not cancelled:
+            self.progress.setValue(self.progress.maximum())
         failed_items = (
             list(manifest.get("failed_items") or [])
             if isinstance(manifest, dict)
             else []
         )
-        if failed_items:
+        if cancelled:
+            self._set_workflow_status(
+                "Yearly backfill cancelled at a safe boundary.",
+                "warning",
+            )
+        elif failed_items:
             self._set_workflow_status(
                 f"Yearly backfill finished with {len(failed_items)} failed item(s).",
                 "warning",

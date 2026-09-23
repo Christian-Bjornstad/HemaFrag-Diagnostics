@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -176,6 +177,87 @@ def test_flt3_yearly_runner_writes_review_bundle_and_manifest(
     assert summary["review_case_count"] == 1
     assert summary["run_manifest_path"].endswith("run.json")
     assert captured["tracking_excel_path"].name == "FLT3_Tracking.xlsx"
+
+
+def test_flt3_yearly_runner_propagates_cancellation_and_skips_combine(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "input"
+    (source / "2026_01_run").mkdir(parents=True)
+    (source / "2026_02_run").mkdir(parents=True)
+    output = tmp_path / "output"
+    cancel_event = threading.Event()
+    captured: dict = {}
+
+    monkeypatch.setattr(
+        "scripts.run_flt3_yearly.generate_jobs",
+        lambda folders, **_kwargs: [
+            {
+                "name": Path(folders[0]).name,
+                "type": "pipeline",
+                "path": folders[0],
+                "files": [],
+            }
+        ],
+    )
+
+    def fake_batch(**kwargs):
+        captured.update(kwargs)
+        cancel_event.set()
+        return {
+            "failed_jobs": [],
+            "dit_report_entries": [],
+            "cancelled": True,
+            "cancellation_requested": True,
+        }
+
+    monkeypatch.setattr("scripts.run_flt3_yearly.run_batch_jobs", fake_batch)
+    monkeypatch.setattr(
+        "scripts.run_flt3_yearly.combine_run_root",
+        lambda *_args, **_kwargs: pytest.fail("cancelled run must not combine"),
+    )
+
+    result = run_yearly_validation(
+        year_label="2026",
+        input_root=source,
+        output_root=output,
+        run_name="cancelled-flt3",
+        months=["2026_01", "2026_02"],
+        cancel_event=cancel_event,
+    )
+
+    assert captured["cancel_event"] is cancel_event
+    assert result["status"] == "cancelled"
+    assert result["months"]["2026_01"]["status"] == "cancelled"
+    assert "2026_02" not in result["months"]
+    assert result["combined_workbook_path"] == ""
+
+
+def test_flt3_cancellation_during_combine_reports_completed_output(tmp_path, monkeypatch):
+    source = tmp_path / "input"
+    source.mkdir()
+    cancel_event = threading.Event()
+    workbook = tmp_path / "combined.xlsx"
+
+    def fake_combine(*_args, **_kwargs):
+        cancel_event.set()
+        workbook.touch()
+        return workbook
+
+    monkeypatch.setattr("scripts.run_flt3_yearly.combine_run_root", fake_combine)
+    result = run_yearly_validation(
+        year_label="2026",
+        input_root=source,
+        output_root=tmp_path / "output",
+        run_name="combine-boundary",
+        months=["2026_01"],
+        cancel_event=cancel_event,
+    )
+
+    assert result["status"] == "completed"
+    assert result["cancellation_requested"] is True
+    assert result["combined_workbook_path"] == str(workbook.resolve())
 
 
 def test_archive_tab_switches_to_flt3_runner(qapp):

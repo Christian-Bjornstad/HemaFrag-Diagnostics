@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -181,6 +182,87 @@ def test_yearly_orchestration_writes_resumable_manifest(
     assert persisted["status"] == "completed"
     assert events[0]["event"] == "run_started"
     assert events[-1]["event"] == "run_finished"
+
+
+def test_yearly_orchestration_cancels_between_months_without_combining(
+    tmp_path,
+    monkeypatch,
+):
+    input_root = tmp_path / "input"
+    (input_root / "2026_01_run").mkdir(parents=True)
+    (input_root / "2026_02_run").mkdir(parents=True)
+    output_root = tmp_path / "output"
+    cancel_event = threading.Event()
+    calls: list[str] = []
+    events: list[dict] = []
+
+    def fake_backfill(**kwargs):
+        month = kwargs["month"]
+        calls.append(month)
+        cancel_event.set()
+        return {
+            "folders": {
+                f"{month}_run": {"month": month, "status": "done"}
+            }
+        }
+
+    monkeypatch.setattr(
+        "scripts.run_clonality_yearly.run_clonality_backfill",
+        fake_backfill,
+    )
+    monkeypatch.setattr(
+        "scripts.run_clonality_yearly.combine_run_root",
+        lambda *_args, **_kwargs: pytest.fail("cancelled run must not combine"),
+    )
+
+    result = run_yearly_validation(
+        year_label="2026",
+        input_root=input_root,
+        output_root=output_root,
+        run_name="cancelled",
+        months=["2026_01", "2026_02"],
+        cancel_event=cancel_event,
+        progress_callback=events.append,
+    )
+
+    persisted = json.loads(
+        (Path(result["run_dir"]) / "full_2026_run_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert calls == ["2026_01"]
+    assert result["status"] == "cancelled"
+    assert persisted["status"] == "cancelled"
+    assert persisted["months"]["2026_01"]["status"] == "done"
+    assert "2026_02" not in persisted["months"]
+    assert persisted["combined_workbook_path"] == ""
+    assert any(event["event"] == "run_cancelled" for event in events)
+
+
+def test_cancellation_during_combine_reports_completed_output(tmp_path, monkeypatch):
+    source = tmp_path / "input"
+    source.mkdir()
+    cancel_event = threading.Event()
+    workbook = tmp_path / "combined.xlsx"
+
+    def fake_combine(*_args, **_kwargs):
+        cancel_event.set()
+        workbook.touch()
+        return workbook
+
+    monkeypatch.setattr("scripts.run_clonality_yearly.combine_run_root", fake_combine)
+    result = run_yearly_validation(
+        year_label="2026",
+        input_root=source,
+        output_root=tmp_path / "output",
+        run_name="combine-boundary",
+        months=["2026_01"],
+        cancel_event=cancel_event,
+    )
+
+    assert result["status"] == "completed"
+    assert result["cancellation_requested"] is True
+    assert result["combined_workbook_path"] == str(workbook.resolve())
 
 
 def test_archive_runner_support_modules_are_available():

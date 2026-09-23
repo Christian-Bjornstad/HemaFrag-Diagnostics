@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -89,6 +90,7 @@ def run_yearly_validation(
     skip_html_reports: bool = True,
     progress_callback: Callable | None = None,
     status_callback: Callable | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     year = str(year_label).strip()
     if not re.fullmatch(r"\d{4}", year):
@@ -141,8 +143,12 @@ def run_yearly_validation(
     previous_rust = APP_SETTINGS.setdefault("engine", {}).get("use_rust", True)
     APP_SETTINGS["engine"]["use_rust"] = bool(use_rust)
     failures: list[str] = []
+    cancelled = False
     try:
         for month_key in month_keys:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
             folders = month_map.get(month_key, [])
             month_dir = run_root / "month_runs" / month_key
             month_dir.mkdir(parents=True, exist_ok=True)
@@ -218,21 +224,33 @@ def run_yearly_validation(
                     "status": month_state["status"],
                 },
             )
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
     finally:
         APP_SETTINGS["engine"]["use_rust"] = previous_rust
 
     workbook_path: Path | None = None
-    try:
-        workbook_path = combine_run_root(
-            run_root,
-            run_root / f"track-clonality-{year}-overview.xlsx",
-            year_label=year,
-            include_sl=include_sl,
-        )
-    except FileNotFoundError:
-        workbook_path = None
+    cancelled = cancelled or bool(cancel_event and cancel_event.is_set())
+    if not cancelled:
+        try:
+            workbook_path = combine_run_root(
+                run_root,
+                run_root / f"track-clonality-{year}-overview.xlsx",
+                year_label=year,
+                include_sl=include_sl,
+            )
+        except FileNotFoundError:
+            workbook_path = None
 
-    manifest["status"] = "completed_with_errors" if failures else "completed"
+    manifest["status"] = (
+        "cancelled"
+        if cancelled
+        else "completed_with_errors" if failures else "completed"
+    )
+    manifest["cancellation_requested"] = cancelled or bool(
+        cancel_event and cancel_event.is_set()
+    )
     manifest["failed_items"] = failures
     manifest["combined_workbook_path"] = (
         str(workbook_path.resolve()) if workbook_path else ""
@@ -241,6 +259,15 @@ def run_yearly_validation(
     manifest["updated_at_utc"] = _utc_now()
     manifest["completed_at_utc"] = _utc_now()
     _write_manifest(manifest_path, manifest)
+    if cancelled:
+        _emit(
+            progress_callback,
+            {
+                "event": "run_cancelled",
+                "manifest_path": str(manifest_path),
+                "run_dir": str(run_root),
+            },
+        )
     _emit(
         progress_callback,
         {
@@ -257,7 +284,14 @@ def run_yearly_validation(
             "run_dir": str(run_root),
         },
     )
-    _emit(status_callback, "Yearly archive run finished")
+    _emit(
+        status_callback,
+        (
+            "Yearly archive run cancelled at a safe month boundary"
+            if cancelled
+            else "Yearly archive run finished"
+        ),
+    )
     return manifest
 
 
