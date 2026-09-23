@@ -71,6 +71,14 @@ def test_operation_handle_keeps_identity_and_settles_once(qapp, window):
     assert window.operation_coordinator.active_handles() == ()
 
 
+def test_window_wires_one_coordinator_to_all_worker_tabs(window):
+    coordinator = window.operation_coordinator
+
+    assert window.tab_run.operation_coordinator is coordinator
+    assert window.tab_archive_runner._operation_coordinator is coordinator
+    assert window.tab_ladder._operation_coordinator is coordinator
+
+
 def test_close_requests_cancel_once_stays_responsive_and_rejects_new_work(
     qapp,
     window,

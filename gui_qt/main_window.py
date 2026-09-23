@@ -220,6 +220,11 @@ class MainWindow(QMainWindow):
         self.tab_settings_flt3 = TabAnalysisSettings("flt3")
         self.tab_settings_general = TabAnalysisSettings("general")
 
+        # One lifecycle owner must see work from every shared thread-pool tab.
+        self.tab_run.set_operation_coordinator(self.operation_coordinator)
+        self.tab_ladder.set_operation_coordinator(self.operation_coordinator)
+        self.tab_archive_runner.set_operation_coordinator(self.operation_coordinator)
+
         # Connect settings saved to reload run defaults
         self.tab_settings_clonality.settings_saved.connect(self._on_settings_saved)
         self.tab_settings_flt3.settings_saved.connect(self._on_settings_saved)
