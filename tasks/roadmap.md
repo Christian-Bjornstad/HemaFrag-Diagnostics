@@ -1,6 +1,6 @@
 # Videre utvikling etter UI- og stabilitetsopprydding
 
-Dato: 2026-09-19, oppdatert 2026-09-22. Dette er utviklingsbehov, ikke en påstand om at eksisterende manifest-, QC- eller rapportfunksjoner mangler helt. Skill bekreftede hull fra områder som trenger mer verifikasjon.
+Dato: 2026-09-19, oppdatert 2026-09-23. Dette er utviklingsbehov, ikke en påstand om at eksisterende manifest-, QC- eller rapportfunksjoner mangler helt. Skill bekreftede hull fra områder som trenger mer verifikasjon.
 
 Oppdatert etter implementering: S01–S10 og S12–S13 er levert, den foreldreløse Archive-wrapperen er fjernet, og ML-/trenings-/labeling-funksjonaliteten er avviklet. Se `execution-log.md` for testbevis. De tre «Nå»-radene nedenfor beskriver opprinnelig leveransegrunnlag; gjenværende arbeid der er fysisk/faglig validering og ekstern CI. Compare-worker er fjernet, og den observerte Archive-klippingen ved laptopbredde er rettet; generell worker-livssyklus og høy-DPI-validering gjenstår.
 
@@ -14,7 +14,7 @@ Ny prioritering etter andre review: stale Excel-verdier og falsk ferdigstatus er
 | Nå | Enklere navigasjon og Settings | Compare ubrukt, feil kontekst, General→Archive unsupported | S06–S09 oppfylt |
 | Nå | Reell automatisert regresjonskontroll | Lokal testsuite finnes; CI kjører feil runtime og bare et lite utvalg | S10 og isolerte UI-tester oppfylt |
 | Neste | Fast kjøringskontekst gjennom hele motoren | Registry/pipeline leser global `APP_SETTINGS`; UI-vern alene er begrenset | Analyse-ID, settings-snapshot og run-ID følger hvert arbeid eksplisitt; endring i UI påvirker ikke startet arbeid |
-| Neste | Livssyklus for bakgrunnsjobber | Run har stopp; ingen appnivå-closeEvent funnet i gui_qt, Compare har QThread | Definert stans/avslutning for alle workertyper; ingen ødelagte referanser, falsk slutt eller halvpresenterte resultater |
+| Neste | Livssyklus for bakgrunnsjobber | R07-forsøket bekrefter at vindu/event-loop lukkes mens syntetiske workere fortsetter og Run-cancel forblir usatt; virkelig rapportkorrupsjon/krasj/heng er ikke reprodusert | Appnivå operation-coordinator drenerer alle workertyper asynkront ved trygg grense; ingen GUI-blokkering, terminate, falsk slutt eller halvpresenterte resultater |
 | Neste | Historikk for manuelle korrigeringer | SQLite lagrer siste record med UPSERT; loader importerer sidecar | Tidligere revisjon, aktivering/deaktivering, kildeidentitet, operatør og konsumert revisjon kan spores |
 | Neste | Backup og flytting av arbeidsoppsett | Settings og ladder-DB er lokale; full backup-/restoreflyt ikke verifisert | Dokumentert eksport/import og testet gjenoppretting på ny maskin uten å miste korrigeringsidentitet |
 | Neste | Reelle arbeidsflyttester | Mye unit-testdekning, men påviste UI-feil passerte | Midlertidig appmiljø tester kjør→review→lagre→gjenåpne→rerun→rapporter med feilinjeksjon |
@@ -28,6 +28,8 @@ Ny prioritering etter andre review: stale Excel-verdier og falsk ferdigstatus er
 ### D01 — Eksplisitt kjøringskontekst
 
 Start med kallkjeden `TabBatch → core.batch → core.runner → core.pipeline → registry`. Kartlegg alle reads av APP_SETTINGS i denne kjeden. Innfør en liten, eksplisitt kontekst med analyse-ID, profilkopi og run-ID ved arbeidsstart. Migrer én kjøringsvei om gangen; behold kompatibilitet for CLI under overgangen.
+
+R07-kartleggingen i `robustness-r07-investigation.md` viser også downstream-reads i engine-flagg, analysepipelines, rapportering og tracking, samt bakgrunnsworkere som muterer aktiv analyse. Bruk de vertikale S1–S5-snittene der; UI-vern er ikke en erstatning for eksplisitt context.
 
 Akseptanse: to syntetiske kjøringer med ulike profiler påvirker ikke hverandre; callbacks knyttes til riktig run-ID; manifestet beskriver de innstillingene som faktisk ble brukt. En endring i GUI etter arbeidsstart endrer ikke dispatch eller rapportkontekst.
 
@@ -65,4 +67,4 @@ Akseptanse: dokumentasjonen følger faktisk UI; en ny operatør kan fullføre en
 
 ## Anbefalt leveranserekkefølge
 
-Først gjennomfør stabilitets- og oppryddingsoppgavene i `todo.md`. Deretter D01/D02 for mer pålitelig tilstand og sporbarhet, D03 for komplett redigeringsflyt og D04 for fersk validering/ytelse. D05 oppdateres samtidig med de aktuelle endringene. Utvidelser som nye modeller, nye analysetyper og ny sammenlikningsfunksjon kommer etter at dette grunnlaget er verifisert.
+Først gjennomfør stabilitets- og oppryddingsoppgavene i `todo.md`. Deretter gjennomføres R07-planens close-livssyklus og D01s settings-snapshot som separate, vertikale endringer; de skal ikke skjules i en knappretting. D02 følger for mer sporbarhet, D03 for komplett redigeringsflyt og D04 for fersk validering/ytelse. D05 oppdateres samtidig med de aktuelle endringene. Utvidelser som nye modeller, nye analysetyper og ny sammenlikningsfunksjon kommer etter at dette grunnlaget er verifisert.

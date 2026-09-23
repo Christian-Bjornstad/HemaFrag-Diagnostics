@@ -1,6 +1,6 @@
 # Utføringsliste for GPT-5.6 Sol
 
-Les `plan.md` først. Status per 2026-09-22: implementeringen av S01–S10 og S12–S13 er levert; ML-/trenings-/labelingfunksjonaliteten er avviklet. FLT3-valideringsverktøy vurderes separat.
+Les `plan.md` først. Status per 2026-09-23: implementeringen av S01–S10 og S12–S13 er levert; ML-/trenings-/labelingfunksjonaliteten er avviklet. FLT3-valideringsverktøy vurderes separat.
 Se `execution-log.md` for faktisk verifikasjon og gjenværende begrensninger. Avkrysningspunktene nedenfor er den opprinnelige, detaljerte akseptanselisten, ikke en påstand om at all manuell/faglig validering er fullført.
 S = liten oppgave, M = middels. Filoversiktene er startpunkter, ikke anledning til å endre hele filene.
 
@@ -13,11 +13,14 @@ Detaljer, filer, avhengigheter og testkommandoer ligger i `robustness-plan-2026-
 - [x] M01–M02: Fjern ML/labeling fra GUI og runtime.
 - [x] M03: Frikoble tracking uten å miste historiske kolonner.
 - [x] M04–M06: Fjern config, annotation-hjelpere, scripts og forskningsmotorer i fokuserte commits.
-- [ ] M07: Dokumentasjon, referanse-/dependency-audit og samlet verifikasjon. Dokumentasjon/dependencies/importvern er ferdig; full suite og native smoke gjenstår i sluttgaten.
-- [ ] R03: Sikker review-bundle-lagring med konsistens/recovery.
-- [ ] R05–R06: Eierstyrte metadata-, scan-, load- og rerun-operasjoner.
-- [ ] R02: Beslutning om filidentitet og krasjsikker workbook-publisering.
-- [ ] R07: Undersøk avslutning og lag separat snapshot-migreringsplan.
+- [x] M07: Dokumentasjon, referanse-/dependency-audit og samlet lokal verifikasjon. Lokal retirement-gate er grønn med full suite, compileall, diffcheck, tomt aktivt Python-referansesøk og faktisk isolert native-wheel-smoke. Ekstern CI samt operatør- og klinisk validering tilhører fortsatt åpne R08.
+- [x] R02: Beslutning om filidentitet og krasjsikker workbook-publisering.
+- [x] R03: Sikker review-bundle-lagring med konsistens/recovery.
+- [x] R05: Bind metadata- og rerun-resultater til riktig analyse-/filkontekst.
+- [x] R06a: Én eierstyrt Ladder scan/load-livssyklus.
+- [x] R06b: Run scan er del av aktiv-operasjon-vernet ved analyse-/settingsbytte.
+- [x] R07 undersøkelse: Reproduser close-gapet syntetisk og dokumenter avgrenset close-/snapshot-plan i `robustness-r07-investigation.md`.
+- [ ] R07 implementasjon: Innfør appnivå draining/cancellation og per-run settings-snapshot i separate vertikale endringer.
 - [ ] R08: Samlet feilinjeksjon, CI og faktisk driftsvalidering.
 
 ## S01 — Beskytt aktiv kjøring mot analyse- og settingsbytte (M)

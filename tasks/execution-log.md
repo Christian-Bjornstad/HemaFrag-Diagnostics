@@ -79,4 +79,45 @@ Verifisering for denne deloppgaven:
 - `python -m pytest --collect-only -q`: **691 tester samlet** uten importfeil.
 - `python -m compileall -q qt_app.py core gui_qt scripts`: bestått.
 - `git diff --check`: bestått; Git varslet kun om framtidig LF→CRLF-normalisering i `requirements.txt`.
-- Referansesøk i aktiv Python-kode finner slettede navn bare i eksplisitte fraværs-/importvern-tester. Full pytest og native wheel-smoke kjøres av orkestratorens sluttgate før M07 markeres komplett.
+- Referansesøk i aktiv Python-kode fant ingen referanser til de slettede navnene. Orkestratorens lokale sluttgate med full pytest, compileall, diffcheck og faktisk isolert native-wheel-smoke er senere gjennomført; se samlet lokal verifikasjon nedenfor.
+
+## R02 — krasjsikker publisering av tracking
+
+Gjennomført 2026-09-22 med atomisk erstatning og uten direkte overskrivingsfallback:
+
+- Staging-filen lukkes og `fsync`-es før publisering. POSIX bruker deretter `os.replace` og `fsync` av målkatalogen; Windows bruker `MoveFileExW` med `REPLACE_EXISTING | WRITE_THROUGH` via standardbibliotekets `ctypes`.
+- Lik staging- og målfil avvises før oppryddingsblokken. Feil ved filsynk, replace eller katalogsynk propageres, og en blokkert replace skriver aldri direkte over siste gode arbeidsbok.
+- Kontrakten lover komplett gammel eller ny arbeidsbok ved prosesskrasj. Strømbruddsvarighet avhenger fortsatt av at operativsystem, filsystem og lagringsenhet respekterer sync-/write-through-forespørselen.
+- `python -m pytest -q tests/test_tracking_workbook_io.py tests/test_clonality_tracking_output.py tests/test_flt3_tracking_output.py`: **26 bestått** på 9,17 sekunder.
+- Isolert Windows-test med faktisk Excel COM-lås på en syntetisk midlertidig `.xlsx`: `PermissionError [WinError 5]`, original SHA-256 uendret og staging-filen fjernet. Ingen kliniske filer eller brukerfiler ble brukt.
+- `python -m compileall -q qt_app.py core gui_qt scripts`: bestått.
+- `git diff --check`: bestått.
+
+## R03/R05/R06 — review-bundle og asynkron kontekst
+
+Gjennomført 2026-09-23:
+
+- R03 samler CSV og summary i en transaksjonell review-bundle-kontrakt med staging, journal og recovery. Både Run-carry og Ladder-lagring går gjennom samme kontrakt; lagringsfeil skal ikke presenteres som suksess.
+- R05 binder metadata-resultater til request-ID, analyse-ID og løst filspor. Analyse-/kontekstbytte ugyldiggjør eldre callbacks, og single-/bundle-rerun låser kildekonteksten til gjeldende operasjon er ferdig.
+- R06a bruker én gjensidig utelukkende Ladder source-load-livssyklus for scan og bundle-load; stale success/error-callbacks får ikke reaktivere kontroller som eies av en nyere operasjon.
+- R06b inkluderer Run scan i MainWindow sitt aktiv-operasjon-vern. Analyse- og settingsbytte avvises mens scan eier konteksten, og success/error frigjør riktig scan-request uten å nullstille en aktiv analysejobb.
+
+## R07 — close-/snapshot-undersøkelse
+
+Undersøkelsen er dokumentert i `robustness-r07-investigation.md`; implementasjonen er fortsatt åpen.
+
+- Kontrollert offscreen-reproduksjon brukte ordinær `MainWindow`/`Worker`, en kooperativ syntetisk jobb og en midlertidig syntetisk rapportfil. Close returnerte og Qt-eventløkken stanset etter ca. 15 ms mens cancellation fortsatt var usatt, begge workere kjørte og filen bare inneholdt første skrivefase. Etter kontrollert testopprydding var begge workere ferdige og fase 2 skrevet.
+- Dette bekrefter arbeid etter skjult UI/event-loop-stopp. Virkelig HemaFrag HTML/XLSX-korrupsjon, krasj og heng er ikke reprodusert og omtales derfor bare som statisk risiko.
+- Kartleggingen viser mutable `APP_SETTINGS`-reads gjennom batch/runner/pipeline/registry og downstream rapport/tracking, samt rerun-workere som muterer aktiv analyse. Planen deler close-coordinator og per-run `RunContext` i separate, testbare migreringssnitt.
+
+## Samlet lokal verifikasjon 2026-09-23
+
+Kjørt av orkestratoren etter integrasjon:
+
+- Tre siste integrasjonsrettelser ble verifisert samlet: Ladder ugyldiggjør source-callbacks ved analysebytte; Run nullstiller scan-kontrollene; Locate File/annotation er serialisert, og CSV+relocation-audit publiseres atomisk med en koordinert toprosesstest.
+- Full `python -m pytest -q` etter alle tre integrasjonsrettelsene: **734 bestått, 6 skipped, 4 warnings** på **95,22 sekunder**. Prosessen avsluttet uten teardown-traceback.
+- Målrettet native/ladder/HTML-utvalg: **35 bestått**. Native-wheel-delen av dette in-process-testutvalget bruker mocking og er derfor ikke en faktisk installasjonstest av wheel-filen.
+- Faktisk native-wheel-smoke ble kjørt isolert med `pip install --no-deps --target <temp> wheels/fraggler_kernels-0.1.2-cp310-abi3-win_amd64.whl`; deretter returnerte `fraggler_native.is_available()` `True`, og rapportert versjon var `0.1.2`. Brukerens Python-miljø ble ikke endret.
+- `python -m compileall -q qt_app.py core gui_qt scripts` og `git diff --check`: bestått.
+- Referansesøk i aktiv Python-kode etter de avviklede navnene: ingen treff.
+- M07 er komplett for den lokale retirement-gaten. R08 er fortsatt åpen for ekstern CI, operatørvalidering og klinisk validering; de lokale resultatene er programvareregresjon og utgjør ikke ny klinisk godkjenning.
