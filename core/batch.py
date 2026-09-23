@@ -467,6 +467,7 @@ def run_batch_jobs(
     from core.assay_config import OUTDIR_NAME
     settings = run_context.settings_snapshot if run_context is not None else APP_SETTINGS
     runner_context_kwargs = {"run_context": run_context} if run_context is not None else {}
+    tracking_context_kwargs = {"settings": settings} if run_context is not None else {}
     s_qc = settings.get("qc", {})
     active_analysis = (
         run_context.analysis_id
@@ -572,7 +573,7 @@ def run_batch_jobs(
                 configured = str(analysis_batch.get("global_tracking_excel_path") or "").strip()
                 global_path = Path(configured).expanduser() if configured else None
                 if global_path is not None:
-                    update_clonality_tracking_workbook(global_path, entries)
+                    update_clonality_tracking_workbook(global_path, entries, **tracking_context_kwargs)
             if global_path is not None:
                 log(f"[BATCH] Updated global clonality tracking workbook: {global_path}")
         except Exception as exc:
@@ -805,6 +806,7 @@ def run_batch_jobs(
                                         update_clonality_tracking_workbook,
                                         _clonality_tracking_path(agg_outdir),
                                         entries,
+                                        **tracking_context_kwargs,
                                     )
                         if defer_dit_html_reports:
                             log(f"[BATCH] Deferred aggregated DIT report for {job_name} with {len(entries)} entries.")
@@ -895,6 +897,7 @@ def run_batch_jobs(
                                     update_clonality_tracking_workbook,
                                     _clonality_tracking_path(agg_outdir or output_base),
                                     qc_entries,
+                                    **tracking_context_kwargs,
                                 )
                             _update_global_clonality_tracking(qc_entries)
                         log(f"[BATCH] Collected {len(qc_entries)} tracking entries from QC job {job_name}.")
@@ -980,6 +983,7 @@ def run_batch_jobs(
                                         update_clonality_tracking_workbook,
                                         _clonality_tracking_path(agg_outdir),
                                         entries,
+                                        **tracking_context_kwargs,
                                     )
                         if defer_dit_html_reports:
                             log(f"[BATCH] Deferred aggregated DIT report for {job_name} with {len(entries)} entries.")
@@ -1226,6 +1230,7 @@ def run_batch_jobs(
                     update_clonality_tracking_workbook,
                     _clonality_tracking_path(agg_outdir),
                     dit_report_entries,
+                    **tracking_context_kwargs,
                 )
                 _update_global_clonality_tracking(dit_report_entries)
             log(f"[BATCH] Successfully built aggregated DIT reports in {agg_outdir}")
@@ -1256,6 +1261,7 @@ def run_batch_jobs(
                 update_clonality_tracking_workbook,
                 _clonality_tracking_path(agg_outdir),
                 dit_report_entries,
+                **tracking_context_kwargs,
             )
             _update_global_clonality_tracking(dit_report_entries)
         if block_dit_for_ladder_review:

@@ -1,6 +1,15 @@
 # R07 — undersøkelse av trygg avslutning og operasjonssnapshot
 
-Dato: 2026-09-23. Status: undersøkelse og arkitekturplan; ingen livssyklus- eller settingsarkitektur er implementert her.
+Dato: 2026-09-23. Denne rapportens reproduksjon og «nåværende» kodebeskrivelse er et historisk før-bilde. Status for implementeringen står nedenfor.
+
+## Implementeringsstatus 2026-09-23
+
+- C1–C3: appnivå-koordinator og asynkron, trygg lukking er implementert for aktive Run-, Archive- og Ladder-workere. Syntetisk subprocess-smoke bekrefter at en rapportskriver dreneres før Qt avslutter. Dette er ikke en test av alle virkelige rapportformater eller ekstern prosess-terminering.
+- S1–S3: frosset `RunContext` med analyse-ID, run-ID og settings-fingerprint følger Run-scan, batch, runner og eksplisitt pipeline-dispatch. Legacy/CLI-kall har fortsatt en kompatibilitetsbane uten context.
+- S4 pågår: General-klassifisering og Clonality timeout, prewarm, interpretation og tracking leser snapshotet når det er gitt. Batchens lokale og globale Clonality tracking-skrivere mottar nå samme QC-snapshot. FLT3 og felles analyse-/rapportkode har fortsatt globale reads; to samtidige kjøringer er derfor ikke dokumentert fullstendig isolert ennå.
+- S5 gjenstår: Ladder/Archive og enkelte rerun-baner bruker fortsatt globale settings-writes/reads. Disse må migreres før snapshot-kontrakten kan kalles ende-til-ende.
+
+Risikotabeller og «ferdigkriterier» nedenfor beholdes som kartlegging og akseptansemål, ikke som påstand om nåværende produktstatus.
 
 ## Kort konklusjon
 

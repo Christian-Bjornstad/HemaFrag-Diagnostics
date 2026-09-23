@@ -123,6 +123,7 @@ def test_context_selects_clonality_tracking_path_without_global_settings(tmp_pat
     context = RunContext.create(
         analysis_id="clonality",
         settings={
+            "qc": {"sample_peak_window_bp": 9.0},
             "analyses": {
                 "clonality": {
                     "batch": {
@@ -149,7 +150,7 @@ def test_context_selects_clonality_tracking_path_without_global_settings(tmp_pat
     monkeypatch.setattr(
         tracking_excel,
         "update_clonality_tracking_workbook",
-        lambda path, _entries: paths.append(path),
+        lambda path, _entries, *, settings=None: paths.append((path, settings)),
     )
 
     run_batch_jobs(
@@ -165,4 +166,7 @@ def test_context_selects_clonality_tracking_path_without_global_settings(tmp_pat
         run_context=context,
     )
 
-    assert paths == [selected, snapshot_global]
+    assert paths == [
+        (selected, context.settings_snapshot),
+        (snapshot_global, context.settings_snapshot),
+    ]
