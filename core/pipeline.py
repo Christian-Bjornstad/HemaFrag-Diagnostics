@@ -37,6 +37,11 @@ def run_pipeline(
         if run_context is not None
         else get_analysis_module("pipeline")
     )
+    context_kwargs = (
+        {"run_context": run_context}
+        if run_context is not None and run_context.analysis_id in {"general", "clonality"}
+        else {}
+    )
     return mod.run_pipeline(
         fsa_dir=fsa_dir,
         base_outdir=base_outdir,
@@ -47,4 +52,5 @@ def run_pipeline(
         tracking_excel_path=tracking_excel_path,
         update_tracking_workbook=update_tracking_workbook,
         progress_callback=progress_callback,
+        **context_kwargs,
     )

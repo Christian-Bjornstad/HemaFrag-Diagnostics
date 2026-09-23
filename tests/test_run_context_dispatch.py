@@ -70,24 +70,26 @@ def test_parallel_contexts_dispatch_despite_global_mutation(monkeypatch, tmp_pat
     assert {global_analysis for _, global_analysis in seen} == {"flt3"}
 
 
-def test_pipeline_does_not_send_settings_to_legacy_analysis(monkeypatch, tmp_path):
+@pytest.mark.parametrize("analysis_id", ["general", "clonality"])
+def test_pipeline_forwards_context_to_context_aware_analysis(monkeypatch, tmp_path, analysis_id):
     from core import pipeline
 
     received = []
 
-    def legacy_pipeline(*, fsa_dir, base_outdir, assay_folder_name,
+    def analysis_pipeline(*, fsa_dir, base_outdir, assay_folder_name,
                         return_entries, make_dit_reports, mode,
                         tracking_excel_path, update_tracking_workbook,
-                        progress_callback):
-        received.append(fsa_dir)
+                        progress_callback, run_context):
+        received.append((fsa_dir, run_context))
         return []
 
     monkeypatch.setattr(
         pipeline, "get_analysis_module",
-        lambda submodule, *, analysis_id=None: SimpleNamespace(run_pipeline=legacy_pipeline),
+        lambda submodule, *, analysis_id=None: SimpleNamespace(run_pipeline=analysis_pipeline),
     )
-    assert pipeline.run_pipeline(tmp_path, run_context=_context("general")) == []
-    assert received == [tmp_path]
+    context = _context(analysis_id)
+    assert pipeline.run_pipeline(tmp_path, run_context=context) == []
+    assert received == [(tmp_path, context)]
 
 
 @pytest.mark.parametrize("collect", [False, True])

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
+from typing import Any
 
 from config import APP_SETTINGS
 from core.assay_config import DEFAULT_LIZ_LADDER, DEFAULT_ROX_LADDER
@@ -54,17 +56,19 @@ GENERAL_PROFILE_LADDER_STEPS = {
 }
 
 
-def _general_profile(settings: dict | None = None) -> dict:
-    settings = settings or APP_SETTINGS
+def _general_profile(settings: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    settings = APP_SETTINGS if settings is None else settings
     analyses = settings.get("analyses", {})
     profile = analyses.get("general", {})
-    return profile if isinstance(profile, dict) else {}
+    return profile if isinstance(profile, Mapping) else {}
 
 
-def get_general_pipeline_settings(settings: dict | None = None) -> dict:
+def get_general_pipeline_settings(
+    settings: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
     profile = _general_profile(settings)
     pipeline = profile.get("pipeline", {})
-    return pipeline if isinstance(pipeline, dict) else {}
+    return pipeline if isinstance(pipeline, Mapping) else {}
 
 
 def normalize_ladder_name(ladder_name: str | None) -> str:
@@ -101,7 +105,7 @@ def choose_primary_channel(trace_channels: list[str], preferred: str | None = No
     return trace_channels[0] if trace_channels else DEFAULT_TRACE_CHANNELS[0]
 
 
-def resolve_runtime_config(settings: dict | None = None) -> dict:
+def resolve_runtime_config(settings: Mapping[str, Any] | None = None) -> dict:
     pipeline = get_general_pipeline_settings(settings)
     trace_channels = normalize_trace_channels(pipeline.get("trace_channels"))
     primary_channel = choose_primary_channel(
