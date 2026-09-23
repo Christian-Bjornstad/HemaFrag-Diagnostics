@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 from core.analyses.registry import get_analysis_module
+from core.run_context import RunContext
 
 def _scan_files(fsa_dir: Path, mode: str = "all") -> list[Path]:
     """Compatibility wrapper for tests and shared callers."""
@@ -27,9 +28,15 @@ def run_pipeline(
     tracking_excel_path: Path | None = None,
     update_tracking_workbook: bool = True,
     progress_callback=None,
+    *,
+    run_context: RunContext | None = None,
 ) -> list[dict] | None:
     """Delegates pipeline execution to the active analysis module."""
-    mod = get_analysis_module("pipeline")
+    mod = (
+        get_analysis_module("pipeline", analysis_id=run_context.analysis_id)
+        if run_context is not None
+        else get_analysis_module("pipeline")
+    )
     return mod.run_pipeline(
         fsa_dir=fsa_dir,
         base_outdir=base_outdir,

@@ -11,12 +11,12 @@ def get_active_analysis_name() -> str:
     """Returns the name of the active analysis (clonality, flt3, etc)."""
     return APP_SETTINGS.get("active_analysis", "clonality")
 
-def get_analysis_module(submodule: str) -> Any:
+def get_analysis_module(submodule: str, *, analysis_id: str | None = None) -> Any:
     """
-    Returns the module for the active analysis and submodule (config, classification, pipeline).
-    Example: get_analysis_module("config") -> core.analyses.clonality.config
+    Return a submodule for an explicit analysis, or the active analysis for legacy callers.
+    Missing explicit modules raise instead of silently selecting clonality.
     """
-    name = get_active_analysis_name()
+    name = get_active_analysis_name() if analysis_id is None else analysis_id
     module_path = f"core.analyses.{name}.{submodule}"
     try:
         return importlib.import_module(module_path)
@@ -25,7 +25,7 @@ def get_analysis_module(submodule: str) -> Any:
         # not when an inner dependency import failed from inside that module.
         missing_name = exc.name or ""
         analysis_package = f"core.analyses.{name}"
-        if missing_name not in {analysis_package, module_path}:
+        if analysis_id is not None or missing_name not in {analysis_package, module_path}:
             raise
         fallback_path = f"core.analyses.clonality.{submodule}"
         return importlib.import_module(fallback_path)
