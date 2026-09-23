@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from config import APP_SETTINGS
+from collections.abc import Mapping
 from core.analyses.clonality.interpretation import (
     TRACKING_COLUMNS as CLONALITY_INTERPRETATION_COLUMNS,
     interpretation_enabled,
@@ -102,8 +103,9 @@ PEAK_SHEET_COLUMNS = [
 ]
 
 
-def build_clonality_qc_rules() -> QCRules:
-    qc_settings = APP_SETTINGS.get("qc", {})
+def build_clonality_qc_rules(settings: Mapping | None = None) -> QCRules:
+    source = APP_SETTINGS if settings is None else settings
+    qc_settings = source.get("qc", {})
     sample_window = qc_settings.get("sample_peak_window_bp", qc_settings.get("w_sample", 3.0))
     ladder_window = qc_settings.get("ladder_peak_window_bp", qc_settings.get("w_ladder", 3.0))
     return QCRules(
@@ -165,10 +167,12 @@ def update_clonality_tracking_workbook(
     entries: list[dict],
     rules: QCRules | None = None,
     refresh_dashboard: bool = True,
+    *,
+    settings: Mapping | None = None,
 ) -> None:
     excel_path.parent.mkdir(parents=True, exist_ok=True)
 
-    rules = rules or build_clonality_qc_rules()
+    rules = build_clonality_qc_rules(settings) if rules is None else rules
     run_columns = _run_sheet_columns()
     df_runs, df_peaks, pk_identity_keys = _build_tracking_frames(entries, rules, run_columns=run_columns)
     # If no data and file exists, nothing to do. If no data and file MISSING, we create the skeleton below.
@@ -635,25 +639,31 @@ def _split_run_frames(runs: pd.DataFrame, *, run_columns: list[str] | None = Non
     return patient_runs, control_runs
 
 
-def resolve_global_clonality_tracking_path() -> Path | None:
-    batch_settings = APP_SETTINGS.get("analyses", {}).get("clonality", {}).get("batch", {})
+def resolve_global_clonality_tracking_path(settings: Mapping | None = None) -> Path | None:
+    source = APP_SETTINGS if settings is None else settings
+    batch_settings = source.get("analyses", {}).get("clonality", {}).get("batch", {})
     configured = str(batch_settings.get("global_tracking_excel_path") or "").strip()
     if configured:
         return Path(configured).expanduser()
     return None
 
 
-def update_global_clonality_tracking_workbook(entries: list[dict]) -> Path | None:
+def update_global_clonality_tracking_workbook(
+    entries: list[dict], *, settings: Mapping | None = None,
+) -> Path | None:
     if not entries:
         return None
-    path = resolve_global_clonality_tracking_path()
+    path = resolve_global_clonality_tracking_path(settings)
     if path is None:
         print_warning(
             "[TRACKING] Clonality master workbook is disabled. Set 'Master Tracking Excel File' in Clonality Settings to enable it."
         )
         return None
     try:
-        update_clonality_tracking_workbook(path, entries)
+        if settings is None:
+            update_clonality_tracking_workbook(path, entries)
+        else:
+            update_clonality_tracking_workbook(path, entries, settings=settings)
     except Exception as exc:
         print_warning(
             f"[TRACKING] Could not update optional clonality master workbook {path}: {exc}. "

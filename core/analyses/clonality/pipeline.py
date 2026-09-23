@@ -12,6 +12,8 @@ import sys
 import __main__
 import threading
 import time
+from collections.abc import Mapping
+from functools import partial
 from pathlib import Path
 from datetime import datetime
 
@@ -49,6 +51,7 @@ from core.html_reports import (
     extract_dit_from_name,
 )
 from core.engine_flags import strict_rust_ladder_enabled
+from core.run_context import RunContext
 from core.analyses.shared_pipeline import (
     finalize_pipeline_run,
     normalize_pipeline_paths,
@@ -95,13 +98,29 @@ def _emit_progress(
     )
 
 
-def _should_use_multiprocessing() -> bool:
-    if strict_rust_ladder_enabled():
+def _plain_settings(value):
+    if isinstance(value, Mapping):
+        return {key: _plain_settings(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_plain_settings(item) for item in value]
+    return value
+
+
+def _should_use_multiprocessing(*, settings: Mapping | None = None) -> bool:
+    strict_env = any(
+        os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+        for name in ("HEMAFRAG_STRICT_RUST_LADDER", "HEMAFRAG_RUST_ONLY")
+    )
+    strict = (
+        strict_rust_ladder_enabled() if settings is None
+        else strict_env or bool(settings.get("engine", {}).get("strict_rust_ladder", False))
+    )
+    if strict:
         return False
     try:
         from config import APP_SETTINGS
-
-        if APP_SETTINGS.get("engine", {}).get("use_rust", False):
+        source = APP_SETTINGS if settings is None else settings
+        if source.get("engine", {}).get("use_rust", False):
             allow_pool = os.environ.get("HEMAFRAG_CLONALITY_ALLOW_PYTHON_POOL_WITH_RUST", "").strip().lower()
             if allow_pool not in {"1", "true", "yes", "on"} and _rust_worker_batch_mode_available():
                 return False
@@ -607,7 +626,9 @@ def _build_ladder_review_only_entry(
     return attach_analysis_provenance(entry)
 
 
-def _analyze_single_file(fsa_path: Path) -> dict | None:
+def _analyze_single_file(
+    fsa_path: Path, *, settings: Mapping | None = None,
+) -> dict | None:
     """Analyze a single FSA file. Returns an entry dict or None if skipped.
 
     This is a top-level function (not a closure) so it can be pickled
@@ -917,17 +938,22 @@ def _analyze_single_file(fsa_path: Path) -> dict | None:
         except Exception as ex:
             print_warning(f"[IGHV] Klarte ikke beregne IGHV-resultater for {fsa.file_name}: {ex}")
 
-    return attach_interpretation_if_enabled(attach_analysis_provenance(entry))
+    enriched = attach_analysis_provenance(entry)
+    if settings is None:
+        return attach_interpretation_if_enabled(enriched)
+    return attach_interpretation_if_enabled(enriched, settings=settings)
 
 
-def _run_analyze_single_file_child(fsa_path: Path, queue) -> None:
+def _run_analyze_single_file_child(
+    fsa_path: Path, queue, settings: Mapping | None = None,
+) -> None:
     previous_worker_setting = os.environ.get("HEMAFRAG_DISABLE_PERSISTENT_RUST_WORKER")
     os.environ["HEMAFRAG_DISABLE_PERSISTENT_RUST_WORKER"] = "1"
     try:
         from core.rust_bridge import reset_rust_engine_stats, rust_engine_stats_snapshot
 
         reset_rust_engine_stats()
-        result = _analyze_single_file(fsa_path)
+        result = _analyze_single_file(fsa_path) if settings is None else _analyze_single_file(fsa_path, settings=settings)
         if isinstance(result, dict):
             result["_rust_engine_stats_delta"] = rust_engine_stats_snapshot()
         queue.put(("ok", result))
@@ -940,7 +966,7 @@ def _run_analyze_single_file_child(fsa_path: Path, queue) -> None:
             os.environ["HEMAFRAG_DISABLE_PERSISTENT_RUST_WORKER"] = previous_worker_setting
 
 
-def _clonality_file_timeout_seconds() -> int:
+def _clonality_file_timeout_seconds(settings: Mapping | None = None) -> int:
     env_value = os.environ.get("HEMAFRAG_CLONALITY_FILE_TIMEOUT_SECONDS", "").strip()
     if env_value:
         try:
@@ -951,8 +977,9 @@ def _clonality_file_timeout_seconds() -> int:
     try:
         from config import APP_SETTINGS
 
+        source = APP_SETTINGS if settings is None else settings
         value = (
-            APP_SETTINGS.get("analyses", {})
+            source.get("analyses", {})
             .get("clonality", {})
             .get("pipeline", {})
             .get("file_timeout_seconds", 0)
@@ -972,16 +999,19 @@ def _can_use_isolated_file_timeout() -> bool:
     return True
 
 
-def _analyze_single_file_with_timeout(fsa_path: Path, timeout_seconds: int) -> tuple[dict | None, str]:
+def _analyze_single_file_with_timeout(
+    fsa_path: Path, timeout_seconds: int, *, settings: Mapping | None = None,
+) -> tuple[dict | None, str]:
     if timeout_seconds <= 0 or not _can_use_isolated_file_timeout():
-        return _analyze_single_file(fsa_path), ""
+        result = _analyze_single_file(fsa_path) if settings is None else _analyze_single_file(fsa_path, settings=settings)
+        return result, ""
 
     import multiprocessing as mp
     import queue as queue_mod
 
     ctx = mp.get_context("fork")
     result_queue = ctx.Queue(maxsize=1)
-    proc = ctx.Process(target=_run_analyze_single_file_child, args=(fsa_path, result_queue))
+    proc = ctx.Process(target=_run_analyze_single_file_child, args=(fsa_path, result_queue, settings))
     proc.start()
 
     try:
@@ -1056,6 +1086,7 @@ def _analyze_files(
     fsa_files: list[Path],
     *,
     progress_callback=None,
+    settings: Mapping | None = None,
 ) -> tuple[list[dict], int]:
     """Performs analysis (ladder fitting, peak detection) on a list of FSA files.
 
@@ -1064,14 +1095,15 @@ def _analyze_files(
     total_files = len(fsa_files)
     use_multiprocessing = (
         progress_callback is None
-        and _should_use_multiprocessing()
+        and _should_use_multiprocessing(settings=settings)
         and total_files >= 2
     )
 
     if not use_multiprocessing:
         from config import APP_SETTINGS
 
-        if APP_SETTINGS.get("engine", {}).get("use_rust", False) and fsa_files:
+        source = APP_SETTINGS if settings is None else settings
+        if source.get("engine", {}).get("use_rust", False) and fsa_files:
             try:
                 from core.rust_bridge import prime_rust_worker_results, reset_rust_engine_stats
 
@@ -1083,7 +1115,7 @@ def _analyze_files(
                 print_warning(f"[RUST] Failed to prewarm clonality worker cache ({ex}).")
 
         results = []
-        file_timeout_seconds = _clonality_file_timeout_seconds()
+        file_timeout_seconds = _clonality_file_timeout_seconds(settings)
         for index, path in enumerate(fsa_files, start=1):
             _emit_progress(
                 progress_callback,
@@ -1125,7 +1157,12 @@ def _analyze_files(
             heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
             heartbeat_thread.start()
             try:
-                result, skip_reason = _analyze_single_file_with_timeout(path, file_timeout_seconds)
+                if settings is None:
+                    result, skip_reason = _analyze_single_file_with_timeout(path, file_timeout_seconds)
+                else:
+                    result, skip_reason = _analyze_single_file_with_timeout(
+                        path, file_timeout_seconds, settings=settings,
+                    )
                 if skip_reason:
                     print_warning(f"[ANALYZE] Skipping {path.name}: {skip_reason}.")
                     _emit_progress(
@@ -1179,11 +1216,17 @@ def _analyze_files(
                     concurrency_plan.numeric_threads_per_worker,
                 ),
             ) as pool:
-                results = pool.map(_analyze_single_file, fsa_files)
+                analyze = _analyze_single_file if settings is None else partial(
+                    _analyze_single_file, settings=_plain_settings(settings),
+                )
+                results = pool.map(analyze, fsa_files)
         except Exception as ex:
             # Fallback to sequential if multiprocessing fails (e.g. frozen app)
             print_warning(f"[PARALLEL] Multiprocessing failed ({ex}), falling back to sequential.")
-            results = [_analyze_single_file(p) for p in fsa_files]
+            results = [
+                _analyze_single_file(p) if settings is None else _analyze_single_file(p, settings=settings)
+                for p in fsa_files
+            ]
 
     entries = [r for r in results if r is not None]
     skipped = len(fsa_files) - len(entries)
@@ -1210,6 +1253,8 @@ def run_pipeline(
     tracking_excel_path: Path | None = None,
     update_tracking_workbook: bool = True,
     progress_callback=None,
+    *,
+    run_context: RunContext | None = None,
 ) -> list[dict] | None:
 
     """
@@ -1223,7 +1268,11 @@ def run_pipeline(
         return [] if return_entries else None
 
     # 2) Analyze
-    entries, _ = _analyze_files(fsa_files, progress_callback=progress_callback)
+    settings = run_context.settings_snapshot if run_context is not None else None
+    if settings is None:
+        entries, _ = _analyze_files(fsa_files, progress_callback=progress_callback)
+    else:
+        entries, _ = _analyze_files(fsa_files, progress_callback=progress_callback, settings=settings)
     if not entries:
         print_warning("Ingen gyldige entries etter analyse – avslutter.")
         return [] if return_entries else None
@@ -1246,8 +1295,12 @@ def run_pipeline(
             "clonality",
             assay_dir,
             CLONALITY_TRACKING_FILENAME,
+            settings={"active_analysis": "clonality", **_plain_settings(settings)} if settings is not None else None,
         )
-        update_clonality_tracking_workbook(resolved_tracking_excel_path, entries)
+        if settings is None:
+            update_clonality_tracking_workbook(resolved_tracking_excel_path, entries)
+        else:
+            update_clonality_tracking_workbook(resolved_tracking_excel_path, entries, settings=settings)
 
     return finalize_pipeline_run(
         entries,

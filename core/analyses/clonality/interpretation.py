@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -34,11 +34,11 @@ TRACKING_COLUMNS = [
 NONSPECIFIC_PEAK_WINDOW_BP = 1.5
 
 
-def interpretation_enabled(settings: dict[str, Any] | None = None) -> bool:
-    settings = settings or APP_SETTINGS
+def interpretation_enabled(settings: Mapping[str, Any] | None = None) -> bool:
+    settings = APP_SETTINGS if settings is None else settings
     profile = settings.get("analyses", {}).get("clonality", {})
     interpretation = profile.get("interpretation", {})
-    if not isinstance(interpretation, dict):
+    if not isinstance(interpretation, Mapping):
         return False
     return bool(interpretation.get("enabled", False))
 
@@ -374,8 +374,10 @@ def interpret_entry(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def attach_interpretation_if_enabled(entry: dict[str, Any]) -> dict[str, Any]:
-    if not interpretation_enabled():
+def attach_interpretation_if_enabled(
+    entry: dict[str, Any], *, settings: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not interpretation_enabled(settings):
         return entry
     result = interpret_entry(entry)
     entry["clonality_interpretation"] = result
