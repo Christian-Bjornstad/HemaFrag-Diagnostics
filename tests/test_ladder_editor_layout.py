@@ -69,6 +69,32 @@ def test_ladder_editor_exposes_grouped_controls_and_scrollable_qc(qapp, monkeypa
     dialog.close()
 
 
+def test_ladder_editor_residual_refresh_leaves_no_deferred_canvas_draw(
+    qapp,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        LadderAdjustmentDialog,
+        "_get_candidates",
+        lambda self: pd.DataFrame(columns=["index", "time", "intensity", "source"]),
+    )
+    monkeypatch.setattr(
+        LadderAdjustmentDialog,
+        "_suggest_auto",
+        lambda self, store_initial: None,
+    )
+    monkeypatch.setattr(
+        LadderAdjustmentDialog,
+        "_refresh_preview_state",
+        lambda self, show_errors: None,
+    )
+    monkeypatch.setattr(LadderAdjustmentDialog, "_focus_initial_step", lambda self: None)
+
+    dialog = LadderAdjustmentDialog(_fake_fsa())
+    assert dialog.residual_canvas._draw_pending is False
+    dialog.close()
+
+
 def test_ladder_editor_round_trips_distinct_exact_markers_in_partial_payload(
     qapp,
     monkeypatch,

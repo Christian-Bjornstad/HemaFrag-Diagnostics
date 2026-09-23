@@ -418,6 +418,8 @@ class MainWindow(QMainWindow):
         """Return the worker-backed operation currently protecting UI context."""
         if self.tab_run._active_run_cancel_event is not None or getattr(self.tab_run, "_review_finalize_active", False):
             return "Run"
+        if self.tab_run.is_scan_active():
+            return "Run scan"
         if self.tab_archive_runner._active_worker is not None:
             return "Archive Runner"
         if self.tab_ladder.is_operation_active():

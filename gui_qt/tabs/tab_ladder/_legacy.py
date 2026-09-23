@@ -71,7 +71,9 @@ class TabLadder(QWidget):
         self._pending_open_editor_after_metadata = False
         self._current_analysis_id = APP_SETTINGS.get("active_analysis", "clonality")
         self._scan_request_id = 0
+        self._source_load_active = False
         self._metadata_request_id = 0
+        self._metadata_request_context: tuple[int, str, Path] | None = None
         self._report_request_id = 0
         self._single_rerun_request_id = 0
         self._review_bundle_rerun_request_id = 0
@@ -129,17 +131,17 @@ class TabLadder(QWidget):
         row1 = QHBoxLayout()
         self.source_dir = QLineEdit()
         self.source_dir.setPlaceholderText("/path/to/folder with .fsa files")
-        btn_browse_dir = QPushButton("Browse Folder...")
-        btn_browse_dir.clicked.connect(self._choose_source_dir)
+        self.btn_browse_dir = QPushButton("Browse Folder...")
+        self.btn_browse_dir.clicked.connect(self._choose_source_dir)
         self.btn_scan = QPushButton("Scan .fsa Files")
         self.btn_scan.clicked.connect(self._scan_files)
-        btn_browse_file = QPushButton("Open Single File...")
-        btn_browse_file.clicked.connect(self._choose_single_file)
+        self.btn_browse_file = QPushButton("Open Single File...")
+        self.btn_browse_file.clicked.connect(self._choose_single_file)
         row1.addWidget(QLabel("Input Folder:"))
         row1.addWidget(self.source_dir, stretch=1)
-        row1.addWidget(btn_browse_dir)
+        row1.addWidget(self.btn_browse_dir)
         row1.addWidget(self.btn_scan)
-        row1.addWidget(btn_browse_file)
+        row1.addWidget(self.btn_browse_file)
         layout.addLayout(row1)
 
         row2 = QHBoxLayout()
@@ -168,14 +170,12 @@ class TabLadder(QWidget):
         row3 = QHBoxLayout()
         self.review_bundle_dir = QLineEdit()
         self.review_bundle_dir.setPlaceholderText("/optional/path/to/review bundle with ladder_review_cases.csv")
-        btn_browse_bundle = QPushButton("Browse Bundle...")
-        btn_browse_bundle.clicked.connect(self._choose_review_bundle)
+        self.btn_browse_bundle = QPushButton("Browse Bundle...")
+        self.btn_browse_bundle.clicked.connect(self._choose_review_bundle)
         self.btn_load_bundle = QPushButton("Load Review Bundle")
         self.btn_load_bundle.clicked.connect(self._load_review_bundle)
         self.btn_load_bundle.setEnabled(False)
-        self.review_bundle_dir.textChanged.connect(
-            lambda text: self.btn_load_bundle.setEnabled(bool(text.strip()))
-        )
+        self.review_bundle_dir.textChanged.connect(self._update_bundle_load_button)
         self.btn_rerun_review_bundle = QPushButton("Run Reviewed Files + Reports")
         self.btn_rerun_review_bundle.setToolTip(
             "Rerun files marked as manually adjusted or reviewed, then rebuild their reports."
@@ -184,7 +184,7 @@ class TabLadder(QWidget):
         self.btn_rerun_review_bundle.setEnabled(False)
         row3.addWidget(QLabel("Review Bundle:"))
         row3.addWidget(self.review_bundle_dir, stretch=1)
-        row3.addWidget(btn_browse_bundle)
+        row3.addWidget(self.btn_browse_bundle)
         row3.addWidget(self.btn_load_bundle)
         row3.addWidget(self.btn_rerun_review_bundle)
         review_layout.addLayout(row3)
@@ -351,7 +351,14 @@ class TabLadder(QWidget):
         elif Path("final").exists():
             self.report_root.setText("final")
 
-    def set_analysis(self, analysis_id: str) -> None:
+    def set_analysis(self, analysis_id: str) -> bool:
+        if self.is_operation_active():
+            self._set_status(
+                "A ladder rerun is active. Wait for it to finish before changing analysis.",
+                error=True,
+            )
+            return False
+
         previous_profile = get_analysis_settings(self._current_analysis_id)
         next_profile = get_analysis_settings(analysis_id)
 
@@ -363,14 +370,25 @@ class TabLadder(QWidget):
         if not self.report_root.text().strip() or self.report_root.text().strip() == previous_output:
             self.report_root.setText(next_profile.get("batch", {}).get("output_base", ""))
 
+        analysis_changed = analysis_id != self._current_analysis_id
         self._current_analysis_id = analysis_id
+        if analysis_changed:
+            self._invalidate_source_request()
+            self._invalidate_metadata_request()
+            self._review_runtime_cache = {}
         self._current_meta = None
         self._current_fsa = None
         self._clear_details()
+        self.btn_open_editor.setEnabled(False)
+        self.btn_rerun_file.setEnabled(False)
+        self.btn_remove_adjustment.setEnabled(False)
+        self.btn_exclude_missing_ladder.setEnabled(False)
+        self.btn_refresh_meta.setEnabled(self._current_file is not None)
         if self._current_file:
             self._set_status(
                 f"Analysis switched to {analysis_id}. Refresh metadata to re-evaluate the current file."
             )
+        return True
 
     @staticmethod
     def _format_file_item(file_path: Path, case: dict | None) -> str:
@@ -380,6 +398,8 @@ class TabLadder(QWidget):
         return format_file_item(file_path, case)
 
     def _choose_source_dir(self) -> None:
+        if self._reject_context_switch_during_rerun():
+            return
         folder = QFileDialog.getExistingDirectory(
             self,
             "Select Folder With .fsa Files",
@@ -399,6 +419,8 @@ class TabLadder(QWidget):
             self._refresh_report_matches()
 
     def _choose_review_bundle(self) -> None:
+        if self._reject_context_switch_during_rerun():
+            return
         folder = QFileDialog.getExistingDirectory(
             self,
             "Select Review Bundle Folder",
@@ -408,6 +430,8 @@ class TabLadder(QWidget):
             self.load_review_bundle_from_path(folder)
 
     def _choose_single_file(self) -> None:
+        if self._reject_context_switch_during_rerun():
+            return
         file_name, _ = QFileDialog.getOpenFileName(
             self,
             "Open .fsa File",
@@ -425,6 +449,10 @@ class TabLadder(QWidget):
             self._select_file(file_path)
 
     def _scan_files(self) -> None:
+        if self._reject_context_switch_during_rerun():
+            return
+        if self._reject_concurrent_source_load():
+            return
         source = Path(self.source_dir.text().strip()).expanduser()
         if not source.exists() or not source.is_dir():
             self._set_status("Input folder does not exist.", error=True)
@@ -432,7 +460,7 @@ class TabLadder(QWidget):
 
         self._scan_request_id += 1
         request_id = self._scan_request_id
-        self.btn_scan.setEnabled(False)
+        self._set_source_load_active(True)
         self._set_status(f"Scanning {source} for .fsa files...")
 
         worker = Worker(self._scan_fsa_files_worker, source)
@@ -441,6 +469,10 @@ class TabLadder(QWidget):
         self.threadpool.start(worker)
 
     def _load_review_bundle(self) -> None:
+        if self._reject_context_switch_during_rerun():
+            return
+        if self._reject_concurrent_source_load():
+            return
         bundle_dir = Path(self.review_bundle_dir.text().strip()).expanduser()
         if not bundle_dir.exists() or not bundle_dir.is_dir():
             self._set_status("Review bundle folder does not exist.", error=True)
@@ -448,7 +480,7 @@ class TabLadder(QWidget):
 
         self._scan_request_id += 1
         request_id = self._scan_request_id
-        self.btn_load_bundle.setEnabled(False)
+        self._set_source_load_active(True)
         self.btn_rerun_review_bundle.setEnabled(False)
         self._set_status(f"Loading review bundle from {bundle_dir.name}...")
 
@@ -464,6 +496,10 @@ class TabLadder(QWidget):
         preloaded_entries: list[dict] | None = None,
         auto_open_first: bool = False,
     ) -> None:
+        if self._reject_context_switch_during_rerun():
+            return
+        if self._reject_concurrent_source_load():
+            return
         bundle_path = Path(bundle_dir).expanduser()
         if bundle_path.is_file():
             bundle_path = bundle_path.parent
@@ -516,6 +552,16 @@ class TabLadder(QWidget):
         self._update_current_file(Path(items[0].data(Qt.ItemDataRole.UserRole)))
 
     def _update_current_file(self, file_path: Path | None) -> None:
+        if file_path != self._current_file and self._reject_context_switch_during_rerun():
+            self.file_list.blockSignals(True)
+            try:
+                if self._current_file is not None:
+                    self._select_file(self._current_file)
+                else:
+                    self.file_list.clearSelection()
+            finally:
+                self.file_list.blockSignals(False)
+            return
         self._current_file = file_path
         self._current_meta = None
         self._current_fsa = None
@@ -568,6 +614,7 @@ class TabLadder(QWidget):
         cached = self._cached_review_payload_for(self._current_file)
         if cached:
             self._metadata_request_id += 1
+            self._metadata_request_context = None
             self._metadata_loading = False
             self._apply_metadata_result(
                 {
@@ -776,7 +823,31 @@ class TabLadder(QWidget):
                         "meta": copy.deepcopy(self._current_meta or {}),
                     }
             if review_case and self._review_bundle_dir is not None:
-                self._save_review_bundle_annotation(review_case, review_payload)
+                try:
+                    self._save_review_bundle_annotation(review_case, review_payload)
+                except Exception as exc:
+                    adjustment_saved = bool(
+                        review_payload.get("action") != "note_only"
+                        and review_payload.get("adjustment_path")
+                    )
+                    if adjustment_saved:
+                        detail = (
+                            f"The ladder adjustment was saved for {self._current_file.name}, "
+                            "but the review bundle was not saved. The review case remains "
+                            f"unresolved: {exc}"
+                        )
+                    else:
+                        detail = (
+                            f"The review bundle was not saved for {self._current_file.name}. "
+                            f"The review case remains unresolved: {exc}"
+                        )
+                    self._set_status(detail, error=True)
+                    QMessageBox.critical(
+                        self,
+                        "Review Bundle Not Saved",
+                        detail,
+                    )
+                    return
             self._refresh_current_metadata()
             if review_payload.get("action") == "save_draft":
                 self._set_status(
@@ -927,6 +998,72 @@ class TabLadder(QWidget):
     def is_operation_active(self) -> bool:
         return self._single_rerun_active or self._review_bundle_rerun_active
 
+    def _reject_context_switch_during_rerun(self) -> bool:
+        if not self.is_operation_active():
+            return False
+        self._set_status(
+            "A ladder rerun is active. Wait for it to finish before changing source, file, or review bundle.",
+            error=True,
+        )
+        return True
+
+    def _reject_concurrent_source_load(self) -> bool:
+        if not self._source_load_active:
+            return False
+        self._set_status(
+            "A source load is already active. Wait for it to finish before scanning or loading another review bundle.",
+            error=True,
+        )
+        return True
+
+    def _update_bundle_load_button(self, text: str | None = None) -> None:
+        bundle_text = self.review_bundle_dir.text() if text is None else text
+        source_controls_enabled = (
+            not self._source_load_active and not self.is_operation_active()
+        )
+        self.btn_scan.setEnabled(source_controls_enabled)
+        self.btn_load_bundle.setEnabled(
+            bool(str(bundle_text).strip()) and source_controls_enabled
+        )
+
+    def _set_source_load_active(self, active: bool) -> None:
+        self._source_load_active = active
+        self._update_bundle_load_button()
+
+    def _set_rerun_context_locked(self, locked: bool) -> None:
+        for control in (
+            self.source_dir,
+            self.btn_browse_dir,
+            self.btn_scan,
+            self.btn_browse_file,
+            self.file_list,
+            self.btn_toggle_review_bundle,
+            self.review_bundle_dir,
+            self.btn_browse_bundle,
+        ):
+            control.setEnabled(not locked)
+        if locked:
+            self.btn_load_bundle.setEnabled(False)
+        else:
+            self._update_bundle_load_button()
+
+    def _invalidate_metadata_request(self) -> None:
+        self._metadata_request_id += 1
+        self._metadata_request_context = None
+        self._metadata_loading = False
+        self._auto_open_review_editor_once = False
+        self._pending_open_editor_after_metadata = False
+
+    def _invalidate_source_request(self) -> None:
+        self._scan_request_id += 1
+        self._set_source_load_active(False)
+
+    def _invalidate_context_requests_for_rerun(self) -> None:
+        """Make every earlier context-loading callback stale before rerun starts."""
+        self._invalidate_source_request()
+        self._report_request_id += 1
+        self._invalidate_metadata_request()
+
     def _remove_saved_adjustment(self) -> None:
         if not self._current_file:
             return
@@ -1042,6 +1179,9 @@ class TabLadder(QWidget):
         }
 
     def _rerun_current_file_reports(self) -> None:
+        if self.is_operation_active():
+            self._set_status("A ladder rerun is already active.", error=True)
+            return
         if not self._current_file:
             return
         file_path = self._current_file
@@ -1068,9 +1208,11 @@ class TabLadder(QWidget):
         if settings is None:
             return
 
+        self._invalidate_context_requests_for_rerun()
         self._single_rerun_request_id += 1
         request_id = self._single_rerun_request_id
         self._single_rerun_active = True
+        self._set_rerun_context_locked(True)
         for btn in (self.btn_rerun_file, self.btn_open_editor, self.btn_refresh_meta):
             btn.setEnabled(False)
         self._set_status(f"Running single-file reports for {file_path.name}...")
@@ -1226,6 +1368,9 @@ class TabLadder(QWidget):
         return files, missing, unresolved
 
     def _rerun_review_bundle_reports(self) -> None:
+        if self.is_operation_active():
+            self._set_status("A ladder rerun is already active.", error=True)
+            return
         if self._return_to_run_tab_for_review():
             return
 
@@ -1266,9 +1411,11 @@ class TabLadder(QWidget):
         if settings is None:
             return
 
+        self._invalidate_context_requests_for_rerun()
         self._review_bundle_rerun_request_id += 1
         request_id = self._review_bundle_rerun_request_id
         self._review_bundle_rerun_active = True
+        self._set_rerun_context_locked(True)
         for btn in (
             self.btn_rerun_review_bundle,
             self.btn_load_bundle,
@@ -1338,6 +1485,7 @@ class TabLadder(QWidget):
         if request_id != self._single_rerun_request_id:
             return
         self._single_rerun_active = False
+        self._set_rerun_context_locked(False)
         self.btn_rerun_file.setEnabled(self._current_file is not None)
         self.btn_open_editor.setEnabled(self._current_file is not None and not self._metadata_loading)
         self.btn_refresh_meta.setEnabled(self._current_file is not None)
@@ -1421,6 +1569,7 @@ class TabLadder(QWidget):
         if request_id != self._single_rerun_request_id:
             return
         self._single_rerun_active = False
+        self._set_rerun_context_locked(False)
         self.btn_rerun_file.setEnabled(self._current_file is not None)
         self.btn_open_editor.setEnabled(self._current_file is not None and not self._metadata_loading)
         self.btn_refresh_meta.setEnabled(self._current_file is not None)
@@ -1431,6 +1580,7 @@ class TabLadder(QWidget):
         if request_id != self._review_bundle_rerun_request_id:
             return
         self._review_bundle_rerun_active = False
+        self._set_rerun_context_locked(False)
 
         self.btn_load_bundle.setEnabled(True)
         self.btn_rerun_file.setEnabled(self._current_file is not None)
@@ -1578,6 +1728,7 @@ class TabLadder(QWidget):
         if request_id != self._review_bundle_rerun_request_id:
             return
         self._review_bundle_rerun_active = False
+        self._set_rerun_context_locked(False)
         self.btn_load_bundle.setEnabled(True)
         self.btn_rerun_file.setEnabled(self._current_file is not None)
         self.btn_open_editor.setEnabled(self._current_file is not None and not self._metadata_loading)
@@ -1725,14 +1876,24 @@ class TabLadder(QWidget):
     def _start_metadata_load(self, file_path: Path) -> None:
         self._metadata_request_id += 1
         request_id = self._metadata_request_id
-        analysis_id = APP_SETTINGS.get("active_analysis")
+        analysis_id = self._current_analysis_id
+        context = (
+            request_id,
+            str(analysis_id),
+            self._resolve_cache_key(file_path),
+        )
+        self._metadata_request_context = context
         self._metadata_loading = True
         self.btn_open_editor.setEnabled(False)
         self._set_status(f"Loading ladder metadata for {file_path.name}...")
 
         worker = Worker(self._load_metadata_worker, file_path, analysis_id)
-        worker.signals.result.connect(lambda result, rid=request_id: self._on_metadata_result(rid, result))
-        worker.signals.error.connect(lambda err, rid=request_id: self._on_metadata_error(rid, err))
+        worker.signals.result.connect(
+            lambda result, ctx=context: self._on_metadata_result(ctx, result)
+        )
+        worker.signals.error.connect(
+            lambda err, ctx=context: self._on_metadata_error(ctx, err)
+        )
         self.threadpool.start(worker)
 
     @staticmethod
@@ -1862,7 +2023,7 @@ class TabLadder(QWidget):
     def _on_scan_result(self, request_id: int, source: Path, files: list[Path]) -> None:
         if request_id != self._scan_request_id:
             return
-        self.btn_scan.setEnabled(True)
+        self._set_source_load_active(False)
         self._all_files = files
         self._rebuild_file_list()
         self._set_status(f"Found {len(self._all_files)} .fsa files in {source}.")
@@ -1870,13 +2031,13 @@ class TabLadder(QWidget):
     def _on_scan_error(self, request_id: int, err_tuple) -> None:
         if request_id != self._scan_request_id:
             return
-        self.btn_scan.setEnabled(True)
+        self._set_source_load_active(False)
         self._set_status(f"Could not scan .fsa files: {err_tuple[1]}", error=True)
 
     def _on_review_bundle_result(self, request_id: int, result: dict) -> None:
         if request_id != self._scan_request_id:
             return
-        self.btn_load_bundle.setEnabled(True)
+        self._set_source_load_active(False)
         self._review_bundle_dir = result["bundle_dir"]
         self._review_bundle_run_manifest_path = result.get("run_manifest_path")
         self._review_bundle_cases = result["rows"]
@@ -1920,7 +2081,7 @@ class TabLadder(QWidget):
     def _on_review_bundle_error(self, request_id: int, err_tuple) -> None:
         if request_id != self._scan_request_id:
             return
-        self.btn_load_bundle.setEnabled(True)
+        self._set_source_load_active(False)
         self._auto_open_review_editor_once = False
         self._pending_open_editor_after_metadata = False
         self._review_bundle_cases = []
@@ -1929,13 +2090,38 @@ class TabLadder(QWidget):
         self._sync_chip_strip(cases=[])
         self._set_status(f"Could not load review bundle: {err_tuple[1]}", error=True)
 
-    def _on_metadata_result(self, request_id: int, result: dict) -> None:
-        if request_id != self._metadata_request_id:
+    def _metadata_context_is_current(
+        self,
+        context: tuple[int, str, Path],
+        result_file_path: Path | None = None,
+    ) -> bool:
+        if context != self._metadata_request_context:
+            return False
+        _request_id, analysis_id, file_path = context
+        if analysis_id != self._current_analysis_id or self._current_file is None:
+            return False
+        if file_path != self._resolve_cache_key(self._current_file):
+            return False
+        if (
+            result_file_path is not None
+            and file_path != self._resolve_cache_key(result_file_path)
+        ):
+            return False
+        return True
+
+    def _on_metadata_result(
+        self,
+        context: tuple[int, str, Path],
+        result: dict,
+    ) -> None:
+        result_path = Path(result["file_path"])
+        if not self._metadata_context_is_current(context, result_path):
             return
+        self._metadata_request_context = None
         self._metadata_loading = False
 
         self._apply_metadata_result(result)
-        self._maybe_auto_open_review_editor(result["file_path"])
+        self._maybe_auto_open_review_editor(result_path)
 
     def _maybe_auto_open_review_editor(self, file_path: Path) -> None:
         if not (self._auto_open_review_editor_once or self._pending_open_editor_after_metadata):
@@ -2027,9 +2213,14 @@ class TabLadder(QWidget):
         else:
             self._set_status(fit_note or f"Loaded metadata for {file_path.name}.")
 
-    def _on_metadata_error(self, request_id: int, err_tuple) -> None:
-        if request_id != self._metadata_request_id:
+    def _on_metadata_error(
+        self,
+        context: tuple[int, str, Path],
+        err_tuple,
+    ) -> None:
+        if not self._metadata_context_is_current(context):
             return
+        self._metadata_request_context = None
         self._metadata_loading = False
         self._auto_open_review_editor_once = False
         self._pending_open_editor_after_metadata = False

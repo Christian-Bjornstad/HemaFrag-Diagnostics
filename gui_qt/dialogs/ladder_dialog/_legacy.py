@@ -1742,7 +1742,9 @@ class LadderAdjustmentDialog(QDialog):
         self.residual_ax.set_xlabel("Expected ladder step (bp)")
         self.residual_ax.grid(True, alpha=0.2)
         self._apply_matplotlib_layout(self.residual_figure, left=0.07, right=0.985, top=0.86, bottom=0.30)
-        self.residual_canvas.draw_idle()
+        # This canvas belongs to the dialog.  A deferred Qt draw can outlive an
+        # unshown dialog and reach update() after Qt has deleted the canvas.
+        self.residual_canvas.draw()
 
     def _trace_current_limits(self) -> tuple[tuple[float, float], tuple[float, float]] | tuple[None, None]:
         if self._trace_backend == "pyqtgraph" and self.pg_plot is not None:

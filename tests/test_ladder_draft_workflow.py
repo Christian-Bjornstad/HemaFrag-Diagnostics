@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from PyQt6.QtWidgets import QApplication
+
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_ladder import _legacy as ladder_tab
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    return QApplication.instance() or QApplication([])
 
 
 class _DraftDialog:
@@ -27,6 +37,29 @@ class _DraftDialog:
             "mapping": {0: 0, 2: 1},
             "mapping_times": {0: 100.0, 2: 300.0},
             "partial_mapping": True,
+        }
+
+
+class _CompleteDialog:
+    _preview_fsa = None
+
+    def exec(self):
+        return 1
+
+    def get_review_payload(self):
+        return {
+            "action": "apply",
+            "comment": "reviewed",
+            "after_qc": {},
+            "partial_mapping": False,
+            "partial_approved": False,
+        }
+
+    def get_adjustment_payload(self):
+        return {
+            "mapping": {0: 0, 1: 1, 2: 2},
+            "mapping_times": {0: 100.0, 1: 200.0, 2: 300.0},
+            "partial_mapping": False,
         }
 
 
@@ -66,6 +99,85 @@ def test_open_editor_persists_short_draft_without_approving_or_offering_rerun(
         "Saved ladder draft for sample.fsa. Add at least 3 anchors before rerunning.",
         False,
     )
+
+
+def test_open_editor_reports_adjustment_saved_but_bundle_not_saved(
+    qapp,
+    tmp_path,
+    monkeypatch,
+):
+    statuses = []
+    critical_messages = []
+    success_messages = []
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"trace")
+    fsa = SimpleNamespace(file=str(source), file_name=source.name)
+    review_case = {"full_path": str(source), "label": ""}
+    tab = TabLadder()
+    cache_key = tab._resolve_cache_key(source)
+    tab._current_file = source
+    tab._metadata_loading = False
+    tab._current_meta = {}
+    tab._current_fsa = fsa
+    tab._review_case_by_path = {cache_key: review_case}
+    tab._review_bundle_cases = [review_case]
+    tab._review_bundle_dir = tmp_path / "review-bundle"
+    tab._review_runtime_cache = {}
+    tab._recent_reviewed_files = set()
+    monkeypatch.setattr(
+        tab,
+        "_save_review_bundle_annotation_worker",
+        lambda *args: (_ for _ in ()).throw(
+            PermissionError("bundle is read-only")
+        ),
+    )
+    monkeypatch.setattr(
+        tab,
+        "_set_status",
+        lambda text, error=False: statuses.append((text, error)),
+    )
+    monkeypatch.setattr(tab, "_is_run_tab_owned_review", lambda: False)
+
+    monkeypatch.setattr(
+        ladder_tab,
+        "_open_ladder_adjustment_dialog",
+        lambda *args, **kwargs: _CompleteDialog(),
+    )
+    monkeypatch.setattr(
+        ladder_tab,
+        "save_ladder_adjustment",
+        lambda *args, **kwargs: Path("ladder_adjustments.sqlite3"),
+    )
+    monkeypatch.setattr(
+        ladder_tab,
+        "load_ladder_adjustment",
+        lambda _fsa: {"mapping": {0: 0, 1: 1, 2: 2}},
+    )
+    monkeypatch.setattr(
+        ladder_tab.QMessageBox,
+        "critical",
+        lambda _parent, title, message: critical_messages.append((title, message)),
+    )
+    monkeypatch.setattr(
+        ladder_tab.QMessageBox,
+        "information",
+        lambda *args: success_messages.append(args),
+    )
+
+    try:
+        tab._open_ladder_editor()
+
+        assert review_case["label"] == ""
+        assert tab._recent_reviewed_files == set()
+        assert statuses[-1][1] is True
+        assert "adjustment was saved" in statuses[-1][0].lower()
+        assert "review bundle was not saved" in statuses[-1][0].lower()
+        assert critical_messages
+        assert critical_messages[0][0] == "Review Bundle Not Saved"
+        assert success_messages == []
+    finally:
+        tab.close()
+        qapp.processEvents()
 
 
 def test_review_bundle_keeps_short_draft_unresolved():

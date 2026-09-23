@@ -1,7 +1,6 @@
 from pathlib import Path
 import copy
 import csv
-import json
 import subprocess
 import threading
 import sys
@@ -21,6 +20,10 @@ from config import (
     GENERAL_DEFAULT_LADDER,
     GENERAL_DEFAULT_TRACE_CHANNELS,
     GENERAL_DEFAULT_PRIMARY_CHANNEL,
+)
+from core.ladder_review_bundle_store import (
+    review_bundle_transaction,
+    save_review_bundle,
 )
 from core.analyses.clonality.ladder_review_labels import is_review_resolved
 from . import GENERAL_LADDER_OPTIONS, GENERAL_TRACE_OPTIONS, ANALYSIS_LABELS
@@ -541,8 +544,13 @@ class TabBatch(QWidget):
         widget.update()
 
     def _reset_queue_state(self, message: str = "Ready", state: str = "ready") -> None:
-        """Clear queued jobs so the next run must start from a fresh scan."""
+        """Cancel scan ownership, then clear the queue unless a run owns it."""
+        scan_was_active = self.is_scan_active()
         self._active_scan_request_id = 0
+        if self._active_run_cancel_event is not None or getattr(self, "_review_finalize_active", False):
+            return
+        if scan_was_active:
+            self.btn_scan.setEnabled(True)
         self._detected_jobs = []
         self._job_states = {}
         self._clear_review_session()
@@ -652,6 +660,11 @@ class TabBatch(QWidget):
         if bundle_dir is None:
             return {}
         cases_path = Path(bundle_dir) / "ladder_review_cases.csv"
+        with review_bundle_transaction(cases_path):
+            return cls._resolved_review_rows_from_cases(cases_path)
+
+    @classmethod
+    def _resolved_review_rows_from_cases(cls, cases_path: Path) -> dict[str, dict]:
         if not cases_path.exists():
             return {}
 
@@ -675,6 +688,11 @@ class TabBatch(QWidget):
         if bundle_dir is None:
             return 0, 0
         cases_path = Path(bundle_dir) / "ladder_review_cases.csv"
+        with review_bundle_transaction(cases_path):
+            return cls._review_bundle_resolution_counts_locked(cases_path)
+
+    @classmethod
+    def _review_bundle_resolution_counts_locked(cls, cases_path: Path) -> tuple[int, int]:
         if not cases_path.exists():
             return 0, 0
 
@@ -696,6 +714,11 @@ class TabBatch(QWidget):
         if bundle_dir is None:
             return []
         cases_path = Path(bundle_dir) / "ladder_review_cases.csv"
+        with review_bundle_transaction(cases_path):
+            return TabBatch._review_queue_paths_locked(cases_path)
+
+    @staticmethod
+    def _review_queue_paths_locked(cases_path: Path) -> list[Path]:
         try:
             with cases_path.open(
                 "r",
@@ -763,6 +786,21 @@ class TabBatch(QWidget):
             return raw_count
 
         cases_path = Path(str(gate.get("cases_path") or "")).expanduser()
+        with review_bundle_transaction(cases_path):
+            return TabBatch._carry_resolved_labels_to_gate_locked(
+                gate,
+                resolved_review_rows,
+                cases_path,
+                raw_count,
+            )
+
+    @staticmethod
+    def _carry_resolved_labels_to_gate_locked(
+        gate: dict,
+        resolved_review_rows: dict[str, dict],
+        cases_path: Path,
+        raw_count: int,
+    ) -> int:
         if not cases_path.exists():
             return raw_count
 
@@ -794,21 +832,27 @@ class TabBatch(QWidget):
                 unresolved += 1
 
         if changed:
-            with cases_path.open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(rows)
-            gate["review_case_count"] = unresolved
-            gate["resolved_carried_from_previous_review"] = True
-            summary_path = gate.get("summary_path")
-            if summary_path:
-                try:
-                    Path(str(summary_path)).write_text(
-                        json.dumps({k: v for k, v in gate.items() if k != "summary_path"}, indent=2, ensure_ascii=True),
-                        encoding="utf-8",
-                    )
-                except Exception:
-                    pass
+            updated_gate = dict(gate)
+            updated_gate["review_case_count"] = unresolved
+            updated_gate["resolved_carried_from_previous_review"] = True
+            summary_path_raw = updated_gate.get("summary_path")
+            summary_path = (
+                Path(str(summary_path_raw)).expanduser()
+                if summary_path_raw
+                else None
+            )
+            save_review_bundle(
+                cases_path,
+                rows,
+                fieldnames,
+                summary_path,
+                {
+                    key: value
+                    for key, value in updated_gate.items()
+                    if key != "summary_path"
+                },
+            )
+            gate.update(updated_gate)
         return unresolved
 
     def _refresh_review_finalize_button(self) -> None:
@@ -949,7 +993,16 @@ class TabBatch(QWidget):
     def _profile_for(self, analysis_id: str | None = None) -> dict:
         return get_analysis_settings(analysis_id or self._current_analysis_id)
 
-    def set_analysis(self, analysis_id: str, force_replace_inputs: bool = False) -> None:
+    def is_scan_active(self) -> bool:
+        return self._active_scan_request_id != 0
+
+    def set_analysis(self, analysis_id: str, force_replace_inputs: bool = False) -> bool:
+        if (
+            self.is_scan_active()
+            or self._active_run_cancel_event is not None
+            or getattr(self, "_review_finalize_active", False)
+        ):
+            return False
         previous_profile = self._profile_for(self._current_analysis_id)
         previous_default = previous_profile.get("batch", {}).get("base_input_dir", "")
         current_items = [self.folder_list.item(i).text() for i in range(self.folder_list.count())]
@@ -972,6 +1025,7 @@ class TabBatch(QWidget):
             "Ready",
             "ready",
         )
+        return True
 
     def load_from_settings(self, replace_inputs: bool = False):
         """Reload analysis-specific defaults from APP_SETTINGS."""
@@ -1322,6 +1376,7 @@ class TabBatch(QWidget):
     def _on_scan_result(self, jobs, request_id: int | None = None):
         if request_id != self._active_scan_request_id:
             return
+        self._active_scan_request_id = 0
         self._detected_jobs = jobs
         self._job_states = {index: "pending" for index, _job in enumerate(jobs)}
         
@@ -1359,6 +1414,7 @@ class TabBatch(QWidget):
     def _on_scan_error(self, err_tuple, request_id: int | None = None):
         if request_id != self._active_scan_request_id:
             return
+        self._active_scan_request_id = 0
         self._set_workflow_status(f"Scan error: {err_tuple[1]}", "error")
         self.progress.setRange(0, 100)
         self.progress.setValue(0)

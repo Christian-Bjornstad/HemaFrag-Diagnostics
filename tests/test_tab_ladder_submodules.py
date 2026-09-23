@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -452,14 +453,14 @@ class TabLadderIOHelperTests(unittest.TestCase):
                 if (
                     not failed_once
                     and destination_path == annotations_path
-                    and source_path.suffix == ".tmp"
+                    and source_path.suffix == ".staged"
                 ):
                     failed_once = True
                     raise OSError("injected annotation publication failure")
                 real_replace(source, destination)
 
             with patch(
-                "gui_qt.tabs.tab_ladder._io.os.replace",
+                "core.ladder_review_bundle_store.os.replace",
                 side_effect=fail_second_publication,
             ):
                 with self.assertRaisesRegex(
@@ -494,18 +495,18 @@ class TabLadderIOHelperTests(unittest.TestCase):
             annotations_path.write_bytes(b'{"sentinel": true}\r\n')
             original_cases = cases_path.read_bytes()
             original_annotations = annotations_path.read_bytes()
-            real_replace = os.replace
+            real_copy = shutil.copyfileobj
+            copy_count = 0
 
             def fail_second_backup(source, destination):
-                if (
-                    Path(source) == annotations_path
-                    and Path(destination).suffix == ".backup"
-                ):
+                nonlocal copy_count
+                copy_count += 1
+                if copy_count == 2:
                     raise OSError("injected annotation backup failure")
-                real_replace(source, destination)
+                return real_copy(source, destination)
 
             with patch(
-                "gui_qt.tabs.tab_ladder._io.os.replace",
+                "core.ladder_review_bundle_store.shutil.copyfileobj",
                 side_effect=fail_second_backup,
             ):
                 with self.assertRaisesRegex(
@@ -550,7 +551,7 @@ class TabLadderIOHelperTests(unittest.TestCase):
                 if (
                     not publication_failed
                     and destination_path == annotations_path
-                    and source_path.suffix == ".tmp"
+                    and source_path.suffix == ".staged"
                 ):
                     publication_failed = True
                     raise OSError("injected annotation publication failure")
@@ -563,11 +564,11 @@ class TabLadderIOHelperTests(unittest.TestCase):
                 real_replace(source, destination)
 
             with patch(
-                "gui_qt.tabs.tab_ladder._io.os.replace",
+                "core.ladder_review_bundle_store.os.replace",
                 side_effect=fail_publication_and_csv_rollback,
             ):
                 with self.assertRaisesRegex(
-                    RuntimeError, "publication and rollback both failed"
+                    RuntimeError, "publication failed and rollback could not complete"
                 ):
                     save_review_bundle_annotation_worker(
                         bundle,
@@ -581,10 +582,20 @@ class TabLadderIOHelperTests(unittest.TestCase):
                     )
 
             backups = list(bundle.glob(".*.backup"))
-            self.assertEqual(len(backups), 1)
-            self.assertEqual(backups[0].read_bytes(), original_cases)
-            self.assertFalse(cases_path.exists())
+            self.assertEqual(len(backups), 2)
+            cases_backup = next(
+                path for path in backups if "ladder_review_cases.csv" in path.name
+            )
+            self.assertEqual(cases_backup.read_bytes(), original_cases)
+            self.assertTrue(cases_path.exists())
             self.assertEqual(annotations_path.read_bytes(), original_annotations)
+
+            # The journal and old backup make the otherwise-inconsistent pair
+            # recoverable on the next read after the transient fault is gone.
+            loaded = load_review_bundle_worker(bundle)
+            self.assertEqual(loaded["rows"][0]["label"], "")
+            self.assertEqual(cases_path.read_bytes(), original_cases)
+            self.assertFalse(list(bundle.glob(".*.backup")))
 
     def test_save_review_bundle_annotation_worker_raises_on_unknown_path(self) -> None:
         with tempfile.TemporaryDirectory() as td:

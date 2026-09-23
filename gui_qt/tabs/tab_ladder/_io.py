@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 from pathlib import Path
-import tempfile
 import threading
 from typing import Any
 
 from core.ladder_adjustment_store import load_ladder_adjustment_record
+from core.ladder_review_bundle_store import (
+    review_bundle_transaction,
+    save_review_bundle,
+)
 from core.analyses.clonality.ladder_review_labels import (
     is_review_rerunnable,
     is_review_resolved,
@@ -62,127 +64,12 @@ def _read_bundle_csv(cases_path: Path) -> tuple[list[str], list[dict[str, Any]]]
     and the parsed rows. Errors fall through to the Worker error
     signal in the GUI.
     """
-    with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
-        reader = csv.DictReader(handle)
-        fieldnames = list(reader.fieldnames or [])
-        rows = list(reader)
-    return fieldnames, rows
-
-
-def _write_bundle_csv_temporary(
-    cases_path: Path,
-    fieldnames: list[str],
-    rows: list[dict[str, Any]],
-) -> Path:
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=cases_path.parent,
-            prefix=f".{cases_path.name}.",
-            suffix=".tmp",
-            mode="w",
-            encoding="utf-8",
-            newline="",
-            delete=False,
-        ) as handle:
-            temporary_path = Path(handle.name)
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-        result = temporary_path
-        temporary_path = None
-        return result
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-
-
-def _write_bundle_csv_atomic(
-    cases_path: Path,
-    fieldnames: list[str],
-    rows: list[dict[str, Any]],
-) -> None:
-    temporary_path = _write_bundle_csv_temporary(cases_path, fieldnames, rows)
-    try:
-        os.replace(temporary_path, cases_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-
-
-def _write_json_temporary(path: Path, value: Any) -> Path:
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            mode="w",
-            encoding="utf-8",
-            delete=False,
-        ) as handle:
-            temporary_path = Path(handle.name)
-            json.dump(value, handle, indent=2, ensure_ascii=True)
-        result = temporary_path
-        temporary_path = None
-        return result
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-
-
-def _publish_bundle_files_atomically(
-    replacements: list[tuple[Path, Path]],
-) -> None:
-    backups: dict[Path, Path | None] = {}
-    backed_up: set[Path] = set()
-    published: list[Path] = []
-    try:
-        for _temporary, target in replacements:
-            backup: Path | None = None
-            if target.exists():
-                with tempfile.NamedTemporaryFile(
-                    dir=target.parent,
-                    prefix=f".{target.name}.",
-                    suffix=".backup",
-                    delete=False,
-                ) as handle:
-                    backup = Path(handle.name)
-                backups[target] = backup
-                os.replace(target, backup)
-                backed_up.add(target)
-            else:
-                backups[target] = None
-
-        for temporary, target in replacements:
-            os.replace(temporary, target)
-            published.append(target)
-    except Exception:
-        for target in published:
-            target.unlink(missing_ok=True)
-        try:
-            for _temporary, target in reversed(replacements):
-                backup = backups.get(target)
-                if (
-                    target in backed_up
-                    and backup is not None
-                    and backup.exists()
-                ):
-                    os.replace(backup, target)
-        except Exception as rollback_error:
-            raise RuntimeError(
-                "Review annotation publication and rollback both failed"
-            ) from rollback_error
-        raise
-    else:
-        for backup in backups.values():
-            if backup is not None:
-                backup.unlink(missing_ok=True)
-    finally:
-        for temporary, _target in replacements:
-            temporary.unlink(missing_ok=True)
-        for target, backup in backups.items():
-            if target not in backed_up and backup is not None:
-                backup.unlink(missing_ok=True)
+    with review_bundle_transaction(cases_path):
+        with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
+        return fieldnames, rows
 
 
 def load_review_bundle_worker(bundle_dir: Path) -> dict:
@@ -197,8 +84,13 @@ def load_review_bundle_worker(bundle_dir: Path) -> dict:
     missing — caller surfaces that to the chemist via the red status
     bar.
     """
-    assert_review_bundle_open_allowed(bundle_dir)
     cases_path = bundle_dir / "ladder_review_cases.csv"
+    with review_bundle_transaction(cases_path):
+        return _load_review_bundle_worker_locked(bundle_dir, cases_path)
+
+
+def _load_review_bundle_worker_locked(bundle_dir: Path, cases_path: Path) -> dict:
+    assert_review_bundle_open_allowed(bundle_dir)
     if not cases_path.exists():
         raise FileNotFoundError(f"Missing review bundle file: {cases_path.name}")
 
@@ -248,6 +140,11 @@ def review_case_paths_from_bundle(bundle_dir: Path) -> set[Path]:
     references (regardless of whether they currently exist on disk).
     """
     cases_path = bundle_dir / "ladder_review_cases.csv"
+    with review_bundle_transaction(cases_path):
+        return _review_case_paths_from_bundle_locked(cases_path)
+
+
+def _review_case_paths_from_bundle_locked(cases_path: Path) -> set[Path]:
     if not cases_path.exists():
         return set()
 
@@ -307,6 +204,23 @@ def save_missing_ladder_exclusion_worker(
 
 
 def save_review_bundle_annotation_worker(
+    bundle_dir: Path,
+    full_path: Path,
+    annotation: dict,
+    *,
+    _require_unresolved_without_adjustment: bool = False,
+) -> dict:
+    cases_path = bundle_dir / "ladder_review_cases.csv"
+    with review_bundle_transaction(cases_path):
+        return _save_review_bundle_annotation_locked(
+            bundle_dir,
+            full_path,
+            annotation,
+            _require_unresolved_without_adjustment=_require_unresolved_without_adjustment,
+        )
+
+
+def _save_review_bundle_annotation_locked(
     bundle_dir: Path,
     full_path: Path,
     annotation: dict,
@@ -387,22 +301,34 @@ def save_review_bundle_annotation_worker(
                 raise ValueError("Review annotations must contain a JSON object")
             existing = loaded
         existing[matched_path_text] = annotation
-        csv_temporary = _write_bundle_csv_temporary(cases_path, fieldnames, rows)
-        try:
-            json_temporary = _write_json_temporary(annotations_path, existing)
-        except Exception:
-            csv_temporary.unlink(missing_ok=True)
-            raise
-        _publish_bundle_files_atomically(
-            [
-                (csv_temporary, cases_path),
-                (json_temporary, annotations_path),
-            ]
+        save_review_bundle(
+            cases_path,
+            rows,
+            fieldnames,
+            annotations_path,
+            existing,
         )
     return annotation
 
 
 def save_review_bundle_rerun_status_worker(
+    bundle_dir: Path,
+    consumption_by_file: dict[str, dict[str, Any]],
+    *,
+    run_manifest_path: Path | None,
+    rerun_at_utc: str,
+) -> int:
+    cases_path = bundle_dir / "ladder_review_cases.csv"
+    with review_bundle_transaction(cases_path):
+        return _save_review_bundle_rerun_status_locked(
+            bundle_dir,
+            consumption_by_file,
+            run_manifest_path=run_manifest_path,
+            rerun_at_utc=rerun_at_utc,
+        )
+
+
+def _save_review_bundle_rerun_status_locked(
     bundle_dir: Path,
     consumption_by_file: dict[str, dict[str, Any]],
     *,
@@ -447,5 +373,5 @@ def save_review_bundle_rerun_status_worker(
         )
         updated += 1
 
-    _write_bundle_csv_atomic(cases_path, fieldnames, rows)
+    save_review_bundle(cases_path, rows, fieldnames, None, {})
     return updated

@@ -10,6 +10,10 @@ from typing import Any
 from core.analyses.clonality.ladder_review_labels import (
     is_review_resolved,
 )
+from core.ladder_review_bundle_store import (
+    review_bundle_transaction,
+    save_review_bundle,
+)
 
 REVIEW_STATUSES = {"review_required", "missing_ladder", "ladder_qc_failed"}
 
@@ -219,7 +223,11 @@ def relocate_review_case(
     old_full_path: Path,
     new_full_path: Path,
 ) -> dict:
-    """Swap a row's full_path in the bundle CSV + audit-log it.
+    """Atomically swap a row's full_path and update its relocation audit.
+
+    The bundle transaction serializes the full read-modify-publish sequence
+    with annotation saves. CSV and audit are committed together or both retain
+    their previous revision when publication raises.
 
     Returns `{"old_path": str, "new_path": str,
               "relocated_at_utc": iso8601, "updated_row_index": int}`.
@@ -227,73 +235,74 @@ def relocate_review_case(
     Raises FileNotFoundError when:
       * the bundle's `ladder_review_cases.csv` is missing, or
       * no row's full_path matches `old_full_path`.
+    Raises RuntimeError when an existing relocation audit cannot be read.
     """
-    old_text = _path_to_str(old_full_path)
-    new_text = _path_to_str(new_full_path)
-
     cases_path = bundle_dir / "ladder_review_cases.csv"
-    if not cases_path.exists():
-        raise FileNotFoundError(f"Missing review bundle file: {cases_path.name}")
-
-    with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
-        reader = csv.DictReader(handle)
-        fieldnames = list(reader.fieldnames or [])
-        rows = list(reader)
-
-    if "full_path" not in fieldnames:
-        raise FileNotFoundError(
-            f"No 'full_path' column in {cases_path.name}"
-        )
-
     old_text = _path_to_str(old_full_path)
     old_key = _resolve_cache_key(old_text)
     new_text = _path_to_str(new_full_path)
-
-    updated_row_index = -1
-    for index, row in enumerate(rows):
-        row_path_text = str(row.get("full_path", "") or "")
-        row_matches = row_path_text == old_text
-        if not row_matches and row_path_text:
-            try:
-                row_matches = _resolve_cache_key(row_path_text) == old_key
-            except Exception:
-                row_matches = False
-        if row_matches:
-            row["full_path"] = new_text
-            updated_row_index = index
-            break
-
-    if updated_row_index == -1:
-        raise FileNotFoundError(
-            f"Could not find review bundle row matching {old_text}"
-        )
-
-    with cases_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-    # Append-only audit log (JSONL-shaped JSON).
     relocations_path = bundle_dir / "ladder_review_relocations.json"
-    existing: dict[str, dict] = {}
-    if relocations_path.exists():
-        try:
-            existing = json.loads(relocations_path.read_text(encoding="utf-8"))
-        except Exception:
-            existing = {}
+    with review_bundle_transaction(cases_path):
+        if not cases_path.exists():
+            raise FileNotFoundError(f"Missing review bundle file: {cases_path.name}")
 
-    relocated_entry = {
-        "old_path": old_text,
-        "new_path": new_text,
-        "relocated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "updated_row_index": updated_row_index,
-    }
-    # Key by old_path so a future locate of the same row replaces
-    # the prior audit rather than appending jitter.
-    existing[old_text] = relocated_entry
-    relocations_path.write_text(
-        json.dumps(existing, indent=2, ensure_ascii=True),
-        encoding="utf-8",
-    )
+        with cases_path.open(
+            "r",
+            encoding="utf-8",
+            errors="replace",
+            newline="",
+        ) as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
+
+        if "full_path" not in fieldnames:
+            raise FileNotFoundError(f"No 'full_path' column in {cases_path.name}")
+
+        updated_row_index = -1
+        for index, row in enumerate(rows):
+            row_path_text = str(row.get("full_path", "") or "")
+            row_matches = row_path_text == old_text
+            if not row_matches and row_path_text:
+                try:
+                    row_matches = _resolve_cache_key(row_path_text) == old_key
+                except Exception:
+                    row_matches = False
+            if row_matches:
+                row["full_path"] = new_text
+                updated_row_index = index
+                break
+
+        if updated_row_index == -1:
+            raise FileNotFoundError(
+                f"Could not find review bundle row matching {old_text}"
+            )
+
+        existing: dict[str, dict] = {}
+        if relocations_path.exists():
+            try:
+                loaded = json.loads(relocations_path.read_text(encoding="utf-8"))
+            except Exception as error:
+                raise RuntimeError("Could not read relocation audit log") from error
+            if not isinstance(loaded, dict):
+                raise RuntimeError("Relocation audit log must be a JSON object")
+            existing = loaded
+
+        relocated_entry = {
+            "old_path": old_text,
+            "new_path": new_text,
+            "relocated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "updated_row_index": updated_row_index,
+        }
+        # Key by old_path so a future locate of the same row replaces
+        # the prior audit rather than appending jitter.
+        existing[old_text] = relocated_entry
+        save_review_bundle(
+            cases_path,
+            rows,
+            fieldnames,
+            relocations_path,
+            existing,
+        )
 
     return relocated_entry
