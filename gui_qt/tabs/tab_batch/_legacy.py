@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QGridLayout, QLayout, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QThreadPool, QEvent, QSignalBlocker, QPoint, QRect, QSize
+from gui_qt.operation_coordinator import OperationStartRejected
 from gui_qt.worker import Worker
 from config import (
     APP_SETTINGS,
@@ -199,6 +200,8 @@ class TabBatch(QWidget):
         self._review_session_incomplete = False
         self._review_corrected_paths: set[Path] = set()
         self._review_finalize_request_id = 0
+        self._review_finalize_active = False
+        self.operation_coordinator = None
         
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -614,6 +617,28 @@ class TabBatch(QWidget):
         self._restyle_widget(self.status_lbl)
         self._restyle_widget(self.status_badge)
         self._refresh_dashboard()
+
+    def set_operation_coordinator(self, coordinator) -> None:
+        """Attach the app-level worker lifecycle coordinator."""
+        self.operation_coordinator = coordinator
+
+    def _register_worker_operation(self, worker: Worker, kind: str, *, cancel):
+        coordinator = self.operation_coordinator
+        if coordinator is None:
+            return None
+        handle = coordinator.register(kind, cancel=cancel)
+        worker.signals.finished.connect(handle.settle)
+        return handle
+
+    def _start_registered_worker(self, worker: Worker, handle) -> None:
+        if handle is not None:
+            handle.mark_running()
+        try:
+            self.threadpool.start(worker)
+        except Exception:
+            if handle is not None:
+                handle.settle()
+            raise
 
     def _selected_row_count(self) -> int:
         selection_model = self.table.selectionModel()
@@ -1470,23 +1495,6 @@ class TabBatch(QWidget):
         if not out_path_obj or not out_path_obj.exists():
             self._set_workflow_status("Output folder does not exist — set it before running.", "error")
             return
-
-        self._clear_review_session()
-        self._active_run_jobs = [copy.deepcopy(job) for job in jobs_to_run]
-        self._active_run_rows = list(selected_rows)
-        self._progress_job_rows = list(selected_rows)
-        self._active_run_output_root = out_path_obj
-            
-        for row in selected_rows:
-            self._job_states[row] = "queued"
-        self._rebuild_table()
-        
-        self._set_batch_controls_busy(True)
-        self._active_run_cancel_event = threading.Event()
-        self.progress.setRange(0, len(jobs_to_run))
-        self.progress.setValue(0)
-
-        self._set_workflow_status(f"Running {len(jobs_to_run)} jobs...", "running")
         
         profile = self._profile_for()
         s_pipe = profile.get("pipeline", {})
@@ -1494,9 +1502,8 @@ class TabBatch(QWidget):
         p_scope = s_pipe.get("mode", "all")
         a_filter = s_pipe.get("assay_filter_substring", "")
         aggregate_dit_reports = bool(s_batch.get("aggregate_dit_reports", True))
-        if self._is_general_analysis():
-            self._persist_general_runtime_settings()
-        
+
+        cancel_event = threading.Event()
         worker = Worker(
             run_batch_jobs,
             jobs=jobs_to_run,
@@ -1509,7 +1516,7 @@ class TabBatch(QWidget):
             aggregate_dit_reports=aggregate_dit_reports,
             continue_on_error=True,
             update_callback=None, # Passed explicitly as kwarg below
-            cancel_event=self._active_run_cancel_event,
+            cancel_event=cancel_event,
         )
         # Assign the emit method of our new progress_ext signal as the callback
         worker.kwargs['update_callback'] = worker.signals.progress_ext.emit
@@ -1517,8 +1524,73 @@ class TabBatch(QWidget):
         worker.signals.result.connect(self._on_run_finished)
         worker.signals.progress_ext.connect(self._update_progress_from_thread)
         worker.signals.error.connect(self._on_run_error)
-        
-        self.threadpool.start(worker)
+
+        self._active_run_cancel_event = cancel_event
+        try:
+            operation_handle = self._register_worker_operation(
+                worker,
+                "Run batch",
+                cancel=self.on_stop,
+            )
+        except OperationStartRejected:
+            self._active_run_cancel_event = None
+            self._set_workflow_status(
+                "Application is closing — batch was not started.",
+                "warning",
+            )
+            return
+
+        try:
+            if self._is_general_analysis():
+                self._persist_general_runtime_settings()
+        except Exception as exc:
+            if operation_handle is not None:
+                operation_handle.settle()
+            self._active_run_cancel_event = None
+            self._set_workflow_status(
+                f"Batch settings could not be saved: {exc}",
+                "error",
+            )
+            return
+
+        previous_job_states = {
+            row: self._job_states.get(row, "pending") for row in selected_rows
+        }
+        previous_progress_job_rows = list(self._progress_job_rows)
+        self._progress_job_rows = list(selected_rows)
+        for row in selected_rows:
+            self._job_states[row] = "queued"
+        self._rebuild_table()
+
+        self._set_batch_controls_busy(True)
+        self.progress.setRange(0, len(jobs_to_run))
+        self.progress.setValue(0)
+        self._set_workflow_status(f"Running {len(jobs_to_run)} jobs...", "running")
+
+        try:
+            self._start_registered_worker(worker, operation_handle)
+        except Exception as exc:
+            self._active_run_cancel_event = None
+            for row, state in previous_job_states.items():
+                self._job_states[row] = state
+            self._progress_job_rows = previous_progress_job_rows
+            self._rebuild_table()
+            self._set_batch_controls_busy(False)
+            self.progress.setRange(0, max(len(self._detected_jobs), 1))
+            self.progress.setValue(0)
+            self._set_workflow_status(
+                f"Batch could not start: {exc}",
+                "error",
+            )
+            return
+
+        # Only replace a prior review session once the new worker was accepted
+        # by the thread pool. A synchronous start failure must be lossless.
+        self._clear_review_session()
+        self._active_run_jobs = [copy.deepcopy(job) for job in jobs_to_run]
+        self._active_run_rows = list(selected_rows)
+        self._progress_job_rows = list(selected_rows)
+        self._active_run_output_root = out_path_obj
 
     def _start_review_session(self, result: dict, bundle_dir: Path) -> None:
         report_dir = bundle_dir.parent
@@ -1623,21 +1695,6 @@ class TabBatch(QWidget):
 
         self._review_finalize_request_id += 1
         request_id = self._review_finalize_request_id
-        self._review_finalize_active = True
-        self.btn_scan.setEnabled(False)
-        self.btn_run.setEnabled(False)
-        self.btn_run_reviewed.setEnabled(False)
-        self.progress.setRange(0, len(linked_jobs))
-        self.progress.setValue(0)
-        self._progress_job_rows = self._detected_rows_for_jobs(linked_jobs)
-        for row in self._progress_job_rows:
-            self._job_states[row] = "running"
-        self._rebuild_table()
-        self._set_workflow_status(
-            f"Rerunning {len(linked_jobs)} linked job(s) and preparing final DIT reports...",
-            "running",
-        )
-
         worker = Worker(
             self._review_finalize_worker,
             jobs_to_run=linked_jobs,
@@ -1657,7 +1714,59 @@ class TabBatch(QWidget):
         worker.signals.result.connect(lambda payload, rid=request_id: self._on_review_finalize_finished(rid, payload))
         worker.signals.progress_ext.connect(self._update_progress_from_thread)
         worker.signals.error.connect(lambda err, rid=request_id: self._on_review_finalize_error(rid, err))
-        self.threadpool.start(worker)
+        try:
+            operation_handle = self._register_worker_operation(
+                worker,
+                "Run review finalization",
+                # Final report publication has no safe mid-write boundary yet.
+                # Keep the operation registered so close waits for completion.
+                cancel=lambda: None,
+            )
+        except OperationStartRejected:
+            self._review_finalize_active = False
+            self._set_workflow_status(
+                "Application is closing — review finalization was not started.",
+                "warning",
+            )
+            return
+
+        previous_job_states = {
+            row: self._job_states.get(row, "pending")
+            for row in self._detected_rows_for_jobs(linked_jobs)
+        }
+        previous_progress_job_rows = list(self._progress_job_rows)
+        review_button_was_enabled = self.btn_run_reviewed.isEnabled()
+        self._review_finalize_active = True
+        self.btn_scan.setEnabled(False)
+        self.btn_run.setEnabled(False)
+        self.btn_run_reviewed.setEnabled(False)
+        self.progress.setRange(0, len(linked_jobs))
+        self.progress.setValue(0)
+        self._progress_job_rows = list(previous_job_states)
+        for row in self._progress_job_rows:
+            self._job_states[row] = "running"
+        self._rebuild_table()
+        self._set_workflow_status(
+            f"Rerunning {len(linked_jobs)} linked job(s) and preparing final DIT reports...",
+            "running",
+        )
+        try:
+            self._start_registered_worker(worker, operation_handle)
+        except Exception as exc:
+            self._review_finalize_active = False
+            for row, state in previous_job_states.items():
+                self._job_states[row] = state
+            self._progress_job_rows = previous_progress_job_rows
+            self._rebuild_table()
+            self.btn_scan.setEnabled(True)
+            self.btn_run.setEnabled(bool(self._detected_jobs))
+            self.btn_run_reviewed.setEnabled(review_button_was_enabled)
+            self.progress.setRange(0, max(len(self._review_session_jobs), 1))
+            self.progress.setValue(0)
+            self._set_workflow_status(
+                f"Review finalization could not start: {exc}",
+                "error",
+            )
 
     @staticmethod
     def _review_finalize_worker(
