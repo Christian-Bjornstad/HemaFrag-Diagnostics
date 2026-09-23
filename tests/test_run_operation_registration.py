@@ -6,6 +6,7 @@ import pytest
 from PyQt6.QtWidgets import QApplication
 
 from config import APP_SETTINGS
+from core.run_context import RunContext
 from gui_qt.operation_coordinator import OperationStartRejected
 from gui_qt.tabs.tab_batch import TabBatch
 
@@ -130,6 +131,28 @@ def test_run_scan_registers_before_start_and_settles_on_finish(
     assert coordinator.calls[0]["handle"].settled is True
 
 
+def test_run_workers_capture_settings_before_global_changes(
+    run_tab, tmp_path, monkeypatch
+):
+    source = tmp_path / "scan.fsa"
+    source.write_bytes(b"synthetic")
+    monkeypatch.setattr(run_tab, "_general_selected_paths", lambda: [source])
+    run_tab.on_scan()
+    scan_context = run_tab.threadpool.started[-1].kwargs["run_context"]
+
+    _prepare_batch(run_tab, tmp_path, monkeypatch)
+    run_tab.on_run()
+    run_context = run_tab.threadpool.started[-1].kwargs["run_context"]
+    original_analysis = run_context.analysis_id
+    original_fingerprint = run_context.settings_fingerprint
+    monkeypatch.setitem(APP_SETTINGS, "active_analysis", "flt3")
+
+    assert scan_context.analysis_id == "clonality"
+    assert run_context.analysis_id == original_analysis == "clonality"
+    assert run_context.settings_fingerprint == original_fingerprint
+    assert run_context.settings_snapshot["active_analysis"] == "clonality"
+
+
 def test_run_scan_rejected_during_close_restores_controls(
     run_tab, tmp_path, monkeypatch
 ):
@@ -226,6 +249,12 @@ def test_review_finalization_is_registered_and_close_waits_for_worker_finish(
     run_tab._review_session_entries_by_path = {}
     run_tab._review_session_bundle_dir = tmp_path / "review"
     run_tab._review_session_jobs = [{"name": "Patient 1", "type": "pipeline", "files": []}]
+    parent_context = RunContext.create(
+        analysis_id="clonality", settings=copy.deepcopy(APP_SETTINGS), run_id="parent-run"
+    )
+    run_tab._review_session_context = parent_context
+    original_rust = parent_context.settings_snapshot["engine"]["use_rust"]
+    monkeypatch.setitem(APP_SETTINGS["engine"], "use_rust", not original_rust)
     run_tab.btn_run_reviewed.setEnabled(True)
     monkeypatch.setattr(run_tab, "_review_bundle_resolution_counts", lambda *_: (1, 0))
     monkeypatch.setattr(
@@ -240,6 +269,9 @@ def test_review_finalization_is_registered_and_close_waits_for_worker_finish(
     assert len(coordinator.calls) == 1
     registration = coordinator.calls[0]
     assert registration["kind"] == "Run review finalization"
+    child_context = run_tab.threadpool.started[0].kwargs["run_context"]
+    assert child_context.parent_run_id == parent_context.run_id
+    assert child_context.settings_snapshot["engine"]["use_rust"] is original_rust
     assert registration["handle"].running is True
     assert len(run_tab.threadpool.started) == 1
 
@@ -278,6 +310,42 @@ def test_review_finalization_rejection_restores_review_action(
     assert run_tab.btn_scan.isEnabled() is True
     assert run_tab.btn_run_reviewed.isEnabled() is True
     assert "closing" in run_tab.status_lbl.text().lower()
+
+
+def test_review_worker_with_context_does_not_change_global_analysis(
+    tmp_path, monkeypatch
+):
+    from core import batch
+
+    captured = {}
+
+    def fake_batch(**kwargs):
+        captured.update(kwargs)
+        return {"collected_entries": [], "qc_report_entries": [], "failed_jobs": []}
+
+    monkeypatch.setattr(batch, "run_batch_jobs", fake_batch)
+    monkeypatch.setitem(APP_SETTINGS, "active_analysis", "flt3")
+    context = RunContext.create(
+        analysis_id="clonality",
+        settings={"active_analysis": "clonality"},
+    )
+
+    TabBatch._review_finalize_worker(
+        jobs_to_run=[],
+        corrected_paths=[],
+        session_entries=[],
+        resolved_review_rows={},
+        output_root=tmp_path,
+        analysis_id="clonality",
+        pipeline_scope="all",
+        assay_filter="",
+        aggregate_dit_reports=False,
+        aggregate_outdir_name=None,
+        run_context=context,
+    )
+
+    assert APP_SETTINGS["active_analysis"] == "flt3"
+    assert captured["run_context"] is context
 
 
 def test_review_finalization_start_failure_settles_and_restores_review_action(

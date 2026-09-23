@@ -4,6 +4,7 @@ import csv
 import subprocess
 import threading
 import sys
+import uuid
 from datetime import datetime, timezone
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -26,6 +27,7 @@ from core.ladder_review_bundle_store import (
     review_bundle_transaction,
     save_review_bundle,
 )
+from core.run_context import RunContext
 from core.analyses.clonality.ladder_review_labels import is_review_resolved
 from . import GENERAL_LADDER_OPTIONS, GENERAL_TRACE_OPTIONS, ANALYSIS_LABELS
 
@@ -182,6 +184,7 @@ class TabBatch(QWidget):
         self._job_states = {}
         self._scan_request_counter = 0
         self._active_scan_request_id = 0
+        self._active_scan_context: RunContext | None = None
         self._current_analysis_id = APP_SETTINGS.get("active_analysis", "clonality")
         self._workflow_state = "ready"
         self._active_run_jobs = []
@@ -189,6 +192,7 @@ class TabBatch(QWidget):
         self._active_run_rows: list[int] = []
         self._progress_job_rows: list[int] = []
         self._active_run_cancel_event: threading.Event | None = None
+        self._active_run_context: RunContext | None = None
         self._last_run_result: dict = {}
         self._review_session_active = False
         self._review_session_jobs = []
@@ -197,6 +201,7 @@ class TabBatch(QWidget):
         self._review_session_output_root: Path | None = None
         self._review_session_aggregate_outdir_name: str | None = None
         self._review_session_run_manifest_path: Path | None = None
+        self._review_session_context: RunContext | None = None
         self._review_session_incomplete = False
         self._review_corrected_paths: set[Path] = set()
         self._review_finalize_request_id = 0
@@ -550,6 +555,7 @@ class TabBatch(QWidget):
         """Cancel scan ownership, then clear the queue unless a run owns it."""
         scan_was_active = self.is_scan_active()
         self._active_scan_request_id = 0
+        self._active_scan_context = None
         if self._active_run_cancel_event is not None or getattr(self, "_review_finalize_active", False):
             return
         if scan_was_active:
@@ -575,6 +581,7 @@ class TabBatch(QWidget):
         self._review_session_output_root = None
         self._review_session_aggregate_outdir_name = None
         self._review_session_run_manifest_path = None
+        self._review_session_context = None
         self._review_session_incomplete = False
         self._review_corrected_paths = set()
         self.btn_run_reviewed.setVisible(False)
@@ -622,11 +629,13 @@ class TabBatch(QWidget):
         """Attach the app-level worker lifecycle coordinator."""
         self.operation_coordinator = coordinator
 
-    def _register_worker_operation(self, worker: Worker, kind: str, *, cancel):
+    def _register_worker_operation(
+        self, worker: Worker, kind: str, *, cancel, run_id: str | None = None
+    ):
         coordinator = self.operation_coordinator
         if coordinator is None:
             return None
-        handle = coordinator.register(kind, cancel=cancel)
+        handle = coordinator.register(kind, cancel=cancel, run_id=run_id)
         worker.signals.finished.connect(handle.settle)
         return handle
 
@@ -1018,6 +1027,24 @@ class TabBatch(QWidget):
     def _profile_for(self, analysis_id: str | None = None) -> dict:
         return get_analysis_settings(analysis_id or self._current_analysis_id)
 
+    def _capture_run_context(
+        self, *, parent: RunContext | None = None, run_id: str | None = None
+    ) -> RunContext:
+        if parent is not None:
+            return RunContext.create(
+                analysis_id=parent.analysis_id,
+                settings=parent.settings_snapshot,
+                parent_run_id=parent.run_id,
+                run_id=run_id,
+            )
+        settings = copy.deepcopy(APP_SETTINGS)
+        settings["active_analysis"] = self._current_analysis_id
+        return RunContext.create(
+            analysis_id=self._current_analysis_id,
+            settings=settings,
+            run_id=run_id,
+        )
+
     def is_scan_active(self) -> bool:
         return self._active_scan_request_id != 0
 
@@ -1375,6 +1402,7 @@ class TabBatch(QWidget):
             run_date_filter = "all"
         self._scan_request_counter += 1
         scan_request_id = self._scan_request_counter
+        scan_context = self._capture_run_context()
 
         worker = Worker(
             generate_jobs,
@@ -1382,6 +1410,7 @@ class TabBatch(QWidget):
             aggregate_patients=agg_pat,
             patient_regex=regex,
             run_date_filter=run_date_filter,
+            run_context=scan_context,
         )
         worker.signals.result.connect(
             lambda jobs, request_id=scan_request_id: self._on_scan_result(jobs, request_id)
@@ -1395,6 +1424,7 @@ class TabBatch(QWidget):
                 "Run scan",
                 # Directory enumeration has no safe interruption boundary yet.
                 cancel=lambda: None,
+                run_id=scan_context.run_id,
             )
         except OperationStartRejected:
             self._set_workflow_status(
@@ -1403,6 +1433,7 @@ class TabBatch(QWidget):
             return
 
         self._active_scan_request_id = scan_request_id
+        self._active_scan_context = scan_context
         self.btn_scan.setEnabled(False)
         self.btn_run.setEnabled(False)
         self.progress.setRange(0, 0)  # Indeterminate spinner
@@ -1411,6 +1442,7 @@ class TabBatch(QWidget):
             self._start_registered_worker(worker, operation_handle)
         except Exception as exc:
             self._active_scan_request_id = 0
+            self._active_scan_context = None
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
             self.btn_scan.setEnabled(True)
@@ -1421,6 +1453,7 @@ class TabBatch(QWidget):
         if request_id != self._active_scan_request_id:
             return
         self._active_scan_request_id = 0
+        self._active_scan_context = None
         self._detected_jobs = jobs
         self._job_states = {index: "pending" for index, _job in enumerate(jobs)}
         
@@ -1459,6 +1492,7 @@ class TabBatch(QWidget):
         if request_id != self._active_scan_request_id:
             return
         self._active_scan_request_id = 0
+        self._active_scan_context = None
         self._set_workflow_status(f"Scan error: {err_tuple[1]}", "error")
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -1544,12 +1578,14 @@ class TabBatch(QWidget):
         worker.signals.progress_ext.connect(self._update_progress_from_thread)
         worker.signals.error.connect(self._on_run_error)
 
+        run_id = uuid.uuid4().hex
         self._active_run_cancel_event = cancel_event
         try:
             operation_handle = self._register_worker_operation(
                 worker,
                 "Run batch",
                 cancel=self.on_stop,
+                run_id=run_id,
             )
         except OperationStartRejected:
             self._active_run_cancel_event = None
@@ -1572,6 +1608,9 @@ class TabBatch(QWidget):
             )
             return
 
+        run_context = self._capture_run_context(run_id=run_id)
+        worker.kwargs["run_context"] = run_context
+
         previous_job_states = {
             row: self._job_states.get(row, "pending") for row in selected_rows
         }
@@ -1586,9 +1625,12 @@ class TabBatch(QWidget):
         self.progress.setValue(0)
         self._set_workflow_status(f"Running {len(jobs_to_run)} jobs...", "running")
 
+        previous_context = self._active_run_context
+        self._active_run_context = run_context
         try:
             self._start_registered_worker(worker, operation_handle)
         except Exception as exc:
+            self._active_run_context = previous_context
             self._active_run_cancel_event = None
             for row, state in previous_job_states.items():
                 self._job_states[row] = state
@@ -1625,6 +1667,7 @@ class TabBatch(QWidget):
         self._review_session_run_manifest_path = (
             Path(raw_manifest_path) if raw_manifest_path else None
         )
+        self._review_session_context = self._active_run_context
         self._review_session_incomplete = bool((result or {}).get("cancelled"))
         self._review_corrected_paths = set()
         self._set_review_session_entries(
@@ -1705,7 +1748,11 @@ class TabBatch(QWidget):
             self._set_workflow_status("Could not find linked jobs for the corrected files.", "error")
             return
 
-        profile = self._profile_for()
+        parent_context = self._review_session_context or self._capture_run_context()
+        child_context = self._capture_run_context(parent=parent_context)
+        profile_settings = parent_context.settings_copy()
+        profile_settings.setdefault("active_analysis", parent_context.analysis_id)
+        profile = get_analysis_settings(parent_context.analysis_id, profile_settings)
         s_pipe = profile.get("pipeline", {})
         s_batch = profile.get("batch", {})
         p_scope = s_pipe.get("mode", "all")
@@ -1727,6 +1774,7 @@ class TabBatch(QWidget):
             aggregate_dit_reports=aggregate_dit_reports,
             aggregate_outdir_name=self._review_session_aggregate_outdir_name,
             parent_run_manifest_path=self._review_session_run_manifest_path,
+            run_context=child_context,
             update_callback=None,
         )
         worker.kwargs["update_callback"] = worker.signals.progress_ext.emit
@@ -1740,6 +1788,7 @@ class TabBatch(QWidget):
                 # Final report publication has no safe mid-write boundary yet.
                 # Keep the operation registered so close waits for completion.
                 cancel=lambda: None,
+                run_id=child_context.run_id,
             )
         except OperationStartRejected:
             self._review_finalize_active = False
@@ -1801,12 +1850,16 @@ class TabBatch(QWidget):
         aggregate_dit_reports: bool,
         aggregate_outdir_name: str | None,
         parent_run_manifest_path: Path | None = None,
+        run_context: RunContext | None = None,
         update_callback=None,
     ) -> dict:
         from config import APP_SETTINGS, resolve_analysis_excel_output_path
         from core.batch import run_batch_jobs
 
-        APP_SETTINGS["active_analysis"] = analysis_id
+        if run_context is None:
+            APP_SETTINGS["active_analysis"] = analysis_id
+        elif run_context.analysis_id != analysis_id:
+            raise ValueError("Review analysis does not match run context")
         result = run_batch_jobs(
             jobs=jobs_to_run,
             output_base=output_root,
@@ -1823,6 +1876,7 @@ class TabBatch(QWidget):
             defer_dit_html_reports=True,
             preserve_deferred_entries=True,
             parent_run_manifest_path=parent_run_manifest_path,
+            **({"run_context": run_context} if run_context is not None else {}),
         )
 
         combined_by_path: dict[Path, dict] = {}
@@ -1910,6 +1964,7 @@ class TabBatch(QWidget):
                     "clonality",
                     agg_outdir,
                     CLONALITY_TRACKING_FILENAME,
+                    settings=(run_context.settings_copy() if run_context is not None else None),
                 ),
                 combined_entries,
             )
