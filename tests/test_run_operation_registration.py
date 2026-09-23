@@ -110,6 +110,64 @@ def test_run_batch_registers_before_start_and_settles_on_worker_finish(
     assert registration["handle"].settled is True
 
 
+def test_run_scan_registers_before_start_and_settles_on_finish(
+    run_tab, tmp_path, monkeypatch
+):
+    source = tmp_path / "scan.fsa"
+    source.write_bytes(b"synthetic")
+    monkeypatch.setattr(run_tab, "_general_selected_paths", lambda: [source])
+    coordinator = _Coordinator()
+    run_tab.set_operation_coordinator(coordinator)
+
+    run_tab.on_scan()
+
+    assert coordinator.calls[0]["kind"] == "Run scan"
+    assert coordinator.calls[0]["handle"].running is True
+    assert len(run_tab.threadpool.started) == 1
+    coordinator.calls[0]["cancel"]()
+    assert coordinator.calls[0]["handle"].settled is False
+    run_tab.threadpool.started[0].signals.finished.emit()
+    assert coordinator.calls[0]["handle"].settled is True
+
+
+def test_run_scan_rejected_during_close_restores_controls(
+    run_tab, tmp_path, monkeypatch
+):
+    source = tmp_path / "scan.fsa"
+    source.write_bytes(b"synthetic")
+    monkeypatch.setattr(run_tab, "_general_selected_paths", lambda: [source])
+    run_tab.set_operation_coordinator(_Coordinator(reject=True))
+
+    run_tab.on_scan()
+
+    assert run_tab.threadpool.started == []
+    assert run_tab.is_scan_active() is False
+    assert run_tab.btn_scan.isEnabled() is True
+    assert "closing" in run_tab.status_lbl.text().lower()
+
+
+def test_run_scan_pool_failure_settles_and_restores_controls(
+    run_tab, tmp_path, monkeypatch
+):
+    source = tmp_path / "scan.fsa"
+    source.write_bytes(b"synthetic")
+    monkeypatch.setattr(run_tab, "_general_selected_paths", lambda: [source])
+    coordinator = _Coordinator()
+    run_tab.set_operation_coordinator(coordinator)
+
+    class FailingPool:
+        def start(self, _worker):
+            raise RuntimeError("pool unavailable")
+
+    run_tab.threadpool = FailingPool()
+    run_tab.on_scan()
+
+    assert coordinator.calls[0]["handle"].settled is True
+    assert run_tab.is_scan_active() is False
+    assert run_tab.btn_scan.isEnabled() is True
+    assert "pool unavailable" in run_tab.status_lbl.text().lower()
+
+
 def test_run_batch_rejection_leaves_previous_review_and_idle_controls_intact(
     run_tab, tmp_path, monkeypatch
 ):

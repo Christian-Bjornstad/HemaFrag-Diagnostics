@@ -1363,11 +1363,6 @@ class TabBatch(QWidget):
             )
             return
             
-        self.btn_scan.setEnabled(False)
-        self.btn_run.setEnabled(False)
-        self.progress.setRange(0, 0) # Indeterminate spinner
-        self._set_workflow_status("Finding jobs...", "running")
-
         from core.batch import generate_jobs
 
         batch_settings = self._profile_for().get("batch", {})
@@ -1380,7 +1375,6 @@ class TabBatch(QWidget):
             run_date_filter = "all"
         self._scan_request_counter += 1
         scan_request_id = self._scan_request_counter
-        self._active_scan_request_id = scan_request_id
 
         worker = Worker(
             generate_jobs,
@@ -1395,8 +1389,33 @@ class TabBatch(QWidget):
         worker.signals.error.connect(
             lambda err_tuple, request_id=scan_request_id: self._on_scan_error(err_tuple, request_id)
         )
-        
-        self.threadpool.start(worker)
+        try:
+            operation_handle = self._register_worker_operation(
+                worker,
+                "Run scan",
+                # Directory enumeration has no safe interruption boundary yet.
+                cancel=lambda: None,
+            )
+        except OperationStartRejected:
+            self._set_workflow_status(
+                "Application is closing — scan was not started.", "warning"
+            )
+            return
+
+        self._active_scan_request_id = scan_request_id
+        self.btn_scan.setEnabled(False)
+        self.btn_run.setEnabled(False)
+        self.progress.setRange(0, 0)  # Indeterminate spinner
+        self._set_workflow_status("Finding jobs...", "running")
+        try:
+            self._start_registered_worker(worker, operation_handle)
+        except Exception as exc:
+            self._active_scan_request_id = 0
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            self.btn_scan.setEnabled(True)
+            self.btn_run.setEnabled(bool(self._detected_jobs))
+            self._set_workflow_status(f"Scan could not start: {exc}", "error")
         
     def _on_scan_result(self, jobs, request_id: int | None = None):
         if request_id != self._active_scan_request_id:
