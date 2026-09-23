@@ -579,6 +579,9 @@ class MainWindow(QMainWindow):
             return "Archive Runner"
         if self.tab_ladder.is_operation_active():
             return "ladder rerun"
+        active_handles = self.operation_coordinator.active_handles()
+        if active_handles:
+            return active_handles[0].kind
         return None
 
     def _blocked_operation_message(self) -> None:

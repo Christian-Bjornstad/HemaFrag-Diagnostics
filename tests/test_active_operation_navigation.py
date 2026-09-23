@@ -86,6 +86,20 @@ def test_other_workers_block_programmatic_analysis_and_release(window, monkeypat
     assert APP_SETTINGS["active_analysis"] == "flt3"
 
 
+def test_registered_ladder_scan_blocks_settings_and_analysis_until_settled(window, qapp):
+    handle = window.operation_coordinator.register("Ladder scan", cancel=lambda: None)
+
+    assert window.active_operation() == "Ladder scan"
+    assert window._activate_analysis("flt3") is False
+    assert not window.settings_changes_allowed()
+    assert APP_SETTINGS["active_analysis"] == "clonality"
+
+    handle.settle()
+    qapp.processEvents()
+    assert window.active_operation() is None
+    assert window.settings_changes_allowed()
+
+
 def test_run_error_and_cancelled_completion_release_guard(window):
     run = window.tab_run
     run._active_run_cancel_event = threading.Event()
@@ -112,6 +126,7 @@ def test_scan_blocks_analysis_and_settings_until_its_callback(
     window,
     tmp_path,
     completion,
+    qapp,
 ):
     class DeferredPool:
         def __init__(self):
@@ -153,6 +168,8 @@ def test_scan_blocks_analysis_and_settings_until_its_callback(
         run.threadpool.worker.signals.error.emit(
             (RuntimeError, RuntimeError("synthetic scan failure"), "")
         )
+    run.threadpool.worker.signals.finished.emit()
+    qapp.processEvents()
 
     assert window.active_operation() is None
     assert window.settings_changes_allowed()
