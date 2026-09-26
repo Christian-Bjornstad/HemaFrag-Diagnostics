@@ -12,9 +12,11 @@ import subprocess
 import sys
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import threading
 
+if TYPE_CHECKING:
+    from core.rust_bridge._legacy import _RustPrimitiveWorker
 
 
 

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/**', 'codex/**']
   pull_request:
 
 jobs:
@@ -31,7 +31,9 @@ jobs:
         with:
           node-version: "22"
       - name: Install Python dependencies
-        run: python -m pip install -r requirements.txt pytest
+        run: python -m pip install -r requirements.txt pytest ruff==0.16.2
+      - name: Check for undefined Python names
+        run: python -m ruff check --select F821 core gui_qt qt_app.py config.py
       - name: Install Windows native engine
         if: runner.os == 'Windows'
         run: python -m pip install wheels/fraggler_kernels-0.1.2-cp310-abi3-win_amd64.whl
