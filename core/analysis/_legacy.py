@@ -9,6 +9,7 @@ MIT-licensed components from `willros/fraggler`.
 """
 from __future__ import annotations
 import hashlib
+import math
 import os
 
 from datetime import datetime, timezone

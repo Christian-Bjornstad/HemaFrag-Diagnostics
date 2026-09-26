@@ -360,6 +360,11 @@ class LadderAdjustmentDialog(QDialog):
             QWidget#TraceAssignControls {
                 background: transparent;
             }
+            QWidget#TraceAssignControls QPushButton {
+                padding: 3px 9px;
+                min-height: 24px;
+                font-size: 11px;
+            }
             QLabel#TraceControlGroupLabel {
                 color: #64748b;
                 font-size: 9px;
@@ -568,7 +573,7 @@ class LadderAdjustmentDialog(QDialog):
         summary_header.setSpacing(14)
         title_stack = QVBoxLayout()
         title_stack.setSpacing(2)
-        summary_title = QLabel("Ladder Studio")
+        summary_title = QLabel("Ladder editor")
         summary_title.setObjectName("WorkspaceTitle")
         title_stack.addWidget(summary_title)
 
@@ -639,7 +644,7 @@ class LadderAdjustmentDialog(QDialog):
         plot_title = QLabel("LADDER TRACE")
         plot_title.setObjectName("WorkspaceEyebrow")
         plot_header.addWidget(plot_title)
-        self.trace_backend_label = QLabel("INTERACTIVE CANVAS" if self._trace_backend == "pyqtgraph" else "MATPLOTLIB FALLBACK")
+        self.trace_backend_label = QLabel("Select peaks on the trace")
         self.trace_backend_label.setObjectName("ModeBadge")
         plot_header.addWidget(self.trace_backend_label)
         plot_header.addStretch()
@@ -647,8 +652,9 @@ class LadderAdjustmentDialog(QDialog):
             "red = candidates · amber = model · teal = manual · blue/green = selected ladder"
         )
         self.trace_legend_label.setObjectName("TraceLegend")
-        plot_header.addWidget(self.trace_legend_label)
         plot_layout.addLayout(plot_header)
+        self.trace_legend_label.setWordWrap(True)
+        plot_layout.addWidget(self.trace_legend_label)
 
         trace_toolbar = QWidget()
         trace_toolbar.setObjectName("TraceToolbar")
@@ -718,8 +724,7 @@ class LadderAdjustmentDialog(QDialog):
             self.btn_trace_next_missing,
             self.btn_trace_missing_order,
         ):
-            btn.setMinimumHeight(24)
-            btn.setMaximumHeight(28)
+            btn.setFixedHeight(34)
             assign_controls.addWidget(btn)
         assign_controls.addStretch()
         toolbar_layout.addWidget(view_controls_widget)
@@ -887,10 +892,10 @@ class LadderAdjustmentDialog(QDialog):
         qc_header.addWidget(self.qc_grade_label)
         qc_header.addSpacing(12)
         qc_header.addWidget(self.qc_summary_label, stretch=1)
-        qc_header.addWidget(self.linear_fit_label)
         qc_layout.addLayout(qc_header)
+        qc_layout.addWidget(self.linear_fit_label)
 
-        self.qc_reason_label = QLabel("Map all ladder steps to inspect residuals and sizing quality.")
+        self.qc_reason_label = QLabel("Assign at least 3 ladder steps to preview the fit.")
         self.qc_reason_label.setWordWrap(True)
         self.qc_reason_label.setStyleSheet("color: #64748b;")
         qc_layout.addWidget(self.qc_reason_label)
@@ -962,8 +967,8 @@ class LadderAdjustmentDialog(QDialog):
 
         self.residual_figure, self.residual_ax = plt.subplots(figsize=(11, 1.85))
         self.residual_canvas = FigureCanvas(self.residual_figure)
-        self.residual_canvas.setMinimumHeight(78)
-        self.residual_canvas.setMaximumHeight(105)
+        self.residual_canvas.setMinimumHeight(150)
+        self.residual_canvas.setMaximumHeight(180)
         self.residual_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         qc_layout.addWidget(self.residual_canvas)
         qc_scroll = QScrollArea()
@@ -979,7 +984,7 @@ class LadderAdjustmentDialog(QDialog):
         main_splitter.addWidget(qc_scroll)
         main_splitter.setStretchFactor(0, 5)
         main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([820, 150])
+        main_splitter.setSizes([600, 240])
         layout.addWidget(main_splitter, stretch=1)
 
         action_bar = QWidget()
@@ -1250,8 +1255,8 @@ class LadderAdjustmentDialog(QDialog):
             row_state = self._row_fit_state(row)
             items = [
                 QTableWidgetItem(f"{row_state['expected_bp']:.0f} bp"),
-                QTableWidgetItem("—" if row_state["observed_pos"] is None else f"{row_state['observed_pos']:.0f}"),
-                QTableWidgetItem("—" if row_state["residual"] is None else f"{row_state['residual']:+.2f} bp"),
+                QTableWidgetItem("—" if row_state["observed_pos"] is None else f"{row_state['observed_pos']:.2f}"),
+                QTableWidgetItem("—" if row_state["residual"] is None else f"{row_state['residual']:+z.2f} bp"),
                 QTableWidgetItem(str(row_state["status"])),
             ]
             status = str(row_state["status"])
@@ -1490,17 +1495,15 @@ class LadderAdjustmentDialog(QDialog):
         preview_fsa = self._preview_fsa
         if preview_fsa is None:
             return None
-        df = getattr(preview_fsa, "sample_data_with_basepairs", None)
-        if df is not None and {"time", "basepairs"}.issubset(df.columns):
-            row = df.loc[df["time"] == int(peak_time)]
-            if not row.empty:
-                return float(row["basepairs"].iloc[0])
         ladder_model = getattr(preview_fsa, "ladder_model", None)
         if ladder_model is not None:
             try:
                 return float(ladder_model.predict(np.array([[peak_time]], dtype=float))[0])
             except Exception:
                 return None
+        df = getattr(preview_fsa, "sample_data_with_basepairs", None)
+        if df is not None and not df.empty and {"time", "basepairs"}.issubset(df.columns):
+            return float(np.interp(peak_time, df["time"], df["basepairs"]))
         return None
 
     def _candidate_intensity_median(self) -> float:
@@ -1602,8 +1605,10 @@ class LadderAdjustmentDialog(QDialog):
         missing_count = sum(1 for row in self._fit_rows if row["status"] == "Missing")
         outlier_count = sum(1 for row in self._fit_rows if row["status"] == "Outlier")
         if self._preview_metrics is None:
-            if len(self.mapping) < 2:
-                return "check", "Map at least 2 ladder steps to preview the fit."
+            if len(self.mapping) < 3:
+                return "check", "Assign at least 3 ladder steps to preview. Fewer can be saved as a draft."
+            if self._fit_reason != "Preview not run":
+                return "fail", self._fit_reason
             return "unknown", "Preview not run"
 
         r2 = float(self._preview_metrics.get("r2", float("nan")))
@@ -1615,8 +1620,7 @@ class LadderAdjustmentDialog(QDialog):
         if missing_count:
             return (
                 "check",
-                f"{missing_count} expected ladder step(s) remain explicitly missing; "
-                "only observed anchors are fitted.",
+                f"Partial fit: {missing_count} ladder steps unassigned. Check the assigned peaks before saving.",
             )
         if r2 < PASS_R2 or max_abs > PASS_MAX_ABS_RESIDUAL:
             return "check", "Fit is usable, but one or more residuals still need review."
@@ -1629,7 +1633,7 @@ class LadderAdjustmentDialog(QDialog):
         self._fit_grade = "unknown"
         self._fit_reason = "Preview not run"
 
-        if len(self.mapping) < 2:
+        if len(self.mapping) < 3:
             self._fit_rows = self._build_fit_rows()
             self._fit_grade, self._fit_reason = self._grade_preview_state()
             return
@@ -1684,8 +1688,8 @@ class LadderAdjustmentDialog(QDialog):
                 f"{self._fit_method_name()} · mapped {len(self.mapping)}/{len(self.ladder_steps)} · missing {missing_count} · extra {extra_count}"
             )
             self.qc_reason_label.setText(self._fit_reason)
-            self.stats_label.setText(f"Preview pending: {self._fit_reason}")
-            self.stats_label.setStyleSheet("color: #d97706; font-weight: 700;")
+            self.stats_label.setText("Preview failed — see sizing QC" if self._fit_grade == "fail" else f"{len(self.mapping)} peaks assigned · draft")
+            self.stats_label.setStyleSheet(f"color: {color_map.get(self._fit_grade, '#64748b')}; font-weight: 700;")
             return
 
         r2 = float(self._preview_metrics.get("r2", float("nan")))
@@ -1703,7 +1707,7 @@ class LadderAdjustmentDialog(QDialog):
         )
         self.qc_reason_label.setText(self._fit_reason)
         self.stats_label.setText(
-            f"Preview fit {label}: R² {r2:.6f} | mean {mean_abs:.2f} bp | max {max_abs:.2f} bp"
+            f"{len(self.mapping)}/{len(self.ladder_steps)} peaks assigned · {label.lower()}"
         )
         self.stats_label.setStyleSheet(f"color: {color_map.get(self._fit_grade, '#64748b')}; font-weight: 700;")
 
@@ -1725,6 +1729,8 @@ class LadderAdjustmentDialog(QDialog):
                 colors.append("#dc2626")
 
         self.residual_ax.axhline(0.0, color="#94a3b8", linestyle="--", linewidth=1.0)
+        residual_limit = max(1.0, max((abs(value) for value in ys), default=0.0) * 1.2)
+        self.residual_ax.set_ylim(-residual_limit, residual_limit)
         if xs:
             self.residual_ax.scatter(xs, ys, c=colors, s=42, zorder=3)
             self.residual_ax.plot(xs, ys, color="#cbd5e1", linewidth=1.0, zorder=2)
@@ -2430,6 +2436,10 @@ class LadderAdjustmentDialog(QDialog):
             self._review_action = "save_draft"
             self.accept()
             return
+        self._refresh_preview_state(show_errors=True)
+        self._refresh_all()
+        if self._preview_metrics is None:
+            return
         missing_steps = self._missing_step_indices()
         if missing_steps:
             missing_text = ", ".join(f"{self.ladder_steps[idx]:.0f} bp" for idx in missing_steps[:8])
@@ -2449,15 +2459,6 @@ class LadderAdjustmentDialog(QDialog):
             if answer != QMessageBox.StandardButton.Yes:
                 return
 
-        self._refresh_preview_state(show_errors=True)
-        self._refresh_all()
-        if self._preview_metrics is None:
-            QMessageBox.warning(
-                self,
-                "Preview Required",
-                "This ladder correction could not be previewed successfully yet. Fix the fit before saving.",
-            )
-            return
         self._partial_approved = bool(missing_steps)
         self.accept()
 

@@ -27,6 +27,19 @@ def _fake_fit(fsa):
     )
     return fsa
 
+
+def test_manual_candidates_merge_without_losing_fractional_positions(monkeypatch):
+    import core.analysis._legacy as analysis
+
+    fsa = _FakeFsa([50, 100, 150], [100, 200, 300])
+    monkeypatch.setattr(analysis, "fit_size_standard_to_ladder", _fake_fit)
+    result = analysis.apply_manual_ladder_mapping(fsa, {
+        "mapping_times": {0: 100.25, 1: 200.5, 2: 300.75},
+        "manual_candidates": [100, 100.25, 200.5, 300.75],
+    })
+    assert result.best_size_standard.tolist() == [100.25, 200.5, 300.75]
+    assert result.size_standard_peaks.tolist() == [100, 100.25, 200, 200.5, 300, 300.75]
+
 def test_exact_trace_sampling_preserves_fractional_x_without_peak_snap():
     from gui_qt.dialogs.ladder_dialog._legacy import sample_raw_trace_at_x
 

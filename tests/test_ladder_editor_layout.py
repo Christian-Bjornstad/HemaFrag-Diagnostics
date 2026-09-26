@@ -34,6 +34,34 @@ def _fake_fsa():
     )
 
 
+def test_preview_failure_remains_visible_in_qc(qapp, monkeypatch):
+    monkeypatch.setattr(LadderAdjustmentDialog, "_suggest_auto", lambda self, store_initial: None)
+    monkeypatch.setattr(LadderAdjustmentDialog, "_get_candidates", lambda self: pd.DataFrame({
+        "time": [100., 200., 300.], "intensity": [100., 100., 100.],
+        "source": ["auto"] * 3,
+    }))
+    import core.analysis as analysis
+
+    def fail(*args):
+        raise ValueError("Selected ladder peaks must be strictly increasing in time.")
+
+    monkeypatch.setattr(analysis, "apply_manual_ladder_mapping", fail)
+    dialog = LadderAdjustmentDialog(_fake_fsa())
+    dialog.mapping = {0: 0, 1: 1, 2: 2}
+    dialog._refresh_preview_state(show_errors=False)
+    dialog._refresh_all()
+    assert dialog._fit_grade == "fail"
+    assert "strictly increasing" in dialog.qc_reason_label.text()
+    messages = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: messages.append("error"))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: messages.append("warning"))
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: messages.append("question"))
+    dialog._on_apply()
+    assert messages == ["error"]
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    dialog.close()
+
+
 def test_ladder_editor_exposes_grouped_controls_and_scrollable_qc(qapp, monkeypatch):
     monkeypatch.setattr(
         LadderAdjustmentDialog,
@@ -350,4 +378,30 @@ def test_ladder_editor_restores_saved_draft_mapping(qapp, monkeypatch):
 
     assert dialog.mapping == {0: 0, 2: 1}
     assert dialog._manual_candidate_times == [100.25, 300.75]
+    dialog.close()
+
+
+def test_manual_trace_markers_preview_and_save_with_real_fit(qapp, monkeypatch):
+    monkeypatch.setattr(LadderAdjustmentDialog, "_suggest_auto", lambda self, store_initial: None)
+    fsa = _fake_fsa()
+    fsa.sample_data = np.zeros(1200)
+    fsa.size_standard_peaks = np.array([100., 200., 300.])
+    dialog = LadderAdjustmentDialog(fsa)
+    for step, bp in enumerate(fsa.ladder_steps):
+        candidate = dialog._insert_manual_candidate(float(bp * 2 + 100.25), 100.)
+        dialog.mapping[step] = candidate
+    dialog._refresh_preview_state(show_errors=False)
+    assert dialog._preview_metrics is not None, dialog._fit_reason
+    assert dialog._preview_metrics["r2"] > 0.999
+    assert max(abs(row["residual"]) for row in dialog._fit_rows) < 0.01
+    dialog._refresh_all()
+    assert dialog.table.item(0, 1).text() == "170.25"
+    assert dialog.table.item(0, 2).text() == "+0.00 bp"
+    assert dialog.residual_ax.get_ylim() == (-1.0, 1.0)
+    dialog._on_apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    payload = dialog.get_adjustment_payload()
+    assert payload["mapping_times"][0] == pytest.approx(170.25)
+    assert len(payload["manual_candidates"]) == len(fsa.ladder_steps)
+    assert not hasattr(fsa, "ladder_model")
     dialog.close()
