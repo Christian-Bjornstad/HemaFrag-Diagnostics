@@ -35,7 +35,7 @@ def _candidate_rows() -> tuple[list[dict[str, object]], list[dict[str, object]]]
     ):
         for group_ordinal in range(count):
             ordinal += 1
-            source = Path(f"C:/allowed/{2024 + group_ordinal % 3}/run-{ordinal}/case-{ordinal}.fsa")
+            source = Path(f"C:/allowed/{2024 + group_ordinal % 3}/run-{ordinal}/case-{ordinal}.fsa").resolve()
             content_hash = f"hash-{ordinal:03d}"
             outcome = (
                 "fit_rejected_with_usable_signal"

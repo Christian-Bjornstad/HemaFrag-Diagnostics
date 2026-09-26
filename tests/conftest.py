@@ -19,6 +19,15 @@ os.environ["HEMAFRAG_LADDER_ADJUSTMENT_DB"] = str(_runtime_path / "ladder.sqlite
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
+@pytest.fixture(scope="session")
+def qapp():
+    """Provide Qt without depending on a locally installed pytest plugin."""
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
 @pytest.fixture(autouse=True)
 def isolated_operator_state(monkeypatch, tmp_path):
     import config

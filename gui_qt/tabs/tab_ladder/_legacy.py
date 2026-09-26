@@ -1429,7 +1429,7 @@ class TabLadder(QWidget):
             if resolved_path in seen:
                 continue
             seen.add(resolved_path)
-            files.append(file_path)
+            files.append(resolved_path)
 
         return files, missing, unresolved
 

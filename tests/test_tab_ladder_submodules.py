@@ -452,7 +452,7 @@ class TabLadderIOHelperTests(unittest.TestCase):
                 destination_path = Path(destination)
                 if (
                     not failed_once
-                    and destination_path == annotations_path
+                    and destination_path.resolve() == annotations_path.resolve()
                     and source_path.suffix == ".staged"
                 ):
                     failed_once = True
@@ -550,14 +550,14 @@ class TabLadderIOHelperTests(unittest.TestCase):
                 destination_path = Path(destination)
                 if (
                     not publication_failed
-                    and destination_path == annotations_path
+                    and destination_path.resolve() == annotations_path.resolve()
                     and source_path.suffix == ".staged"
                 ):
                     publication_failed = True
                     raise OSError("injected annotation publication failure")
                 if (
                     publication_failed
-                    and destination_path == cases_path
+                    and destination_path.resolve() == cases_path.resolve()
                     and source_path.suffix == ".backup"
                 ):
                     raise OSError("injected CSV rollback failure")
