@@ -405,3 +405,52 @@ def test_manual_trace_markers_preview_and_save_with_real_fit(qapp, monkeypatch):
     assert len(payload["manual_candidates"]) == len(fsa.ladder_steps)
     assert not hasattr(fsa, "ladder_model")
     dialog.close()
+
+
+@pytest.mark.parametrize("key,value", [
+    ("r2", float("nan")), ("max_abs_error_bp", float("nan")),
+    ("mean_abs_error_bp", float("inf")), ("r2", None),
+    ("n_ladder_steps", 0),
+])
+def test_invalid_qc_cannot_be_saved_as_a_successful_preview(qapp, monkeypatch, key, value):
+    import core.analysis as analysis
+
+    monkeypatch.setattr(LadderAdjustmentDialog, "_suggest_auto", lambda self, store_initial: None)
+    metrics = {"r2": 1.0, "max_abs_error_bp": 0.0, "mean_abs_error_bp": 0.0, "n_ladder_steps": 3}
+    metrics[key] = value
+    monkeypatch.setattr(analysis, "apply_manual_ladder_mapping", lambda fsa, payload: fsa)
+    monkeypatch.setattr(analysis, "compute_ladder_qc_metrics", lambda fsa: metrics)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: None)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    dialog = LadderAdjustmentDialog(_fake_fsa())
+    for step in range(3):
+        dialog.mapping[step] = dialog._insert_manual_candidate(100.0 + step * 100, 100)
+    dialog._on_apply()
+    assert dialog._preview_metrics is None
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert "QC" in dialog.qc_reason_label.text()
+    dialog.close()
+
+
+def test_nonfinite_qc_never_receives_pass_grade():
+    dialog = LadderAdjustmentDialog.__new__(LadderAdjustmentDialog)
+    dialog._fit_rows = []
+    dialog._preview_metrics = {"r2": float("nan"), "max_abs_error_bp": float("nan")}
+    assert dialog._grade_preview_state()[0] == "fail"
+
+
+def test_auto_suggestion_rebuilds_indices_before_mapping_and_refreshes_table(qapp, monkeypatch):
+    fsa = _fake_fsa()
+    fsa.best_size_standard = np.array([100.0])
+    candidates = pd.DataFrame({
+        "time": [100.2, 200.0], "intensity": [100.0, 100.0], "source": ["auto", "auto"],
+    })
+    monkeypatch.setattr(LadderAdjustmentDialog, "_get_candidates", lambda self: candidates.copy())
+    dialog = LadderAdjustmentDialog(fsa)
+    manual = dialog._insert_manual_candidate(100.0, 100.0)
+    dialog.mapping = {0: manual}
+    dialog._suggest_auto(store_initial=False)
+    assert dialog.mapping == {0: 0}
+    assert dialog._manual_candidate_times == []
+    assert dialog.table.item(0, 1).text() == "100.20"
+    dialog.close()

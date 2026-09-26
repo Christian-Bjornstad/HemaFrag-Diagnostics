@@ -40,6 +40,33 @@ def test_manual_candidates_merge_without_losing_fractional_positions(monkeypatch
     assert result.best_size_standard.tolist() == [100.25, 200.5, 300.75]
     assert result.size_standard_peaks.tolist() == [100, 100.25, 200, 200.5, 300, 300.75]
 
+
+def test_failed_saved_fit_does_not_change_input_for_auto_fallback(monkeypatch):
+    import core.analysis._legacy as analysis
+
+    fsa = _FakeFsa([50, 100, 150, 200], [100, 200, 300, 400])
+
+    def failed_fit(candidate):
+        candidate.fitted_to_model = False
+        return candidate
+
+    monkeypatch.setattr(analysis, "fit_size_standard_to_ladder", failed_fit)
+    result = analysis._try_apply_saved_ladder_adjustment(
+        fsa, {"mapping_times": {0: 100, 2: 300, 3: 400}}, "ROX",
+    )
+    assert result is None
+    assert fsa.ladder_steps.tolist() == [50, 100, 150, 200]
+    assert not hasattr(fsa, "manual_ladder_partial")
+
+
+def test_malformed_saved_mapping_falls_back_without_crashing():
+    import core.analysis._legacy as analysis
+
+    fsa = _FakeFsa([50, 100, 150], [100, 200, 300])
+    assert analysis._try_apply_saved_ladder_adjustment(
+        fsa, {"mapping_times": {"broken": 100}}, "ROX",
+    ) is None
+
 def test_exact_trace_sampling_preserves_fractional_x_without_peak_snap():
     from gui_qt.dialogs.ladder_dialog._legacy import sample_raw_trace_at_x
 

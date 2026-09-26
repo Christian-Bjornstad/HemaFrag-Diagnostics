@@ -1611,8 +1611,13 @@ class LadderAdjustmentDialog(QDialog):
                 return "fail", self._fit_reason
             return "unknown", "Preview not run"
 
-        r2 = float(self._preview_metrics.get("r2", float("nan")))
-        max_abs = float(self._preview_metrics.get("max_abs_error_bp", float("inf")))
+        try:
+            r2 = float(self._preview_metrics.get("r2", float("nan")))
+            max_abs = float(self._preview_metrics.get("max_abs_error_bp", float("inf")))
+        except (TypeError, ValueError, OverflowError):
+            return "fail", "Fit QC is incomplete. Preview the fit again."
+        if not math.isfinite(r2) or not math.isfinite(max_abs):
+            return "fail", "Fit QC is incomplete. Preview the fit again."
         # Delvis kartlegging (interpolerte trinn) gir "check", ikke "fail" —
         # residualene gjelder kun de faktisk plasserte toppene.
         if outlier_count or r2 < CHECK_R2 or max_abs > CHECK_MAX_ABS_RESIDUAL:
@@ -1647,8 +1652,18 @@ class LadderAdjustmentDialog(QDialog):
             preview_fsa.expected_ladder_steps = np.array(self.ladder_steps, dtype=float).copy()
             preview_fsa.ladder_steps = np.array(self.ladder_steps, dtype=float).copy()
             preview_fsa = apply_manual_ladder_mapping(preview_fsa, self._build_adjustment_payload())
+            metrics = compute_ladder_qc_metrics(preview_fsa)
+            for key in ("r2", "mean_abs_error_bp", "max_abs_error_bp"):
+                try:
+                    value = float(metrics.get(key, float("nan")))
+                except (TypeError, ValueError, OverflowError):
+                    value = float("nan")
+                if not math.isfinite(value):
+                    raise ValueError("Fit QC is incomplete. Check the assigned peaks and preview again.")
+            if metrics.get("n_ladder_steps") != len(self.mapping):
+                raise ValueError("Fit QC does not cover every assigned ladder step. Preview the fit again.")
             self._preview_fsa = preview_fsa
-            self._preview_metrics = compute_ladder_qc_metrics(preview_fsa)
+            self._preview_metrics = metrics
         except Exception as exc:
             self._preview_fsa = None
             self._preview_metrics = None
@@ -2385,6 +2400,9 @@ class LadderAdjustmentDialog(QDialog):
         self._assign_candidate_to_step(step_idx, cand_idx)
 
     def _suggest_auto(self, store_initial: bool):
+        if not store_initial:
+            self._manual_candidate_times = []
+            self.candidates = self._get_candidates().reset_index(drop=True)
         best = getattr(self.fsa, "best_size_standard", None)
         auto_mapping: dict[int, int] = {}
         if best is not None and len(best) > 0 and not self.candidates.empty:
@@ -2406,14 +2424,13 @@ class LadderAdjustmentDialog(QDialog):
                 auto_mapping[step_idx] = cand_idx
 
         self.mapping = auto_mapping
-        if not store_initial:
-            self._manual_candidate_times = []
-            self.candidates = self._get_candidates().reset_index(drop=True)
         if store_initial:
             self._initial_mapping = dict(auto_mapping)
         self._missing_order = self._recommended_missing_order()
         self._sync_missing_order_button()
         self._refresh_preview_state(show_errors=False)
+        if not store_initial:
+            self._refresh_all()
 
     def _preview_fit(self):
         if len(self.mapping) < 3:
