@@ -16,6 +16,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -198,6 +199,17 @@ def normalize_ladder_adjustment_payload(adjustment: dict | None) -> dict | None:
                 marker["candidate_index"] = int(mapping[step_index])
             markers.append(marker)
             marker_ids.add(marker_id)
+
+    assigned_marker_ids = list(marker_id_by_step.values())
+    if len(assigned_marker_ids) != len(set(assigned_marker_ids)):
+        raise ValueError("One marker cannot be assigned to multiple ladder steps.")
+    markers_by_id = {marker["marker_id"]: marker for marker in markers}
+    for step_index, scan_x in mapping_times.items():
+        marker = markers_by_id[marker_id_by_step[step_index]]
+        if not math.isclose(marker["scan_x"], scan_x, rel_tol=0.0, abs_tol=1e-9):
+            raise ValueError(
+                f"Marker position for ladder step {step_index} does not match its mapped time."
+            )
 
     expected_steps = [
         float(value) for value in list(adjustment.get("expected_ladder_steps") or [])

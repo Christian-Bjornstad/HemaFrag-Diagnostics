@@ -195,6 +195,36 @@ def test_structured_v2_payload_without_mapping_normalizes_safely():
     assert normalized["markers"] == []
 
 
+def test_conflicting_marker_time_cannot_overwrite_saved_adjustment(tmp_path):
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"fsa")
+    fsa = SimpleNamespace(file=str(source))
+    save_ladder_adjustment(fsa, _payload())
+    original = load_ladder_adjustment_record(source)
+    conflicting = _payload() | {
+        "markers": [{"marker_id": "first", "scan_x": 150.0}],
+        "marker_id_by_step": {0: "first"},
+    }
+
+    with pytest.raises(RuntimeError, match="does not match.*mapped time"):
+        save_ladder_adjustment(fsa, conflicting)
+
+    assert load_ladder_adjustment_record(source) == original
+
+
+def test_conflicting_stored_marker_is_rejected_on_reload(tmp_path, capsys):
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"fsa")
+    conflicting = _payload() | {
+        "markers": [{"marker_id": "first", "scan_x": 150.0}],
+        "marker_id_by_step": {0: "first"},
+    }
+    save_ladder_adjustment_record(source, conflicting)
+
+    assert load_ladder_adjustment(SimpleNamespace(file=str(source))) is None
+    assert "does not match" in capsys.readouterr().out
+
+
 def test_v3_partial_round_trip_preserves_exact_markers_and_approval(tmp_path):
     source = tmp_path / "partial.fsa"
     source.write_bytes(b"synthetic")
