@@ -486,7 +486,14 @@ def load_ladder_adjustment(fsa: "FsaFile") -> dict | None:
         size_standard_channel=channel,
     )
     if stored is not None:
-        return normalize_ladder_adjustment_payload(stored.get("payload"))
+        try:
+            return normalize_ladder_adjustment_payload(stored.get("payload"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            _print_warning(
+                f"Ignoring invalid stored ladder adjustment for {source_path.name}: {exc}"
+            )
+            # Keep the record for inspection and do not revive an older sidecar.
+            return None
     if is_ladder_adjustment_deactivated(
         source_path, ladder=ladder, size_standard_channel=channel
     ):

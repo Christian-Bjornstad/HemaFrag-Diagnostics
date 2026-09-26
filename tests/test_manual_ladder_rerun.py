@@ -143,6 +143,27 @@ def test_legacy_index_only_ladder_adjustment_remains_saveable(tmp_path):
     }
 
 
+@pytest.mark.parametrize("invalid_payload", [
+    {"mapping_times": {"0": "not-a-number"}},
+    {"markers": [{"scan_x": 100, "candidate_index": "invalid"}]},
+    {"markers": [{"marker_id": "same", "scan_x": 100}] * 2},
+])
+def test_invalid_stored_adjustment_does_not_crash_or_import_stale_sidecar(
+    tmp_path, capsys, invalid_payload,
+):
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"fsa")
+    save_ladder_adjustment_record(source, invalid_payload)
+    sidecar = source.with_suffix(".ladder_adj.json")
+    sidecar.write_text(json.dumps(_payload()), encoding="utf-8")
+
+    assert load_ladder_adjustment(SimpleNamespace(file=str(source))) is None
+
+    assert "Ignoring invalid stored ladder adjustment" in capsys.readouterr().out
+    assert load_ladder_adjustment_record(source)["payload"] == invalid_payload
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == json.loads(json.dumps(_payload()))
+
+
 def test_legacy_ladder_adjustment_remains_loadable(tmp_path):
     fsa_path = tmp_path / "legacy.fsa"
     fsa_path.write_bytes(b"legacy")
