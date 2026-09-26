@@ -228,6 +228,7 @@ class LadderAdjustmentDialog(QDialog):
                         and math.isclose(
                             float(marker.get("scan_x", float("nan"))),
                             scan_x,
+                            rel_tol=0.0,
                             abs_tol=1e-9,
                         )
                     ),
@@ -303,7 +304,9 @@ class LadderAdjustmentDialog(QDialog):
             for step_idx, scan_x in mapping_times.items():
                 if step_idx in restored:
                     continue
-                matches = np.where(np.isclose(candidate_times, scan_x, atol=1e-9))[0]
+                matches = np.where(
+                    np.isclose(candidate_times, scan_x, rtol=0.0, atol=1e-9)
+                )[0]
                 if matches.size:
                     restored[step_idx] = int(matches[0])
         for step_idx, candidate_index in dict(
