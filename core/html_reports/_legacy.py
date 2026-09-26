@@ -30,7 +30,6 @@ pd = _PandasModuleProxy()
 
 from core.analyses.registry import get_active_analysis_name
 from core.analyses.flt3.distance import (
-    calculate_bp_distance_metrics,
     calculate_entry_bp_distance_metrics,
 )
 
@@ -978,19 +977,16 @@ def _flt3_manual_mutant_text(entry: dict, peaks: pd.DataFrame) -> str | None:
 
 
 def _flt3_bp_distance_metrics(entry: dict, peaks: pd.DataFrame | None = None) -> list[dict[str, object]]:
+    selection = entry.get("manual_ratio_selection")
+    if isinstance(selection, dict):
+        wt_ids = selection.get("wt_peak_ids")
+        if wt_ids is None:
+            wt_ids = [selection.get("wt_peak_id") or (selection.get("wt") or {}).get("peak_id")]
+        if not any(wt_ids):
+            return []
     metrics = calculate_entry_bp_distance_metrics(entry)
-    if metrics or peaks is None or peaks.empty:
-        return metrics
-
-    wt_rows = peaks[peaks.label == "WT"].sort_values("peaks", ascending=False)
-    mut_rows = peaks[peaks.label.isin(["MUT", "ITD"])].sort_values("area", ascending=False)
-    wt_main = _dominant_peak(wt_rows)
-    if wt_main is None or mut_rows.empty:
-        return []
-    return calculate_bp_distance_metrics(
-        [float(wt_main.basepairs)],
-        [float(value) for value in mut_rows.basepairs.tolist()],
-    )
+    wt_channels = entry.get("selected_wt_channels") or []
+    return [metric for metric in metrics if not wt_channels or metric["channel"] in wt_channels]
 
 
 def _format_flt3_bp_distance_html(metrics: list[dict[str, object]]) -> str:
@@ -1002,12 +998,11 @@ def _format_flt3_bp_distance_html(metrics: list[dict[str, object]]) -> str:
         rounded_delta = int(metric["rounded_delta_bp"])
         channel = _flt3_channel_label(str(metric.get("channel") or ""))
         channel_prefix = f"{escape(channel)}: " if channel != "auto" else ""
+        suffix = ""
         if metric["divisible_by_3"]:
             codons = abs(rounded_delta) // 3
-            frame = f"{codons} kodon{'er' if codons != 1 else ''}; delbar med 3"
-        else:
-            frame = f"ikke delbar med 3; rest {int(metric['frame_remainder'])}"
-        parts.append(f"{channel_prefix}{delta:+.1f} bp <span class='small'>(≈{rounded_delta:+d} bp; {frame})</span>")
+            suffix = f" <span class='small'>({codons} kodon{'er' if codons != 1 else ''})</span>"
+        parts.append(f"{channel_prefix}{delta:+.1f} bp{suffix}")
     return "<br>".join(parts)
 
 

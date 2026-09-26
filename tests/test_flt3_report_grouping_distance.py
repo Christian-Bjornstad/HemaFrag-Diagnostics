@@ -127,5 +127,33 @@ def test_flt3_summary_shows_distance_and_live_update_target():
 
     assert "Δbp / kodoner" in html
     assert "+9.1 bp" in html
-    assert "3 kodoner; delbar med 3" in html
+    assert "3 kodoner" in html
+    assert "delbar" not in html
+    assert "≈" not in html
     assert "id='peakplot_test_flt3_bp_distance_summary'" in html
+
+
+def test_distance_does_not_infer_selection_from_automatic_peak_labels():
+    from core.html_reports._legacy import _flt3_bp_distance_metrics
+
+    peaks = pd.DataFrame([
+        {"label": "WT", "basepairs": 330, "peaks": 5000, "area": 10000},
+        {"label": "ITD", "basepairs": 339, "peaks": 1000, "area": 2000},
+    ])
+    assert _flt3_bp_distance_metrics({}, peaks) == []
+
+
+def test_non_codon_distance_shows_only_basepairs():
+    from core.html_reports._legacy import _format_flt3_bp_distance_html
+
+    assert _format_flt3_bp_distance_html(calculate_bp_distance_metrics([330], [338])) == "+8.0 bp"
+
+
+def test_static_distance_ignores_inferred_wt_in_resolved_selection():
+    from core.html_reports._legacy import _flt3_bp_distance_metrics
+
+    entry = {
+        "manual_ratio_selection": {"enabled": True, "wt": {"peak_id": None}, "mutants": [{"peak_id": "mut"}]},
+        "selected_wt_bps": [330], "selected_mutant_bps": [339],
+    }
+    assert _flt3_bp_distance_metrics(entry) == []

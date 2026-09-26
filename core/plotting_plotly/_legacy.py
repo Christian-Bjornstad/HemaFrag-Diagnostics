@@ -1186,18 +1186,17 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
       var parts = [];
       for (var i = 0; i < selectedMutants.length; i++) {{
         var mutant = selectedMutants[i];
-        var wtPeak = wtMap[mutant.source_channel] || wtPeaks[0];
+        var wtPeak = wtMap[mutant.source_channel];
         if (!wtPeak || !Number.isFinite(Number(mutant.x)) || !Number.isFinite(Number(wtPeak.x))) continue;
         var delta = Number(mutant.x) - Number(wtPeak.x);
         var roundedDelta = Math.round(delta);
         var remainder = Math.abs(roundedDelta) % 3;
         var channelPrefix = mutant.source_channel ? channelLabel(mutant.source_channel) + ": " : "";
         var sign = delta >= 0 ? "+" : "";
-        var roundedSign = roundedDelta >= 0 ? "+" : "";
         var frameText = remainder === 0
-          ? (Math.abs(roundedDelta) / 3).toFixed(0) + " kodon" + (Math.abs(roundedDelta) === 3 ? "" : "er") + "; delbar med 3"
-          : "ikke delbar med 3; rest " + remainder;
-        parts.push(channelPrefix + sign + delta.toFixed(1) + " bp (≈" + roundedSign + roundedDelta + " bp; " + frameText + ")");
+          ? " (" + (Math.abs(roundedDelta) / 3).toFixed(0) + " kodon" + (Math.abs(roundedDelta) === 3 ? "" : "er") + ")"
+          : "";
+        parts.push(channelPrefix + sign + delta.toFixed(1) + " bp" + frameText);
       }}
       return parts.length ? parts.join("; ") : "—";
     }}
@@ -1259,7 +1258,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
         numerator: numerator,
         denominator: denominator,
         ratio: denominator > 0 ? numerator / denominator : 0.0,
-        distanceText: bpDistanceText(selectedMutants, wtMap),
+        distanceText: manualSelection.wt_peak_ids.length > 0 ? bpDistanceText(selectedMutants, wtMap) : "—",
         valid: selectedMutants.length > 0 && missingWtChannels.length === 0 && denominator > 0
       }};
     }}
