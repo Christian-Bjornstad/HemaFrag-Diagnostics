@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import sqlite3
@@ -16,6 +17,11 @@ DEFAULT_LADDER_ADJUSTMENT_DB = (
     Path.home() / ".config" / "fraggler" / "ladder_adjustments.sqlite3"
 )
 _STORE_LOCK = threading.Lock()
+_LOGGER = logging.getLogger(__name__)
+
+
+class InvalidLadderAdjustmentRecord(ValueError):
+    """An existing record failed integrity checks and must not be replaced implicitly."""
 
 
 def resolve_ladder_adjustment_db_path() -> Path:
@@ -43,10 +49,10 @@ def _normalize_identity(value: str | None) -> str:
     return str(value or "").strip().upper()
 
 
-def _payload_digest(payload: dict[str, Any]) -> str:
+def _payload_digest(payload: dict[str, Any], *, sort_keys: bool = True) -> str:
     encoded = json.dumps(
         payload,
-        sort_keys=True,
+        sort_keys=sort_keys,
         separators=(",", ":"),
         ensure_ascii=True,
     ).encode("utf-8")
@@ -191,7 +197,13 @@ def load_ladder_adjustment_record(
     size_standard_channel: str = "",
     database_path: Path | None = None,
     allow_unscoped_ladder: bool = True,
+    raise_on_invalid: bool = False,
 ) -> dict[str, Any] | None:
+    """Read a verified record, optionally distinguishing invalid from absent data.
+
+    Migration callers must opt into ``raise_on_invalid`` so an invalid existing
+    record cannot be mistaken for permission to import an older correction.
+    """
     database_path = (
         Path(database_path).expanduser()
         if database_path is not None
@@ -247,10 +259,20 @@ def load_ladder_adjustment_record(
     if row is None:
         return None
     try:
-        payload = json.loads(row[0])
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(payload, dict):
+        try:
+            payload = json.loads(row[0])
+        except (TypeError, ValueError) as error:
+            raise InvalidLadderAdjustmentRecord("Stored adjustment is not valid JSON.") from error
+        if not isinstance(payload, dict):
+            raise InvalidLadderAdjustmentRecord("Stored adjustment must be a JSON object.")
+        # Preserve serialized key order: existing records may have sorted
+        # integer mapping keys, which become strings after the JSON round trip.
+        if _payload_digest(payload, sort_keys=False) != str(row[1] or ""):
+            raise InvalidLadderAdjustmentRecord("Stored adjustment checksum does not match.")
+    except InvalidLadderAdjustmentRecord as error:
+        if raise_on_invalid:
+            raise
+        _LOGGER.warning("Ignoring invalid stored ladder adjustment for %s: %s", source_path.name, error)
         return None
     return {
         "payload": payload,
@@ -263,6 +285,7 @@ def load_ladder_adjustment_record(
 __all__ = [
     "DEFAULT_LADDER_ADJUSTMENT_DB",
     "LADDER_ADJUSTMENT_DB_ENV",
+    "InvalidLadderAdjustmentRecord",
     "deactivate_ladder_adjustment_record",
     "is_ladder_adjustment_deactivated",
     "load_ladder_adjustment_record",

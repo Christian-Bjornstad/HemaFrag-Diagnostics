@@ -480,6 +480,7 @@ def save_ladder_adjustment(
 def load_ladder_adjustment(fsa: "FsaFile") -> dict | None:
     """Load a manual mapping from the internal store or migrate a legacy sidecar."""
     from core.ladder_adjustment_store import (
+        InvalidLadderAdjustmentRecord,
         is_ladder_adjustment_deactivated,
         load_ladder_adjustment_record,
         save_ladder_adjustment_record,
@@ -492,11 +493,18 @@ def load_ladder_adjustment(fsa: "FsaFile") -> dict | None:
         or getattr(fsa, "size_standard_channel", "")
         or ""
     )
-    stored = load_ladder_adjustment_record(
-        source_path,
-        ladder=ladder,
-        size_standard_channel=channel,
-    )
+    try:
+        stored = load_ladder_adjustment_record(
+            source_path,
+            ladder=ladder,
+            size_standard_channel=channel,
+            raise_on_invalid=True,
+        )
+    except InvalidLadderAdjustmentRecord as exc:
+        _print_warning(
+            f"Ignoring invalid stored ladder adjustment for {source_path.name}: {exc}"
+        )
+        return None
     if stored is not None:
         try:
             return normalize_ladder_adjustment_payload(stored.get("payload"))
