@@ -38,6 +38,16 @@ def _print_warning(text: str) -> None:
     print(f"\033[93m\033[4m[WARNING]: {text}\033[0m")
 
 
+def _remove_migrated_sidecar(path: Path) -> None:
+    """Cleanup must not turn a committed database write into a reported failure."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        _print_warning(
+            f"Adjustment is stored internally; could not remove legacy file {path.name}: {exc}"
+        )
+
+
 def ladder_adjustment_file_hash(path: Path) -> str | None:
     if not path.is_file():
         return None
@@ -440,12 +450,14 @@ def save_ladder_adjustment(
         )
         if (
             verified is None
-            or normalize_ladder_adjustment_payload(verified.get("payload"))
-            != normalized
+            # Compare the persisted representation: missing original QC can
+            # contain NaN, which is unequal to itself after a JSON round trip.
+            or json.dumps(normalize_ladder_adjustment_payload(verified.get("payload")), sort_keys=True)
+            != json.dumps(normalized, sort_keys=True)
         ):
             raise OSError("Saved ladder adjustment could not be verified.")
         legacy_path = source_path.with_suffix(".ladder_adj.json")
-        legacy_path.unlink(missing_ok=True)
+        _remove_migrated_sidecar(legacy_path)
         _print_green("Saved ladder adjustment in the internal adjustment store.")
         return database_path
     except Exception as e:
@@ -541,7 +553,7 @@ def load_ladder_adjustment(fsa: "FsaFile") -> dict | None:
                     ladder=ladder,
                     size_standard_channel=channel,
                 )
-                adj_path.unlink(missing_ok=True)
+                _remove_migrated_sidecar(adj_path)
                 return normalized
         except Exception as e:
             _print_warning(f"Could not load ladder adjustment {adj_path.name}: {e}")

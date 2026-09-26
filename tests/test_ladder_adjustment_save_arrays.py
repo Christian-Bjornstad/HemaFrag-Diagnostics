@@ -73,3 +73,18 @@ def test_saved_record_carries_expected_bp_from_numpy_steps(tmp_path):
     record = load_ladder_adjustment_record(Path(fsa.file), ladder="", size_standard_channel="")
     peaks = record["payload"]["selected_peaks"]
     assert peaks[0]["expected_bp"] == pytest.approx(100.0)
+
+
+def test_save_verifies_adjustment_when_original_qc_contains_nan(tmp_path):
+    fsa = _make_fsa(tmp_path, [100, 200, 300], [100, 200, 300])
+    saved = save_ladder_adjustment(
+        fsa, _PAYLOAD,
+        before_qc={"r2": float("nan"), "max_abs_error_bp": float("inf")},
+        after_qc={"r2": 1.0, "max_abs_error_bp": 0.0},
+    )
+    assert saved.exists()
+    from core.ladder_adjustment_io import load_ladder_adjustment
+
+    loaded = load_ladder_adjustment(fsa)
+    assert loaded["mapping_times"] == {0: 12.5}
+    assert loaded["review"]["after_qc"]["r2"] == 1.0

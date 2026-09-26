@@ -105,6 +105,30 @@ def test_manual_ladder_adjustment_write_failure_is_not_reported_as_success(
         save_ladder_adjustment(fsa, _payload())
 
 
+@pytest.mark.parametrize("operation", ["save", "migrate"])
+def test_readonly_legacy_sidecar_does_not_hide_persisted_adjustment(tmp_path, monkeypatch, operation):
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"fsa")
+    sidecar = source.with_suffix(".ladder_adj.json")
+    sidecar.write_text(json.dumps(_payload()), encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def refuse_sidecar_cleanup(path, *args, **kwargs):
+        if path == sidecar:
+            raise PermissionError("read-only source directory")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse_sidecar_cleanup)
+    fsa = SimpleNamespace(file=str(source))
+    if operation == "save":
+        assert save_ladder_adjustment(fsa, _payload()).exists()
+    loaded = load_ladder_adjustment(fsa)
+    assert loaded is not None
+    assert loaded["mapping_times"] == _payload()["mapping_times"]
+    assert sidecar.exists()
+    assert load_ladder_adjustment_record(source) is not None
+
+
 def test_legacy_index_only_ladder_adjustment_remains_saveable(tmp_path):
     fsa = SimpleNamespace(file=str(tmp_path / "legacy.fsa"))
 
