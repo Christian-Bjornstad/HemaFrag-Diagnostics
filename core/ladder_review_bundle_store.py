@@ -17,6 +17,7 @@ import csv
 from contextlib import contextmanager
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -29,6 +30,7 @@ from uuid import uuid4
 
 
 _JOURNAL_VERSION = 1
+_LOGGER = logging.getLogger(__name__)
 _WRITE_LOCK = threading.RLock()
 _LOCK_STATE = threading.local()
 _REVISION_PATTERN = re.compile(r"[0-9a-f]{32}")
@@ -578,6 +580,7 @@ def _save_review_bundle_locked(
     backup_paths: list[Path] = []
     entries: list[dict[str, Any]] = []
     journal_published = False
+    committed = False
 
     try:
         _validate_regular_single_link(
@@ -680,6 +683,7 @@ def _save_review_bundle_locked(
         _safe_unlink(journal_path, "Review bundle transaction journal")
         _fsync_directory(cases_path.parent)
         journal_published = False
+        committed = True
     except Exception:
         if journal_published or _path_entry_exists(journal_path):
             try:
@@ -692,7 +696,18 @@ def _save_review_bundle_locked(
     finally:
         if not _path_entry_exists(journal_path):
             for artifact in [*staged_paths, *backup_paths]:
-                _safe_unlink(artifact, "Review bundle transaction artifact")
+                try:
+                    _safe_unlink(artifact, "Review bundle transaction artifact")
+                except OSError as error:
+                    if not committed:
+                        raise
+                    # The journal is gone and both targets are durable. A
+                    # locked backup must not report this completed save as failed.
+                    _LOGGER.warning(
+                        "Review bundle saved; could not remove artifact %s: %s",
+                        artifact,
+                        error,
+                    )
 
 
 __all__ = [
