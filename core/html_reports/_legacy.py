@@ -659,6 +659,12 @@ window.PeakManager = {
         }
         return all;
     },
+    hasInitialPeakDataForPlot: function(id) {
+        var data = this._readPeakData();
+        if (!data || !Object.prototype.hasOwnProperty.call(data, id)) return false;
+        var payload = data[id];
+        return Array.isArray(payload) || !!(payload && Array.isArray(payload.peaks));
+    },
     getInitialPeakDataForPlot: function(id) {
         var data = this._readPeakData();
         return this._normalizePeakPayload(data[id]);
@@ -984,9 +990,7 @@ def _flt3_bp_distance_metrics(entry: dict, peaks: pd.DataFrame | None = None) ->
             wt_ids = [selection.get("wt_peak_id") or (selection.get("wt") or {}).get("peak_id")]
         if not any(wt_ids):
             return []
-    metrics = calculate_entry_bp_distance_metrics(entry)
-    wt_channels = entry.get("selected_wt_channels") or []
-    return [metric for metric in metrics if not wt_channels or metric["channel"] in wt_channels]
+    return calculate_entry_bp_distance_metrics(entry)
 
 
 def _format_flt3_bp_distance_html(metrics: list[dict[str, object]]) -> str:

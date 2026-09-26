@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pandas as pd
+import numpy as np
 import pytest
 
 from core.analyses.flt3.classification import detect_analysis_type
@@ -157,3 +158,18 @@ def test_static_distance_ignores_inferred_wt_in_resolved_selection():
         "selected_wt_bps": [330], "selected_mutant_bps": [339],
     }
     assert _flt3_bp_distance_metrics(entry) == []
+
+
+def test_static_distance_accepts_array_channels_without_cross_channel_pairing():
+    from core.html_reports._legacy import _flt3_bp_distance_metrics
+
+    entry = {
+        "selected_wt_bps": np.array([330., 340.]),
+        "selected_mutant_bps": np.array([339., 349., 359.]),
+        "selected_wt_channels": np.array(["DATA1", "DATA2"]),
+        "selected_mutant_channels": np.array(["DATA1", "DATA2", "DATA3"]),
+    }
+    metrics = _flt3_bp_distance_metrics(entry)
+    assert [(metric["channel"], metric["delta_bp"]) for metric in metrics] == [
+        ("DATA1", 9.), ("DATA2", 9.),
+    ]

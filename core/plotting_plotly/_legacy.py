@@ -1097,19 +1097,47 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
           out.wt_peak_ids = [String(selection.wt.peak_id)];
         }}
       }}
+      out.wt_peak_ids = uniqueWtPeakIdsByChannel(out.wt_peak_ids);
       return out;
+    }}
+
+    function uniqueWtPeakIdsByChannel(peakIds) {{
+      var seenChannels = {{}};
+      var selectedIds = [];
+      // Keep the last choice, matching the WT previously used in the ratio.
+      for (var i = peakIds.length - 1; i >= 0; i--) {{
+        var peak = findPeakById(peakIds[i]);
+        if (!peak || !peak.active || !peak.source_channel) {{
+          selectedIds.push(peakIds[i]);
+          continue;
+        }}
+        if (seenChannels[peak.source_channel]) continue;
+        seenChannels[peak.source_channel] = true;
+        selectedIds.push(peakIds[i]);
+      }}
+      return selectedIds.reverse();
     }}
 
     var peaks = [];
     var initialPeakData = (window.PeakManager && window.PeakManager.getInitialPeakDataForPlot)
       ? window.PeakManager.getInitialPeakDataForPlot(divId)
       : null;
+    // An explicitly saved empty list means every marker was deleted.
+    var hasSavedPeaks = false;
+    if (window.PeakManager && window.PeakManager.hasInitialPeakDataForPlot) {{
+      hasSavedPeaks = window.PeakManager.hasInitialPeakDataForPlot(divId);
+    }} else if (window.PeakManager && window.PeakManager._readPeakData) {{
+      var savedPeakData = window.PeakManager._readPeakData();
+      var savedPayload = savedPeakData && Object.prototype.hasOwnProperty.call(savedPeakData, divId)
+        ? savedPeakData[divId] : null;
+      hasSavedPeaks = Array.isArray(savedPayload) || !!(savedPayload && Array.isArray(savedPayload.peaks));
+    }}
     if (initialPeakData && Array.isArray(initialPeakData.peaks) && initialPeakData.peaks.length) {{
       peaks = initialPeakData.peaks.slice();
     }} else if (window.PeakManager) {{
       peaks = window.PeakManager.getInitialPeaksForPlot(divId);
     }}
-    if (!peaks || peaks.length === 0) {{ peaks = (initialPeaks && Array.isArray(initialPeaks)) ? initialPeaks.slice() : []; }}
+    if ((!peaks || peaks.length === 0) && !hasSavedPeaks) {{ peaks = (initialPeaks && Array.isArray(initialPeaks)) ? initialPeaks.slice() : []; }}
     peaks = peaks.map(function(p, idx) {{ return normalizePeak(p, idx); }}).filter(function(p) {{ return Number.isFinite(p.x) && Number.isFinite(p.y); }});
     ensurePeakIds();
 
@@ -1652,6 +1680,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
               if (manualSelection.wt_peak_ids.indexOf(peakId) < 0) {{
                 manualSelection.wt_peak_ids.push(peakId);
               }}
+              manualSelection.wt_peak_ids = uniqueWtPeakIdsByChannel(manualSelection.wt_peak_ids);
               manualSelection.mutant_peak_ids = manualSelection.mutant_peak_ids.filter(function(id) {{ return id !== peakId; }});
             }} else {{
               manualSelection.wt_peak_ids = manualSelection.wt_peak_ids.filter(function(id) {{ return id !== peakId; }});
