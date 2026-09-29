@@ -77,11 +77,25 @@ def collect_ladder_review_cases(entries: list[dict[str, Any]]) -> list[dict[str,
     """
 
     rows: list[dict[str, str]] = []
-    for entry in entries:
+    seen_paths: set[str] = set()
+    review_entries = [
+        candidate
+        for entry in entries
+        for candidate in (entry, *(entry.get("_alternate_ladder_review_entries") or []))
+        if isinstance(candidate, dict)
+    ]
+    for entry in review_entries:
         status = str(entry.get("ladder_qc_status") or "").strip() or "ok"
         review_required = bool(entry.get("ladder_review_required")) or status in REVIEW_STATUSES
         if not review_required:
             continue
+
+        full_path = _entry_file_path(entry)
+        if full_path:
+            path_key = str(_resolve_cache_key(full_path)).casefold()
+            if path_key in seen_paths:
+                continue
+            seen_paths.add(path_key)
 
         reason_codes = entry.get("ladder_review_reason_codes") or []
         if isinstance(reason_codes, (list, tuple)):
@@ -95,7 +109,7 @@ def collect_ladder_review_cases(entries: list[dict[str, Any]]) -> list[dict[str,
 
         rows.append(
             {
-                "full_path": _entry_file_path(entry),
+                "full_path": full_path,
                 "file": _entry_file_name(entry),
                 "source_run_dir": str(entry.get("source_run_dir") or ""),
                 "assay": str(entry.get("assay") or ""),

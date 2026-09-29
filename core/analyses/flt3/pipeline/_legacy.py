@@ -6217,6 +6217,33 @@ def _fallback_entry_ranking_key(entry: dict, preferred_injection: int) -> tuple[
     )
 
 
+def _attach_alternate_ladder_reviews(
+    selected: dict, fallback_entries: list[tuple[dict, str, bool]]
+) -> None:
+    """Keep rejected sibling files visible to Ladder Editor without reporting them as results."""
+    review_fields = (
+        "original_file_path", "file_name", "source_run_dir", "assay", "ladder",
+        "ladder_qc_status", "ladder_review_required", "ladder_review_reason",
+        "ladder_review_reason_codes", "ladder_review_summary",
+        "ladder_linear_max_residual_bp", "ladder_linear_mean_residual_bp",
+        "ladder_linear_r2", "ladder_expected_step_count", "ladder_fitted_step_count",
+        "n_ladder_steps", "ladder_fit_strategy",
+    )
+    alternates = [
+        {field: entry.get(field) for field in review_fields}
+        for entry, _reason, _preferred in fallback_entries
+        if entry is not selected
+        and (
+            entry.get("ladder_review_required")
+            or entry.get("ladder_qc_status") in {
+                "review_required", "missing_ladder", "ladder_qc_failed"
+            }
+        )
+    ]
+    if alternates:
+        selected["_alternate_ladder_review_entries"] = alternates
+
+
 def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
     if not candidates:
         return None
@@ -6227,6 +6254,11 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
         if int(item[1].get("injection_time", 0) or 0) == preferred_injection
     ]
     pool = preferred_only if preferred_only else candidates
+    review_only_pool = [
+        item for item in candidates
+        if preferred_only
+        and int(item[1].get("injection_time", 0) or 0) != preferred_injection
+    ]
     ordered = sorted(pool, key=lambda item: _candidate_sort_key(item, preferred_injection))
 
     audit_records: list[dict] = []
@@ -6242,7 +6274,9 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
             from core.rust_bridge import prime_rust_worker_results
 
             rust_analysis_kind = "general" if _flt3_uses_liz_ladder() else "flt3"
-            prime_rust_worker_results([path for path, _meta in ordered], rust_analysis_kind)
+            prime_rust_worker_results(
+                [path for path, _meta in (*ordered, *review_only_pool)], rust_analysis_kind
+            )
     except Exception:
         pass
 
@@ -6276,6 +6310,15 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
         acceptable_entries.append((entry, candidate_reason, same_as_preferred))
         audit_records.append(_candidate_audit_record(path, meta, "not_selected", "better candidate selected"))
 
+    # Preferred injection determines the reported result. Still inspect every
+    # other source file's ladder so a rejected sibling cannot disappear from
+    # the manual-review bundle merely because it was not eligible for reporting.
+    review_siblings = list(fallback_entries)
+    for path, meta in sorted(review_only_pool, key=lambda item: _candidate_sort_key(item, preferred_injection)):
+        alternate = _build_entry_from_candidate(path, meta)
+        if alternate is not None:
+            review_siblings.append((alternate, "not_selected", False))
+
     if acceptable_entries:
         entry, _candidate_reason, selected_is_preferred = min(
             acceptable_entries,
@@ -6299,10 +6342,19 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
             f"{alt['selected_injection']} {alt['file']} ({alt['status']}: {alt['reason']})"
             for alt in entry["alternate_injections"]
         )
+        _attach_alternate_ladder_reviews(entry, review_siblings)
         return entry
 
     if not fallback_entries:
-        return None
+        fallback_entries = [
+            candidate for candidate in review_siblings
+            if candidate[0].get("ladder_review_required")
+            or candidate[0].get("ladder_qc_status") in {
+                "review_required", "missing_ladder", "ladder_qc_failed"
+            }
+        ]
+        if not fallback_entries:
+            return None
 
     entry, best_reason, _selected_is_preferred = min(
         fallback_entries,
@@ -6316,6 +6368,7 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
         f"{alt['selected_injection']} {alt['file']} ({alt['status']}: {alt['reason']})"
         for alt in entry["alternate_injections"]
     )
+    _attach_alternate_ladder_reviews(entry, review_siblings)
     return entry
 
 
@@ -7197,8 +7250,12 @@ def run_pipeline(
     if not entries:
         return [] if return_entries else None
 
-    if any(entry.get("ladder_review_required") for entry in entries):
-        from core.analyses.clonality.ladder_review_gate import write_ladder_review_gate
+    from core.analyses.clonality.ladder_review_gate import (
+        collect_ladder_review_cases,
+        write_ladder_review_gate,
+    )
+
+    if collect_ladder_review_cases(entries):
 
         review_bundle = write_ladder_review_gate(
             entries,

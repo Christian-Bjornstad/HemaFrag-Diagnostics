@@ -114,18 +114,21 @@ def _stamp_entry_source_provenance(
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        fsa = entry.get("fsa")
-        staged_name = str(
-            getattr(fsa, "file_name", "")
-            or entry.get("file_name")
-            or ""
-        )
-        source = by_name.get(strip_stage_prefix(staged_name))
-        if source is None:
-            continue
-        entry["file_name"] = source.name
-        entry["source_run_dir"] = source.parent.name
-        entry["original_file_path"] = str(source.resolve())
+        for candidate in (entry, *(entry.get("_alternate_ladder_review_entries") or [])):
+            if not isinstance(candidate, dict):
+                continue
+            fsa = candidate.get("fsa")
+            staged_name = str(
+                getattr(fsa, "file_name", "")
+                or candidate.get("file_name")
+                or ""
+            )
+            source = by_name.get(strip_stage_prefix(staged_name))
+            if source is None:
+                continue
+            candidate["file_name"] = source.name
+            candidate["source_run_dir"] = source.parent.name
+            candidate["original_file_path"] = str(source.resolve())
     return entries
 
 
