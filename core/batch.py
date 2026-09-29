@@ -1181,7 +1181,8 @@ def run_batch_jobs(
                 log(
                     "[BATCH] Ladder review gate "
                     f"{'blocking mode' if block_dit_for_ladder_review else 'shadow mode'}: "
-                    f"{review_count} file(s) require review before DIT reporting. "
+                    f"{review_count} file(s) flagged for review"
+                    f"{' before DIT reporting' if block_dit_for_ladder_review else '; DIT reporting may continue'}. "
                     f"Bundle: {ladder_review_gate.get('cases_path')}"
                 )
         except Exception as e:

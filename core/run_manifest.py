@@ -63,7 +63,17 @@ def _atomic_write_json(path: Path, payload: object) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        # SMB/Windows can briefly deny replacement while another process has
+        # the current manifest open. Keep the atomic write and retry the same
+        # staged file only for the observed sharing/access-denied errors.
+        for attempt in range(4):
+            try:
+                os.replace(temporary, path)
+                break
+            except OSError as exc:
+                if getattr(exc, "winerror", None) not in (5, 32) or attempt == 3:
+                    raise
+                time.sleep(0.05 * (2 ** attempt))
         temporary = None
     finally:
         if temporary is not None:

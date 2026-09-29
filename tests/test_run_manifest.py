@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+
+from core import run_manifest
 
 from core.run_manifest import (
     RUN_MANIFEST_SCHEMA,
@@ -15,6 +18,56 @@ from core.ladder_adjustment_store import (
     load_ladder_adjustment_record,
     save_ladder_adjustment_record,
 )
+
+
+def _windows_replace_error(code: int) -> PermissionError:
+    error = PermissionError(code, "temporary manifest lock")
+    error.winerror = code
+    return error
+
+
+def test_atomic_manifest_write_retries_transient_windows_lock(tmp_path, monkeypatch):
+    path = tmp_path / "run.json"
+    run_manifest._atomic_write_json(path, {"status": "old"})
+    original_replace = os.replace
+    attempts = []
+    delays = []
+
+    def temporarily_locked(source, destination):
+        attempts.append((source, destination))
+        if len(attempts) < 3:
+            raise _windows_replace_error(32)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(run_manifest.os, "replace", temporarily_locked)
+    monkeypatch.setattr(run_manifest.time, "sleep", delays.append)
+
+    run_manifest._atomic_write_json(path, {"status": "new"})
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"status": "new"}
+    assert len(attempts) == 3
+    assert len(delays) == 2
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_atomic_manifest_write_exhausts_access_denied_without_damage(tmp_path, monkeypatch):
+    path = tmp_path / "run.json"
+    run_manifest._atomic_write_json(path, {"status": "old"})
+    attempts = []
+
+    def locked(source, destination):
+        attempts.append((source, destination))
+        raise _windows_replace_error(5)
+
+    monkeypatch.setattr(run_manifest.os, "replace", locked)
+    monkeypatch.setattr(run_manifest.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(PermissionError, match="temporary manifest lock"):
+        run_manifest._atomic_write_json(path, {"status": "new"})
+
+    assert len(attempts) == 4
+    assert json.loads(path.read_text(encoding="utf-8")) == {"status": "old"}
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 def test_manifest_rejects_unsafe_explicit_run_id_before_writing(tmp_path):
