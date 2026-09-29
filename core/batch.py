@@ -1163,11 +1163,23 @@ def run_batch_jobs(
                     )
             review_count = int(ladder_review_gate.get("review_case_count") or 0)
             if review_count:
-                block_dit_for_ladder_review = ladder_review_gate_blocks_dit
+                # A Rust guardrail rejection needs an operator decision before
+                # the aggregated clinical report can be published, even while
+                # less severe review cases still run in shadow mode.
+                rejected_ladder_count = int(
+                    ladder_review_gate.get("rejected_ladder_case_count") or 0
+                )
+                block_dit_for_ladder_review = (
+                    ladder_review_gate_blocks_dit or rejected_ladder_count > 0
+                )
                 if block_dit_for_ladder_review:
                     ladder_review_gate["blocked"] = True
                     ladder_review_gate["mode"] = "blocking"
-                    ladder_review_gate["block_reason"] = "unresolved_ladder_review_cases"
+                    ladder_review_gate["block_reason"] = (
+                        "rejected_ladder_requires_review"
+                        if rejected_ladder_count
+                        else "unresolved_ladder_review_cases"
+                    )
                     summary_path = ladder_review_gate.get("summary_path")
                     if summary_path:
                         Path(str(summary_path)).write_text(
@@ -1186,7 +1198,12 @@ def run_batch_jobs(
                     f"Bundle: {ladder_review_gate.get('cases_path')}"
                 )
         except Exception as e:
-            log(f"[WARN] Failed to write ladder review gate artifact: {e}")
+            # A failed gate write must not silently publish a report whose
+            # underlying ladder cases could not be made reviewable.
+            block_dit_for_ladder_review = True
+            aggregation_failed = True
+            failed_jobs.append("ladder review gate")
+            log(f"[ERROR] Failed to write ladder review gate artifact; DIT reporting stopped: {e}")
     # Stop may be requested after the last job finishes while review artifacts
     # are being written. Re-check at the final publication boundary.
     run_cancelled = run_cancelled or bool(

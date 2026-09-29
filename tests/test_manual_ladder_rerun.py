@@ -644,6 +644,84 @@ def test_review_finalize_blocks_when_original_qc_cohort_is_missing(
     assert built == []
 
 
+def test_review_finalize_builds_from_retained_entries_without_rerun(
+    tmp_path, monkeypatch
+):
+    from core.run_manifest import BatchRunManifest
+    from gui_qt.tabs.tab_batch import TabBatch
+    import core.batch as batch
+    import core.html_reports as html_reports
+    from core.analyses.clonality import tracking_excel
+
+    selected = tmp_path / "selected.fsa"
+    rejected = tmp_path / "rejected.fsa"
+    selected.write_bytes(b"selected")
+    rejected.write_bytes(b"rejected")
+    retained_entry = {"original_file_path": str(selected), "kind": "selected"}
+    parent_manifest = BatchRunManifest.create(
+        output_dir=tmp_path,
+        jobs=[{
+            "name": "patient",
+            "type": "pipeline",
+            "path": tmp_path,
+            "files": [selected, rejected],
+        }],
+        analysis="clonality",
+        settings={},
+        execution={},
+    )
+    parent_manifest.finalize(
+        result={
+            "completed_jobs": ["patient"],
+            "failed_jobs": [],
+            "dit_report_entries": [retained_entry],
+            "qc_report_entries": [],
+        },
+        aggregate_output_dir=tmp_path,
+        review_gate={},
+    )
+    calls = []
+    monkeypatch.setattr(
+        batch,
+        "run_batch_jobs",
+        lambda **kwargs: calls.append(kwargs) or {
+            "collected_entries": [],
+            "qc_report_entries": [],
+            "failed_jobs": [],
+            "ladder_review_gate": {},
+        },
+    )
+    built = []
+    monkeypatch.setattr(
+        html_reports,
+        "build_dit_html_reports",
+        lambda entries, _outdir: built.extend(entries),
+    )
+    monkeypatch.setattr(tracking_excel, "update_clonality_tracking_workbook", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tracking_excel, "update_global_clonality_tracking_workbook", lambda *_args, **_kwargs: None)
+
+    result = TabBatch._review_finalize_worker(
+        jobs_to_run=[],
+        corrected_paths=[],
+        session_entries=[retained_entry],
+        resolved_review_rows={
+            str(rejected.resolve()): {"label": "excluded_unusable_ladder"}
+        },
+        output_root=tmp_path,
+        analysis_id="clonality",
+        pipeline_scope="all",
+        assay_filter="",
+        aggregate_dit_reports=True,
+        aggregate_outdir_name="reports",
+        parent_run_manifest_path=parent_manifest.path,
+    )
+
+    assert calls == []
+    assert result["final_reports_built"] is True
+    assert result["finalization_validation"]["passed"] is True
+    assert built == [retained_entry]
+
+
 def test_review_bundle_restart_recovers_original_patient_and_qc_jobs(
     tmp_path,
     monkeypatch,

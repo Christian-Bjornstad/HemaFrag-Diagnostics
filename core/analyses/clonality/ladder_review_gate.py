@@ -179,6 +179,10 @@ def write_ladder_review_gate(
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "total_entries": len(entries),
         "review_case_count": len(cases),
+        "rejected_ladder_case_count": sum(
+            "rust_ladder_fit_rejected" in row["reason_codes"].split(";")
+            for row in cases
+        ),
         "cases_path": str(cases_path),
         "blocked": False,
         "mode": "shadow",

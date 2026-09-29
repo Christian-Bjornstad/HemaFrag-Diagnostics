@@ -913,6 +913,12 @@ class TabBatch(QWidget):
             self.btn_run_reviewed.setToolTip(
                 "Reruns corrected files with their original patient/job group and rebuilds final DIT reports."
             )
+        elif resolved_count and unresolved_count <= 0 and self._review_session_entries_by_path:
+            self.btn_run_reviewed.setText("Build DIT After Review")
+            self.btn_run_reviewed.setEnabled(True)
+            self.btn_run_reviewed.setToolTip(
+                "Builds final reports from the retained entries after every ladder review is resolved."
+            )
         elif unresolved_count > 0:
             self.btn_run_reviewed.setText(f"Finish Ladder Review ({unresolved_count} left)")
             self.btn_run_reviewed.setEnabled(False)
@@ -1719,8 +1725,8 @@ class TabBatch(QWidget):
         if not self._review_session_active:
             self._set_workflow_status("No active ladder review session.", "error")
             return
-        if not self._review_corrected_paths:
-            self._set_workflow_status("No manual ladder corrections are ready yet.", "error")
+        if not self._review_corrected_paths and not self._review_session_entries_by_path:
+            self._set_workflow_status("No reportable entries are available after review.", "error")
             return
         if self._review_session_output_root is None:
             self._set_workflow_status("Review session output folder is missing.", "error")
@@ -1744,7 +1750,7 @@ class TabBatch(QWidget):
             return
 
         linked_jobs = self._linked_jobs_for_corrected_files(set(self._review_corrected_paths))
-        if not linked_jobs:
+        if self._review_corrected_paths and not linked_jobs:
             self._set_workflow_status("Could not find linked jobs for the corrected files.", "error")
             return
 
@@ -1808,14 +1814,18 @@ class TabBatch(QWidget):
         self.btn_scan.setEnabled(False)
         self.btn_run.setEnabled(False)
         self.btn_run_reviewed.setEnabled(False)
-        self.progress.setRange(0, len(linked_jobs))
+        self.progress.setRange(0, max(len(linked_jobs), 1))
         self.progress.setValue(0)
         self._progress_job_rows = list(previous_job_states)
         for row in self._progress_job_rows:
             self._job_states[row] = "running"
         self._rebuild_table()
         self._set_workflow_status(
-            f"Rerunning {len(linked_jobs)} linked job(s) and preparing final DIT reports...",
+            (
+                f"Rerunning {len(linked_jobs)} linked job(s) and preparing final DIT reports..."
+                if linked_jobs
+                else "Building final DIT reports from reviewed entries..."
+            ),
             "running",
         )
         try:
@@ -1860,24 +1870,32 @@ class TabBatch(QWidget):
             APP_SETTINGS["active_analysis"] = analysis_id
         elif run_context.analysis_id != analysis_id:
             raise ValueError("Review analysis does not match run context")
-        result = run_batch_jobs(
-            jobs=jobs_to_run,
-            output_base=output_root,
-            out_folder_tmpl="ASSAY_REPORTS",
-            outfile_html_tmpl="QC_REPORT_{name}.html",
-            excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
-            pipeline_scope=pipeline_scope,
-            assay_filter=assay_filter,
-            aggregate_dit_reports=aggregate_dit_reports,
-            continue_on_error=True,
-            update_callback=update_callback,
-            aggregate_outdir_name=aggregate_outdir_name,
-            defer_tracking_workbook_refresh=True,
-            defer_dit_html_reports=True,
-            preserve_deferred_entries=True,
-            parent_run_manifest_path=parent_run_manifest_path,
-            **({"run_context": run_context} if run_context is not None else {}),
-        )
+        if jobs_to_run or not session_entries:
+            result = run_batch_jobs(
+                jobs=jobs_to_run,
+                output_base=output_root,
+                out_folder_tmpl="ASSAY_REPORTS",
+                outfile_html_tmpl="QC_REPORT_{name}.html",
+                excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
+                pipeline_scope=pipeline_scope,
+                assay_filter=assay_filter,
+                aggregate_dit_reports=aggregate_dit_reports,
+                continue_on_error=True,
+                update_callback=update_callback,
+                aggregate_outdir_name=aggregate_outdir_name,
+                defer_tracking_workbook_refresh=True,
+                defer_dit_html_reports=True,
+                preserve_deferred_entries=True,
+                parent_run_manifest_path=parent_run_manifest_path,
+                **({"run_context": run_context} if run_context is not None else {}),
+            )
+        else:
+            result = {
+                "collected_entries": [],
+                "qc_report_entries": [],
+                "failed_jobs": [],
+                "ladder_review_gate": {},
+            }
 
         combined_by_path: dict[Path, dict] = {}
         for entry in session_entries:

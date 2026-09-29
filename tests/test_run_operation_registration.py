@@ -312,6 +312,40 @@ def test_review_finalization_rejection_restores_review_action(
     assert "closing" in run_tab.status_lbl.text().lower()
 
 
+def test_reviewed_exclusion_can_finalize_without_manual_adjustment(
+    run_tab, tmp_path, monkeypatch
+):
+    source = tmp_path / "selected.fsa"
+    source.write_bytes(b"fsa")
+    run_tab._review_session_active = True
+    run_tab._review_session_output_root = tmp_path
+    run_tab._review_session_bundle_dir = tmp_path / "review"
+    run_tab._review_session_bundle_dir.mkdir()
+    run_tab._review_session_entries_by_path = {
+        source.resolve(): {"original_file_path": str(source)}
+    }
+    run_tab._review_corrected_paths = set()
+    monkeypatch.setattr(run_tab, "_review_bundle_resolution_counts", lambda *_: (1, 0))
+    monkeypatch.setattr(run_tab, "_resolved_review_rows_from_bundle", lambda *_: {
+        str(source.resolve()): {"label": "excluded_unusable_ladder"}
+    })
+    coordinator = _Coordinator()
+    run_tab.set_operation_coordinator(coordinator)
+
+    run_tab._refresh_review_finalize_button()
+    assert run_tab.btn_run_reviewed.isEnabled()
+    assert run_tab.btn_run_reviewed.text() == "Build DIT After Review"
+
+    run_tab.on_run_reviewed()
+
+    assert len(run_tab.threadpool.started) == 1
+    worker = run_tab.threadpool.started[0]
+    assert worker.kwargs["jobs_to_run"] == []
+    assert len(worker.kwargs["session_entries"]) == 1
+    assert "Rerunning 0" not in run_tab.status_lbl.text()
+    worker.signals.finished.emit()
+
+
 def test_review_worker_with_context_does_not_change_global_analysis(
     tmp_path, monkeypatch
 ):
