@@ -159,7 +159,10 @@ def _workspace_roots(workspace: Path) -> ResearchRoots:
 
 
 def _resolved_round_two_workspace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    excluded_label: str = "excluded_missing_ladder_signal",
 ) -> tuple[Path, dict[str, str], dict[str, str]]:
     workspace = _round_two_workspace(tmp_path)
     published = round_two_module.prepare_round_two_review(
@@ -175,7 +178,7 @@ def _resolved_round_two_workspace(
     manual_row = rows[0]
     manual_row["label"] = "manual_adjusted"
     excluded_row = rows[-1]
-    excluded_row["label"] = "excluded_missing_ladder_signal"
+    excluded_row["label"] = excluded_label
     excluded_row["label_note"] = "No usable ladder signal"
     _write_review_rows(cases_path, rows)
 
@@ -1233,11 +1236,15 @@ def test_finalize_round_two_ignores_newer_wrong_ladder_record_in_bundle_database
     assert manual_case["review_scan_indices"][:3] == [101.0, 198.0, 305.0]
 
 
-def test_finalize_round_two_excludes_missing_ladder_from_metrics(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "excluded_label",
+    ["excluded_missing_ladder_signal", "excluded_unusable_ladder"],
+)
+def test_finalize_round_two_excludes_ladder_from_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, excluded_label: str
 ):
     workspace, _manual_row, _excluded_row = _resolved_round_two_workspace(
-        tmp_path, monkeypatch
+        tmp_path, monkeypatch, excluded_label=excluded_label
     )
 
     result = round_two_module.finalize_round_two_review(
@@ -1249,6 +1256,11 @@ def test_finalize_round_two_excludes_missing_ladder_from_metrics(
     assert result.fitting_evaluation_count == 17
     assert result.ml_eligible_count == 17
     payload = json.loads(result.outcomes_path.read_text(encoding="utf-8"))
+    excluded_case = next(
+        case for case in payload["cases"] if case["label"] == excluded_label
+    )
+    assert excluded_case["review_scan_indices"] == []
+    assert excluded_case["anchor_deltas"] == []
     assert payload["counts"]["by_cohort_group"] == {
         "control": 6,
         "suspicious": 12,

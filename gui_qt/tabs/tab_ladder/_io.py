@@ -203,6 +203,32 @@ def save_missing_ladder_exclusion_worker(
     )
 
 
+def save_unusable_ladder_exclusion_worker(
+    bundle_dir: Path,
+    full_path: Path,
+    *,
+    note: str,
+    reviewed_at_utc: str,
+) -> dict:
+    """Record an operator decision that the ladder cannot be fitted safely."""
+    label = "excluded_unusable_ladder"
+    if not is_review_resolved(label) or is_review_rerunnable(label):
+        raise RuntimeError("Unusable-ladder exclusion label policy is invalid")
+    if not str(note or "").strip() or not str(reviewed_at_utc or "").strip():
+        raise ValueError("Unusable-ladder exclusion requires a note and review timestamp")
+    annotation = build_review_annotation(
+        label,
+        str(note).strip(),
+        reviewed_at_utc=reviewed_at_utc,
+    )
+    return save_review_bundle_annotation_worker(
+        bundle_dir,
+        full_path,
+        annotation,
+        _require_unresolved_without_adjustment=True,
+    )
+
+
 def save_review_bundle_annotation_worker(
     bundle_dir: Path,
     full_path: Path,
@@ -262,11 +288,16 @@ def _save_review_bundle_annotation_locked(
             if not row_matches:
                 continue
             if _require_unresolved_without_adjustment:
+                exclusion_name = (
+                    "Unusable-ladder"
+                    if annotation.get("label") == "excluded_unusable_ladder"
+                    else "Missing-ladder"
+                )
                 if str(row.get("label") or "").strip() or str(
                     row.get("adjustment_path") or ""
                 ).strip():
                     raise ValueError(
-                        "Missing-ladder exclusion requires an unresolved row "
+                        f"{exclusion_name} exclusion requires an unresolved row "
                         "without an adjustment"
                     )
                 source_path = Path(row_path_text).expanduser()
@@ -278,7 +309,7 @@ def _save_review_bundle_annotation_locked(
                     is not None
                 ):
                     raise ValueError(
-                        "Missing-ladder exclusion cannot replace an existing adjustment"
+                        f"{exclusion_name} exclusion cannot replace an existing adjustment"
                     )
             row["label"] = annotation.get("label", "")
             row["label_note"] = annotation.get("label_note", "")

@@ -962,11 +962,26 @@ class LadderAdjustmentDialog(QDialog):
                 self._initial_review_comment or str(self.review_context.get("label_note", "") or "")
             )
             review_layout.addWidget(self.review_comment_edit)
+            self.btn_mark_unusable = QPushButton("Ladder Does Not Fit")
+            self.btn_mark_unusable.setObjectName("DangerButton")
+            self.btn_mark_unusable.setToolTip(
+                "Record that this ladder cannot be fitted safely and exclude the file from reporting."
+            )
+            self.btn_mark_unusable.setEnabled(
+                not str(self.review_context.get("label") or "").strip()
+                and not str(self.review_context.get("adjustment_path") or "").strip()
+                and not self._initial_adjustment
+            )
+            self.btn_mark_unusable.clicked.connect(self._on_mark_unusable)
+            review_layout.addWidget(
+                self.btn_mark_unusable, alignment=Qt.AlignmentFlag.AlignLeft
+            )
             qc_layout.addWidget(review_card)
         else:
             self.review_case_label = None
             self.review_metrics_label = None
             self.review_comment_edit = None
+            self.btn_mark_unusable = None
 
         self.residual_figure, self.residual_ax = plt.subplots(figsize=(11, 1.85))
         self.residual_canvas = FigureCanvas(self.residual_figure)
@@ -2484,6 +2499,22 @@ class LadderAdjustmentDialog(QDialog):
 
     def _on_save_note_only(self):
         self._review_action = "note_only"
+        self.accept()
+
+    def _on_mark_unusable(self):
+        if self.btn_mark_unusable is None or not self.btn_mark_unusable.isEnabled():
+            return
+        answer = QMessageBox.question(
+            self,
+            "Ladder Does Not Fit",
+            "Mark this ladder as unusable? This decision will be saved in the review "
+            "bundle. The file will not be rerun or included in reports.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._review_action = "exclude_unusable_ladder"
         self.accept()
 
     def get_mapping(self):

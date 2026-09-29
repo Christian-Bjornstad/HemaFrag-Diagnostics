@@ -30,6 +30,7 @@ from core.research.ladder.round_two import (
     load_round_two_inputs,
 )
 from core.analyses.clonality.ladder_review_labels import (
+    EXCLUDED_LADDER_LABELS,
     is_review_fitting_eligible,
     is_review_ml_eligible,
     is_review_resolved,
@@ -1174,7 +1175,7 @@ def finalize_fit_improvement_wave(
                     f"Fit-improvement case {case_id} requires a complete Rust ladder"
                 )
             review_scans = list(rust_scans)
-        elif label == "excluded_missing_ladder_signal":
+        elif label in EXCLUDED_LADDER_LABELS:
             if (
                 not str(row.get("label_note") or "").strip()
                 or adjustment_path
@@ -1206,7 +1207,7 @@ def finalize_fit_improvement_wave(
                 "review_scan_indices": review_scans,
                 "anchor_deltas": (
                     []
-                    if label == "excluded_missing_ladder_signal"
+                    if label in EXCLUDED_LADDER_LABELS
                     else _anchor_deltas(rust_scans, review_scans)
                 ),
                 "fitting_evaluation_eligible": is_review_fitting_eligible(label),
@@ -1215,7 +1216,7 @@ def finalize_fit_improvement_wave(
         )
 
     excluded_count = sum(
-        case["label"] == "excluded_missing_ladder_signal" for case in outcomes
+        case["label"] in EXCLUDED_LADDER_LABELS for case in outcomes
     )
     fitting_count = sum(bool(case["fitting_evaluation_eligible"]) for case in outcomes)
     ml_count = sum(bool(case["ml_eligible"]) for case in outcomes)

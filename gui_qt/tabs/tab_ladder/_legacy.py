@@ -316,7 +316,7 @@ class TabLadder(QWidget):
         self.btn_open_editor = QPushButton("Open Ladder Editor")
         self.btn_open_editor.setObjectName("PrimaryButton")
         self.btn_open_editor.clicked.connect(self._open_ladder_editor)
-        self.btn_exclude_missing_ladder = QPushButton("No ladder / human error")
+        self.btn_exclude_missing_ladder = QPushButton("No Ladder Signal")
         self.btn_exclude_missing_ladder.clicked.connect(
             self._exclude_current_missing_ladder_signal
         )
@@ -823,7 +823,39 @@ class TabLadder(QWidget):
         )
         if dialog.exec():
             review_payload = dialog.get_review_payload()
-            if review_payload.get("action") != "note_only":
+            action = review_payload.get("action")
+            if action == "exclude_unusable_ladder":
+                if review_case is None or self._review_bundle_dir is None:
+                    self._set_status("A review bundle is required to record this decision.", error=True)
+                    return
+                from gui_qt.tabs.tab_ladder._io import save_unusable_ladder_exclusion_worker
+
+                cache_key = self._resolve_cache_key(self._current_file)
+                note = str(review_payload.get("comment") or "").strip()
+                if not note:
+                    note = "Ladder cannot be fitted safely; excluded after operator review."
+                try:
+                    annotation = save_unusable_ladder_exclusion_worker(
+                        self._review_bundle_dir,
+                        cache_key,
+                        note=note,
+                        reviewed_at_utc=datetime.now(timezone.utc).isoformat(),
+                    )
+                except Exception as exc:
+                    self._set_status(
+                        f"Could not record unusable ladder for {cache_key.name}: {exc}",
+                        error=True,
+                    )
+                    QMessageBox.critical(
+                        self,
+                        "Review Decision Not Saved",
+                        f"The review case remains unresolved.\n\n{exc}",
+                    )
+                    return
+                self._on_missing_ladder_exclusion_saved(cache_key, annotation)
+                self._set_status(f"Ladder unusable: {cache_key.name} excluded from reruns and reports.")
+                return
+            if action != "note_only":
                 adjustment = dialog.get_adjustment_payload()
                 try:
                     saved_path = save_ladder_adjustment(
@@ -974,7 +1006,7 @@ class TabLadder(QWidget):
 
         reply = QMessageBox.question(
             self,
-            "No Ladder / Human Error",
+            "No Ladder Signal",
             (
                 f"Mark {self._current_file.name} as excluded because it has no usable "
                 "ladder signal? This resolves the review case without saving a ladder "
@@ -984,7 +1016,7 @@ class TabLadder(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        note = "No usable ladder signal; preparation error."
+        note = "No usable ladder signal; excluded after operator review."
         reviewed_at_utc = datetime.now(timezone.utc).isoformat()
         self.btn_exclude_missing_ladder.setEnabled(False)
         self._set_status(f"Saving no-ladder exclusion for {self._current_file.name}...")
@@ -1038,7 +1070,13 @@ class TabLadder(QWidget):
         if self._current_file is not None:
             self._select_file(self._current_file)
         self._refresh_review_bundle_run_button()
-        self._set_status(f"Excluded {cache_key.name}: no usable ladder signal.")
+        label = str(annotation.get("label") or "")
+        reason = (
+            "ladder does not fit"
+            if label == "excluded_unusable_ladder"
+            else "no usable ladder signal"
+        )
+        self._set_status(f"Excluded {cache_key.name}: {reason}.")
 
     def _on_missing_ladder_exclusion_error(self, cache_key: Path, err_tuple) -> None:
         if self._current_file is not None and self._resolve_cache_key(self._current_file) == cache_key:
