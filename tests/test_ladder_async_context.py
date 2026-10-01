@@ -46,6 +46,21 @@ def _metadata_result(file_path: Path) -> dict:
     }
 
 
+def test_loading_review_bundle_clears_stale_filename_filter(ladder, tmp_path):
+    ladder.file_filter.setText("previous_file")
+    rows = [
+        {"full_path": str(tmp_path / name), "file": name, "label": ""}
+        for name in ("first.fsa", "second.fsa")
+    ]
+    ladder._on_review_bundle_result(ladder._scan_request_id, {
+        "bundle_dir": tmp_path,
+        "rows": rows,
+        "missing_paths": [],
+    })
+    assert ladder.file_filter.text() == ""
+    assert ladder.file_list.count() == 2
+
+
 def _rerun_settings(tmp_path: Path) -> dict:
     return {
         "analysis_id": "clonality",

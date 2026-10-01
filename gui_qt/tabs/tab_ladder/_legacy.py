@@ -2163,6 +2163,10 @@ class TabLadder(QWidget):
             for row in self._review_bundle_cases
         }
         self._all_files = list(self._review_case_by_path.keys())
+        # A filter from the previous source must not hide newly queued cases.
+        self.file_filter.blockSignals(True)
+        self.file_filter.clear()
+        self.file_filter.blockSignals(False)
         self._rebuild_file_list()
         self._refresh_review_bundle_run_button()
         resolved, unresolved = self._review_bundle_counts()

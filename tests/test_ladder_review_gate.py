@@ -280,7 +280,7 @@ class TabLadderBundleLoaderTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 self._loader_result(td)
 
-    def test_bundle_loader_drops_only_truly_empty_paths(self) -> None:
+    def test_bundle_loader_keeps_filename_when_path_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             real = Path(td) / "real.fsa"
             real.write_bytes(b"x")
@@ -292,8 +292,10 @@ class TabLadderBundleLoaderTests(unittest.TestCase):
                 ],
             )
             result = self._loader_result(td)
-            self.assertEqual(len(result["rows"]), 1)
-            self.assertEqual(result["rows"][0]["file"], "real.fsa")
+            self.assertEqual(len(result["rows"]), 2)
+            self.assertEqual(result["rows"][0]["file"], "blank.fsa")
+            self.assertEqual(result["rows"][0]["_path_unreachable"], "true")
+            self.assertEqual(result["rows"][1]["file"], "real.fsa")
 
 
 class RelocateReviewCaseTests(unittest.TestCase):

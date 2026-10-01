@@ -24,6 +24,8 @@ from core.runner import run_pipeline_job, run_pipeline_job_collect, run_qc_job, 
 
 # Lazy load fraggler modules to prevent global Panel state pollution on import
 
+# Historical diagnostics only. Normal job discovery must include these files:
+# prior hangs are not evidence that their analysis or review is complete.
 KNOWN_CLONALITY_BACKFILL_SKIP_FILES = {
     # User-requested overnight guardrail: this historical KDE file repeatedly
     # entered an unbounded fallback path during the 2026-05-18 T7 backfill.
@@ -166,9 +168,6 @@ def _scan_folder_fsa_files(path: Path, folder_files: Dict[Path, List[Path]]) -> 
 
         def _is_usable_fsa(candidate: Path) -> bool:
             if candidate.suffix.lower() != ".fsa" or is_water_file(candidate.name):
-                return False
-            if candidate.name in KNOWN_CLONALITY_BACKFILL_SKIP_FILES:
-                log(f"[WARN] Skipping known clonality backfill hang file: {candidate.name}")
                 return False
             try:
                 if candidate.stat().st_size <= 0:

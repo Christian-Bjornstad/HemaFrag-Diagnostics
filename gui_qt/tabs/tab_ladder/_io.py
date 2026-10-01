@@ -76,7 +76,8 @@ def load_review_bundle_worker(bundle_dir: Path) -> dict:
     """Read a ladder-review bundle folder into a tagged case-list.
 
     Phase 12.0 contract: keep every row whose `full_path` is
-    non-empty, even when the FSA is not currently on disk. Unreachable
+    non-empty, even when the FSA is not currently on disk. Legacy rows
+    without a path retain their filename and can be relocated. Unreachable
     rows are tagged `_path_unreachable=true` and collected into
     `missing_paths` so the GUI can surface them.
 
@@ -96,12 +97,23 @@ def _load_review_bundle_worker_locked(bundle_dir: Path, cases_path: Path) -> dic
 
     rows: list[dict] = []
     missing_paths: list[str] = []
+    repaired_paths = False
     with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
         reader = csv.DictReader(handle)
-        for row in reader:
+        fieldnames = list(reader.fieldnames or [])
+        for row_number, row in enumerate(reader, start=2):
             raw_path = str(row.get("full_path", "") or "").strip()
             if not raw_path:
-                continue
+                filename = str(row.get("file", "") or "").strip()
+                if not filename:
+                    raise ValueError(
+                        f"Review bundle row {row_number} has neither a file path nor a filename. "
+                        "Restore its source path before reviewing this bundle."
+                    )
+                # Persist the identity used by the editor so Locate File and
+                # annotation writes can find this same row afterwards.
+                raw_path = str((bundle_dir / filename).expanduser().resolve())
+                repaired_paths = True
             full_path = Path(raw_path).expanduser()
             if not full_path.exists():
                 missing_paths.append(raw_path)
@@ -110,6 +122,17 @@ def _load_review_bundle_worker_locked(bundle_dir: Path, cases_path: Path) -> dic
                 row["_path_unreachable"] = "false"
             row["full_path"] = raw_path
             rows.append(row)
+
+    if repaired_paths:
+        if "full_path" not in fieldnames:
+            fieldnames.append("full_path")
+        save_review_bundle(
+            cases_path=cases_path,
+            rows=[{key: value for key, value in row.items() if key in fieldnames} for row in rows],
+            fieldnames=fieldnames,
+            summary_path=None,
+            summary={},
+        )
 
     run_manifest_path: Path | None = None
     summary_path = bundle_dir / "ladder_review_summary.json"

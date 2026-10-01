@@ -25,7 +25,7 @@ def _entry_file_path(entry: dict[str, Any]) -> str:
 
     fsa = entry.get("fsa")
     if fsa is None:
-        return ""
+        return str(entry.get("file_name") or "")
     path = (
         getattr(fsa, "file", None)
         or getattr(fsa, "path", None)
