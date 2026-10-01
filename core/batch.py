@@ -161,6 +161,27 @@ def scan_jobs_from_yaml(yaml_path: Path) -> List[Path]:
 # PATIENT AGGREGATION UTILITIES
 # ============================================================
 
+def _release_entry_runtime_data(entry: dict) -> None:
+    """Keep source identity when dropping large runtime objects before review."""
+    from core.analyses.clonality.tracking_excel import resolve_original_input_path
+
+    fsa = entry.get("fsa")
+    if fsa is not None:
+        source = (
+            getattr(fsa, "file", None) or getattr(fsa, "path", None)
+            or getattr(fsa, "file_path", None) or getattr(fsa, "filepath", None)
+        )
+        if not entry.get("original_file_path") and source:
+            entry["original_file_path"] = str(resolve_original_input_path(source) or source)
+        if not entry.get("file_name"):
+            entry["file_name"] = str(
+                getattr(fsa, "file_name", "")
+                or (Path(entry["original_file_path"]).name if entry.get("original_file_path") else "")
+            )
+    entry["fsa"] = None
+    entry.pop("peaks_by_channel", None)
+    entry.pop("size_standard", None)
+
 def _scan_folder_fsa_files(path: Path, folder_files: Dict[Path, List[Path]]) -> List[Path]:
     """Return cached .fsa files for a folder/file, scanning only once per call site."""
     if path not in folder_files:
@@ -753,9 +774,7 @@ def run_batch_jobs(
                         from core.html_reports import build_dit_html_reports
                         if (defer_dit_html_reports or skip_html_reports) and not preserve_deferred_entries:
                             for entry in entries:
-                                entry["fsa"] = None
-                                entry.pop("peaks_by_channel", None)
-                                entry.pop("size_standard", None)
+                                _release_entry_runtime_data(entry)
                             with data_lock:
                                 _extend_entries(all_collected_entries_by_job, i, entries)
                             _emit_progress(
@@ -814,9 +833,7 @@ def run_batch_jobs(
                     else:
                         if (defer_dit_html_reports or skip_html_reports) and not preserve_deferred_entries:
                             for entry in entries:
-                                entry["fsa"] = None
-                                entry.pop("peaks_by_channel", None)
-                                entry.pop("size_standard", None)
+                                _release_entry_runtime_data(entry)
                         with data_lock:
                             _extend_entries(all_collected_entries_by_job, i, entries)
                             if defer_tracking_workbook_refresh and deferred_tracking_entries_by_job is not None:
@@ -867,9 +884,7 @@ def run_batch_jobs(
                     if qc_entries:
                         if (defer_dit_html_reports or skip_html_reports) and not preserve_deferred_entries:
                             for entry in qc_entries:
-                                entry["fsa"] = None
-                                entry.pop("peaks_by_channel", None)
-                                entry.pop("size_standard", None)
+                                _release_entry_runtime_data(entry)
                         with data_lock:
                             _extend_entries(qc_report_entries_by_job, i, qc_entries)
                         if defer_tracking_workbook_refresh and deferred_tracking_entries_by_job is not None:
