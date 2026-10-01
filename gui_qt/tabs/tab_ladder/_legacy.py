@@ -2176,6 +2176,7 @@ class TabLadder(QWidget):
             if self._cached_review_payload_for(Path(str(row.get("full_path", "") or ""))) is not None
         )
         missing_paths = result.get("missing_paths", []) or []
+        load_warnings = result.get("warnings", []) or []
         status_msg = (
             f"Loaded review bundle {self._review_bundle_dir.name} with "
             f"{len(self._review_bundle_cases)} case(s): {resolved} reviewed, "
@@ -2190,9 +2191,9 @@ class TabLadder(QWidget):
                 f"that is currently unreachable — open those via "
                 f"'Locate File' before saving."
             )
-            self._set_status(status_msg, error=True)
-        else:
-            self._set_status(status_msg)
+        if load_warnings:
+            status_msg += "  " + "  ".join(load_warnings)
+        self._set_status(status_msg, error=bool(missing_paths or load_warnings))
         # Phase 12.3 — refresh the chip strip whenever bundle loads.
         self._sync_chip_strip()
 

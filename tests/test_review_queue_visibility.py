@@ -2,8 +2,6 @@
 import csv
 from pathlib import Path
 
-import pytest
-
 from core.batch import find_all_fsa_files, KNOWN_CLONALITY_BACKFILL_SKIP_FILES
 from core.analyses.clonality.ladder_review_gate import (
     collect_ladder_review_cases,
@@ -59,7 +57,49 @@ def test_legacy_blank_path_remains_visible_and_can_be_reviewed(tmp_path):
     assert count_unresolved_review_cases(path) == 1
 
 
-def test_unidentifiable_row_is_reported_instead_of_dropped(tmp_path):
-    _write_cases(tmp_path, [{"full_path": "", "file": "", "label": ""}])
-    with pytest.raises(ValueError, match="row 2"):
-        load_review_bundle_worker(tmp_path)
+def test_unidentifiable_row_does_not_block_valid_files(tmp_path):
+    source = tmp_path / "valid.fsa"
+    source.write_bytes(b"fsa")
+    _write_cases(tmp_path, [
+        {"full_path": "", "file": "", "label": ""},
+        {"full_path": str(source), "file": source.name, "label": ""},
+    ])
+    result = load_review_bundle_worker(tmp_path)
+    assert len(result["rows"]) == 2
+    assert result["rows"][1]["full_path"] == str(source)
+    assert result["rows"][1]["_path_unreachable"] == "false"
+    assert result["rows"][0]["_path_unreachable"] == "true"
+    assert "row 2" in " ".join(result["warnings"])
+
+
+def test_repair_write_failure_does_not_block_valid_files(tmp_path, monkeypatch):
+    source = tmp_path / "valid.fsa"
+    source.write_bytes(b"fsa")
+    cases = _write_cases(tmp_path, [
+        {"full_path": "", "file": "hidden.fsa", "label": ""},
+        {"full_path": str(source), "file": source.name, "label": ""},
+    ])
+    original = cases.read_bytes()
+    def locked(*args, **kwargs):
+        raise PermissionError("CSV is locked")
+    monkeypatch.setattr("gui_qt.tabs.tab_ladder._io.save_review_bundle", locked)
+    result = load_review_bundle_worker(tmp_path)
+    assert len(result["rows"]) == 2
+    assert result["rows"][1]["full_path"] == str(source)
+    assert "CSV is locked" in " ".join(result["warnings"])
+    assert cases.read_bytes() == original
+
+
+def test_windows_bom_does_not_hide_original_path(tmp_path):
+    source = tmp_path / "source" / "valid.fsa"
+    source.parent.mkdir()
+    source.write_bytes(b"fsa")
+    cases = _write_cases(tmp_path, [{"full_path": str(source), "file": source.name, "label": ""}])
+    cases.write_bytes(b"\xef\xbb\xbf" + cases.read_bytes())
+    original = cases.read_bytes()
+    result = load_review_bundle_worker(tmp_path)
+    assert result["rows"][0]["full_path"] == str(source)
+    assert result["rows"][0]["_path_unreachable"] == "false"
+    assert cases.read_bytes() == original
+    save_review_bundle_annotation_worker(tmp_path, source, {"label": "reviewed_no_change"})
+    assert count_unresolved_review_cases(cases) == 0

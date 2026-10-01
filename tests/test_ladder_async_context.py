@@ -61,6 +61,33 @@ def test_loading_review_bundle_clears_stale_filename_filter(ladder, tmp_path):
     assert ladder.file_list.count() == 2
 
 
+@pytest.mark.parametrize("locked", [False, True])
+def test_bad_row_does_not_empty_ladder_editor(ladder, tmp_path, monkeypatch, locked):
+    import csv
+
+    source = tmp_path / "valid.fsa"
+    source.write_bytes(b"fsa")
+    with (tmp_path / "ladder_review_cases.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["full_path", "file", "label"])
+        writer.writeheader()
+        writer.writerows([
+            {"full_path": "", "file": "", "label": ""},
+            {"full_path": str(source), "file": source.name, "label": ""},
+        ])
+    if locked:
+        def reject_save(*args, **kwargs):
+            raise PermissionError("CSV is locked")
+        monkeypatch.setattr("gui_qt.tabs.tab_ladder._io.save_review_bundle", reject_save)
+    result = ladder._load_review_bundle_worker(tmp_path)
+    ladder._on_review_bundle_result(ladder._scan_request_id, result)
+    assert ladder.file_list.count() == 2
+    assert source.resolve() in ladder._all_files
+    assert ladder._review_bundle_counts() == (0, 2)
+    assert ladder._chip_strip.chipCount() == 2
+    ladder._select_file(source.resolve())
+    assert ladder._current_file == source.resolve()
+
+
 def _rerun_settings(tmp_path: Path) -> dict:
     return {
         "analysis_id": "clonality",

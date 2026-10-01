@@ -65,7 +65,7 @@ def _read_bundle_csv(cases_path: Path) -> tuple[list[str], list[dict[str, Any]]]
     signal in the GUI.
     """
     with review_bundle_transaction(cases_path):
-        with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        with cases_path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
             reader = csv.DictReader(handle)
             fieldnames = list(reader.fieldnames or [])
             rows = list(reader)
@@ -97,8 +97,9 @@ def _load_review_bundle_worker_locked(bundle_dir: Path, cases_path: Path) -> dic
 
     rows: list[dict] = []
     missing_paths: list[str] = []
+    warnings: list[str] = []
     repaired_paths = False
-    with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+    with cases_path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
         reader = csv.DictReader(handle)
         fieldnames = list(reader.fieldnames or [])
         for row_number, row in enumerate(reader, start=2):
@@ -106,10 +107,12 @@ def _load_review_bundle_worker_locked(bundle_dir: Path, cases_path: Path) -> dic
             if not raw_path:
                 filename = str(row.get("file", "") or "").strip()
                 if not filename:
-                    raise ValueError(
+                    warnings.append(
                         f"Review bundle row {row_number} has neither a file path nor a filename. "
-                        "Restore its source path before reviewing this bundle."
+                        "Use Locate File to restore its source path."
                     )
+                    filename = f"__missing_review_path_row_{row_number}__.fsa"
+                    row["file"] = f"Unknown file (CSV row {row_number})"
                 # Persist the identity used by the editor so Locate File and
                 # annotation writes can find this same row afterwards.
                 raw_path = str((bundle_dir / filename).expanduser().resolve())
@@ -126,13 +129,19 @@ def _load_review_bundle_worker_locked(bundle_dir: Path, cases_path: Path) -> dic
     if repaired_paths:
         if "full_path" not in fieldnames:
             fieldnames.append("full_path")
-        save_review_bundle(
-            cases_path=cases_path,
-            rows=[{key: value for key, value in row.items() if key in fieldnames} for row in rows],
-            fieldnames=fieldnames,
-            summary_path=None,
-            summary={},
-        )
+        try:
+            save_review_bundle(
+                cases_path=cases_path,
+                rows=[{key: value for key, value in row.items() if key in fieldnames} for row in rows],
+                fieldnames=fieldnames,
+                summary_path=None,
+                summary={},
+            )
+        except (OSError, RuntimeError) as exc:
+            warnings.append(
+                f"Missing-path repairs could not be saved: {exc}. "
+                "Existing files are available; unlock the CSV and reload before locating missing files."
+            )
 
     run_manifest_path: Path | None = None
     summary_path = bundle_dir / "ladder_review_summary.json"
@@ -152,6 +161,7 @@ def _load_review_bundle_worker_locked(bundle_dir: Path, cases_path: Path) -> dic
         "cases_path": cases_path,
         "rows": rows,
         "missing_paths": missing_paths,
+        "warnings": warnings,
         "run_manifest_path": run_manifest_path,
     }
 
@@ -173,7 +183,7 @@ def _review_case_paths_from_bundle_locked(cases_path: Path) -> set[Path]:
 
     paths: set[Path] = set()
     try:
-        with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        with cases_path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 raw_path = str(row.get("full_path", "") or "").strip()

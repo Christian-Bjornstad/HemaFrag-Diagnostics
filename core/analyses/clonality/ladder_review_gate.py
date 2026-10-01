@@ -197,7 +197,7 @@ def count_unresolved_review_cases(cases_path: Path) -> int:
         return 0
 
     unresolved = 0
-    with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+    with cases_path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             if not is_review_resolved(row.get("label")):
@@ -266,7 +266,7 @@ def relocate_review_case(
 
         with cases_path.open(
             "r",
-            encoding="utf-8",
+            encoding="utf-8-sig",
             errors="replace",
             newline="",
         ) as handle:
