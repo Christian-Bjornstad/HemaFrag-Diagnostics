@@ -336,10 +336,12 @@ def run_pipeline_job(
             f"Pipeline completed with errors: {ok_chunks} ok, {failed_chunks} failed."
         )
     if collected_entries and effective_mode != "controls":
-        from core.assay_config import OUTDIR_NAME
+        from core.analyses.shared_pipeline import normalize_pipeline_paths
         from core.html_reports import build_dit_html_reports
 
-        assay_outdir = base_outdir / (out_folder_name or OUTDIR_NAME)
+        _, assay_outdir = normalize_pipeline_paths(
+            fsa_dir or files[0].parent, base_outdir, out_folder_name,
+        )
         build_dit_html_reports(collected_entries, assay_outdir)
     return None
 

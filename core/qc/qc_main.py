@@ -20,7 +20,7 @@ def main():
     parser.add_argument("--fsa_dir", type=str, default=str(DEFAULT_FSA_DIR),
                         help="Mappe med .fsa-filer")
     parser.add_argument("--outdir", type=str, default="",
-                        help="Output-mappe. Hvis tom: bruker fsa_dir/ASSAY_REPORTS")
+                        help="Output-mappe. Hvis tom: bruker fsa_dir")
     parser.add_argument("--outfile", type=str, default="QC_REPORT.html",
                         help="Navn på QC-HTML-filen")
     parser.add_argument("--excel", type=str, default="QC_TRENDS.xlsx",

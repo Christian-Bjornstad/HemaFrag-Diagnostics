@@ -19,7 +19,11 @@ def normalize_pipeline_paths(
     """Resolve common input/output locations for all analyses."""
     fsa_dir = Path(fsa_dir).expanduser()
     base_outdir = Path(base_outdir or fsa_dir).expanduser()
-    assay_dir = base_outdir / (assay_folder_name or "REPORTS").strip()
+    folder = str(assay_folder_name or "").strip()
+    # Also retire names saved in older installations' settings.
+    if folder.casefold() in {"reports", "assay_reports"}:
+        folder = ""
+    assay_dir = base_outdir / folder if folder else base_outdir
     return fsa_dir, assay_dir
 
 

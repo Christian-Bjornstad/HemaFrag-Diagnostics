@@ -52,7 +52,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "pipeline": {
         "input_dir": str(Path.home()),
         "output_base": str(Path.home()),
-        "out_folder_name": "ASSAY_REPORTS",
+        "out_folder_name": "",
         "mode": "all",               # "all" | "controls" | "custom"
         "assay_filter_substring": "",
     },
@@ -87,7 +87,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "yaml_path": "",
         "job_type": "pipeline",       # "pipeline" | "qc" | "dit"
         "output_base": str(Path.home()),
-        "out_folder_tmpl": "ASSAY_REPORTS",
+        "out_folder_tmpl": "",
         "outfile_html_tmpl": "QC_REPORT_{name}.html",
         "excel_name_tmpl": "QC_TRENDS_{name}.xlsx",
         "mode": "all",
@@ -529,7 +529,7 @@ def _validate_settings(settings: Dict[str, Any]) -> None:
     """Basic validation for critical settings."""
     pipeline = settings.get("pipeline", {})
     if not isinstance(pipeline.get("out_folder_name"), str):
-        pipeline["out_folder_name"] = "ASSAY_REPORTS"
+        pipeline["out_folder_name"] = ""
     for key in ("input_dir", "output_base", "assay_filter_substring"):
         if key in pipeline and not isinstance(pipeline.get(key), str):
             pipeline[key] = str(pipeline.get(key, ""))

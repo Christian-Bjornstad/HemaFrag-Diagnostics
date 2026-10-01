@@ -1567,7 +1567,7 @@ class TabBatch(QWidget):
             run_batch_jobs,
             jobs=jobs_to_run,
             output_base=out_path_obj,
-            out_folder_tmpl="ASSAY_REPORTS",
+            out_folder_tmpl="",
             outfile_html_tmpl="QC_REPORT_{name}.html",
             excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
             pipeline_scope=p_scope,
@@ -1874,7 +1874,7 @@ class TabBatch(QWidget):
             result = run_batch_jobs(
                 jobs=jobs_to_run,
                 output_base=output_root,
-                out_folder_tmpl="ASSAY_REPORTS",
+                out_folder_tmpl="",
                 outfile_html_tmpl="QC_REPORT_{name}.html",
                 excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
                 pipeline_scope=pipeline_scope,
