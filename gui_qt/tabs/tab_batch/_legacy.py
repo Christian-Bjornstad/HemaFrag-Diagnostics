@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThreadPool, QEvent, QSignalBlocker, QPoint, QRect, QSize
 from gui_qt.operation_coordinator import OperationStartRejected
 from gui_qt.worker import Worker
+from gui_qt.input_folders import choose_input_directories
 from config import (
     APP_SETTINGS,
     get_analysis_settings,
@@ -270,9 +271,9 @@ class TabBatch(QWidget):
         self.folder_list.dropEvent = _dropEvent
         
         btn_layout = QVBoxLayout()
-        self.btn_add_folders = QPushButton("Add Folder...")
+        self.btn_add_folders = QPushButton("Add Folders...")
         self.btn_add_folders.setToolTip(
-            "Uses the native folder picker so Windows Quick Access and pinned locations are available. Click again to add another folder."
+            "Select several input folders at once with Ctrl or Shift. The saved start folder is only a browser location."
         )
         self.btn_add_files = QPushButton("Add Files...")
         self.btn_remove_sources = QPushButton("Remove Selected")
@@ -1061,14 +1062,9 @@ class TabBatch(QWidget):
             or getattr(self, "_review_finalize_active", False)
         ):
             return False
-        previous_profile = self._profile_for(self._current_analysis_id)
-        previous_default = previous_profile.get("batch", {}).get("base_input_dir", "")
-        current_items = [self.folder_list.item(i).text() for i in range(self.folder_list.count())]
-        should_replace_inputs = force_replace_inputs or not current_items or current_items == [previous_default]
-
         self._current_analysis_id = analysis_id
         self._reset_queue_state("Ready", "ready")
-        self.load_from_settings(replace_inputs=should_replace_inputs)
+        self.load_from_settings(replace_inputs=force_replace_inputs)
         pretty_name = ANALYSIS_LABELS.get(analysis_id, analysis_id.capitalize())
         self.title_lbl.setText(f"Run {pretty_name}")
         self.subtitle_lbl.setText("")
@@ -1097,11 +1093,8 @@ class TabBatch(QWidget):
             saved_output or "/path/to/output (leave empty to use the saved output or the first sample folder)"
         )
 
-        default_dir = batch_settings.get("base_input_dir", "")
         if replace_inputs:
             self.folder_list.clear()
-        if default_dir and self.folder_list.count() == 0:
-            self.folder_list.addItem(default_dir)
 
         run_date_filter = str(batch_settings.get("run_date_filter", "all") or "all")
         idx = self.input_scope_combo.findData(run_date_filter)
@@ -1248,36 +1241,34 @@ class TabBatch(QWidget):
 
     def _add_folders(self):
         batch_settings = self._profile_for().get("batch", {})
-        start = str(batch_settings.get("last_input_directory") or "").strip()
-        if not start and self.folder_list.count():
-            candidate = Path(self.folder_list.item(self.folder_list.count() - 1).text()).expanduser()
-            start = str(candidate if candidate.is_dir() else candidate.parent)
-        if not start:
-            start = str(batch_settings.get("base_input_dir") or Path.home())
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "Add Input Folder",
-            start,
-            QFileDialog.Option.ShowDirsOnly,
+        start = str(
+            batch_settings.get("base_input_dir")
+            or batch_settings.get("last_input_directory") or Path.home()
         )
-        if not folder:
+        folders = choose_input_directories(self, start)
+        if not folders:
             return
-        existing = {
-            self.folder_list.item(i).text()
-            for i in range(self.folder_list.count())
-        }
-        if folder not in existing:
+        for folder in folders:
             self._add_source_item(folder)
         profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(
             self._current_analysis_id,
             {},
         )
-        profile.setdefault("batch", {})["last_input_directory"] = folder
+        settings = profile.setdefault("batch", {})
+        settings["last_input_directory"] = str(Path(folders[0]).parent)
+        directory_count = sum(Path(self.folder_list.item(i).text()).is_dir() for i in range(self.folder_list.count()))
+        if directory_count > 1:
+            # Keep the operator's explicit cohort instead of dropping older
+            # selected folders under the saved "latest run date" default.
+            settings["run_date_filter"] = "all"
+            scope_blocker = QSignalBlocker(self.input_scope_combo)
+            self.input_scope_combo.setCurrentIndex(self.input_scope_combo.findData("all"))
+            del scope_blocker
         save_settings(APP_SETTINGS)
 
     def _add_files(self):
         batch_settings = self._profile_for().get("batch", {})
-        start = str(batch_settings.get("last_input_directory") or Path.home())
+        start = str(batch_settings.get("base_input_dir") or batch_settings.get("last_input_directory") or Path.home())
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Add .fsa Files",
