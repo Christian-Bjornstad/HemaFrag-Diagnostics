@@ -50,7 +50,7 @@ def test_failed_saved_fit_does_not_change_input_for_auto_fallback(monkeypatch):
         candidate.fitted_to_model = False
         return candidate
 
-    monkeypatch.setattr(analysis, "fit_size_standard_to_ladder", failed_fit)
+    monkeypatch.setattr(analysis, "fit_partial_manual_ladder", failed_fit)
     result = analysis._try_apply_saved_ladder_adjustment(
         fsa, {"mapping_times": {0: 100, 2: 300, 3: 400}}, "ROX",
     )

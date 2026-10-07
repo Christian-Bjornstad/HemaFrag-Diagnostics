@@ -1499,7 +1499,10 @@ class LadderAdjustmentDialog(QDialog):
         self.candidate_table.selectRow(cand_idx)
 
     def _fit_method_name(self) -> str:
-        model = getattr(self._preview_fsa or self.fsa, "ladder_model", None)
+        current_fsa = self._preview_fsa or self.fsa
+        if getattr(current_fsa, "manual_ladder_sizing_method", "") == "bounded_linear":
+            return "bounded linear"
+        model = getattr(current_fsa, "ladder_model", None)
         if model is None:
             return "unknown"
         name = model.__class__.__name__.lower()
@@ -1508,6 +1511,15 @@ class LadderAdjustmentDialog(QDialog):
         if "poly" in name:
             return "polynomial"
         return name.replace("model", "")
+
+    def _partial_sizing_limits_text(self) -> str:
+        bounds = getattr(self._preview_fsa, "manual_ladder_sizing_bp_range", None)
+        if bounds is None:
+            return ""
+        return (
+            f"Sizing is limited to {bounds[0]:g}\u2013{bounds[1]:g} bp; "
+            "peaks outside the assigned end anchors have no size."
+        )
 
     def _lookup_fitted_bp(self, peak_time: float) -> float | None:
         preview_fsa = self._preview_fsa
@@ -1636,14 +1648,16 @@ class LadderAdjustmentDialog(QDialog):
             return "fail", "Fit QC is incomplete. Preview the fit again."
         if not math.isfinite(r2) or not math.isfinite(max_abs):
             return "fail", "Fit QC is incomplete. Preview the fit again."
-        # Delvis kartlegging (interpolerte trinn) gir "check", ikke "fail" —
-        # residualene gjelder kun de faktisk plasserte toppene.
+        # A partial fit needs review even when its observed anchors match exactly.
         if outlier_count or r2 < CHECK_R2 or max_abs > CHECK_MAX_ABS_RESIDUAL:
             return "fail", "Fit needs attention: low R², or high residual outlier detected."
         if missing_count:
             return (
                 "check",
-                f"Partial fit: {missing_count} ladder steps unassigned. Check the assigned peaks before saving.",
+                f"Partial fit: {missing_count} ladder steps unassigned. "
+                f"{self._partial_sizing_limits_text()} "
+                "Assigned anchors match exactly; zero residuals do not validate sizing accuracy. "
+                "Check the assigned peaks before saving.",
             )
         if r2 < PASS_R2 or max_abs > PASS_MAX_ABS_RESIDUAL:
             return "check", "Fit is usable, but one or more residuals still need review."
@@ -2486,6 +2500,7 @@ class LadderAdjustmentDialog(QDialog):
                 "Not all ladder steps are assigned. Only the observed anchors you "
                 "placed will be used to fit the sizing model; missing steps remain "
                 "explicit and this file remains marked as a reviewed partial fit.\n\n"
+                f"{self._partial_sizing_limits_text()}\n\n"
                 f"Missing: {missing_text}\n\n"
                 "Save this partial adjustment anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,

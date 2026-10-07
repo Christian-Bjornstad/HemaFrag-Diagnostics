@@ -710,6 +710,7 @@ def _analyze_single_file(
         from core.ighv import (
             IGHV_RFU_PEAK_THRESHOLD,
             _peak_area_near,
+            _trace_arrays,
             apply_sample_type,
             find_peaks_in_window,
             ighv_reference_range,
@@ -730,12 +731,7 @@ def _analyze_single_file(
             signal_arr, bp_arr = None, None
             raw_df = getattr(fsa, "sample_data_with_basepairs", None)
             if raw_df is not None and not getattr(raw_df, "empty", True):
-                import numpy as _np
-
-                sig = _np.asarray(fsa.fsa[primary_peak_channel], dtype=float)
-                bps = raw_df["basepairs"].to_numpy(dtype=float)
-                n = min(len(sig), len(bps))
-                signal_arr, bp_arr = sig[:n], bps[:n]
+                signal_arr, bp_arr = _trace_arrays(fsa, primary_peak_channel)
             if bp_arr is not None:
                 hits = find_peaks_in_window(
                     bp_arr,
@@ -766,9 +762,32 @@ def _analyze_single_file(
     else:
         for ch in peak_channels:
             peaks_by_channel[ch] = pd.DataFrame(columns=["basepairs", "peaks", "keep"])
-        rust_peaks = _build_peaks_from_rust_clonality_preview(fsa, assay, primary_peak_channel)
-        if rust_peaks:
-            peaks_by_channel.update(rust_peaks)
+        if getattr(fsa, "ladder_fit_strategy", "") in {"manual_adjustment", "manual_partial"}:
+            from core.analyses.clonality.manual_peaks import build_manual_clonality_peaks
+
+            try:
+                peaks_by_channel = build_manual_clonality_peaks(
+                    fsa, peak_channels, bp_min=bp_min, bp_max=bp_max,
+                )
+            except ValueError as exc:
+                # An unusable remapped channel is a visible review case, not
+                # an empty peak set that could be interpreted as negative.
+                fsa.ladder_review_required = True
+                fsa.ladder_fit_note = f"Manual sizing could not be used for sample peaks: {exc}"
+                entry = _build_ladder_review_only_entry(
+                    fsa_path, fsa, assay=assay, group=group, ladder=ladder,
+                    trace_channels=trace_channels, peak_channels=peak_channels,
+                    primary_peak_channel=primary_peak_channel, bp_min=bp_min, bp_max=bp_max,
+                )
+                entry["ladder_qc_status"] = "ladder_qc_failed"
+                entry["ladder_fit_strategy"] = fsa.ladder_fit_strategy
+                from core.analysis_provenance import attach_analysis_provenance
+
+                return attach_analysis_provenance(entry)
+        else:
+            rust_peaks = _build_peaks_from_rust_clonality_preview(fsa, assay, primary_peak_channel)
+            if rust_peaks:
+                peaks_by_channel.update(rust_peaks)
 
     ymax = compute_zoom_ymax(fsa, bp_min, bp_max, trace_channels, assay_name=assay)
 

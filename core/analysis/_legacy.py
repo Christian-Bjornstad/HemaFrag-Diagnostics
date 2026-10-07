@@ -42,6 +42,7 @@ from fraggler.fraggler import (
 from core.analysis._constants import *
 
 from core.engine_flags import rust_owned_ladder_enabled
+from core.manual_ladder_sizing import fit_partial_manual_ladder
 from core.assay_config import (
     DEFAULT_LIZ_LADDER,
     DEFAULT_ROX_LADDER,
@@ -4925,7 +4926,20 @@ def apply_manual_ladder_mapping(fsa: FsaFile, adjustment: dict[int, int] | dict)
     fsa.expected_ladder_steps = expected_steps.copy()
     fsa.ladder_steps = selected_steps.copy()
     fsa.best_size_standard = selected_peaks.copy()
-    fsa = fit_size_standard_to_ladder(fsa)
+    if not missing_step_indices:
+        # A completed edit of a prior partial fit must not retain its old limits.
+        for attribute in (
+            "manual_ladder_sizing_method",
+            "manual_ladder_sizing_time_range",
+            "manual_ladder_sizing_bp_range",
+        ):
+            if hasattr(fsa, attribute):
+                delattr(fsa, attribute)
+    fsa = (
+        fit_partial_manual_ladder(fsa)
+        if missing_step_indices
+        else fit_size_standard_to_ladder(fsa)
+    )
     if not getattr(fsa, "fitted_to_model", False):
         raise ValueError("Manual ladder mapping did not produce a valid fit.")
 
@@ -4937,6 +4951,22 @@ def apply_manual_ladder_mapping(fsa: FsaFile, adjustment: dict[int, int] | dict)
         raise ValueError(
             "Manual ladder mapping produced a non-monotonic sizing domain."
         )
+
+    # Assay previews were sized with the automatic model. Recompute peaks
+    # against the new scan domain instead of carrying old bp or clonal groups.
+    # Keep raw ladder candidates and rejection diagnostics as audit context.
+    for attribute in (
+        "rust_flt3_preview",
+        "rust_clonality_preview",
+        "rust_ladder_qc_metrics",
+        "_flt3_sizing_method",
+    ):
+        if hasattr(fsa, attribute):
+            delattr(fsa, attribute)
+    fsa.rust_guardrail_review_required = False
+    fsa.ladder_missing_signal = False
+    if getattr(fsa, "analysis_status", "") == "ladder_review_only":
+        delattr(fsa, "analysis_status")
 
     strategy = "manual_partial" if missing_step_indices else "manual_adjustment"
     fsa.ladder_fit_strategy = strategy

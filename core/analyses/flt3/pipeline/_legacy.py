@@ -981,6 +981,10 @@ def _apply_bp_offset(fsa: FsaFile, assay: str) -> None:
 
 
 def _infer_sizing_method(fsa: FsaFile) -> str:
+    if getattr(fsa, "manual_ladder_partial", False):
+        method = getattr(fsa, "manual_ladder_sizing_method", "")
+        if method:
+            return str(method)
     if hasattr(fsa, "_flt3_sizing_method"):
         return str(getattr(fsa, "_flt3_sizing_method"))
     model = getattr(fsa, "ladder_model", None)
@@ -5534,6 +5538,8 @@ def _gs500rox_start_prior_trials(fsa: FsaFile, ladder_steps: np.ndarray) -> list
 
 
 def _apply_gs500rox_start_family_prior_if_review_band(fsa: FsaFile) -> FsaFile:
+    if getattr(fsa, "ladder_fit_strategy", "") in {"manual_adjustment", "manual_partial"}:
+        return fsa
     ladder_steps = _flt3_expected_ladder_steps(fsa)
     trials = _gs500rox_start_prior_trials(fsa, ladder_steps)
     if not trials:

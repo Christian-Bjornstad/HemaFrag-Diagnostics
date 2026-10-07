@@ -119,6 +119,15 @@ def build_analysis_provenance(entry: dict[str, Any]) -> dict[str, object]:
             strategy == "manual_partial"
             or adjustment_payload.get("partial_mapping")
         ),
+        "manual_adjustment_sizing_method": str(
+            getattr(fsa, "manual_ladder_sizing_method", "") or ""
+        ) if manual_strategy else "",
+        "manual_adjustment_sizing_time_range": list(
+            getattr(fsa, "manual_ladder_sizing_time_range", None) or []
+        ) if manual_strategy else [],
+        "manual_adjustment_sizing_bp_range": list(
+            getattr(fsa, "manual_ladder_sizing_bp_range", None) or []
+        ) if manual_strategy else [],
         "manual_adjustment_mapped_step_indices": [
             int(value)
             for value in (

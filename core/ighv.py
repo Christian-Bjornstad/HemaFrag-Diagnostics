@@ -91,12 +91,21 @@ def apply_sample_type(assay: str, sample_type: str) -> tuple[float, float]:
 
 
 def _trace_arrays(fsa: Any, channel: str = "DATA1") -> tuple[np.ndarray, np.ndarray]:
-    """Returner (signal_rfus, basepairs) justert mot samme lengde."""
+    """Pair the sized domain with its observed raw channel scans."""
     signal = np.asarray(fsa.fsa[channel], dtype=float)
     raw_df = getattr(fsa, "sample_data_with_basepairs", None)
     if raw_df is None or getattr(raw_df, "empty", True) or "basepairs" not in raw_df.columns:
         raise ValueError("sample_data_with_basepairs mangler basepairs – kan ikke lokalisere topper.")
     bp = raw_df["basepairs"].to_numpy(dtype=float)
+    if "time" in raw_df.columns:
+        times = raw_df["time"].to_numpy(dtype=float)
+        valid = (
+            np.isfinite(times) & np.isfinite(bp)
+            & (times >= 0) & (times < signal.size)
+            & (times == np.floor(times))
+        )
+        return signal[times[valid].astype(int)], bp[valid]
+    # Older callers may provide only an already aligned base-pair array.
     n = min(len(signal), len(bp))
     return signal[:n], bp[:n]
 
