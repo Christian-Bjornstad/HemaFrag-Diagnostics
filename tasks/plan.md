@@ -77,6 +77,19 @@ Ved samlet kontrollpunkt C: `python -m pytest -q`. Bruk eksisterende startup-/pa
 - S01s UI-vern er første tiltak. Fullt immutable kjøringssnapshot gjennom alle lag er en separat videreutviklingspakke, ikke noe som kan hevdes løst med bare deaktiverte knapper.
 - Ved avvikling av gamle faner: bevar motorer, dataformater og gyldige historiske artefakter. Oppdater tester når produktkontrakten faktisk endres; ikke slett feildekning for å få grønt.
 
+## Oppfølging 2026-10-07 — ladder, tracking og mappevalg
+
+Fire uavhengige rettelser på eksisterende `feature/ladder-review-workflow`:
+
+1. Gjenskap 10 av 16 manuelle ladder-ankere som gir ikke-monoton sizing; bevar de valgte ankrene og delvis-review-status, og verifiser lagring og rerun.
+2. Behold én lagreknapp per Settings-side. Valg av tracking-fil skal kun endre lagret filsti.
+3. Bevar tracking-historikk og brukerinnhold ved oppdatering av en eksisterende workbook; en lesefeil skal avbryte oppdateringen uten å erstatte filen.
+4. Velg flere inputmapper i samme dialog. `base_input_dir` er startmappe for velgeren, aldri en automatisk valgt kilde. Bevar eksplisitte kilder ved Settings-refresh.
+
+Verifikasjon: fokuserte regresjoner først, deretter samlet pytest, compileall og CI-lint. Root gjennomgår endringene og pusher separate commits etter testene.
+
+Ladder-rettelsen inkluderer konsumentene av sizing-tabellen i samme commit: gamle Rust-assay-previews må ugyldiggjøres, og Klonalitet/IGHV må beregne topper på de nye faktiske scan-posisjonene. Ellers ville en mellomcommit med ny mapping fortsatt kunne rapportere gamle størrelser eller tomme peak-sett.
+
 ## Avklaringer som kan vente til aktuell oppgave
 
 - Norsk eller engelsk som gjennomgående operatørspråk? Funksjonsrettelser kan gjennomføres først; unngå omfattende oversettelse før valget er tatt.

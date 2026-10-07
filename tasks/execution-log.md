@@ -121,3 +121,24 @@ Kjørt av orkestratoren etter integrasjon:
 - `python -m compileall -q qt_app.py core gui_qt scripts` og `git diff --check`: bestått.
 - Referansesøk i aktiv Python-kode etter de avviklede navnene: ingen treff.
 - M07 er komplett for den lokale retirement-gaten. R08 er fortsatt åpen for ekstern CI, operatørvalidering og klinisk validering; de lokale resultatene er programvareregresjon og utgjør ikke ny klinisk godkjenning.
+
+## Oppfølging 2026-10-07 — delvis ladder, tracking og input
+
+Gjennomført på eksisterende `feature/ladder-review-workflow` med midlertidig konfigurasjon, ladderdatabase og syntetiske spor/arbeidsbøker:
+
+- Reproduserte en gammel spline som snudde ved scan 438–524 med 10 av 16 ordnede GS500-ankere. Delvis manuell mapping bruker nå lineær interpolasjon mellom observerte ankere, med full intern presisjon og ingen sizing utenfor endankrene. Full manuell og automatisk fitting beholder eksisterende beregningsmetode. Editor viser det tilgjengelige bp-intervallet og beholder eksplisitt delvis godkjenning; null ankerresidual presenteres ikke som validering av størrelsesnøyaktighet.
+- Mapping ugyldiggjør gamle Rust-assay-previews og automatisk guardrail-status etter vellykket fit. Rå ladder-kandidater og opprinnelige review-diagnoser beholdes som historikk. FLT3 bruker eksisterende deteksjon på det nye domenet, og automatisk startfamilie-korreksjon endrer ikke operatørens mapping. Klonalitet bruker de eksisterende Rust-reglene for rå sample-peak-deteksjon mot nye scan/bp-par; IGHV kobler råsignal til domenets faktiske `time`-posisjoner. Ubrukelig manuell kanal gir en synlig review-case uten negativ tolkning.
+- Excel-lesefeil kan ikke lenger bli tolket som tom historikk. `Runs`, eldre `Run`, og separate pasient-/kontrollark videreføres; eksisterende identiteter beholdes også ved endret salt. Operatørkolonner og formler bevares. FLT3 henter gjeldende `ReviewStatus`/`TrackingNote` fra operatørarket, også etter en ny redigering eller et bevisst tømt felt.
+- Settings har én lagreknapp per side. Tracking-velgeren lagrer bare stien og skriver aldri til valgt workbook. Input-innstillingen er merket som nettleserens startmappe.
+- `Add Folders...` lar operatøren velge flere mapper med Ctrl/Shift. Startmappen blir ikke automatisk input; eksplisitte kilder beholdes ved Settings-refresh. Flere valgte mapper setter kjøringsomfang til alle mapper, så en lagret «latest»-standard ikke fjerner deler av operatørens utvalg. Enter i plasseringsfeltet navigerer uten å akseptere gammel selection.
+
+Verifikasjon:
+
+- Tracking-regresjoner og workbook-output: **43 bestått**. Dekker historisk layout, saltendring, gjentatte noter/redigeringer/tømming, formler og byte-uendret fil ved lesefeil.
+- Ladder-integrasjon med Klonalitet/IGHV og Rust-rejection: **32 bestått**, samt egen FLT3-pipelinetest som bekrefter nye WT/MUT-størrelser og ekskluderte topper utenfor delvis domene.
+- Qt-mapvalg og Run-/navigasjonsregresjoner: **32 bestått**. Settings/persistence ble også kjørt i den samlede suiten; skjermbilder av Settings og mappevelger ble kontrollert offscreen med Segoe UI.
+- `python -m compileall -q qt_app.py gui_qt core`, CI-lint `ruff --select F821`, full lint på nye moduler og berørte testfiler, og `git diff --check`: bestått.
+- Endelig `python -m pytest -q --junitxml=.pytest_cache/task-20261007-final.xml`: **978 bestått, 6 skipped, 4 warnings** på **87,90 sekunder** (lokal Windows/Python 3.12). Tre warnings er forventet feilinjeksjon i Settings; én er eksisterende pandas FutureWarning i FLT3-dashboard.
+- Koderettelsene er pushet til `origin/feature/ladder-review-workflow`: ladder `fd037f9`, tracking `0603072`, Settings `c4339fd`, mappevalg `422c77d`. Ekstern CI er separat fra den lokale testgaten.
+
+Brukerens konkrete jobb-PC-FSA er ikke tilgjengelig i dette arbeidsområdet. Dette er programvareregresjon med syntetiske data, ikke ny faglig validering av den filen eller fysisk kontroll av native dialoger på jobb-PC-en. Tidligere tapte Excel-rader kan ikke gjenopprettes uten en eldre workbook-kopi.

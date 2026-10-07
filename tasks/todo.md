@@ -170,6 +170,14 @@ Funn: R10 og gjenstående UX etter ladderrettelsen. Avhengigheter: S05. Filer: `
 
 Verifikasjon: `python -m pytest -q tests/test_ladder_editor_layout.py tests/test_ladder_draft_workflow.py tests/test_ladder_partial_save.py tests/test_manual_ladder_rerun.py`. Visuell prøve med syntetisk trace og tastatur; faktisk peak-sletting i HTML skal fortsatt være uten popup.
 
+## Oppfølging 2026-10-07
+
+- [x] Delvis manuell ladder: gjenskap, rett og test monotoni samt bevart review-status.
+- [x] Settings: én lagreknapp, trygg tracking-filvelger og tydelig startmappe for inputvelger.
+- [x] Tracking: historikk bevares i eksisterende og eldre workbook-layout; lesefeil bevarer filen.
+- [x] Input: multivalg av mapper og ingen automatisk kilde fra Settings.
+- [x] Samlet regresjon, review, compileall, lint og push. **978 bestått, 6 skipped**; kodecommits `fd037f9`, `0603072`, `c4339fd`, `422c77d` pushet til eksisterende branch. Se `execution-log.md`.
+
 ## Kontrollpunkt C og overlevering
 
 - [ ] Alle ferdige oppgaver har faktisk testresultat og commitreferanse; åpne kriterier er eksplisitt oppført.
