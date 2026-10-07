@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -51,6 +52,7 @@ def test_tab_save_publishes_only_after_persistence(isolated_settings):
 
 def test_tab_save_respects_operation_guard(isolated_settings):
     from PyQt6.QtWidgets import QWidget
+
     from gui_qt.tabs.tab_settings import TabAnalysisSettings
 
     _app, target = isolated_settings
@@ -186,3 +188,117 @@ def test_rule_based_interpretation_round_trip(isolated_settings):
     assert saved_profile["interpretation"] == {"enabled": True}
     assert "model_path" not in saved_profile["interpretation"]
     assert "learning" not in saved_profile
+
+
+@pytest.mark.parametrize(
+    "analysis_id, field_name, browse_method",
+    [
+        ("clonality", "tracking_excel_path", "_browse_excel_path"),
+        ("flt3", "tracking_excel_path", "_browse_excel_path"),
+        ("general", "tracking_excel_path", "_browse_excel_path"),
+        ("clonality", "global_tracking_excel_path", "_browse_global_tracking_excel_path"),
+        ("flt3", "global_tracking_excel_path", "_browse_global_tracking_excel_path"),
+    ],
+)
+def test_selecting_and_saving_existing_tracking_workbook_preserves_contents(
+    isolated_settings, monkeypatch, analysis_id, field_name, browse_method
+):
+    from openpyxl import Workbook, load_workbook
+    from PyQt6.QtWidgets import QDialog, QFileDialog
+
+    from gui_qt.tabs.tab_settings import TabAnalysisSettings
+
+    _app, settings_path = isolated_settings
+    workbook_path = settings_path.parent / "existing-tracking.xlsx"
+    workbook = Workbook()
+    workbook.active.append(["Patient", "Note", "Formula"])
+    workbook.active.append(["existing-patient", "Keep this history", "=1+2"])
+    workbook.save(workbook_path)
+    original_bytes = workbook_path.read_bytes()
+
+    def select_existing(dialog):
+        assert dialog.acceptMode() == QFileDialog.AcceptMode.AcceptOpen
+        dialog.selectFile(str(workbook_path))
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QFileDialog, "exec", select_existing)
+    tab = TabAnalysisSettings(analysis_id)
+    getattr(tab, browse_method)()
+    assert Path(getattr(tab, field_name).text()) == workbook_path
+    assert workbook_path.read_bytes() == original_bytes
+    assert tab.save() is True
+    saved_batch = config.load_settings(settings_path)["analyses"][analysis_id]["batch"]
+    assert Path(saved_batch[field_name]) == workbook_path
+    assert workbook_path.read_bytes() == original_bytes
+    assert load_workbook(workbook_path).active["C2"].value == "=1+2"
+
+
+def test_tracking_workbook_selection_supports_new_path_and_cancel(isolated_settings, monkeypatch):
+    from PyQt6.QtWidgets import QDialog, QFileDialog
+
+    from gui_qt.tabs.tab_settings import TabAnalysisSettings
+
+    _app, settings_path = isolated_settings
+    tab = TabAnalysisSettings("flt3")
+    selected = settings_path.parent / "new-tracking"
+
+    def select_new(dialog):
+        dialog.selectFile(str(selected))
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QFileDialog, "exec", select_new)
+    tab._browse_excel_path()
+    expected = selected.with_suffix(".xlsx")
+    assert Path(tab.tracking_excel_path.text()) == expected
+    assert not expected.exists()
+    monkeypatch.setattr(QFileDialog, "exec", lambda _dialog: QDialog.DialogCode.Rejected)
+    tab._browse_excel_path()
+    assert Path(tab.tracking_excel_path.text()) == expected
+    assert tab.save() is True
+    assert not expected.exists()
+
+
+@pytest.mark.parametrize("analysis_id", ["clonality", "flt3", "general", "app"])
+def test_settings_panel_has_one_keyboard_save_action(isolated_settings, analysis_id):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QPushButton
+
+    from gui_qt.tabs.tab_app_settings import TabAppSettings
+    from gui_qt.tabs.tab_settings import TabAnalysisSettings
+
+    app, settings_path = isolated_settings
+    tab = TabAppSettings() if analysis_id == "app" else TabAnalysisSettings(analysis_id)
+    tab.resize(960, 900)
+    tab.show()
+    try:
+        app.processEvents()
+        save_actions = [
+            button for button in tab.findChildren(QPushButton)
+            if button.isVisible() and button.text().startswith("Save ")
+        ]
+        assert len(save_actions) == 1
+        save_action = save_actions[0]
+        field = tab.author if analysis_id == "app" else tab.default_output
+        field.setText("Keyboard author" if analysis_id == "app" else str(settings_path.parent / "output"))
+        field.setFocus()
+        for _ in range(35):
+            if app.focusWidget() is save_action:
+                break
+            QTest.keyClick(app.focusWidget(), Qt.Key.Key_Tab)
+            app.processEvents()
+        assert app.focusWidget() is save_action, "The save action must be reachable with Tab"
+        signals = []
+        tab.settings_saved.connect(signals.append)
+        QTest.keyClick(save_action, Qt.Key.Key_Space)
+        app.processEvents()
+        assert signals == [analysis_id]
+        assert "saved" in tab.status_lbl.text()
+        assert not tab.is_dirty()
+        persisted = config.load_settings(settings_path)
+        if analysis_id == "app":
+            assert persisted["general"]["author"] == "Keyboard author"
+        else:
+            assert persisted["analyses"][analysis_id]["batch"]["output_base"] == field.text()
+    finally:
+        tab.close()

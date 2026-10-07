@@ -47,22 +47,16 @@ class TabAnalysisSettings(QWidget):
         title = QLabel(f"{self.analysis_label} Settings")
         title.setObjectName("PageTitle")
         subtitle = QLabel(
-            f"Choose the saved folders and defaults that should be used when you switch to {self.analysis_label.lower()}."
+            "Choose the saved defaults for this analysis. The input folder opens the folder picker; "
+            "select the folders to analyze in Run."
         )
         subtitle.setObjectName("PageSubtitle")
+        subtitle.setWordWrap(True)
         header.addWidget(title)
         header.addWidget(subtitle)
         self.dirty_lbl = QLabel("")
         self.dirty_lbl.setAccessibleName("Unsaved changes status")
         header.addWidget(self.dirty_lbl)
-        self.status_lbl = QLabel("")
-        self.status_lbl.setAccessibleName("Profile save status")
-        self.status_lbl.setWordWrap(True)
-        header.addWidget(self.status_lbl)
-        self.btn_save_top = QPushButton(f"Save {self.analysis_label} Profile")
-        self.btn_save_top.setObjectName("PrimaryButton")
-        self.btn_save_top.clicked.connect(self.save)
-        header.addWidget(self.btn_save_top)
         main_layout.addLayout(header)
 
         self.paths_card = self._build_paths_card()
@@ -89,11 +83,14 @@ class TabAnalysisSettings(QWidget):
 
         row_in = QHBoxLayout()
         self.default_input = QLineEdit()
+        self.default_input.setToolTip(
+            "The folder picker starts here. This folder is not automatically added to the analysis."
+        )
         btn_browse_in = QPushButton("Browse...")
         btn_browse_in.clicked.connect(lambda: self._browse_dir(self.default_input))
         row_in.addWidget(self.default_input, stretch=1)
         row_in.addWidget(btn_browse_in)
-        layout.addRow("Default Input Folder:", row_in)
+        layout.addRow("Input Browser Start Folder:", row_in)
 
         row_out = QHBoxLayout()
         self.default_output = QLineEdit()
@@ -106,6 +103,9 @@ class TabAnalysisSettings(QWidget):
         row_excel = QHBoxLayout()
         self.tracking_excel_path = QLineEdit()
         self.tracking_excel_path.setPlaceholderText("Leave blank to save beside the report output")
+        self.tracking_excel_path.setToolTip(
+            "Choose an existing workbook to keep its tracking history, or enter a path for a new workbook."
+        )
         btn_browse_excel = QPushButton("Browse...")
         btn_browse_excel.clicked.connect(self._browse_excel_path)
         row_excel.addWidget(self.tracking_excel_path, stretch=1)
@@ -196,6 +196,10 @@ class TabAnalysisSettings(QWidget):
         btn_save.setObjectName("PrimaryButton")
         btn_save.clicked.connect(self.save)
         layout.addRow("", btn_save)
+        self.status_lbl = QLabel("")
+        self.status_lbl.setAccessibleName("Profile save status")
+        self.status_lbl.setWordWrap(True)
+        layout.addRow("", self.status_lbl)
 
         return card
 
@@ -324,32 +328,30 @@ class TabAnalysisSettings(QWidget):
             line_edit.setText(folder)
 
     def _browse_excel_path(self) -> None:
-        start_path = self.tracking_excel_path.text().strip() or self.default_output.text().strip() or str(Path.home())
-        selected, _ = QFileDialog.getSaveFileName(
-            self,
-            "Select Tracking Excel File",
-            start_path,
-            "Excel Workbook (*.xlsx)",
-        )
-        if selected:
-            self.tracking_excel_path.setText(selected)
+        self._select_tracking_workbook(self.tracking_excel_path, "Select Tracking Excel File")
 
     def _browse_global_tracking_excel_path(self) -> None:
+        self._select_tracking_workbook(
+            self.global_tracking_excel_path, "Select Master Tracking Excel File"
+        )
+
+    def _select_tracking_workbook(self, field: QLineEdit, title: str) -> None:
+        """Select a workbook path without saving or replacing the workbook."""
         start_path = (
-            self.global_tracking_excel_path.text().strip()
+            field.text().strip()
             or self.default_output.text().strip()
             or str(Path.home())
         )
-        selected, _ = QFileDialog.getSaveFileName(
-            self,
-            "Select Master Tracking Excel File",
-            start_path,
-            "Excel Workbook (*.xlsx)",
-        )
-        if selected:
-            if not selected.lower().endswith(".xlsx"):
+        dialog = QFileDialog(self, title, start_path, "Excel Workbook (*.xlsx)")
+        dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setDefaultSuffix("xlsx")
+        dialog.setLabelText(QFileDialog.DialogLabel.Accept, "Use Workbook")
+        if dialog.exec() and dialog.selectedFiles():
+            selected = dialog.selectedFiles()[0]
+            if not Path(selected).suffix:
                 selected += ".xlsx"
-            self.global_tracking_excel_path.setText(selected)
+            field.setText(selected)
 
     def _sync_patient_regex_enabled(self) -> None:
         self.patient_regex.setEnabled(self.chk_agg_pat.isChecked())
