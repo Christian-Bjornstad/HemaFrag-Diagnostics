@@ -66,6 +66,12 @@ def _record_key(record: dict, key_columns: Sequence[str]):
     return values if all(values) else None
 
 
+def _source_file_key(record: dict, extra_columns: Sequence[str] = ()):
+    """Natural fallback for old tracking rows with no stored IdentityKey."""
+    values = tuple(str(_excel_value(record.get(column)) or "").strip() for column in ("SourceRunDir", "File", *extra_columns))
+    return values if all(values[1:]) else None
+
+
 def _copy_formula_columns(ws, source_row: int, target_row: int, generated_columns: set[str]) -> None:
     if source_row < 2 or target_row <= source_row:
         return
@@ -95,7 +101,18 @@ def _refresh_table(ws) -> None:
     if tables:
         tables[0].ref = ref
         return
-    table = Table(displayName=_table_name(ws.title), ref=ref)
+    base_name = _table_name(ws.title)
+    used_names = {
+        table.name.lower()
+        for sheet in ws.parent.worksheets
+        for table in sheet.tables.values()
+    } | {name.lower() for name in ws.parent.defined_names}
+    name = base_name
+    suffix = 2
+    while name.lower() in used_names:
+        name = f"{base_name[:245]}_{suffix}"
+        suffix += 1
+    table = Table(displayName=name, ref=ref)
     table.tableStyleInfo = TableStyleInfo(
         name="TableStyleMedium2",
         showFirstColumn=False,
@@ -130,20 +147,33 @@ def upsert_frame(
             if key is not None and key not in desired_keys:
                 ws.delete_rows(row)
     existing: dict[tuple[str, ...], int] = {}
+    unkeyed_sources: dict[tuple[str, ...], int | None] = {}
+    fallback_columns = [column for column in key_columns if column != "IdentityKey"]
+    has_source_fallback = "IdentityKey" in key_columns and {"File", "SourceRunDir"}.issubset(headers)
     for row in range(2, ws.max_row + 1):
         key = _row_key(ws, row, headers, key_columns)
         if key is not None:
             existing[key] = row
+        elif has_source_fallback:
+            source = _source_file_key({
+                column: ws.cell(row, headers[column]).value
+                for column in ("SourceRunDir", "File", *fallback_columns)
+            }, fallback_columns)
+            if source is not None:
+                # Ambiguous old rows stay intact; never guess which owns notes.
+                unkeyed_sources[source] = row if source not in unkeyed_sources else None
 
     for record in frame.to_dict(orient="records"):
         key = _record_key(record, key_columns)
         row = existing.get(key) if key is not None else None
+        if row is None and has_source_fallback:
+            row = unkeyed_sources.get(_source_file_key(record, fallback_columns))
         if row is None:
             previous_row = ws.max_row
             row = max(2, previous_row + 1)
             _copy_formula_columns(ws, previous_row, row, generated_columns)
-            if key is not None:
-                existing[key] = row
+        if key is not None:
+            existing[key] = row
         for column in columns:
             ws.cell(row, headers[column]).value = _excel_value(record.get(column))
     _refresh_table(ws)
@@ -205,6 +235,80 @@ def write_tracking_frames(
         workbook.save(path)
     finally:
         workbook.close()
+
+
+def read_tracking_frames(
+    workbook_path: Path,
+    sheet_names: Sequence[str],
+    *,
+    formula_columns: Sequence[str] = (),
+) -> dict[str, pd.DataFrame]:
+    """Read all available history sheets, propagating errors before any write.
+
+    An absent sheet is different from an unreadable sheet: callers can migrate
+    a supported old layout, but must never treat a read failure as empty history.
+    """
+    path = Path(workbook_path)
+    if not path.exists():
+        return {}
+    with pd.ExcelFile(path, engine="openpyxl") as workbook:
+        frames = {
+            name: pd.read_excel(workbook, sheet_name=name, engine="openpyxl")
+            for name in sheet_names
+            if name in workbook.sheet_names
+        }
+    if formula_columns:
+        # pandas reads cached formula values. Editable operator columns must
+        # retain the formula itself when carried into refreshed run sheets.
+        formulas = load_workbook(path, read_only=True, data_only=False, keep_links=True)
+        try:
+            for name, frame in frames.items():
+                if frame.empty:
+                    continue
+                sheet = formulas[name]
+                headers = _headers(sheet)
+                editable = {
+                    column: headers[column] - 1 for column in formula_columns
+                    if column in frame.columns and column in headers
+                }
+                if not editable:
+                    continue
+                for column in editable:
+                    frame[column] = frame[column].astype(object)
+                rows = sheet.iter_rows(
+                    min_row=2, max_row=len(frame) + 1,
+                    max_col=max(editable.values()) + 1, values_only=True,
+                )
+                for index, row in enumerate(rows):
+                    for column, column_index in editable.items():
+                        value = row[column_index]
+                        if isinstance(value, str) and value.startswith("="):
+                            frame.at[index, column] = value
+        finally:
+            formulas.close()
+    return frames
+
+
+def carry_forward_tracking_identities(history: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
+    """Keep existing row identities when the same source file is analyzed again."""
+    columns = {"IdentityKey", "SourceRunDir", "File"}
+    if history.empty or incoming.empty or not columns.issubset(history.columns) or not columns.issubset(incoming.columns):
+        return incoming
+
+    def clean(value) -> str:
+        return str(_excel_value(value) or "").strip()
+
+    identities = {
+        (clean(record["SourceRunDir"]), clean(record["File"])): clean(record["IdentityKey"])
+        for record in history.to_dict(orient="records")
+        if clean(record["File"]) and clean(record["IdentityKey"])
+    }
+    carried = incoming.copy()
+    carried["IdentityKey"] = [
+        identities.get((clean(record["SourceRunDir"]), clean(record["File"])), record["IdentityKey"])
+        for record in incoming.to_dict(orient="records")
+    ]
+    return carried
 
 
 _IS_WINDOWS = os.name == "nt"
@@ -274,7 +378,9 @@ def publish_workbook_contents(staged_path: Path, destination: Path) -> None:
 
 
 __all__ = [
+    "carry_forward_tracking_identities",
     "publish_workbook_contents",
+    "read_tracking_frames",
     "replace_frame",
     "upsert_frame",
     "write_tracking_frames",

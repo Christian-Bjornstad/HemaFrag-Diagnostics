@@ -32,7 +32,9 @@ from core.qc.qc_markers import (
     parse_well_from_filename,
 )
 from core.tracking_workbook_io import (
+    carry_forward_tracking_identities,
     publish_workbook_contents,
+    read_tracking_frames,
     write_tracking_frames,
 )
 from core.qc.qc_rules import QCRules
@@ -180,29 +182,29 @@ def update_clonality_tracking_workbook(
         return
 
     with _clonality_excel_lock:
-        if excel_path.exists():
-            try:
-                with pd.ExcelFile(excel_path, engine="openpyxl") as xls:
-                    has_runs = "Runs" in xls.sheet_names
-                    has_peaks = "PK_Peaks" in xls.sheet_names
-            except Exception:
-                has_runs = False
-                has_peaks = False
-                from fraggler.fraggler import print_warning # Import if not already globally available
-                print_warning(f"Kunne ikke lese eksisterende {excel_path.name}, kanskje korrupt. Lager ny...")
-
-            try:
-                old_runs = pd.read_excel(excel_path, sheet_name="Runs", engine="openpyxl") if has_runs else pd.DataFrame(columns=run_columns)
-                old_peaks = pd.read_excel(excel_path, sheet_name="PK_Peaks", engine="openpyxl") if has_peaks else pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
-            except Exception:
-                old_runs = pd.DataFrame(columns=run_columns)
-                old_peaks = pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
-        else:
-            old_runs = pd.DataFrame(columns=run_columns)
-            old_peaks = pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
+        frames = read_tracking_frames(
+            excel_path, ("Runs", "Run", "Patient_Runs", "Control_Runs", "PK_Peaks"),
+        )
+        histories = [
+            _normalize_run_frame(frames[name], run_columns=run_columns)
+            for name in ("Patient_Runs", "Control_Runs", "Run", "Runs")
+            if name in frames and not frames[name].empty
+        ]
+        old_runs = (
+            pd.concat(histories, ignore_index=True).drop_duplicates("IdentityKey", keep="last")
+            if histories else pd.DataFrame(columns=run_columns)
+        )
+        old_peaks = frames.get("PK_Peaks", pd.DataFrame(columns=PEAK_SHEET_COLUMNS))
 
         old_runs = _normalize_run_frame(old_runs, run_columns=run_columns)
         old_peaks = _reindex_columns(old_peaks, PEAK_SHEET_COLUMNS)
+        old_peaks = carry_forward_tracking_identities(old_runs, old_peaks)
+        carried_runs = carry_forward_tracking_identities(old_runs, df_runs)
+        identity_changes = dict(zip(df_runs["IdentityKey"], carried_runs["IdentityKey"]))
+        df_runs = carried_runs
+        if not df_peaks.empty:
+            df_peaks["IdentityKey"] = df_peaks["IdentityKey"].map(identity_changes).fillna(df_peaks["IdentityKey"])
+        pk_identity_keys = {identity_changes.get(key, key) for key in pk_identity_keys}
         if not df_runs.empty and "IdentityKey" in old_runs.columns:
             old_runs = old_runs[~old_runs["IdentityKey"].isin(df_runs["IdentityKey"])]
         if pk_identity_keys and "IdentityKey" in old_peaks.columns:
@@ -589,17 +591,19 @@ def _normalize_run_frame(df: pd.DataFrame, *, run_columns: list[str] | None = No
     for src, fname, legacy, skind, ctrl in zip(source_run_dir.tolist(), file_name.tolist(), legacy_identity.tolist(), sample_kind.tolist(), control.tolist()):
         legacy_value = str(legacy or "").strip()
         entry_is_control = ctrl in CONTROL_IDS or skind == "control"
-        
-        if entry_is_control:
+
+        # The selected workbook owns its existing keys. Rehashing them with the
+        # current machine's salt would detach operator columns from their rows.
+        if legacy_value:
+            normalized_identity.append(legacy_value)
+        elif entry_is_control:
             normalized_identity.append(f"{src}::{fname}")
         else:
-            if legacy_value.startswith("PT-") and not str(fname or "").strip().lower().endswith(".fsa"):
-                normalized_identity.append(legacy_value)
-                continue
             normalized_identity.append(_build_patient_identity_key(src, fname or legacy))
             
     normalized["IdentityKey"] = normalized_identity
     normalized["SourceRunDir"] = source_run_dir
+    normalized["File"] = file_name
     dit = (
         normalized.get("DIT", pd.Series("", index=normalized.index))
         .fillna("")

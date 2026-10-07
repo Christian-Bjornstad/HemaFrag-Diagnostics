@@ -20,7 +20,9 @@ from core.qc.qc_markers import (
     parse_well_from_filename,
 )
 from core.tracking_workbook_io import (
+    carry_forward_tracking_identities,
     publish_workbook_contents,
+    read_tracking_frames,
     write_tracking_frames,
 )
 
@@ -373,39 +375,23 @@ def update_flt3_npm1_qc_tracker(
     peaks_df = _reindex_columns(peaks_df, PEAK_SHEET_COLUMNS)
 
     with _excel_lock:
-        if excel_path.exists():
-            try:
-                with pd.ExcelFile(excel_path, engine="openpyxl") as xls:
-                    old_runs = pd.read_excel(excel_path, sheet_name="Runs", engine="openpyxl") if "Runs" in xls.sheet_names else pd.DataFrame(columns=RUN_SHEET_COLUMNS)
-                    old_peaks = pd.read_excel(excel_path, sheet_name="PK_Peaks", engine="openpyxl") if "PK_Peaks" in xls.sheet_names else pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
-                    legacy_qc = (
-                        pd.read_excel(
-                            excel_path,
-                            sheet_name="All_Analyzed_QC",
-                            engine="openpyxl",
-                        )
-                        if "All_Analyzed_QC" in xls.sheet_names
-                        else pd.DataFrame()
-                    )
-                    annotation_frames = [
-                        pd.read_excel(
-                            excel_path,
-                            sheet_name=sheet_name,
-                            engine="openpyxl",
-                        )
-                        for sheet_name in ("Patient_Runs", "Control_Runs")
-                        if sheet_name in xls.sheet_names
-                    ]
-            except Exception:
-                old_runs = pd.DataFrame(columns=RUN_SHEET_COLUMNS)
-                old_peaks = pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
-                legacy_qc = pd.DataFrame()
-                annotation_frames = []
-        else:
-            old_runs = pd.DataFrame(columns=RUN_SHEET_COLUMNS)
-            old_peaks = pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
-            legacy_qc = pd.DataFrame()
-            annotation_frames = []
+        frames = read_tracking_frames(
+            excel_path,
+            ("Runs", "Run", "Patient_Runs", "Control_Runs", "PK_Peaks", "All_Analyzed_QC"),
+            formula_columns=USER_RUN_COLUMNS,
+        )
+        histories = [
+            _normalize_legacy_run_classification(_reindex_columns(frames[name], RUN_SHEET_COLUMNS))
+            for name in ("Patient_Runs", "Control_Runs", "Run", "Runs")
+            if name in frames and not frames[name].empty
+        ]
+        old_runs = (
+            pd.concat(histories, ignore_index=True).drop_duplicates("IdentityKey", keep="last")
+            if histories else pd.DataFrame(columns=RUN_SHEET_COLUMNS)
+        )
+        old_peaks = frames.get("PK_Peaks", pd.DataFrame(columns=PEAK_SHEET_COLUMNS))
+        legacy_qc = frames.get("All_Analyzed_QC", pd.DataFrame())
+        annotation_frames = [frames[name] for name in ("Patient_Runs", "Control_Runs") if name in frames]
 
         old_runs = _reindex_columns(old_runs, RUN_SHEET_COLUMNS)
         old_runs = _normalize_legacy_run_classification(old_runs)
@@ -418,7 +404,13 @@ def update_flt3_npm1_qc_tracker(
             ]
             old_runs = _concat_frames(old_runs, migrated_patients)
         old_peaks = _reindex_columns(old_peaks, PEAK_SHEET_COLUMNS)
+        old_peaks = carry_forward_tracking_identities(old_runs, old_peaks)
         old_runs = _merge_user_columns_into_runs(old_runs, annotation_frames)
+        carried_runs = carry_forward_tracking_identities(old_runs, runs_df)
+        identity_changes = dict(zip(runs_df["IdentityKey"], carried_runs["IdentityKey"]))
+        runs_df = carried_runs
+        if not peaks_df.empty:
+            peaks_df["IdentityKey"] = peaks_df["IdentityKey"].map(identity_changes).fillna(peaks_df["IdentityKey"])
         runs_df = _carry_forward_user_columns(old_runs, runs_df)
 
         if not runs_df.empty:
@@ -547,7 +539,7 @@ def _normalize_legacy_run_classification(runs: pd.DataFrame) -> pd.DataFrame:
     if runs.empty:
         return runs
     normalized = runs.copy()
-    for column in ("Control", "DIT", "SpecimenID", "SampleKind"):
+    for column in ("Control", "DIT", "SpecimenID", "SampleKind", "IdentityKey"):
         normalized[column] = normalized[column].astype(object)
     for index, row in normalized.iterrows():
         from core.utils import strip_stage_prefix
@@ -584,6 +576,15 @@ def _normalize_legacy_run_classification(runs: pd.DataFrame) -> pd.DataFrame:
         normalized.at[index, "SampleKind"] = (
             "control" if control else ("patient" if dit else "unassigned")
         )
+        if not clean(row.get("IdentityKey")) and file_name:
+            base = build_tracking_base_row({
+                "file_name": file_name,
+                "source_run_dir": clean(row.get("SourceRunDir")),
+                "specimen_id": specimen_id,
+                "dit": dit,
+                "well_id": clean(row.get("Well")),
+            })
+            normalized.at[index, "IdentityKey"] = base["IdentityKey"]
     return normalized
 
 
@@ -731,7 +732,11 @@ def _merge_user_columns_into_runs(
         inherited = (
             merged["IdentityKey"].fillna("").astype(str).map(values).fillna("")
         )
-        merged[column] = current.where(current.str.strip().ne(""), inherited)
+        # Patient_Runs and Control_Runs are the operator-editable sheets.
+        # An existing annotation row owns the current value, including a
+        # deliberate clear; Runs only supplies values absent from those sheets.
+        annotated = merged["IdentityKey"].fillna("").astype(str).isin(values.index)
+        merged[column] = inherited.where(annotated, current)
     return merged
 
 
