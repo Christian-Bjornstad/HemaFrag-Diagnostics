@@ -66,10 +66,10 @@ def test_unidentifiable_row_does_not_block_valid_files(tmp_path):
         {"full_path": str(source), "file": source.name, "label": ""},
     ])
     result = load_review_bundle_worker(tmp_path)
-    assert len(result["rows"]) == 2
-    assert result["rows"][1]["full_path"] == str(source)
-    assert result["rows"][1]["_path_unreachable"] == "false"
-    assert result["rows"][0]["_path_unreachable"] == "true"
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["full_path"] == str(source)
+    assert result["rows"][0]["_path_unreachable"] == "false"
+    assert result["missing_paths"] == []
     assert "row 2" in " ".join(result["warnings"])
 
 

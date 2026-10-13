@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import APP_SETTINGS, get_analysis_settings, save_settings
+from core.analyses.clonality.ladder_review_gate import is_empty_review_row
 from core.analyses.clonality.ladder_review_labels import is_review_resolved
 from gui_qt.operation_coordinator import (
     OperationCoordinator,
@@ -596,7 +597,7 @@ class TabArchiveRunner(QWidget):
         return sum(
             1
             for row in rows
-            if not is_review_resolved(row.get("label"))
+            if not is_empty_review_row(row) and not is_review_resolved(row.get("label"))
         )
 
     def _guess_manifest_path(self) -> Path | None:

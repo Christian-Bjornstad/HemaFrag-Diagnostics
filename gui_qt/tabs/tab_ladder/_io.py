@@ -18,6 +18,7 @@ import threading
 from typing import Any
 
 from core.ladder_adjustment_store import load_ladder_adjustment_record
+from core.analyses.clonality.ladder_review_gate import is_empty_review_row
 from core.ladder_review_bundle_store import (
     review_bundle_transaction,
     save_review_bundle,
@@ -103,13 +104,16 @@ def _load_review_bundle_worker_locked(bundle_dir: Path, cases_path: Path) -> dic
         reader = csv.DictReader(handle)
         fieldnames = list(reader.fieldnames or [])
         for row_number, row in enumerate(reader, start=2):
+            if is_empty_review_row(row):
+                warnings.append(f"Ignored empty CSV row {row_number}; it contains no review case.")
+                continue
             raw_path = str(row.get("full_path", "") or "").strip()
             if not raw_path:
                 filename = str(row.get("file", "") or "").strip()
                 if not filename:
                     warnings.append(
                         f"Review bundle row {row_number} has neither a file path nor a filename. "
-                        "Use Locate File to restore its source path."
+                        "Use Locate File to restore its source path or Exclude Missing File."
                     )
                     filename = f"__missing_review_path_row_{row_number}__.fsa"
                     row["file"] = f"Unknown file (CSV row {row_number})"
@@ -236,6 +240,24 @@ def save_missing_ladder_exclusion_worker(
     )
 
 
+def save_missing_source_exclusion_worker(
+    bundle_dir: Path,
+    full_path: Path,
+    *,
+    note: str,
+    reviewed_at_utc: str,
+) -> dict:
+    """Resolve an unavailable source explicitly, retaining the row and audit."""
+    if not str(note or "").strip() or not str(reviewed_at_utc or "").strip():
+        raise ValueError("Missing-source exclusion requires a note and review timestamp")
+    return save_review_bundle_annotation_worker(
+        bundle_dir,
+        full_path,
+        build_review_annotation("excluded_missing_source", note.strip(), reviewed_at_utc=reviewed_at_utc),
+        _require_unresolved_without_adjustment=True,
+    )
+
+
 def save_unusable_ladder_exclusion_worker(
     bundle_dir: Path,
     full_path: Path,
@@ -334,6 +356,8 @@ def _save_review_bundle_annotation_locked(
                         "without an adjustment"
                     )
                 source_path = Path(row_path_text).expanduser()
+                if annotation.get("label") == "excluded_missing_source" and source_path.exists():
+                    raise ValueError("Source exists; use ladder review instead of missing-source exclusion")
                 if source_path.with_suffix(".ladder_adj.json").exists() or (
                     load_ladder_adjustment_record(
                         source_path,

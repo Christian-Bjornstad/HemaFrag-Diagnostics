@@ -728,6 +728,8 @@ class TabBatch(QWidget):
 
     @classmethod
     def _review_bundle_resolution_counts_locked(cls, cases_path: Path) -> tuple[int, int]:
+        from core.analyses.clonality.ladder_review_gate import is_empty_review_row
+
         if not cases_path.exists():
             return 0, 0
 
@@ -737,6 +739,8 @@ class TabBatch(QWidget):
             with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
                 reader = csv.DictReader(handle)
                 for row in reader:
+                    if is_empty_review_row(row):
+                        continue
                     if is_review_resolved(row.get("label")):
                         resolved += 1
                     else:
@@ -836,6 +840,8 @@ class TabBatch(QWidget):
         cases_path: Path,
         raw_count: int,
     ) -> int:
+        from core.analyses.clonality.ladder_review_gate import is_empty_review_row
+
         if not cases_path.exists():
             return raw_count
 
@@ -852,6 +858,8 @@ class TabBatch(QWidget):
         changed = False
         now = datetime.now(timezone.utc).isoformat()
         for row in rows:
+            if is_empty_review_row(row):
+                continue
             raw_path = str(row.get("full_path", "") or "").strip()
             resolved_row = None
             if raw_path:

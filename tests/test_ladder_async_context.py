@@ -80,10 +80,10 @@ def test_bad_row_does_not_empty_ladder_editor(ladder, tmp_path, monkeypatch, loc
         monkeypatch.setattr("gui_qt.tabs.tab_ladder._io.save_review_bundle", reject_save)
     result = ladder._load_review_bundle_worker(tmp_path)
     ladder._on_review_bundle_result(ladder._scan_request_id, result)
-    assert ladder.file_list.count() == 2
+    assert ladder.file_list.count() == 1
     assert source.resolve() in ladder._all_files
-    assert ladder._review_bundle_counts() == (0, 2)
-    assert ladder._chip_strip.chipCount() == 2
+    assert ladder._review_bundle_counts() == (0, 1)
+    assert ladder._chip_strip.chipCount() == 1
     ladder._select_file(source.resolve())
     assert ladder._current_file == source.resolve()
 

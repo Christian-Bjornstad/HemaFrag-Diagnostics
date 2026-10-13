@@ -18,6 +18,15 @@ from core.ladder_review_bundle_store import (
 REVIEW_STATUSES = {"review_required", "missing_ladder", "ladder_qc_failed"}
 
 
+def is_empty_review_row(row: dict[str, Any]) -> bool:
+    """Delimiter-only/whitespace records carry no file or review evidence."""
+    return not any(
+        str(item or "").strip()
+        for value in row.values()
+        for item in (value if isinstance(value, list) else [value])
+    )
+
+
 def _entry_file_path(entry: dict[str, Any]) -> str:
     original_path = entry.get("original_file_path")
     if original_path:
@@ -91,6 +100,8 @@ def collect_ladder_review_cases(entries: list[dict[str, Any]]) -> list[dict[str,
             continue
 
         full_path = _entry_file_path(entry)
+        if not str(full_path or "").strip():
+            raise ValueError("Ladder review entry is missing source identity (file path and filename)")
         if full_path:
             path_key = str(_resolve_cache_key(full_path)).casefold()
             if path_key in seen_paths:
@@ -200,6 +211,8 @@ def count_unresolved_review_cases(cases_path: Path) -> int:
     with cases_path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
+            if is_empty_review_row(row):
+                continue
             if not is_review_resolved(row.get("label")):
                 unresolved += 1
     return unresolved

@@ -641,6 +641,9 @@ class TabLadder(QWidget):
         for btn in (self.btn_open_editor, self.btn_rerun_file, self.btn_remove_adjustment):
             btn.setEnabled(False)
         self.btn_exclude_missing_ladder.setEnabled(exclusion_enabled)
+        self.btn_exclude_missing_ladder.setText(
+            "Exclude Missing File" if enabled and not file_path.is_file() else "No Ladder Signal"
+        )
 
         self._empty_state.setVisible(not enabled)
         self._details_card.setVisible(enabled)
@@ -1004,24 +1007,30 @@ class TabLadder(QWidget):
         if cache_key not in self._review_case_by_path:
             return
 
+        missing_source = not self._current_file.is_file()
+        action_title = "Exclude Missing File" if missing_source else "No Ladder Signal"
+        reason = "its source file is unavailable" if missing_source else "it has no usable ladder signal"
         reply = QMessageBox.question(
             self,
-            "No Ladder Signal",
+            action_title,
             (
-                f"Mark {self._current_file.name} as excluded because it has no usable "
-                "ladder signal? This resolves the review case without saving a ladder "
+                f"Mark {self._current_file.name} as excluded because {reason}? "
+                "This resolves the review case without saving a ladder "
                 "adjustment and will not rerun the file."
             ),
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        note = "No usable ladder signal; excluded after operator review."
+        note = (
+            "Source file unavailable; excluded after operator review."
+            if missing_source else "No usable ladder signal; excluded after operator review."
+        )
         reviewed_at_utc = datetime.now(timezone.utc).isoformat()
         self.btn_exclude_missing_ladder.setEnabled(False)
-        self._set_status(f"Saving no-ladder exclusion for {self._current_file.name}...")
+        self._set_status(f"Saving exclusion for {self._current_file.name}...")
         worker = Worker(
-            self._save_missing_ladder_exclusion_worker,
+            self._save_missing_source_exclusion_worker if missing_source else self._save_missing_ladder_exclusion_worker,
             self._review_bundle_dir,
             cache_key,
             note=note,
@@ -1071,11 +1080,10 @@ class TabLadder(QWidget):
             self._select_file(self._current_file)
         self._refresh_review_bundle_run_button()
         label = str(annotation.get("label") or "")
-        reason = (
-            "ladder does not fit"
-            if label == "excluded_unusable_ladder"
-            else "no usable ladder signal"
-        )
+        reason = {
+            "excluded_missing_source": "source file unavailable",
+            "excluded_unusable_ladder": "ladder does not fit",
+        }.get(label, "no usable ladder signal")
         self._set_status(f"Excluded {cache_key.name}: {reason}.")
 
     def _on_missing_ladder_exclusion_error(self, cache_key: Path, err_tuple) -> None:
@@ -1086,12 +1094,12 @@ class TabLadder(QWidget):
                 and not str(review_case.get("adjustment_path") or "").strip()
             )
         self._set_status(
-            f"Could not save no-ladder exclusion for {cache_key.name}: {err_tuple[1]}",
+            f"Could not save exclusion for {cache_key.name}: {err_tuple[1]}",
             error=True,
         )
         QMessageBox.critical(
             self,
-            "No-Ladder Exclusion Not Saved",
+            "Exclusion Not Saved",
             f"The review case remains unresolved.\n\n{err_tuple[1]}",
         )
 
@@ -2045,6 +2053,12 @@ class TabLadder(QWidget):
         from gui_qt.tabs.tab_ladder._io import save_review_bundle_annotation_worker
 
         return save_review_bundle_annotation_worker(bundle_dir, full_path, annotation)
+
+    @staticmethod
+    def _save_missing_source_exclusion_worker(bundle_dir: Path, full_path: Path, **kwargs) -> dict:
+        from gui_qt.tabs.tab_ladder._io import save_missing_source_exclusion_worker
+
+        return save_missing_source_exclusion_worker(bundle_dir, full_path, **kwargs)
 
     @staticmethod
     def _save_missing_ladder_exclusion_worker(

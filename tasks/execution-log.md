@@ -166,3 +166,11 @@ Verifikasjon:
 - NPM1-forklaringstekster om referanseområder, klikk og manuell vurdering er fjernet fra plott og rapport. Filmetadata, akser, markørtabell og ladder-status beholdes. NPM1 gir fortsatt ingen automatisk tolkning eller ratio.
 - Ny kontrollrapport fra den faktiske FSA-filen er åpnet og kontrollert i nettleseren. Den lokale HTML-prøvevisningen er oppdatert.
 - Relevante NPM1-, markør- og FLT3-rapporttester: **45 bestått**. Compileall, F821, lint på NPM1-testene og `git diff --check`: bestått. Endringen er lokal og ikke pushet.
+
+## Ukjent CSV-fil i Ladder Studio — 2026-10-13
+
+- Koden genererte `Unknown file (CSV row N)` når begge kildefeltene var tomme. Delimiter-/whitespace-rader ble tidligere behandlet som uløste filer, også i Run og arkivkjøringen. Tomme rader ignoreres nå konsekvent; ikke-tomme rader med review-evidens beholdes.
+- Gamle plassholderrader og manglende kildefiler kan eksplisitt løses med `Exclude Missing File`, også uten klassifisering eller FSA-metadata. CSV og annotation-audit lagres med den eksisterende transaksjonen. Beslutningen vises som ferdig behandlet og gir ingen fitting, rerun eller rapport for den ekskluderte kilden. Eksisterende filer, justeringer og tidligere beslutninger kan ikke erstattes av denne handlingen.
+- Nye review-entries uten filidentitet avvises ved produksjon med en konkret feil, før en anonym CSV-case kan skrives. En slik produksjonsfeil beholder eksisterende rapportvern; den regnes ikke som bestått ladder.
+- Red/green-regresjoner gjenskapte falsk tom rad, anonym review-evidens, gammel lagret rad 3, UI-handling uten metadata, gjenåpning og rapportopptelling. Seks nye tester; eksisterende blankradtester er oppdatert til å forvente ingen falsk fil. Jobb-PC-ens CSV er ikke tilgjengelig lokalt, så dens opprinnelige skriveårsak er ikke bekreftet.
+- Endelig full suite: **996 bestått, 6 skipped, 4 warnings**, 143,97 sekunder. Compileall, F821, lint på den nye testfilen og `git diff --check`: bestått. Arbeidet ligger lokalt på `codex/ladder-missing-source`.
