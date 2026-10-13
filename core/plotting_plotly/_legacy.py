@@ -762,13 +762,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
 </div>
 """
 
-    manual_help_html = (
-        '<p class="small npm1-manual-help">Klikk på signalet for å markere en topp. '
-        'Shift + klikk nær en markert topp fjerner den. Bare valgte topper vises i tabellen.</p>'
-        if data["assay_name"] == "NPM1" else ""
-    )
     html_fragment = f"""
-{manual_help_html}
 <div id="{div_id}" class="peak-editor-block"></div>
 <div id="{div_id}_table_container" class="peak-table-container" style="display:none;">
     <table id="{div_id}_table">

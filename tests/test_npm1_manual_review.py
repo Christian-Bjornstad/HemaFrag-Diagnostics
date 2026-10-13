@@ -68,7 +68,7 @@ def test_npm1_discards_ratio_and_diagnosis_even_with_stale_selected_peaks(monkey
     assert entry["ratio_mode"] == "not_applicable"
     assert entry["selected_wt_peak_ids"] == []
     assert entry["selected_mutant_peak_ids"] == []
-    assert pipeline._interpret_entry(entry) == "NPM1 - manuell vurdering kreves"
+    assert pipeline._interpret_entry(entry) == ""
     summary = pipeline._summarize_detected_peaks(entry)
     assert np.isnan(summary["wt_bp"])
     assert summary["mut_bps"] == []
@@ -83,7 +83,7 @@ def test_npm1_tracking_has_no_ratio_or_automatic_result():
     for column in ("WT_BP", "WT_Area", "MutantBPs", "MutantAreaTotal", "Ratio", "PositiveCall", "MutantFraction"):
         assert pd.isna(row[column]) or row[column] == ""
     assert row["ResultStatus"] == "manual_peak_selection_required"
-    assert row["Interpretation"] == "NPM1 - manuell vurdering kreves"
+    assert row["Interpretation"] == ""
 
 
 def test_npm1_control_status_requires_manual_review():
@@ -94,9 +94,9 @@ def test_npm1_control_status_requires_manual_review():
     assert np.isnan(result["Ratio"])
 
 
-def test_npm1_config_matches_protocol_ranges():
+def test_npm1_config_matches_operator_selected_ranges():
     from core.analyses.flt3.config import ASSAY_CONFIG, ASSAY_REFERENCE_RANGES
 
     assert ASSAY_CONFIG["NPM1"]["bp_min"] == 280
     assert ASSAY_CONFIG["NPM1"]["bp_max"] == 320
-    assert ASSAY_REFERENCE_RANGES["NPM1"] == [(300, 301), (304, 306)]
+    assert ASSAY_REFERENCE_RANGES["NPM1"] == [(299, 301), (304, 306)]

@@ -838,7 +838,7 @@ def _resolve_manual_ratio_selection(entry: dict, peaks: pd.DataFrame) -> dict | 
 
 def _resolve_flt3_ratio_selection(entry: dict) -> dict:
     if entry.get("assay") == "NPM1":
-        resolved = _empty_manual_ratio_resolution(entry, "NPM1 vurderes manuelt uten ratio")
+        resolved = _empty_manual_ratio_resolution(entry, "")
         resolved["ratio_mode"] = "not_applicable"
         resolved["manual_ratio_selection"] = _default_manual_ratio_selection()
         for name in (
@@ -6531,7 +6531,7 @@ def _interpret_entry(entry: dict) -> str:
         return "Ingen resultat - ladder review kreves"
     assay = entry["assay"]
     if assay == "NPM1":
-        return "NPM1 - manuell vurdering kreves"
+        return ""
     ratio = float(entry.get("ratio", 0.0))
     peak_summary = _summarize_detected_peaks(entry)
     positive_ratio = _assay_positive_ratio(assay)
@@ -6631,8 +6631,7 @@ def _build_control_qc_row(entry: dict) -> dict | None:
             "Well": entry.get("well_id") or "", "SelectedInjection": entry.get("selected_injection") or "",
             "SelectionReason": entry.get("selection_reason") or "", "InjectionTime": entry.get("injection_time"),
             "WT_Area": np.nan, "Mutant_Area": np.nan, "Ratio": np.nan,
-            "Status": "MANUAL_REVIEW", "Details": "Marker topper og vurder kontrollen manuelt.",
-            "Expectation": "Manuell NPM1-vurdering; ingen automatisk kontrollkonklusjon",
+            "Status": "MANUAL_REVIEW", "Details": "", "Expectation": "",
         }
 
     peak_summary = _summarize_detected_peaks(entry)

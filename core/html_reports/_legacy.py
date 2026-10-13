@@ -743,13 +743,13 @@ def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
     """Renders the overview table of all analyzed files."""
     html_lines.append("<h2>Oversikt over analyserte filer</h2>")
     if dit_entries and all(e.get("assay") == "NPM1" for e in dit_entries):
-        html_lines.append("<table><tr><th>Filnavn</th><th>Assay</th><th>Vurdering</th><th>Ladder QC</th><th>R²</th></tr>")
+        html_lines.append("<table><tr><th>Filnavn</th><th>Assay</th><th>Ladder QC</th><th>R²</th></tr>")
         for e in sorted(dit_entries, key=lambda item: item["fsa"].file_name):
             r2 = e.get("ladder_r2")
             r2_text = f"{r2:.4f}" if r2 is not None and np.isfinite(r2) else "&mdash;"
             html_lines.append(
                 f"<tr><td>{escape(e['fsa'].file_name)}</td><td>NPM1</td>"
-                f"<td>Manuell peakmarkering</td><td>{_render_ladder_status_badge(e)}</td><td>{r2_text}</td></tr>"
+                f"<td>{_render_ladder_status_badge(e)}</td><td>{r2_text}</td></tr>"
             )
         html_lines.append("</table>")
         return
@@ -779,8 +779,7 @@ def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
             fname_safe = e['fsa'].file_name.replace('.', '_').replace(' ', '_')
             distance_text = _format_flt3_bp_distance_html(_flt3_bp_distance_metrics(e, peaks))
             if e.get("assay") == "NPM1":
-                wt_text = "<span class='small'>Manuell peakmarkering</span>"
-                mut_text = ratio_str = distance_text = "&mdash;"
+                wt_text = mut_text = ratio_str = distance_text = "&mdash;"
             html_lines.append(
                 f"<tr data-filename='{fname}'>"
                 f"<td>{fname}</td><td>{escape(e['assay'])}</td>"
@@ -858,7 +857,7 @@ def _flt3_qc_status_badge(row: dict) -> str:
     if status == "PASS":
         return _render_status_badge("PASS", "ok", details or "Kontrollen bestod.")
     if status == "MANUAL_REVIEW":
-        return _render_status_badge("Manuell vurdering", "warning", details)
+        return _render_status_badge("Manuell", "warning", details)
     if status == "REVIEW":
         return _render_status_badge("REVIEW", "warning", details or "Kontrollen krever vurdering.")
     return _render_status_badge("FAIL", "failed", details or "Kontrollen feilet.")
@@ -1626,8 +1625,8 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
     html_lines.append("<h2>QC-oversikt</h2>")
     if npm1_only:
         html_lines.append(
-            "<table><tr><th>Rapport</th><th>Kontroller</th><th>Vurdering</th><th>Kjoringer</th></tr>"
-            f"<tr><td>{escape(report_name)}</td><td>{len(qc_rows)}</td><td>Manuell vurdering</td>"
+            "<table><tr><th>Rapport</th><th>Kontroller</th><th>Kjoringer</th></tr>"
+            f"<tr><td>{escape(report_name)}</td><td>{len(qc_rows)}</td>"
             f"<td>{', '.join(escape(r) for r in run_dirs) if run_dirs else '&mdash;'}</td></tr></table>"
         )
     else:
@@ -1678,8 +1677,6 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
         ]
         html_lines.append(f"<p class='small'>{escape(' | '.join(meta_parts))}</p>")
         if entry.get("assay") == "NPM1":
-            html_lines.append(_render_rearrangement_info_html("NPM1"))
-            html_lines.append("<p class='small'>Manuell vurdering av kontrollen.</p>")
             html_lines.append(_build_report_plot_fragment(entry, report_metrics))
             html_lines.append("</div>")
             continue

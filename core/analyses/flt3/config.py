@@ -55,12 +55,12 @@ REFERENCE_SHADE_COLOR = "#ded7a6"
 ASSAY_REFERENCE_RANGES = {
     "FLT3-ITD": [(300.0, 1000.0)],
     "FLT3-D835": [(50.0, 250.0)],
-    "NPM1": [(300.0, 301.0), (304.0, 306.0)],
+    "NPM1": [(299.0, 301.0), (304.0, 306.0)],
 }
 ASSAY_REFERENCE_LABEL = {
     "FLT3-ITD": "Analysevindu: 300-1000 bp. Villtype forventet rundt 330 bp, mutert >335 bp.",
     "FLT3-D835": "Analysevindu: 50-250 bp. Villtype: 80 bp, Mutert >129 bp.",
-    "NPM1": "Villtype: 300–301 bp. Mutert: 304–306 bp. Topper markeres og vurderes manuelt.",
+    "NPM1": "",
 }
 
 # Injection time preference (seconds)

@@ -17,7 +17,7 @@ def test_npm1_plot_shades_protocol_bands_below_trace_and_scales_full_window():
     entry["fsa"].fsa["DATA3"][390] = 9000  # 290 bp, outside the expected bands.
     figure, ymax, _count = _create_plotly_figure(_prepare_plot_data(entry))
     bands = [shape for shape in figure.layout.shapes if shape.type == "rect"]
-    assert [(shape.x0, shape.x1) for shape in bands] == [(300, 301), (304, 306)]
+    assert [(shape.x0, shape.x1) for shape in bands] == [(299, 301), (304, 306)]
     assert all(shape.layer == "below" for shape in bands)
     assert all(shape.fillcolor == "rgba(250,204,21,0.24)" for shape in bands)
     assert ymax == _get_display_trace(entry, "DATA3", "NPM1")[390]
@@ -35,7 +35,7 @@ def test_npm1_summary_never_shows_stale_ratio_or_automatic_call():
     lines = []
     _render_file_summary_table([entry], lines)
     html = "\n".join(lines)
-    assert "Manuell peakmarkering" in html
+    assert "Manuell peakmarkering" not in html
     assert "Ratio" not in html
     assert "20000" not in html
     assert "Positiv" not in html
@@ -48,7 +48,7 @@ def test_npm1_editor_starts_without_markers_or_ratio_controls():
     html = build_interactive_peak_plot_for_entry(entry)
     assert 'var initialPeaks = [];' in html
     assert '"range":[280.0,320.0]' in html
-    assert "Klikk" in html and "Shift" in html
+    assert "npm1-manual-help" not in html
     assert 'data-channel-choice=' not in html
     assert '<th>Peak Størrelse (bp)</th><th>Høyde (RFU)</th><th>Area</th>' in html
     assert '_flt3_ratio_cards" style=' not in html
@@ -64,7 +64,10 @@ def test_npm1_control_report_has_manual_status_and_no_ratio_table(tmp_path):
     row = pipeline._build_control_qc_row(entry)
     path = build_flt3_qc_html_report([entry], [row], tmp_path)
     html = path.read_text(encoding="utf-8")
-    assert "Manuell vurdering" in html
+    assert "Manuell vurdering av kontrollen" not in html
+    assert "Topper markeres og vurderes manuelt" not in html
+    assert "Klikk på signalet" not in html
+    assert "Referanseområde:" not in html
     assert "<th>Ratio</th>" not in html
     assert "<th>WT area</th>" not in html
     assert "<th>Bestatt</th>" not in html

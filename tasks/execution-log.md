@@ -159,3 +159,10 @@ Verifikasjon:
 - Samlet NPM1-utvalg etter tilleggstesten for eksport uten gamle ratio-roller: **12 bestått**. Red/green bekreftet for automatisk peak-/ratio-bypass, nøytrale kontroll-/tracking-resultater, referansefelter, manuell tabell og lagringsstøtte.
 - Compileall, CI-lint F821, full lint på de nye testfilene og `git diff --check`: bestått.
 - Lokale kontrollbilder og selvstendige HTML-filer ligger i `artifacts/npm1-review-20261013/`. De er review-artefakter, ikke en faglig godkjenning av NPM1-analysen.
+
+### NPM1-visning, oppfølging 2026-10-13
+
+- Etter brukerens nye avklaring er WT-feltet 299–301 bp; mutantfeltet er fortsatt 304–306 bp. Plotvinduet er fortsatt 280–320 bp.
+- NPM1-forklaringstekster om referanseområder, klikk og manuell vurdering er fjernet fra plott og rapport. Filmetadata, akser, markørtabell og ladder-status beholdes. NPM1 gir fortsatt ingen automatisk tolkning eller ratio.
+- Ny kontrollrapport fra den faktiske FSA-filen er åpnet og kontrollert i nettleseren. Den lokale HTML-prøvevisningen er oppdatert.
+- Relevante NPM1-, markør- og FLT3-rapporttester: **45 bestått**. Compileall, F821, lint på NPM1-testene og `git diff --check`: bestått. Endringen er lokal og ikke pushet.
