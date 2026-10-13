@@ -586,22 +586,9 @@ def _format_report_metrics_summary(label: str, report_metrics: dict[str, float |
     )
 
 
-def _create_html_header(
-    dit: str,
-    year: int | None,
-    num_entries: int,
-    dit_root: Path,
-    html_lines: list[str],
-    *,
-    display_name: str,
-):
-    """Appends the HTML head and page header to html_lines."""
-    html_lines.extend(["<!DOCTYPE html>", "<html lang='no'>", "<head>", "<meta charset='utf-8'>"])
-    html_lines.append(f"<title>{escape(dit)}_{display_name}_Resultater</title>")
-    html_lines.append(REPORT_STYLE)
-    html_lines.append('<script id="peak-data" type="application/json">{}</script>')
-    html_lines.append('<script id="plot-state" type="application/json">{}</script>')
-    html_lines.append(r"""
+def _build_peak_manager_script() -> str:
+    """Shared manual marker persistence for patient and control reports."""
+    return r"""
 <script>
 // Toggle comment boxes
 function toggleComment(btn) {
@@ -713,7 +700,25 @@ window.PeakManager = {
 
 function printReport() { window.print(); }
 </script>
-""")
+"""
+
+
+def _create_html_header(
+    dit: str,
+    year: int | None,
+    num_entries: int,
+    dit_root: Path,
+    html_lines: list[str],
+    *,
+    display_name: str,
+):
+    """Appends the HTML head and page header to html_lines."""
+    html_lines.extend(["<!DOCTYPE html>", "<html lang='no'>", "<head>", "<meta charset='utf-8'>"])
+    html_lines.append(f"<title>{escape(dit)}_{display_name}_Resultater</title>")
+    html_lines.append(REPORT_STYLE)
+    html_lines.append('<script id="peak-data" type="application/json">{}</script>')
+    html_lines.append('<script id="plot-state" type="application/json">{}</script>')
+    html_lines.append(_build_peak_manager_script())
     html_lines.append(_local_plotly_tag(dit_root, version="2.35.2"))
     html_lines.append(_build_plotly_reflow_script())
     html_lines.extend(["</head>", "<body>"])
@@ -737,6 +742,17 @@ function printReport() { window.print(); }
 def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
     """Renders the overview table of all analyzed files."""
     html_lines.append("<h2>Oversikt over analyserte filer</h2>")
+    if dit_entries and all(e.get("assay") == "NPM1" for e in dit_entries):
+        html_lines.append("<table><tr><th>Filnavn</th><th>Assay</th><th>Vurdering</th><th>Ladder QC</th><th>R²</th></tr>")
+        for e in sorted(dit_entries, key=lambda item: item["fsa"].file_name):
+            r2 = e.get("ladder_r2")
+            r2_text = f"{r2:.4f}" if r2 is not None and np.isfinite(r2) else "&mdash;"
+            html_lines.append(
+                f"<tr><td>{escape(e['fsa'].file_name)}</td><td>NPM1</td>"
+                f"<td>Manuell peakmarkering</td><td>{_render_ladder_status_badge(e)}</td><td>{r2_text}</td></tr>"
+            )
+        html_lines.append("</table>")
+        return
     is_flt3 = {e.get("assay") for e in dit_entries}.issubset({"FLT3-ITD", "FLT3-D835", "NPM1"})
     if is_flt3:
         html_lines.append(
@@ -762,6 +778,9 @@ def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
             fname = escape(e['fsa'].file_name)
             fname_safe = e['fsa'].file_name.replace('.', '_').replace(' ', '_')
             distance_text = _format_flt3_bp_distance_html(_flt3_bp_distance_metrics(e, peaks))
+            if e.get("assay") == "NPM1":
+                wt_text = "<span class='small'>Manuell peakmarkering</span>"
+                mut_text = ratio_str = distance_text = "&mdash;"
             html_lines.append(
                 f"<tr data-filename='{fname}'>"
                 f"<td>{fname}</td><td>{escape(e['assay'])}</td>"
@@ -838,6 +857,8 @@ def _flt3_qc_status_badge(row: dict) -> str:
     details = str(row.get("Details") or "")
     if status == "PASS":
         return _render_status_badge("PASS", "ok", details or "Kontrollen bestod.")
+    if status == "MANUAL_REVIEW":
+        return _render_status_badge("Manuell vurdering", "warning", details)
     if status == "REVIEW":
         return _render_status_badge("REVIEW", "warning", details or "Kontrollen krever vurdering.")
     return _render_status_badge("FAIL", "failed", details or "Kontrollen feilet.")
@@ -1106,6 +1127,9 @@ def _d835_digest_status(peaks: pd.DataFrame, wt_row: pd.Series | None, mut_row: 
 def _build_flt3_summary_table(e: dict) -> str:
     """Validation-oriented FLT3/NPM1 table below each figure."""
     assay = e["assay"]
+    if assay == "NPM1":
+        # NPM1 uses the live generic marker table (bp/RFU/area) in the plot.
+        return ""
     ratio = float(e.get("ratio", 0.0))
     ratio_str = f"{ratio:.4f}" if ratio > 0 else "&mdash;"
     positive_ratio = float(_assay_config().get(assay, {}).get("positive_ratio", 0.01))
@@ -1196,17 +1220,6 @@ def _build_flt3_summary_table(e: dict) -> str:
             f"<td>{digest_text}</td>"
             f"<td><strong>{ratio_str}</strong><br><span class='small'>Mut/WT: {float(e.get('ratio_numerator_area', 0.0)):,.0f} / {float(e.get('ratio_denominator_area', 0.0)):,.0f}<br>Positiv grense > {positive_ratio:.2f}</span></td>"
             f"<td>{validation_text}</td></tr></table></div>"
-        )
-
-    if assay == "NPM1":
-        label = "Positiv" if ratio >= positive_ratio else "Negativ" if mut_main is None else "Manuell vurdering"
-        distance_text = _flt3_distance_summary_span(e, peaks)
-        return (
-            "<div style='margin-top:10px; margin-bottom:24px;'>"
-            "<table style='width:100%; border:1px solid #e2e8f0; table-layout:fixed;'>"
-            "<tr><th>Villtype</th><th>Mutert</th><th>Δbp / kodoner</th><th>Ratio</th><th>Validering</th></tr>"
-            f"<tr><td>{_peak_text(wt_main)}</td><td>{_format_peak_list(mut_rows, max_peaks=4)}</td>"
-            f"<td>{distance_text}</td><td><strong>{ratio_str}</strong></td><td><strong>{label}</strong></td></tr></table></div>"
         )
 
     return ""
@@ -1538,7 +1551,9 @@ def _render_relevant_qc_section(
     plot_fragments: dict[int, str] = {}
 
     for idx, entry in enumerate(relevant_controls):
-        plot_fragments[idx] = _build_report_plot_fragment(entry, report_metrics, qc_rules=rules)
+        plot_fragments[idx] = _build_report_plot_fragment(
+            entry, report_metrics, qc_rules=None if entry.get("assay") == "NPM1" else rules,
+        )
 
     assay_label = ", ".join(sorted(patient_assays))
     html_lines.append("<details class='dit-qc-section'>")
@@ -1582,6 +1597,9 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
     html_lines.extend(["<!DOCTYPE html>", "<html lang='no'>", "<head>", "<meta charset='utf-8'>"])
     html_lines.append(f"<title>{escape(title)}</title>")
     html_lines.append(REPORT_STYLE)
+    html_lines.append('<script id="peak-data" type="application/json">{}</script>')
+    html_lines.append('<script id="plot-state" type="application/json">{}</script>')
+    html_lines.append(_build_peak_manager_script())
     html_lines.append(_local_plotly_tag(assay_outdir, version="2.35.2"))
     html_lines.append(_build_plotly_reflow_script())
     html_lines.extend(["</head>", "<body>"])
@@ -1604,17 +1622,26 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
 
     pass_count = sum(1 for row in qc_rows if str(row.get("Status", "")).upper() == "PASS")
     fail_count = sum(1 for row in qc_rows if str(row.get("Status", "")).upper() == "FAIL")
+    npm1_only = all(entry.get("assay") == "NPM1" for entry in control_entries)
     html_lines.append("<h2>QC-oversikt</h2>")
-    html_lines.append(
-        "<table><tr><th>Rapport</th><th>Kontroller</th><th>Bestatt</th><th>Feilet</th><th>Kjoringer</th></tr>"
-        f"<tr><td>{escape(report_name)}</td><td>{len(qc_rows)}</td><td>{pass_count}</td><td>{fail_count}</td>"
-        f"<td>{', '.join(escape(r) for r in run_dirs) if run_dirs else '&mdash;'}</td></tr></table>"
-    )
+    if npm1_only:
+        html_lines.append(
+            "<table><tr><th>Rapport</th><th>Kontroller</th><th>Vurdering</th><th>Kjoringer</th></tr>"
+            f"<tr><td>{escape(report_name)}</td><td>{len(qc_rows)}</td><td>Manuell vurdering</td>"
+            f"<td>{', '.join(escape(r) for r in run_dirs) if run_dirs else '&mdash;'}</td></tr></table>"
+        )
+    else:
+        html_lines.append(
+            "<table><tr><th>Rapport</th><th>Kontroller</th><th>Bestatt</th><th>Feilet</th><th>Kjoringer</th></tr>"
+            f"<tr><td>{escape(report_name)}</td><td>{len(qc_rows)}</td><td>{pass_count}</td><td>{fail_count}</td>"
+            f"<td>{', '.join(escape(r) for r in run_dirs) if run_dirs else '&mdash;'}</td></tr></table>"
+        )
 
     html_lines.append("<h2>Kontrolltabell</h2>")
+    ratio_heading = "" if npm1_only else "<th>Ratio</th>"
     html_lines.append(
         "<table><tr><th>Filnavn</th><th>Assay</th><th>Kontroll</th><th>Status</th><th>Forventning</th>"
-        "<th>Valgt injeksjon</th><th>Ratio</th><th>Ladder QC</th><th>Detaljer</th></tr>"
+        f"<th>Valgt injeksjon</th>{ratio_heading}<th>Ladder QC</th><th>Detaljer</th></tr>"
     )
     entry_map = {e["fsa"].file_name: e for e in control_entries}
     for row in sorted(qc_rows, key=lambda item: (item.get("Assay", ""), item.get("ControlGroup", ""), item.get("File", ""))):
@@ -1622,6 +1649,7 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
         ladder_badge = _render_ladder_status_badge(entry) if entry is not None else _render_status_badge("Unknown", "unknown")
         ratio = float(row.get("Ratio", 0.0))
         ratio_text = f"{ratio:.4f}" if ratio > 0 else "&mdash;"
+        ratio_cell = "" if npm1_only else f"<td>{ratio_text}</td>"
         html_lines.append(
             f"<tr><td>{escape(str(row.get('File', '')))}</td>"
             f"<td>{escape(str(row.get('Assay', '')))}</td>"
@@ -1629,7 +1657,7 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
             f"<td>{_flt3_qc_status_badge(row)}</td>"
             f"<td>{escape(str(row.get('Expectation', '')))}</td>"
             f"<td>{escape(str(row.get('SelectedInjection', '') or ''))}</td>"
-            f"<td>{ratio_text}</td>"
+            f"{ratio_cell}"
             f"<td>{ladder_badge}</td>"
             f"<td>{escape(str(row.get('Details', '') or '')) or '&mdash;'}</td></tr>"
         )
@@ -1649,6 +1677,12 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
             f"Run: {entry.get('source_run_dir') or '—'}",
         ]
         html_lines.append(f"<p class='small'>{escape(' | '.join(meta_parts))}</p>")
+        if entry.get("assay") == "NPM1":
+            html_lines.append(_render_rearrangement_info_html("NPM1"))
+            html_lines.append("<p class='small'>Manuell vurdering av kontrollen.</p>")
+            html_lines.append(_build_report_plot_fragment(entry, report_metrics))
+            html_lines.append("</div>")
+            continue
         html_lines.append(
             "<table><tr><th>QC-status</th><th>Forventning</th><th>WT area</th><th>Mutant area</th><th>Ratio</th><th>Ladder QC</th></tr>"
             f"<tr><td>{_flt3_qc_status_badge(row)}</td>"
@@ -1667,6 +1701,7 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
 
     html_lines.append("""
 <div class="print-fab no-print">
+  <button class="print-btn save-peaks-btn" onclick="PeakManager.downloadUpdatedHtml()">💾&nbsp; Save Peaks</button>
   <button class="print-btn" onclick="window.print()">🖨&nbsp; Print / PDF</button>
 </div>
 </body></html>""")

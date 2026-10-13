@@ -158,6 +158,8 @@ def _reference_shape_fill(entry: dict | None = None) -> str:
     """Reference-window fill; IGHV RNA-filer får en rødere nyanse enn beige."""
     if entry is not None:
         assay = str((entry or {}).get("assay") or "")
+        if assay == "NPM1":
+            return reference_shade_rgba(color="#facc15")
         if assay.startswith("IGHV"):
             # Per-fil prøvetype (satt av attach_ighv_results, filnavn-trumf
             # inkludert); faller tilbake til GUI-valg hvis ikke stemplet.
@@ -434,7 +436,9 @@ def compute_group_ymax_for_entries(entries: list[dict]) -> float:
                 continue
 
         # --- Velg bp-vindu: referanse(r) hvis definert, ellers bp_min–bp_max ---
-        if assay and assay in _assay_reference_ranges():
+        if assay == "NPM1":
+            mask_bp = (bp_all >= bp_min) & (bp_all <= bp_max)
+        elif assay and assay in _assay_reference_ranges():
             mask_bp = np.zeros_like(bp_all, dtype=bool)
             for a, b in _assay_reference_ranges()[assay]:
                 mask_bp |= (bp_all >= float(a)) & (bp_all <= float(b))
@@ -549,7 +553,9 @@ def _create_plotly_figure(data: dict) -> tuple[go.Figure, float, int]:
     ymax_auto_all = 0.0
 
     # Window for auto-y
-    if assay_name and assay_name in _assay_reference_ranges():
+    if assay_name == "NPM1":
+        win_bp = (bp_trace >= bp_min) & (bp_trace <= bp_max)
+    elif assay_name and assay_name in _assay_reference_ranges():
         win_bp = np.zeros_like(bp_trace, dtype=bool)
         for a, b in _assay_reference_ranges()[assay_name]:
             win_bp |= (bp_trace >= float(a)) & (bp_trace <= float(b))
@@ -562,7 +568,7 @@ def _create_plotly_figure(data: dict) -> tuple[go.Figure, float, int]:
         if y_corr.size == 0:
             continue
 
-        color = CHANNEL_COLORS.get(ch, DEFAULT_TRACE_COLOR)
+        color = "#111827" if assay_name == "NPM1" else CHANNEL_COLORS.get(ch, DEFAULT_TRACE_COLOR)
         fig.add_trace(go.Scatter(x=bp_trace, y=y_corr, mode="lines", name=f"{ch} trace", line=dict(width=1, color=color), hoverinfo="x+y"))
 
         y_win = y_corr[win_bp] if np.any(win_bp) else y_corr
@@ -589,7 +595,7 @@ def _create_plotly_figure(data: dict) -> tuple[go.Figure, float, int]:
     shapes = []
     if assay_name and assay_name in _assay_reference_ranges():
         for (a, b) in _assay_reference_ranges()[assay_name]:
-            shapes.append(dict(type="rect", x0=float(a), x1=float(b), y0=0, y1=1, xref="x", yref="paper", fillcolor=_reference_shape_fill(entry), line_width=0, layer="above", opacity=1.0))
+            shapes.append(dict(type="rect", x0=float(a), x1=float(b), y0=0, y1=1, xref="x", yref="paper", fillcolor=_reference_shape_fill(entry), line_width=0, layer="below" if assay_name == "NPM1" else "above", opacity=1.0))
     else:
         shapes.append(dict(type="rect", x0=float(bp_min), x1=float(bp_max), y0=0, y1=1, xref="x", yref="paper", fillcolor=_reference_shape_fill(entry), line_width=0, layer="above", opacity=1.0))
 
@@ -756,7 +762,13 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
 </div>
 """
 
+    manual_help_html = (
+        '<p class="small npm1-manual-help">Klikk på signalet for å markere en topp. '
+        'Shift + klikk nær en markert topp fjerner den. Bare valgte topper vises i tabellen.</p>'
+        if data["assay_name"] == "NPM1" else ""
+    )
     html_fragment = f"""
+{manual_help_html}
 <div id="{div_id}" class="peak-editor-block"></div>
 <div id="{div_id}_table_container" class="peak-table-container" style="display:none;">
     <table id="{div_id}_table">
@@ -1141,7 +1153,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
     peaks = peaks.map(function(p, idx) {{ return normalizePeak(p, idx); }}).filter(function(p) {{ return Number.isFinite(p.x) && Number.isFinite(p.y); }});
     ensurePeakIds();
 
-    var manualSelection = cloneSelection(initialPeakData && initialPeakData.flt3_manual_ratio_selection ? initialPeakData.flt3_manual_ratio_selection : flt3InitialSelection);
+    var manualSelection = cloneSelection(isManualRatioAssay && initialPeakData && initialPeakData.flt3_manual_ratio_selection ? initialPeakData.flt3_manual_ratio_selection : flt3InitialSelection);
 
     function updatePeakManagerRegistration() {{
       if (!window.PeakManager) return;
@@ -1149,6 +1161,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
       window.PeakManager.registerPlot(divId, {{
         getPeaks: function() {{ return peaks; }},
         getPeakData: function() {{
+          if (assayName === "NPM1") return {{ peaks: peaks }};
           return {{
             peaks: peaks,
             flt3_manual_ratio_selection: {{

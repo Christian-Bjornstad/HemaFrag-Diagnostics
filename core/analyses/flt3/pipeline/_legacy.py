@@ -837,6 +837,16 @@ def _resolve_manual_ratio_selection(entry: dict, peaks: pd.DataFrame) -> dict | 
 
 
 def _resolve_flt3_ratio_selection(entry: dict) -> dict:
+    if entry.get("assay") == "NPM1":
+        resolved = _empty_manual_ratio_resolution(entry, "NPM1 vurderes manuelt uten ratio")
+        resolved["ratio_mode"] = "not_applicable"
+        resolved["manual_ratio_selection"] = _default_manual_ratio_selection()
+        for name in (
+            "selected_wt_area", "selected_mutant_area", "ratio_numerator_area",
+            "ratio_denominator_area", "ratio", "mutant_fraction",
+        ):
+            resolved[name] = np.nan
+        return resolved
     peaks = entry["peaks_by_channel"][entry["primary_peak_channel"]]
     if entry.get("assay") in MANUAL_RATIO_ASSAYS:
         return _resolve_manual_ratio_selection(entry, peaks)
@@ -5756,7 +5766,7 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         peak_channels=peak_channels,
         primary_channel=meta["primary_peak_channel"],
     )
-    if ladder_only_qc:
+    if ladder_only_qc or meta["assay"] == "NPM1":
         combined_trace = raw_combined_trace
         peaks = _ensure_peak_ids(
             pd.DataFrame(
@@ -5832,7 +5842,7 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
                 fast_area=meta.get("group") == "negative_control",
             )
 
-    rust_flt3_preview = getattr(fsa, "rust_flt3_preview", None)
+    rust_flt3_preview = None if meta["assay"] == "NPM1" else getattr(fsa, "rust_flt3_preview", None)
     rust_wt_peak = rust_flt3_preview.get("wt_peak") if isinstance(rust_flt3_preview, dict) else None
     rust_mutant_peaks = list(rust_flt3_preview.get("mutant_peaks") or []) if isinstance(rust_flt3_preview, dict) else []
     expected_ladder_steps = list(
@@ -6030,7 +6040,9 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         ladder_qc_status = "ok"
     else:
         ladder_qc_status = "ladder_qc_failed"
-    if ladder_only_qc:
+    if meta["assay"] == "NPM1":
+        peak_qc_pass, peak_qc_reason = False, "manual_selection_required"
+    elif ladder_only_qc:
         peak_qc_pass, peak_qc_reason = True, FLT3_LADDER_ONLY_PEAK_QC_STATUS
     else:
         peak_qc_pass, peak_qc_reason = _peak_qc_status(peaks, meta.get("group", "sample"))
@@ -6175,6 +6187,8 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
     }
     from core.analysis_provenance import attach_analysis_provenance
 
+    if meta["assay"] == "NPM1":
+        _calculate_ratios([entry])
     return attach_analysis_provenance(entry)
 
 
@@ -6381,7 +6395,7 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
 def _calculate_ratios(entries: list[dict]) -> None:
     """Calculate FLT3 mutant ratios and store explicit numerator/denominator fields."""
     for entry in entries:
-        if entry.get("analysis_status") == "ladder_review_only":
+        if entry.get("analysis_status") == "ladder_review_only" and entry.get("assay") != "NPM1":
             entry["ratio_mode"] = "not_available_ladder_review"
             entry["manual_ratio_selection_valid"] = False
             entry["manual_ratio_selection_reason"] = "Ladder review required before peak selection"
@@ -6485,7 +6499,7 @@ def _summarize_detected_peaks(entry: dict) -> dict:
         }
     )
 
-    return {
+    summary = {
         "ratio_mode": resolved.get("ratio_mode", "auto"),
         "manual_ratio_selection_valid": bool(resolved.get("manual_ratio_selection_valid", False)),
         "manual_ratio_selection_reason": resolved.get("manual_ratio_selection_reason", ""),
@@ -6506,12 +6520,18 @@ def _summarize_detected_peaks(entry: dict) -> dict:
         "mut_main_area": mut_main_area,
         "bp_distance_metrics": bp_metrics,
     }
+    if entry.get("assay") == "NPM1":
+        for name in ("wt_area", "mut_area_total", "mut_main_area"):
+            summary[name] = np.nan
+    return summary
 
 
 def _interpret_entry(entry: dict) -> str:
     if entry.get("analysis_status") == "ladder_review_only":
         return "Ingen resultat - ladder review kreves"
     assay = entry["assay"]
+    if assay == "NPM1":
+        return "NPM1 - manuell vurdering kreves"
     ratio = float(entry.get("ratio", 0.0))
     peak_summary = _summarize_detected_peaks(entry)
     positive_ratio = _assay_positive_ratio(assay)
@@ -6528,12 +6548,6 @@ def _interpret_entry(entry: dict) -> str:
         if peak_summary["mut_bps"]:
             return "FLT3-D835 under positiv grense - dokumentert"
         return "Ingen FLT3-D835 pavist"
-    if assay == "NPM1":
-        if ratio >= positive_ratio:
-            return "Positiv NPM1"
-        if peak_summary["mut_bps"]:
-            return "Mulig NPM1 - vurder manuelt"
-        return "Ingen NPM1-mutasjon pavist"
     return "Ingen tolkning"
 
 
@@ -6610,6 +6624,16 @@ def _build_control_qc_row(entry: dict) -> dict | None:
     group = entry.get("group")
     if group not in ["negative_control", "positive_control", "reactive_control"]:
         return None
+
+    if entry.get("assay") == "NPM1":
+        return {
+            "File": entry["fsa"].file_name, "ControlGroup": group, "Assay": "NPM1",
+            "Well": entry.get("well_id") or "", "SelectedInjection": entry.get("selected_injection") or "",
+            "SelectionReason": entry.get("selection_reason") or "", "InjectionTime": entry.get("injection_time"),
+            "WT_Area": np.nan, "Mutant_Area": np.nan, "Ratio": np.nan,
+            "Status": "MANUAL_REVIEW", "Details": "Marker topper og vurder kontrollen manuelt.",
+            "Expectation": "Manuell NPM1-vurdering; ingen automatisk kontrollkonklusjon",
+        }
 
     peak_summary = _summarize_detected_peaks(entry)
     if peak_summary.get("ratio_mode") == "manual_required":
@@ -6931,6 +6955,19 @@ def _tracker_run_row(entry: dict, base_row: dict, peak_summary: dict, interpreta
             "Interpretation": interpretation,
         }
     )
+    if entry.get("assay") == "NPM1":
+        for name in (
+            "WT_BP", "WT_Area", "MutantBPs", "MutantAreas", "MutantAreaTotal", "MutantMain_BP",
+            "MutantMain_Area", "RatioNumeratorArea", "RatioDenominatorArea", "Ratio", "MutantFraction",
+            "PositiveCall", "RustPreviewPositiveCall", "RustPreviewWTBP", "RustPreviewMutantBPs",
+            "RustPreviewStrongestMutantRatio",
+        ):
+            row[name] = ""
+        row["RatioMode"] = "not_applicable"
+        row["ResultStatus"] = (
+            "ladder_review_required" if entry.get("analysis_status") == "ladder_review_only"
+            else "manual_peak_selection_required"
+        )
     return row
 
 

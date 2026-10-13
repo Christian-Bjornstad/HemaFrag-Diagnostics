@@ -142,3 +142,20 @@ Verifikasjon:
 - Koderettelsene er pushet til `origin/feature/ladder-review-workflow`: ladder `fd037f9`, tracking `0603072`, Settings `c4339fd`, mappevalg `422c77d`. Ekstern CI er separat fra den lokale testgaten.
 
 Brukerens konkrete jobb-PC-FSA er ikke tilgjengelig i dette arbeidsområdet. Dette er programvareregresjon med syntetiske data, ikke ny faglig validering av den filen eller fysisk kontroll av native dialoger på jobb-PC-en. Tidligere tapte Excel-rader kan ikke gjenopprettes uten en eldre workbook-kopi.
+
+## NPM1 manuell markering — 2026-10-13
+
+Implementert lokalt på `codex/npm1-manual-review`; brukeren ønsker visuell gjennomgang før GitHub-push.
+
+- Standard plotvindu er 280–320 bp. Etter brukerens avklaring følger referansefeltene den vedlagte «AML - NPM1», dokument 34836, versjon 4, side 3: WT 300–301 bp og mutert 304–306 bp. Feltene er separate, gule og ligger bak det svarte DATA3-signalet. Y-aksen dekker signalet i hele visningsvinduet, også topper utenfor referansefeltene.
+- NPM1 bruker en tom startliste og den eksisterende manuelle marker-tabellen med bp, RFU og area. Ingen WT/mutant tildeles automatisk, og ingen NPM1-ratio, avstandsberegning eller positiv/negativ konklusjon rapporteres. NPM1-felter i nye tracking-rader er blanke for slike resultater; øvrig eksisterende workbook-historikk migreres ikke eller endres av denne rettelsen.
+- Kontrollrapporten har samme markør-lagring som pasientrapporten. Nettlesertesten avdekket at den tidligere manglet PeakManager/Save Peaks; den deler nå denne eksisterende koden. Manuell markering, Shift-sletting, lagring og gjenåpning, inkludert eksplisitt tomt utvalg, er verifisert med faktisk Edge/Plotly-rendering uten JavaScript-feil.
+- Hele det vedlagte arkivet på 85 FSA-filer ble kjørt lokalt med native wheel 0.1.2 installert i en isolert testmappe. Alle 85 kunne størrelsesbestemmes; 83 hadde ladder OK og 2 beholdt review-required. Alle startet uten NPM1-peakmarkering eller ratio. Rådata og genererte pasientrapporter er kun i ignorerte lokale mapper.
+- Prøvebildet bruker en faktisk normalblodkontroll fra arkivet. Toppen som ble klikket manuelt i demonstrasjonen har beregnet størrelse 299,06 bp, utenfor protokollens WT-felt. Ingen bp-offset eller ladder-endring ble innført for å flytte denne toppen inn i referansefeltet. Dette er synlig i bildet og oppgis for brukerens inspeksjon før push.
+
+Verifikasjon:
+
+- Full `python -m pytest -q --junitxml=.pytest_cache/npm1-review-20261013/tests-final.xml`: **989 bestått, 6 skipped, 4 warnings**, 236,95 sekunder. Tre warnings er forventet Settings-feilinjeksjon og én er eksisterende pandas FutureWarning.
+- Samlet NPM1-utvalg etter tilleggstesten for eksport uten gamle ratio-roller: **12 bestått**. Red/green bekreftet for automatisk peak-/ratio-bypass, nøytrale kontroll-/tracking-resultater, referansefelter, manuell tabell og lagringsstøtte.
+- Compileall, CI-lint F821, full lint på de nye testfilene og `git diff --check`: bestått.
+- Lokale kontrollbilder og selvstendige HTML-filer ligger i `artifacts/npm1-review-20261013/`. De er review-artefakter, ikke en faglig godkjenning av NPM1-analysen.
