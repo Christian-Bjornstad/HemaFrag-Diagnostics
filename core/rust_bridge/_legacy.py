@@ -809,6 +809,57 @@ def _normalized_size_standard_trace_for_fsa(fsa: FsaFile) -> np.ndarray:
     return np.maximum(raw_trace, 0.0)
 
 
+def _liz_core_supports_early_anchor_waiver(
+    scans: np.ndarray,
+    sizes: np.ndarray,
+    trace: np.ndarray,
+) -> bool:
+    """Let a complete, independently supported 75–500 bp core outweigh start heuristics.
+
+    This only changes acceptance of a native fit: all 16 assignments and the
+    native sizing curve remain intact, including the TCRgB window below 75 bp.
+    Interpolating residuals alone cannot establish that the chosen peaks fit
+    the ladder, so check a separate quadratic trend and actual signal apices.
+    """
+    from scipy.signal import find_peaks
+
+    from core.analysis._constants import LADDER_FIT_AUTO_ACCEPT_RULES, LADDER_FIT_PROFILE_CLONALITY_LIZ500
+    from core.assay_config import MIN_SIZE_STANDARD_HEIGHT_LIZ
+    from fraggler.ladders import LADDERS
+
+    expected = np.asarray(LADDERS["LIZ500_250"]["sizes"], dtype=float)
+    if sizes.shape != expected.shape or not np.allclose(sizes, expected, atol=1e-6, rtol=0):
+        return False
+    # Reuse the existing LIZ compatibility ceiling. The former unconditional
+    # 95-scan limit is too narrow, but an arbitrarily distant start is unsafe.
+    if scans[1] - scans[0] > 160.0:
+        return False
+    core_scans, core_sizes = scans[2:], sizes[2:]
+    if not np.isfinite(core_scans).all() or np.any(np.diff(core_scans) <= 0):
+        return False
+    peaks, _ = find_peaks(
+        trace, height=MIN_SIZE_STANDARD_HEIGHT_LIZ, prominence=MIN_SIZE_STANDARD_HEIGHT_LIZ,
+    )
+    if not all(np.any(np.abs(peaks - scan) <= 1) for scan in core_scans):
+        return False
+    # A real early peak may be much smaller than the family, but a baseline
+    # shoulder must not be promoted merely because the later core is clean.
+    early_peaks, _ = find_peaks(trace, height=55.0, prominence=55.0)
+    if not all(np.any(np.abs(early_peaks - scan) <= 1) for scan in scans[:2]):
+        return False
+    rules = LADDER_FIT_AUTO_ACCEPT_RULES[LADDER_FIT_PROFILE_CLONALITY_LIZ500]
+    predicted = np.polyval(np.polyfit(core_scans, core_sizes, 2), core_scans)
+    residuals = np.abs(core_sizes - predicted)
+    total = float(np.sum((core_sizes - np.mean(core_sizes)) ** 2))
+    r2 = 1.0 - float(np.sum(residuals ** 2)) / total
+    return bool(
+        np.isfinite(residuals).all()
+        and np.max(residuals) <= rules["max_abs_error_bp"]
+        and np.mean(residuals) <= rules["mean_abs_error_bp"]
+        and r2 >= rules["r2_floor"]
+    )
+
+
 def _validate_rust_anchor_selection(
     fsa: FsaFile,
     scan_indices: list[int],
@@ -888,6 +939,10 @@ def _validate_rust_anchor_selection(
     if np.isfinite(median_signal) and median_signal < 35.0:
         return False, f"LIZ anchor signal too weak (median {median_signal:.1f})"
 
+    early_anchor_waiver = _liz_core_supports_early_anchor_waiver(
+        scans, np.asarray(expected_bps, dtype=float), validation_trace,
+    )
+
     # LIZ control failures often start by missing the 35/50 bp anchors and
     # replacing them with low baseline shoulders or dye blobs. Tighten the
     # first-anchor checks so these fits are rejected before hydration.
@@ -908,6 +963,7 @@ def _validate_rust_anchor_selection(
             np.isfinite(median_first_signal)
             and first_signal < median_first_signal * 0.55
             and not relaxed_external_liz_first_anchor
+            and not early_anchor_waiver
         ):
             return False, f"LIZ first anchor too weak relative to early ladder ({first_signal:.1f})"
 
@@ -921,11 +977,12 @@ def _validate_rust_anchor_selection(
             if (
                 first_height < max(35.0, local_max * 0.20)
                 and not relaxed_external_liz_first_anchor
+                and not early_anchor_waiver
             ):
                 return False, f"LIZ first anchor looks like baseline ({first_height:.1f} vs local max {local_max:.1f})"
 
     first_gap = float(scans[1] - scans[0]) if scans.size >= 2 else float("inf")
-    if first_gap > 95.0 and not (_flt3_liz_override_enabled() and first_gap <= 160.0):
+    if first_gap > 95.0 and not early_anchor_waiver and not (_flt3_liz_override_enabled() and first_gap <= 160.0):
         return False, f"LIZ first gap too large ({first_gap:.1f})"
 
     return True, "LIZ anchor checks passed"
@@ -1277,6 +1334,22 @@ def _apply_rust_result_to_fsa(fsa: FsaFile, res: dict[str, Any]) -> FsaFile | No
             scan_indices,
             expected_bps,
         ):
+            reason_codes = list(getattr(fsa, "rust_review_reason_codes", []) or [])
+            if "rust_anchor_validation_failed" not in reason_codes:
+                reason_codes.append("rust_anchor_validation_failed")
+            existing_summary = str(getattr(fsa, "rust_review_summary", "") or "").strip()
+            failure_summary = f"Anchor validation failed: {reason}"
+            summary = f"{existing_summary} {failure_summary}".strip()
+            fsa.rust_review_reason_codes = reason_codes
+            fsa.rust_review_primary_reason = reason
+            fsa.rust_review_summary = summary
+            fsa.rust_ladder_review_assessment = {
+                **(review_assessment if isinstance(review_assessment, dict) else {}),
+                "suggested_review": True,
+                "reason_codes": reason_codes,
+                "primary_reason": reason,
+                "summary": summary,
+            }
             log(
                 f"[RUST GUARDRAIL] Rejected anchor set for {fsa.file_name}: {reason}. "
                 "Returning control to the runtime without Python rescue."
