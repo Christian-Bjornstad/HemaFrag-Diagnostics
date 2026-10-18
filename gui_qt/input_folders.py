@@ -2,13 +2,14 @@
 from pathlib import Path
 
 from PyQt6.QtCore import QDir, QEvent, Qt
-from PyQt6.QtGui import QFileSystemModel
+from PyQt6.QtGui import QColor, QFileSystemModel, QPalette
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -16,11 +17,30 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from gui_qt.styles import INPUT_FOLDERS_QSS, PALETTE
+
 
 class InputFoldersDialog(QDialog):
     def __init__(self, parent=None, start_directory: str = ""):
         super().__init__(parent)
+        self.setObjectName("InputFoldersDialog")
         self.setWindowTitle("Add Input Folders")
+        # This custom picker must remain light even with a dark Windows palette.
+        palette = self.palette()
+        for role, color in (
+            (QPalette.ColorRole.Window, PALETTE["background"]),
+            (QPalette.ColorRole.Base, PALETTE["card_bg"]),
+            (QPalette.ColorRole.AlternateBase, PALETTE["empty_state"]),
+            (QPalette.ColorRole.WindowText, PALETTE["neutral_text"]),
+            (QPalette.ColorRole.Text, PALETTE["neutral_text"]),
+            (QPalette.ColorRole.Button, PALETTE["card_bg"]),
+            (QPalette.ColorRole.ButtonText, PALETTE["neutral_text"]),
+            (QPalette.ColorRole.Highlight, PALETTE["primary"]),
+            (QPalette.ColorRole.HighlightedText, PALETTE["card_bg"]),
+        ):
+            palette.setColor(role, QColor(color))
+        self.setPalette(palette)
+        self.setStyleSheet(INPUT_FOLDERS_QSS)
         self.resize(780, 500)
         self.setMinimumSize(540, 320)
         layout = QVBoxLayout(self)
@@ -48,13 +68,20 @@ class InputFoldersDialog(QDialog):
         self.model.setFilter(QDir.Filter.Dirs | QDir.Filter.NoDotAndDotDot)
         self.model.setReadOnly(True)
         self.tree = QTreeView()
+        self.tree.setObjectName("InputFoldersTree")
         self.tree.setAccessibleName("Input folders")
         self.tree.setModel(self.model)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.tree.setHeaderHidden(True)
-        for column in range(1, self.model.columnCount()):
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setHeaderHidden(False)
+        for column in (1, 2):
             self.tree.hideColumn(column)
+        self.tree.header().setStretchLastSection(False)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.setSortingEnabled(True)
+        self.tree.sortByColumn(3, Qt.SortOrder.DescendingOrder)
         self.tree.doubleClicked.connect(lambda index: self.navigate(Path(self.model.filePath(index))))
         self.tree.selectionModel().selectionChanged.connect(self._selection_changed)
         layout.addWidget(self.tree, stretch=1)

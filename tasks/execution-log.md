@@ -184,3 +184,11 @@ Verifikasjon:
 - Python-guardrailens faktiske avvisningsgrunn ble tidligere kun logget og kunne gå tapt i review-CSV/editor. Den lagres nå som primary reason, i summary og med `rust_anchor_validation_failed`, sammen med eksisterende Rust-diagnostikk.
 - Tolv nye regresjonstester dekker høy RFU, tidlig avstand, svak/feil kjerne, manglende ankere, bakgrunn ved 50 bp, uendret native mapping og bevarte avvisningsgrunner. Egen adversarial gjennomgang fant og lukket en falsk aksept av 50 bp på bakgrunn ved 132 skanningers startgap.
 - Full `python -m pytest -q --junitxml=.pytest_cache/liz-early-anchor-qc-final.xml`: **1008 bestått, 6 skipped, 4 warnings**, 196,63 sekunder. Compileall, F821, full lint på nye tester og `git diff --check`: bestått. Lokalt på `codex/liz-early-anchor-qc`; de konkrete 44 filene er ikke verifisert.
+
+## Lys mappevelger med sortering — 2026-10-18
+
+- `Add Input Folders` har lokal lys palett og avgrenset styling for dialog, mappeliste og kolonneoverskrifter, også når Windows/Qt bruker mørk palett. Øvrige dialoger og appens tema endres ikke.
+- Navn og endringsdato vises som klikkbare kolonner. Standard er sist endret øverst; klikk bytter mellom stigende og synkende sortering. Flerutvalg med Ctrl/Shift og eksisterende navigasjon beholdes.
+- En reell Qt-interaksjonstest med ulike mappe-mtime bekrefter nyeste først, toveis navnesortering ved klikk og bevarte valg etter sortering og aksept. Shift-testen bruker nå eksplisitt alfabetisk sortering for å kontrollere sitt sammenhengende utvalg.
+- **26 relevante tester bestått** (mappevalg og navigasjonsvern). Full lint på berørte filer, compileall og `git diff --check`: bestått. Lys dialog ble rendret og visuelt kontrollert med simulert mørk systempalett; syntetisk skjermbilde i `artifacts/input-folder-browser-20261018.png`.
+- Lagret lokalt på `codex/input-folder-browser-sort`; ikke pushet.

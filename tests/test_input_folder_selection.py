@@ -74,6 +74,8 @@ def test_folder_dialog_selects_multiple_folders_with_shift(qapp, tmp_path):
         path.mkdir()
     (tmp_path / "ignore.fsa").write_bytes(b"fsa")
     dialog = InputFoldersDialog(start_directory=str(tmp_path))
+    # This test exercises a contiguous Shift range in alphabetical order.
+    dialog.tree.sortByColumn(0, Qt.SortOrder.AscendingOrder)
     dialog.show()
     try:
         timer = QElapsedTimer()
@@ -94,6 +96,58 @@ def test_folder_dialog_selects_multiple_folders_with_shift(qapp, tmp_path):
         QTest.mouseClick(dialog.add_button, Qt.MouseButton.LeftButton)
         assert dialog.result() == QDialog.DialogCode.Accepted
         assert set(map(Path, dialog._accepted_directories)) == set(sources)
+    finally:
+        dialog.close()
+
+
+def test_folder_browser_sorts_newest_first_and_header_sort_keeps_selection(qapp, tmp_path):
+    import os
+
+    from PyQt6.QtCore import QElapsedTimer, QPoint, Qt
+    from PyQt6.QtTest import QTest
+
+    from gui_qt.input_folders import InputFoldersDialog
+
+    names = ["alpha_old", "zeta_middle", "beta_new"]
+    sources = [tmp_path / name for name in names]
+    for i, path in enumerate(sources):
+        path.mkdir()
+        os.utime(path, (1700000000 + i * 86400, 1700000000 + i * 86400))
+    dialog = InputFoldersDialog(start_directory=str(tmp_path))
+    dialog.show()
+
+    def visible_names():
+        root = dialog.tree.rootIndex()
+        return [dialog.model.fileName(dialog.model.index(i, 0, root))
+                for i in range(dialog.model.rowCount(root))]
+
+    def wait_for_order(expected):
+        timer = QElapsedTimer()
+        timer.start()
+        while visible_names() != expected and timer.elapsed() < 3000:
+            QTest.qWait(10)
+        assert visible_names() == expected
+
+    try:
+        wait_for_order(list(reversed(names)))
+        assert not dialog.tree.header().isHidden()
+        assert not dialog.tree.isColumnHidden(3)
+        for path in (sources[0], sources[2]):
+            index = dialog.model.index(str(path))
+            QTest.mouseClick(dialog.tree.viewport(), Qt.MouseButton.LeftButton,
+                            Qt.KeyboardModifier.ControlModifier,
+                            pos=dialog.tree.visualRect(index).center())
+        selected = {sources[0], sources[2]}
+        assert set(map(Path, dialog.selected_directories())) == selected
+        header = dialog.tree.header()
+        name_position = QPoint(header.sectionViewportPosition(0) + 25, header.height() // 2)
+        QTest.mouseClick(header.viewport(), Qt.MouseButton.LeftButton, pos=name_position)
+        wait_for_order(sorted(names))
+        assert set(map(Path, dialog.selected_directories())) == selected
+        QTest.mouseClick(header.viewport(), Qt.MouseButton.LeftButton, pos=name_position)
+        wait_for_order(sorted(names, reverse=True))
+        dialog.accept()
+        assert set(map(Path, dialog._accepted_directories)) == selected
     finally:
         dialog.close()
 
