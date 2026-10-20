@@ -825,6 +825,9 @@ class TabLadder(QWidget):
             initial_adjustment=initial_adjustment,
         )
         if dialog.exec():
+            unresolved_before = (
+                self._review_bundle_counts()[1] if self._is_run_tab_owned_review() else 0
+            )
             review_payload = dialog.get_review_payload()
             action = review_payload.get("action")
             if action == "exclude_unusable_ladder":
@@ -950,18 +953,7 @@ class TabLadder(QWidget):
             if review_payload.get("action") == "note_only":
                 self._set_status(f"Saved review note for {self._current_file.name}.")
                 if self._is_run_tab_owned_review():
-                    message = QMessageBox(self)
-                    message.setIcon(QMessageBox.Icon.Information)
-                    message.setWindowTitle("Review Saved")
-                    message.setText(f"Review saved for {self._current_file.name}.")
-                    message.setInformativeText(
-                        "Return to Run and use Run Manual Fixes + Build DIT when review is complete."
-                    )
-                    back_btn = message.addButton("Back To Run", QMessageBox.ButtonRole.AcceptRole)
-                    message.addButton("Stay Here", QMessageBox.ButtonRole.RejectRole)
-                    message.exec()
-                    if message.clickedButton() == back_btn:
-                        self._return_to_run_tab_for_review()
+                    self._offer_return_after_review_complete(unresolved_before)
                 else:
                     QMessageBox.information(
                         self,
@@ -973,18 +965,7 @@ class TabLadder(QWidget):
                     f"Saved ladder adjustment for {self._current_file.name}. Re-run the analysis to use the new fit."
                 )
                 if self._is_run_tab_owned_review():
-                    message = QMessageBox(self)
-                    message.setIcon(QMessageBox.Icon.Information)
-                    message.setWindowTitle("Adjustment Saved")
-                    message.setText(f"Ladder adjustment saved for {self._current_file.name}.")
-                    message.setInformativeText(
-                        "Return to Run and use Run Manual Fixes + Build DIT so the linked patient/job group is rerun."
-                    )
-                    back_btn = message.addButton("Back To Run", QMessageBox.ButtonRole.AcceptRole)
-                    message.addButton("Stay Here", QMessageBox.ButtonRole.RejectRole)
-                    message.exec()
-                    if message.clickedButton() == back_btn:
-                        self._return_to_run_tab_for_review()
+                    self._offer_return_after_review_complete(unresolved_before)
                     return
                 message = QMessageBox(self)
                 message.setIcon(QMessageBox.Icon.Information)
@@ -1055,6 +1036,7 @@ class TabLadder(QWidget):
     def _on_missing_ladder_exclusion_saved(
         self, cache_key: Path, annotation: dict
     ) -> None:
+        unresolved_before = self._review_bundle_counts()[1]
         review_case = self._review_case_by_path.get(cache_key)
         if review_case is not None:
             review_case.update(annotation)
@@ -1085,6 +1067,8 @@ class TabLadder(QWidget):
             "excluded_unusable_ladder": "ladder does not fit",
         }.get(label, "no usable ladder signal")
         self._set_status(f"Excluded {cache_key.name}: {reason}.")
+        if self._is_run_tab_owned_review():
+            self._offer_return_after_review_complete(unresolved_before)
 
     def _on_missing_ladder_exclusion_error(self, cache_key: Path, err_tuple) -> None:
         if self._current_file is not None and self._resolve_cache_key(self._current_file) == cache_key:
@@ -1434,6 +1418,24 @@ class TabLadder(QWidget):
             return Path(run_bundle).resolve() == self._review_bundle_dir.resolve()
         except Exception:
             return Path(run_bundle) == self._review_bundle_dir
+
+    def _offer_return_after_review_complete(self, unresolved_before: int) -> None:
+        """Offer the batch handoff only on the transition to a completed review."""
+        if unresolved_before <= 0 or self._review_bundle_counts()[1] != 0:
+            return
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Information)
+        message.setWindowTitle("Ladder Review Complete")
+        message.setText("All ladder review cases have been resolved.")
+        message.setInformativeText(
+            "Return to Run and use Run Manual Fixes + Build DIT to rerun the linked "
+            "patient/job groups and build the final reports."
+        )
+        back_btn = message.addButton("Back To Run", QMessageBox.ButtonRole.AcceptRole)
+        message.addButton("Stay Here", QMessageBox.ButtonRole.RejectRole)
+        message.exec()
+        if message.clickedButton() == back_btn:
+            self._return_to_run_tab_for_review()
 
     def _return_to_run_tab_for_review(self) -> bool:
         if not self._is_run_tab_owned_review():
