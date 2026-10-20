@@ -703,6 +703,8 @@ class TabLadderRerunSelectionTests(unittest.TestCase):
             _refresh_review_bundle_run_button=MagicMock(),
             _set_status=MagicMock(),
             _run_tab_for_review=lambda: run_tab,
+            _review_bundle_counts=lambda: TabLadder._review_bundle_counts(fake_tab),
+            _is_run_tab_owned_review=lambda: False,
         )
         annotation = {
             "label": "excluded_missing_ladder_signal",
