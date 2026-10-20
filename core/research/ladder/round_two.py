@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from core.analyses.clonality.ladder_review_labels import (
+    EXCLUDED_LADDER_LABELS,
     is_review_fitting_eligible,
     is_review_ml_eligible,
     is_review_resolved,
@@ -1217,7 +1218,7 @@ def finalize_round_two_review(
         reviewed_at_utc = str(row.get("reviewed_at_utc") or "").strip()
         if (
             not reviewed_at_utc
-            and label != "excluded_missing_ladder_signal"
+            and label not in EXCLUDED_LADDER_LABELS
         ):
             raise ValueError(
                 f"Round-two case {case_id} requires a review timestamp"
@@ -1247,7 +1248,7 @@ def finalize_round_two_review(
                     f"Round-two reviewed_no_change case {case_id} has contradictory adjustment evidence"
                 )
             review_scans = list(rust_scans)
-        elif label == "excluded_missing_ladder_signal":
+        elif label in EXCLUDED_LADDER_LABELS:
             if (
                 not str(row.get("label_note") or "").strip()
                 or not reviewed_at_utc
@@ -1281,7 +1282,7 @@ def finalize_round_two_review(
                 "review_scan_indices": review_scans,
                 "anchor_deltas": (
                     []
-                    if label == "excluded_missing_ladder_signal"
+                    if label in EXCLUDED_LADDER_LABELS
                     else _anchor_deltas(rust_scans, review_scans)
                 ),
                 "fitting_evaluation_eligible": is_review_fitting_eligible(label),
@@ -1291,7 +1292,7 @@ def finalize_round_two_review(
 
     total_count = len(outcome_cases)
     excluded_count = sum(
-        case["label"] == "excluded_missing_ladder_signal" for case in outcome_cases
+        case["label"] in EXCLUDED_LADDER_LABELS for case in outcome_cases
     )
     fitting_evaluation_count = sum(
         bool(case["fitting_evaluation_eligible"]) for case in outcome_cases

@@ -37,3 +37,30 @@ def test_stamp_entry_source_provenance_leaves_unmatched_entry_unchanged(tmp_path
 
     assert stamped[0]["source_run_dir"] == "existing-run"
     assert "original_file_path" not in stamped[0]
+
+
+def test_stamp_entry_source_provenance_restores_rejected_alternate(tmp_path):
+    run_dir = tmp_path / "instrument_run"
+    run_dir.mkdir()
+    selected = run_dir / "26OUM00000_ITD_B05.fsa"
+    rejected = run_dir / "26OUM00000_ITD_A05.fsa"
+    selected.touch()
+    rejected.touch()
+    entry = {
+        "file_name": "00002_01234567_26OUM00000_ITD_B05.fsa",
+        "_alternate_ladder_review_entries": [
+            {
+                "file_name": "00001_01234567_26OUM00000_ITD_A05.fsa",
+                "original_file_path": str(tmp_path / "fraggler_stage_deleted" / "00001_01234567_26OUM00000_ITD_A05.fsa"),
+                "ladder_review_required": True,
+            }
+        ],
+    }
+
+    _stamp_entry_source_provenance([entry], [selected, rejected])
+
+    alternate = entry["_alternate_ladder_review_entries"][0]
+    assert entry["original_file_path"] == str(selected.resolve())
+    assert alternate["original_file_path"] == str(rejected.resolve())
+    assert alternate["file_name"] == rejected.name
+    assert alternate["source_run_dir"] == run_dir.name

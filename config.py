@@ -10,6 +10,7 @@ import yaml
 import copy
 import logging
 import os
+import tempfile
 import warnings
 from pathlib import Path
 from typing import Any, Dict, Mapping
@@ -19,7 +20,9 @@ from typing import Any, Dict, Mapping
 # ============================================================
 
 LEGACY_SETTINGS_PATH = Path.home() / ".fraggler_gui.yaml"
-SETTINGS_PATH = Path.home() / ".hemafrag_gui.yaml"
+SETTINGS_PATH = Path(
+    os.environ.get("HEMAFRAG_SETTINGS_PATH") or Path.home() / ".hemafrag_gui.yaml"
+).expanduser()
 _LOG = logging.getLogger(__name__)
 
 LAST_SETTINGS_LOAD_ERROR: str | None = None
@@ -49,7 +52,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "pipeline": {
         "input_dir": str(Path.home()),
         "output_base": str(Path.home()),
-        "out_folder_name": "ASSAY_REPORTS",
+        "out_folder_name": "",
         "mode": "all",               # "all" | "controls" | "custom"
         "assay_filter_substring": "",
     },
@@ -84,7 +87,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "yaml_path": "",
         "job_type": "pipeline",       # "pipeline" | "qc" | "dit"
         "output_base": str(Path.home()),
-        "out_folder_tmpl": "ASSAY_REPORTS",
+        "out_folder_tmpl": "",
         "outfile_html_tmpl": "QC_REPORT_{name}.html",
         "excel_name_tmpl": "QC_TRENDS_{name}.xlsx",
         "mode": "all",
@@ -135,21 +138,6 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
             },
             "interpretation": {
                 "enabled": False,
-                "model_path": "",
-                "thresholds": {
-                    "FR1": 0.85, "FR2": 0.85, "FR3": 0.85,
-                    "TCRG-A": 0.75, "TCRG-B": 0.75,
-                    "TCRB-A": 0.75, "TCRB-B": 0.75, "TCRB-C": 0.75,
-                    "DHJH_D": 0.92, "DHJH_E": 0.92,
-                    "IGK": 0.92, "KDE": 0.92,
-                    "SL": 0.95, "IKZF1": 0.95,
-                    "Ktr-albumin": 0.92,
-                    "_default": 0.85,
-                },
-            },
-            "learning": {
-                "enabled": False,
-                "output_dir": "",
             },
         },
         "flt3": {
@@ -425,6 +413,12 @@ def _migrate_legacy_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
                 ),
             )
         if analysis_id == "clonality":
+            profile.pop("learning", None)
+            interpretation = profile.get("interpretation")
+            if isinstance(interpretation, dict):
+                interpretation.pop("model_path", None)
+                interpretation.pop("thresholds", None)
+
             archive_runner = profile.setdefault("archive_runner", {})
             if not isinstance(archive_runner.get("input_root"), str) or not archive_runner.get("input_root"):
                 archive_runner["input_root"] = profile_batch.get("base_input_dir", default_archive_runner.get("input_root", str(Path.home())))
@@ -535,7 +529,7 @@ def _validate_settings(settings: Dict[str, Any]) -> None:
     """Basic validation for critical settings."""
     pipeline = settings.get("pipeline", {})
     if not isinstance(pipeline.get("out_folder_name"), str):
-        pipeline["out_folder_name"] = "ASSAY_REPORTS"
+        pipeline["out_folder_name"] = ""
     for key in ("input_dir", "output_base", "assay_filter_substring"):
         if key in pipeline and not isinstance(pipeline.get(key), str):
             pipeline[key] = str(pipeline.get(key, ""))
@@ -700,7 +694,12 @@ def load_settings(
     LAST_SETTINGS_LOAD_ERROR = None
 
     resolved_settings_path = settings_path
-    if settings_path == SETTINGS_PATH and not settings_path.exists() and LEGACY_SETTINGS_PATH.exists():
+    if (
+        not os.environ.get("HEMAFRAG_SETTINGS_PATH")
+        and settings_path == SETTINGS_PATH
+        and not settings_path.exists()
+        and LEGACY_SETTINGS_PATH.exists()
+    ):
         resolved_settings_path = LEGACY_SETTINGS_PATH
 
     # 1) Load from YAML if exists
@@ -719,20 +718,36 @@ def load_settings(
     return settings
 
 
-def save_settings(settings: Dict[str, Any], settings_path: Path | None = None) -> None:
-    """Persist settings to YAML."""
+def save_settings(settings: Dict[str, Any], settings_path: Path | None = None) -> bool:
+    """Persist settings atomically; return whether the replacement succeeded."""
     global LAST_SETTINGS_SAVE_ERROR
     settings_path = settings_path or SETTINGS_PATH
     LAST_SETTINGS_SAVE_ERROR = None
+    temporary_path: Path | None = None
     try:
         payload = copy.deepcopy(settings)
         payload = _migrate_legacy_settings(payload)
         payload["default_output"] = payload.get("general", {}).get("default_output", "")
         settings_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(settings_path, "w", encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=settings_path.parent,
+            prefix=f".{settings_path.name}.", suffix=".tmp", delete=False,
+        ) as f:
+            temporary_path = Path(f.name)
             yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, settings_path)
+        return True
     except Exception as exc:
         LAST_SETTINGS_SAVE_ERROR = _report_settings_issue("Failed to save", settings_path, exc)
+        return False
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                _LOG.warning("Could not remove temporary settings file %s", temporary_path)
 
 
 # Singleton — imported by other modules

@@ -11,7 +11,6 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QFormLayout,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,

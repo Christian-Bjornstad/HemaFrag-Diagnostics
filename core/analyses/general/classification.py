@@ -2,18 +2,24 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
+from typing import Any
 
 from core.utils import strip_stage_prefix
 
 from .config import GENERAL_ASSAY_NAME, resolve_runtime_config
 
 
-def classify_fsa(fsa_path: Path) -> dict | None:
+def classify_fsa(
+    fsa_path: Path,
+    *,
+    settings: Mapping[str, Any] | None = None,
+) -> dict | None:
     """Return a generic metadata payload for arbitrary .fsa inputs."""
     if not fsa_path.name.lower().endswith(".fsa"):
         return None
 
-    runtime = resolve_runtime_config()
+    runtime = resolve_runtime_config(settings)
     clean_name = strip_stage_prefix(fsa_path.name)
     sample_id = fsa_path.stem
     return {

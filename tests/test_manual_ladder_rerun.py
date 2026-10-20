@@ -9,6 +9,7 @@ import pytest
 from core.analysis import (
     LADDER_ADJUSTMENT_SCHEMA_LEGACY,
     LADDER_ADJUSTMENT_SCHEMA_V2,
+    LADDER_ADJUSTMENT_SCHEMA_V3,
     load_ladder_adjustment,
     save_ladder_adjustment,
 )
@@ -75,10 +76,14 @@ def test_manual_ladder_adjustment_is_atomically_saved_and_reloadable(tmp_path):
     assert not fsa_path.with_suffix(".ladder_adj.json").exists()
     loaded = load_ladder_adjustment(fsa)
     assert loaded is not None
-    assert loaded["schema_version"] == LADDER_ADJUSTMENT_SCHEMA_V2
+    assert loaded["schema_version"] == LADDER_ADJUSTMENT_SCHEMA_V3
     assert {key: loaded[key] for key in _payload()} == _payload()
     assert loaded["source"]["sha256"]
     assert loaded["validation"]["save_verified"] is True
+    assert loaded["validation"]["uses_observed_anchors_only"] is True
+    assert loaded["mapped_step_indices"] == [0, 1, 2]
+    assert loaded["missing_step_indices"] == []
+    assert loaded["partial_mapping"] is False
     assert not list(tmp_path.glob("*.tmp"))
 
 
@@ -100,6 +105,30 @@ def test_manual_ladder_adjustment_write_failure_is_not_reported_as_success(
         save_ladder_adjustment(fsa, _payload())
 
 
+@pytest.mark.parametrize("operation", ["save", "migrate"])
+def test_readonly_legacy_sidecar_does_not_hide_persisted_adjustment(tmp_path, monkeypatch, operation):
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"fsa")
+    sidecar = source.with_suffix(".ladder_adj.json")
+    sidecar.write_text(json.dumps(_payload()), encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def refuse_sidecar_cleanup(path, *args, **kwargs):
+        if path == sidecar:
+            raise PermissionError("read-only source directory")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse_sidecar_cleanup)
+    fsa = SimpleNamespace(file=str(source))
+    if operation == "save":
+        assert save_ladder_adjustment(fsa, _payload()).exists()
+    loaded = load_ladder_adjustment(fsa)
+    assert loaded is not None
+    assert loaded["mapping_times"] == _payload()["mapping_times"]
+    assert sidecar.exists()
+    assert load_ladder_adjustment_record(source) is not None
+
+
 def test_legacy_index_only_ladder_adjustment_remains_saveable(tmp_path):
     fsa = SimpleNamespace(file=str(tmp_path / "legacy.fsa"))
 
@@ -114,6 +143,27 @@ def test_legacy_index_only_ladder_adjustment_remains_saveable(tmp_path):
     }
 
 
+@pytest.mark.parametrize("invalid_payload", [
+    {"mapping_times": {"0": "not-a-number"}},
+    {"markers": [{"scan_x": 100, "candidate_index": "invalid"}]},
+    {"markers": [{"marker_id": "same", "scan_x": 100}] * 2},
+])
+def test_invalid_stored_adjustment_does_not_crash_or_import_stale_sidecar(
+    tmp_path, capsys, invalid_payload,
+):
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"fsa")
+    save_ladder_adjustment_record(source, invalid_payload)
+    sidecar = source.with_suffix(".ladder_adj.json")
+    sidecar.write_text(json.dumps(_payload()), encoding="utf-8")
+
+    assert load_ladder_adjustment(SimpleNamespace(file=str(source))) is None
+
+    assert "Ignoring invalid stored ladder adjustment" in capsys.readouterr().out
+    assert load_ladder_adjustment_record(source)["payload"] == invalid_payload
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == json.loads(json.dumps(_payload()))
+
+
 def test_legacy_ladder_adjustment_remains_loadable(tmp_path):
     fsa_path = tmp_path / "legacy.fsa"
     fsa_path.write_bytes(b"legacy")
@@ -124,13 +174,116 @@ def test_legacy_ladder_adjustment_remains_loadable(tmp_path):
 
     loaded = load_ladder_adjustment(SimpleNamespace(file=str(fsa_path)))
 
-    assert loaded == {
-        "schema_version": LADDER_ADJUSTMENT_SCHEMA_LEGACY,
-        "mapping": {0: 2, 1: 4, 2: 6},
-        "mapping_times": {},
-        "manual_candidates": [],
-    }
+    assert loaded["schema_version"] == LADDER_ADJUSTMENT_SCHEMA_LEGACY
+    assert loaded["mapping"] == {0: 2, 1: 4, 2: 6}
+    assert loaded["mapping_times"] == {}
+    assert loaded["manual_candidates"] == []
+    assert loaded["mapped_step_indices"] == [0, 1, 2]
+    assert loaded["partial_mapping"] is False
     assert not fsa_path.with_suffix(".ladder_adj.json").exists()
+
+def test_structured_v2_payload_without_mapping_normalizes_safely():
+    from core.ladder_adjustment_io import normalize_ladder_adjustment_payload
+
+    normalized = normalize_ladder_adjustment_payload(
+        {"schema_version": LADDER_ADJUSTMENT_SCHEMA_V2}
+    )
+
+    assert normalized is not None
+    assert normalized["schema_version"] == LADDER_ADJUSTMENT_SCHEMA_V2
+    assert normalized["mapping"] == {}
+    assert normalized["markers"] == []
+
+
+def test_conflicting_marker_time_cannot_overwrite_saved_adjustment(tmp_path):
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"fsa")
+    fsa = SimpleNamespace(file=str(source))
+    save_ladder_adjustment(fsa, _payload())
+    original = load_ladder_adjustment_record(source)
+    conflicting = _payload() | {
+        "markers": [{"marker_id": "first", "scan_x": 150.0}],
+        "marker_id_by_step": {0: "first"},
+    }
+
+    with pytest.raises(RuntimeError, match="does not match.*mapped time"):
+        save_ladder_adjustment(fsa, conflicting)
+
+    assert load_ladder_adjustment_record(source) == original
+
+
+def test_conflicting_stored_marker_is_rejected_on_reload(tmp_path, capsys):
+    source = tmp_path / "sample.fsa"
+    source.write_bytes(b"fsa")
+    conflicting = _payload() | {
+        "markers": [{"marker_id": "first", "scan_x": 150.0}],
+        "marker_id_by_step": {0: "first"},
+    }
+    save_ladder_adjustment_record(source, conflicting)
+
+    assert load_ladder_adjustment(SimpleNamespace(file=str(source))) is None
+    assert "does not match" in capsys.readouterr().out
+
+
+def test_v3_partial_round_trip_preserves_exact_markers_and_approval(tmp_path):
+    source = tmp_path / "partial.fsa"
+    source.write_bytes(b"synthetic")
+    fsa = SimpleNamespace(
+        file=str(source),
+        ladder="LIZ500_250",
+        size_standard_channel="DATA4",
+        expected_ladder_steps=[50.0, 75.0, 100.0, 139.0],
+    )
+    payload = {
+        "mapping": {0: 0, 2: 1, 3: 2},
+        "mapping_times": {0: 101.25, 2: 305.5, 3: 450.75},
+        "manual_candidates": [101.25, 305.5, 450.75],
+        "markers": [
+            {
+                "marker_id": "manual-a",
+                "scan_x": 101.25,
+                "requested_x": 101.25,
+                "intensity": 120.0,
+                "source_kind": "manual_exact",
+                "candidate_index": 0,
+            },
+            {
+                "marker_id": "manual-b",
+                "scan_x": 305.5,
+                "requested_x": 305.5,
+                "intensity": 220.0,
+                "source_kind": "manual_exact",
+                "candidate_index": 1,
+            },
+            {
+                "marker_id": "manual-c",
+                "scan_x": 450.75,
+                "requested_x": 450.75,
+                "intensity": 180.0,
+                "source_kind": "manual_exact",
+                "candidate_index": 2,
+            },
+        ],
+        "marker_id_by_step": {0: "manual-a", 2: "manual-b", 3: "manual-c"},
+        "partial_mapping": True,
+    }
+
+    save_ladder_adjustment(fsa, payload, partial_approved=True)
+    loaded = load_ladder_adjustment(fsa)
+
+    assert loaded is not None
+    assert loaded["schema_version"] == LADDER_ADJUSTMENT_SCHEMA_V3
+    assert loaded["mapping_times"] == payload["mapping_times"]
+    assert loaded["marker_id_by_step"] == payload["marker_id_by_step"]
+    assert [marker["scan_x"] for marker in loaded["markers"]] == [
+        101.25,
+        305.5,
+        450.75,
+    ]
+    assert loaded["mapped_step_indices"] == [0, 2, 3]
+    assert loaded["missing_step_indices"] == [1]
+    assert loaded["partial_mapping"] is True
+    assert loaded["review"]["partial_approved"] is True
 
 
 def test_adjustment_follows_staged_copy_by_source_content(tmp_path):
@@ -225,7 +378,16 @@ def test_v2_adjustment_records_review_and_selected_peak_provenance(tmp_path):
     assert loaded["review"]["comment"] == "confirmed"
     assert loaded["review"]["before_qc"]["linear_r2"] == 0.99
     assert loaded["review"]["after_qc"]["r2"] == 0.9999
-    assert loaded["selected_peaks"] == [
+    selected = loaded["selected_peaks"]
+    assert [
+        {
+            "step_index": peak["step_index"],
+            "candidate_index": peak["candidate_index"],
+            "expected_bp": peak["expected_bp"],
+            "observed_time": peak["observed_time"],
+        }
+        for peak in selected
+    ] == [
         {
             "step_index": 0,
             "candidate_index": 0,
@@ -245,6 +407,9 @@ def test_v2_adjustment_records_review_and_selected_peak_provenance(tmp_path):
             "observed_time": 300.0,
         },
     ]
+    marker_ids = [peak["marker_id"] for peak in selected]
+    assert all(marker_ids)
+    assert len(set(marker_ids)) == 3
 
 
 @pytest.mark.parametrize(
@@ -477,6 +642,84 @@ def test_review_finalize_blocks_when_original_qc_cohort_is_missing(
     assert payload["finalization_validation"]["expected_qc_entries"] == 1
     assert payload["finalization_validation"]["actual_qc_entries"] == 0
     assert built == []
+
+
+def test_review_finalize_builds_from_retained_entries_without_rerun(
+    tmp_path, monkeypatch
+):
+    from core.run_manifest import BatchRunManifest
+    from gui_qt.tabs.tab_batch import TabBatch
+    import core.batch as batch
+    import core.html_reports as html_reports
+    from core.analyses.clonality import tracking_excel
+
+    selected = tmp_path / "selected.fsa"
+    rejected = tmp_path / "rejected.fsa"
+    selected.write_bytes(b"selected")
+    rejected.write_bytes(b"rejected")
+    retained_entry = {"original_file_path": str(selected), "kind": "selected"}
+    parent_manifest = BatchRunManifest.create(
+        output_dir=tmp_path,
+        jobs=[{
+            "name": "patient",
+            "type": "pipeline",
+            "path": tmp_path,
+            "files": [selected, rejected],
+        }],
+        analysis="clonality",
+        settings={},
+        execution={},
+    )
+    parent_manifest.finalize(
+        result={
+            "completed_jobs": ["patient"],
+            "failed_jobs": [],
+            "dit_report_entries": [retained_entry],
+            "qc_report_entries": [],
+        },
+        aggregate_output_dir=tmp_path,
+        review_gate={},
+    )
+    calls = []
+    monkeypatch.setattr(
+        batch,
+        "run_batch_jobs",
+        lambda **kwargs: calls.append(kwargs) or {
+            "collected_entries": [],
+            "qc_report_entries": [],
+            "failed_jobs": [],
+            "ladder_review_gate": {},
+        },
+    )
+    built = []
+    monkeypatch.setattr(
+        html_reports,
+        "build_dit_html_reports",
+        lambda entries, _outdir: built.extend(entries),
+    )
+    monkeypatch.setattr(tracking_excel, "update_clonality_tracking_workbook", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tracking_excel, "update_global_clonality_tracking_workbook", lambda *_args, **_kwargs: None)
+
+    result = TabBatch._review_finalize_worker(
+        jobs_to_run=[],
+        corrected_paths=[],
+        session_entries=[retained_entry],
+        resolved_review_rows={
+            str(rejected.resolve()): {"label": "excluded_unusable_ladder"}
+        },
+        output_root=tmp_path,
+        analysis_id="clonality",
+        pipeline_scope="all",
+        assay_filter="",
+        aggregate_dit_reports=True,
+        aggregate_outdir_name="reports",
+        parent_run_manifest_path=parent_manifest.path,
+    )
+
+    assert calls == []
+    assert result["final_reports_built"] is True
+    assert result["finalization_validation"]["passed"] is True
+    assert built == [retained_entry]
 
 
 def test_review_bundle_restart_recovers_original_patient_and_qc_jobs(

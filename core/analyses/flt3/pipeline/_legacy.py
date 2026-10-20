@@ -46,7 +46,6 @@ from core.analyses.flt3.config import (
     ROX_LADDER as FLT3_ROX_LADDER,
 )
 from core.analyses.flt3.qc_tracker import (
-    FLT3_TRACKING_FILENAME,
     RUN_SHEET_COLUMNS,
     PEAK_SHEET_COLUMNS,
     build_tracking_base_row,
@@ -838,6 +837,16 @@ def _resolve_manual_ratio_selection(entry: dict, peaks: pd.DataFrame) -> dict | 
 
 
 def _resolve_flt3_ratio_selection(entry: dict) -> dict:
+    if entry.get("assay") == "NPM1":
+        resolved = _empty_manual_ratio_resolution(entry, "")
+        resolved["ratio_mode"] = "not_applicable"
+        resolved["manual_ratio_selection"] = _default_manual_ratio_selection()
+        for name in (
+            "selected_wt_area", "selected_mutant_area", "ratio_numerator_area",
+            "ratio_denominator_area", "ratio", "mutant_fraction",
+        ):
+            resolved[name] = np.nan
+        return resolved
     peaks = entry["peaks_by_channel"][entry["primary_peak_channel"]]
     if entry.get("assay") in MANUAL_RATIO_ASSAYS:
         return _resolve_manual_ratio_selection(entry, peaks)
@@ -982,6 +991,10 @@ def _apply_bp_offset(fsa: FsaFile, assay: str) -> None:
 
 
 def _infer_sizing_method(fsa: FsaFile) -> str:
+    if getattr(fsa, "manual_ladder_partial", False):
+        method = getattr(fsa, "manual_ladder_sizing_method", "")
+        if method:
+            return str(method)
     if hasattr(fsa, "_flt3_sizing_method"):
         return str(getattr(fsa, "_flt3_sizing_method"))
     model = getattr(fsa, "ladder_model", None)
@@ -1465,7 +1478,10 @@ def _flt3_short_trace_missing_steps(
     assay: str,
     analysis_type: str | None,
 ) -> tuple[list[float], float]:
-    if getattr(fsa, "ladder_fit_strategy", "") == "manual_adjustment":
+    if getattr(fsa, "ladder_fit_strategy", "") in {
+        "manual_adjustment",
+        "manual_partial",
+    }:
         return [], float("nan")
 
     template_key = _resolved_flt3_template_key(fsa, assay, analysis_type)
@@ -3655,7 +3671,7 @@ def _should_attempt_flt3_template_rescue(
         return False
 
     strategy = str(getattr(fsa, "ladder_fit_strategy", "") or "")
-    if strategy == "manual_adjustment":
+    if strategy in {"manual_adjustment", "manual_partial"}:
         return False
 
     if bool(getattr(fsa, "ladder_review_required", False)):
@@ -5532,6 +5548,8 @@ def _gs500rox_start_prior_trials(fsa: FsaFile, ladder_steps: np.ndarray) -> list
 
 
 def _apply_gs500rox_start_family_prior_if_review_band(fsa: FsaFile) -> FsaFile:
+    if getattr(fsa, "ladder_fit_strategy", "") in {"manual_adjustment", "manual_partial"}:
+        return fsa
     ladder_steps = _flt3_expected_ladder_steps(fsa)
     trials = _gs500rox_start_prior_trials(fsa, ladder_steps)
     if not trials:
@@ -5748,7 +5766,7 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         peak_channels=peak_channels,
         primary_channel=meta["primary_peak_channel"],
     )
-    if ladder_only_qc:
+    if ladder_only_qc or meta["assay"] == "NPM1":
         combined_trace = raw_combined_trace
         peaks = _ensure_peak_ids(
             pd.DataFrame(
@@ -5824,7 +5842,7 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
                 fast_area=meta.get("group") == "negative_control",
             )
 
-    rust_flt3_preview = getattr(fsa, "rust_flt3_preview", None)
+    rust_flt3_preview = None if meta["assay"] == "NPM1" else getattr(fsa, "rust_flt3_preview", None)
     rust_wt_peak = rust_flt3_preview.get("wt_peak") if isinstance(rust_flt3_preview, dict) else None
     rust_mutant_peaks = list(rust_flt3_preview.get("mutant_peaks") or []) if isinstance(rust_flt3_preview, dict) else []
     expected_ladder_steps = list(
@@ -6008,15 +6026,23 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
         )
         or poor_gs500rox_linear_fit
     )
-    if ladder_fit_strategy == "manual_adjustment":
-        ladder_qc_status = "manual_adjustment"
-    elif ladder_review_required:
+    if ladder_review_required:
         ladder_qc_status = "review_required"
+    elif ladder_fit_strategy == "manual_partial":
+        ladder_qc_status = (
+            "manual_partial_reviewed"
+            if getattr(fsa, "manual_ladder_partial_approved", False)
+            else "review_required"
+        )
+    elif ladder_fit_strategy == "manual_adjustment":
+        ladder_qc_status = "manual_adjustment"
     elif float(metrics.get("r2", float("nan"))) > FLT3_LADDER_QC_THRESHOLD:
         ladder_qc_status = "ok"
     else:
         ladder_qc_status = "ladder_qc_failed"
-    if ladder_only_qc:
+    if meta["assay"] == "NPM1":
+        peak_qc_pass, peak_qc_reason = False, "manual_selection_required"
+    elif ladder_only_qc:
         peak_qc_pass, peak_qc_reason = True, FLT3_LADDER_ONLY_PEAK_QC_STATUS
     else:
         peak_qc_pass, peak_qc_reason = _peak_qc_status(peaks, meta.get("group", "sample"))
@@ -6161,6 +6187,8 @@ def _build_entry_from_candidate(fsa_path: Path, meta: dict) -> dict | None:
     }
     from core.analysis_provenance import attach_analysis_provenance
 
+    if meta["assay"] == "NPM1":
+        _calculate_ratios([entry])
     return attach_analysis_provenance(entry)
 
 
@@ -6209,6 +6237,33 @@ def _fallback_entry_ranking_key(entry: dict, preferred_injection: int) -> tuple[
     )
 
 
+def _attach_alternate_ladder_reviews(
+    selected: dict, fallback_entries: list[tuple[dict, str, bool]]
+) -> None:
+    """Keep rejected sibling files visible to Ladder Editor without reporting them as results."""
+    review_fields = (
+        "original_file_path", "file_name", "source_run_dir", "assay", "ladder",
+        "ladder_qc_status", "ladder_review_required", "ladder_review_reason",
+        "ladder_review_reason_codes", "ladder_review_summary",
+        "ladder_linear_max_residual_bp", "ladder_linear_mean_residual_bp",
+        "ladder_linear_r2", "ladder_expected_step_count", "ladder_fitted_step_count",
+        "n_ladder_steps", "ladder_fit_strategy",
+    )
+    alternates = [
+        {field: entry.get(field) for field in review_fields}
+        for entry, _reason, _preferred in fallback_entries
+        if entry is not selected
+        and (
+            entry.get("ladder_review_required")
+            or entry.get("ladder_qc_status") in {
+                "review_required", "missing_ladder", "ladder_qc_failed"
+            }
+        )
+    ]
+    if alternates:
+        selected["_alternate_ladder_review_entries"] = alternates
+
+
 def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
     if not candidates:
         return None
@@ -6219,6 +6274,11 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
         if int(item[1].get("injection_time", 0) or 0) == preferred_injection
     ]
     pool = preferred_only if preferred_only else candidates
+    review_only_pool = [
+        item for item in candidates
+        if preferred_only
+        and int(item[1].get("injection_time", 0) or 0) != preferred_injection
+    ]
     ordered = sorted(pool, key=lambda item: _candidate_sort_key(item, preferred_injection))
 
     audit_records: list[dict] = []
@@ -6234,7 +6294,9 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
             from core.rust_bridge import prime_rust_worker_results
 
             rust_analysis_kind = "general" if _flt3_uses_liz_ladder() else "flt3"
-            prime_rust_worker_results([path for path, _meta in ordered], rust_analysis_kind)
+            prime_rust_worker_results(
+                [path for path, _meta in (*ordered, *review_only_pool)], rust_analysis_kind
+            )
     except Exception:
         pass
 
@@ -6248,7 +6310,11 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
             audit_records.append(_candidate_audit_record(path, meta, "rejected", reason))
             continue
 
-        acceptable = entry["ladder_qc_status"] in {"ok", "manual_adjustment"} and entry["peak_qc_pass"]
+        acceptable = entry["ladder_qc_status"] in {
+            "ok",
+            "manual_adjustment",
+            "manual_partial_reviewed",
+        } and entry["peak_qc_pass"]
         candidate_reason = "qc_pass"
         if not acceptable:
             if entry["ladder_qc_status"] != "ok":
@@ -6263,6 +6329,15 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
 
         acceptable_entries.append((entry, candidate_reason, same_as_preferred))
         audit_records.append(_candidate_audit_record(path, meta, "not_selected", "better candidate selected"))
+
+    # Preferred injection determines the reported result. Still inspect every
+    # other source file's ladder so a rejected sibling cannot disappear from
+    # the manual-review bundle merely because it was not eligible for reporting.
+    review_siblings = list(fallback_entries)
+    for path, meta in sorted(review_only_pool, key=lambda item: _candidate_sort_key(item, preferred_injection)):
+        alternate = _build_entry_from_candidate(path, meta)
+        if alternate is not None:
+            review_siblings.append((alternate, "not_selected", False))
 
     if acceptable_entries:
         entry, _candidate_reason, selected_is_preferred = min(
@@ -6287,10 +6362,19 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
             f"{alt['selected_injection']} {alt['file']} ({alt['status']}: {alt['reason']})"
             for alt in entry["alternate_injections"]
         )
+        _attach_alternate_ladder_reviews(entry, review_siblings)
         return entry
 
     if not fallback_entries:
-        return None
+        fallback_entries = [
+            candidate for candidate in review_siblings
+            if candidate[0].get("ladder_review_required")
+            or candidate[0].get("ladder_qc_status") in {
+                "review_required", "missing_ladder", "ladder_qc_failed"
+            }
+        ]
+        if not fallback_entries:
+            return None
 
     entry, best_reason, _selected_is_preferred = min(
         fallback_entries,
@@ -6304,13 +6388,14 @@ def _select_best_entry(candidates: list[tuple[Path, dict]]) -> dict | None:
         f"{alt['selected_injection']} {alt['file']} ({alt['status']}: {alt['reason']})"
         for alt in entry["alternate_injections"]
     )
+    _attach_alternate_ladder_reviews(entry, review_siblings)
     return entry
 
 
 def _calculate_ratios(entries: list[dict]) -> None:
     """Calculate FLT3 mutant ratios and store explicit numerator/denominator fields."""
     for entry in entries:
-        if entry.get("analysis_status") == "ladder_review_only":
+        if entry.get("analysis_status") == "ladder_review_only" and entry.get("assay") != "NPM1":
             entry["ratio_mode"] = "not_available_ladder_review"
             entry["manual_ratio_selection_valid"] = False
             entry["manual_ratio_selection_reason"] = "Ladder review required before peak selection"
@@ -6414,7 +6499,7 @@ def _summarize_detected_peaks(entry: dict) -> dict:
         }
     )
 
-    return {
+    summary = {
         "ratio_mode": resolved.get("ratio_mode", "auto"),
         "manual_ratio_selection_valid": bool(resolved.get("manual_ratio_selection_valid", False)),
         "manual_ratio_selection_reason": resolved.get("manual_ratio_selection_reason", ""),
@@ -6435,12 +6520,18 @@ def _summarize_detected_peaks(entry: dict) -> dict:
         "mut_main_area": mut_main_area,
         "bp_distance_metrics": bp_metrics,
     }
+    if entry.get("assay") == "NPM1":
+        for name in ("wt_area", "mut_area_total", "mut_main_area"):
+            summary[name] = np.nan
+    return summary
 
 
 def _interpret_entry(entry: dict) -> str:
     if entry.get("analysis_status") == "ladder_review_only":
         return "Ingen resultat - ladder review kreves"
     assay = entry["assay"]
+    if assay == "NPM1":
+        return ""
     ratio = float(entry.get("ratio", 0.0))
     peak_summary = _summarize_detected_peaks(entry)
     positive_ratio = _assay_positive_ratio(assay)
@@ -6457,12 +6548,6 @@ def _interpret_entry(entry: dict) -> str:
         if peak_summary["mut_bps"]:
             return "FLT3-D835 under positiv grense - dokumentert"
         return "Ingen FLT3-D835 pavist"
-    if assay == "NPM1":
-        if ratio >= positive_ratio:
-            return "Positiv NPM1"
-        if peak_summary["mut_bps"]:
-            return "Mulig NPM1 - vurder manuelt"
-        return "Ingen NPM1-mutasjon pavist"
     return "Ingen tolkning"
 
 
@@ -6539,6 +6624,15 @@ def _build_control_qc_row(entry: dict) -> dict | None:
     group = entry.get("group")
     if group not in ["negative_control", "positive_control", "reactive_control"]:
         return None
+
+    if entry.get("assay") == "NPM1":
+        return {
+            "File": entry["fsa"].file_name, "ControlGroup": group, "Assay": "NPM1",
+            "Well": entry.get("well_id") or "", "SelectedInjection": entry.get("selected_injection") or "",
+            "SelectionReason": entry.get("selection_reason") or "", "InjectionTime": entry.get("injection_time"),
+            "WT_Area": np.nan, "Mutant_Area": np.nan, "Ratio": np.nan,
+            "Status": "MANUAL_REVIEW", "Details": "", "Expectation": "",
+        }
 
     peak_summary = _summarize_detected_peaks(entry)
     if peak_summary.get("ratio_mode") == "manual_required":
@@ -6860,6 +6954,19 @@ def _tracker_run_row(entry: dict, base_row: dict, peak_summary: dict, interpreta
             "Interpretation": interpretation,
         }
     )
+    if entry.get("assay") == "NPM1":
+        for name in (
+            "WT_BP", "WT_Area", "MutantBPs", "MutantAreas", "MutantAreaTotal", "MutantMain_BP",
+            "MutantMain_Area", "RatioNumeratorArea", "RatioDenominatorArea", "Ratio", "MutantFraction",
+            "PositiveCall", "RustPreviewPositiveCall", "RustPreviewWTBP", "RustPreviewMutantBPs",
+            "RustPreviewStrongestMutantRatio",
+        ):
+            row[name] = ""
+        row["RatioMode"] = "not_applicable"
+        row["ResultStatus"] = (
+            "ladder_review_required" if entry.get("analysis_status") == "ladder_review_only"
+            else "manual_peak_selection_required"
+        )
     return row
 
 
@@ -7185,8 +7292,12 @@ def run_pipeline(
     if not entries:
         return [] if return_entries else None
 
-    if any(entry.get("ladder_review_required") for entry in entries):
-        from core.analyses.clonality.ladder_review_gate import write_ladder_review_gate
+    from core.analyses.clonality.ladder_review_gate import (
+        collect_ladder_review_cases,
+        write_ladder_review_gate,
+    )
+
+    if collect_ladder_review_cases(entries):
 
         review_bundle = write_ladder_review_gate(
             entries,

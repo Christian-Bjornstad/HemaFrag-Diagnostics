@@ -25,7 +25,6 @@ class _PandasModuleProxy:
 
 pd = _PandasModuleProxy()
 
-import core.assay_config as assay_config
 from core.assay_config import (
     CHANNEL_COLORS,
     DEFAULT_TRACE_COLOR,
@@ -51,6 +50,98 @@ from core.plot_cache import (
 
 FLT3_NEGATIVE_CONTROL_YMIN = 250.0
 
+TRACE_MARKER_RUNTIME_JS = r"""
+window.HemaFragTraceMarkers = window.HemaFragTraceMarkers || (function() {
+  var sequence = 0;
+  function markerId(peak, prefix, index) {
+    if (peak && peak.marker_id) return String(peak.marker_id);
+    if (peak && peak.peak_id) return String(peak.peak_id);
+    var x = Number(peak && peak.x);
+    var channel = String((peak && peak.source_channel) || "AUTO");
+    return String(prefix || "marker") + "-legacy-" +
+      (Number.isFinite(x) ? x.toPrecision(15) : "nan") + "-" +
+      channel + "-" + String(index || 0);
+  }
+  function newMarkerId(prefix) {
+    sequence += 1;
+    return String(prefix || "marker") + "-manual-" +
+      Date.now().toString(36) + "-" + sequence.toString(36);
+  }
+  function normalize(peak, index, defaults) {
+    defaults = defaults || {};
+    var marker = Object.assign({}, peak || {});
+    marker.marker_id = markerId(marker, defaults.prefix, index);
+    marker.peak_id = marker.marker_id;
+    marker.source_kind = String(
+      marker.source_kind || defaults.source_kind || "detected"
+    );
+    marker.requested_x = Number.isFinite(Number(marker.requested_x))
+      ? Number(marker.requested_x)
+      : Number(marker.x);
+    marker.sample_index = Number.isFinite(Number(marker.sample_index))
+      ? Number(marker.sample_index)
+      : (Number.isFinite(Number(defaults.sample_index))
+          ? Number(defaults.sample_index)
+          : null);
+    return marker;
+  }
+  function collisionIndices(peaks, x, channel, tolerance) {
+    var matches = [];
+    var limit = Number.isFinite(Number(tolerance)) ? Number(tolerance) : 0.4;
+    for (var i = 0; i < peaks.length; i++) {
+      var peak = peaks[i];
+      if (channel && peak.source_channel && peak.source_channel !== channel) continue;
+      var distance = Math.abs(Number(peak.x) - Number(x));
+      if (Number.isFinite(distance) && distance <= limit) {
+        matches.push({ index: i, distance: distance });
+      }
+    }
+    matches.sort(function(a, b) {
+      return (a.distance - b.distance) || (a.index - b.index);
+    });
+    return matches.map(function(item) { return item.index; });
+  }
+  function chooseCollision(peaks, indices, x) {
+    if (!indices.length) return { action: "new", index: -1 };
+    var lines = indices.map(function(index, ordinal) {
+      var peak = peaks[index];
+      return String(ordinal + 1) + ": " + String(peak.marker_id) +
+        " @ " + Number(peak.x).toFixed(4) +
+        " [" + String(peak.source_kind || "existing") + "]";
+    });
+    var choice = window.prompt(
+      "Marker collision near x=" + Number(x).toFixed(4) + ".\\n" +
+      lines.join("\\n") +
+      "\\nType NEW to place a separate marker, a number to use that marker, or CANCEL.",
+      "CANCEL"
+    );
+    if (choice === null) return { action: "cancel", index: -1 };
+    var normalized = String(choice).trim().toUpperCase();
+    if (normalized === "NEW") return { action: "new", index: -1 };
+    if (normalized === "" || normalized === "CANCEL") {
+      return { action: "cancel", index: -1 };
+    }
+    var selected = Number(normalized);
+    if (Number.isInteger(selected) && selected >= 1 && selected <= indices.length) {
+      return { action: "use", index: indices[selected - 1] };
+    }
+    window.alert("No marker was changed. Enter NEW, a listed number, or CANCEL.");
+    return { action: "cancel", index: -1 };
+  }
+  function confirmDelete(peak, distance, maxDistance) {
+    var limit = Number.isFinite(Number(maxDistance)) ? Number(maxDistance) : 0.4;
+    return !!peak && Number.isFinite(distance) && distance <= limit;
+  }
+  return {
+    normalize: normalize,
+    newMarkerId: newMarkerId,
+    collisionIndices: collisionIndices,
+    chooseCollision: chooseCollision,
+    confirmDelete: confirmDelete
+  };
+})();
+"""
+
 
 def _flt3_peak_id(row: pd.Series, index: int) -> str:
     """Build a stable peak id for persisted FLT3 manual selections."""
@@ -67,6 +158,8 @@ def _reference_shape_fill(entry: dict | None = None) -> str:
     """Reference-window fill; IGHV RNA-filer får en rødere nyanse enn beige."""
     if entry is not None:
         assay = str((entry or {}).get("assay") or "")
+        if assay == "NPM1":
+            return reference_shade_rgba(color="#facc15")
         if assay.startswith("IGHV"):
             # Per-fil prøvetype (satt av attach_ighv_results, filnavn-trumf
             # inkludert); faller tilbake til GUI-valg hvis ikke stemplet.
@@ -343,7 +436,9 @@ def compute_group_ymax_for_entries(entries: list[dict]) -> float:
                 continue
 
         # --- Velg bp-vindu: referanse(r) hvis definert, ellers bp_min–bp_max ---
-        if assay and assay in _assay_reference_ranges():
+        if assay == "NPM1":
+            mask_bp = (bp_all >= bp_min) & (bp_all <= bp_max)
+        elif assay and assay in _assay_reference_ranges():
             mask_bp = np.zeros_like(bp_all, dtype=bool)
             for a, b in _assay_reference_ranges()[assay]:
                 mask_bp |= (bp_all >= float(a)) & (bp_all <= float(b))
@@ -458,7 +553,9 @@ def _create_plotly_figure(data: dict) -> tuple[go.Figure, float, int]:
     ymax_auto_all = 0.0
 
     # Window for auto-y
-    if assay_name and assay_name in _assay_reference_ranges():
+    if assay_name == "NPM1":
+        win_bp = (bp_trace >= bp_min) & (bp_trace <= bp_max)
+    elif assay_name and assay_name in _assay_reference_ranges():
         win_bp = np.zeros_like(bp_trace, dtype=bool)
         for a, b in _assay_reference_ranges()[assay_name]:
             win_bp |= (bp_trace >= float(a)) & (bp_trace <= float(b))
@@ -471,7 +568,7 @@ def _create_plotly_figure(data: dict) -> tuple[go.Figure, float, int]:
         if y_corr.size == 0:
             continue
 
-        color = CHANNEL_COLORS.get(ch, DEFAULT_TRACE_COLOR)
+        color = "#111827" if assay_name == "NPM1" else CHANNEL_COLORS.get(ch, DEFAULT_TRACE_COLOR)
         fig.add_trace(go.Scatter(x=bp_trace, y=y_corr, mode="lines", name=f"{ch} trace", line=dict(width=1, color=color), hoverinfo="x+y"))
 
         y_win = y_corr[win_bp] if np.any(win_bp) else y_corr
@@ -498,7 +595,7 @@ def _create_plotly_figure(data: dict) -> tuple[go.Figure, float, int]:
     shapes = []
     if assay_name and assay_name in _assay_reference_ranges():
         for (a, b) in _assay_reference_ranges()[assay_name]:
-            shapes.append(dict(type="rect", x0=float(a), x1=float(b), y0=0, y1=1, xref="x", yref="paper", fillcolor=_reference_shape_fill(entry), line_width=0, layer="above", opacity=1.0))
+            shapes.append(dict(type="rect", x0=float(a), x1=float(b), y0=0, y1=1, xref="x", yref="paper", fillcolor=_reference_shape_fill(entry), line_width=0, layer="below" if assay_name == "NPM1" else "above", opacity=1.0))
     else:
         shapes.append(dict(type="rect", x0=float(bp_min), x1=float(bp_max), y0=0, y1=1, xref="x", yref="paper", fillcolor=_reference_shape_fill(entry), line_width=0, layer="above", opacity=1.0))
 
@@ -677,6 +774,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
 </div>
 {manual_panel_html}
 <script type="text/javascript">
+{TRACE_MARKER_RUNTIME_JS}
 (function() {{
   var fig = {fig_json};
   var initialPeaks = {initial_peaks_json};
@@ -696,7 +794,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
   var expectedWtBp = {json.dumps(data.get("wt_bp"))};
   var expectedMutBp = {json.dumps(data.get("mut_bp"))};
   var plotFileName = {json.dumps(data.get("file_name", ""))};
-  var overviewIdPrefix = "overview_" + plotFileName.replace(/\./g, "_").replace(/ /g, "_");
+  var overviewIdPrefix = "overview_" + plotFileName.replace(/\\./g, "_").replace(/ /g, "_");
   var initialPlotState = (window.ReportPlotManager && window.ReportPlotManager.getInitialStateForPlot)
     ? window.ReportPlotManager.getInitialStateForPlot(divId)
     : null;
@@ -919,20 +1017,21 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
     }}
 
     function makePeakId(p, idx) {{
+      if (p && p.marker_id) return String(p.marker_id);
       if (p && p.peak_id) return String(p.peak_id);
-      var xKey = Number.isFinite(Number(p && p.x)) ? Math.round(Number(p.x) * 10) : 0;
-      var yKey = Number.isFinite(Number(p && p.y)) ? Math.round(Number(p.y)) : 0;
-      var areaKey = Number.isFinite(Number(p && p.area)) ? Math.round(Number(p.area)) : 0;
-      var channelKey = normalizeSourceChannel(p && p.source_channel, Number(p && p.curve_number)) || "AUTO";
-      return "flt3_pk_" + xKey + "_" + yKey + "_" + areaKey + "_" + channelKey + "_" + idx;
+      return window.HemaFragTraceMarkers.normalize(
+        p || {{}},
+        idx,
+        {{ prefix: divId, source_kind: "detected" }}
+      ).marker_id;
     }}
 
     function peakIdFor(peak, idx) {{
       if (!peak) return "";
-      if (!peak.peak_id) {{
-        peak.peak_id = makePeakId(peak, idx);
-      }}
-      return String(peak.peak_id);
+      var markerId = makePeakId(peak, idx);
+      peak.marker_id = markerId;
+      peak.peak_id = markerId;
+      return markerId;
     }}
 
     function ensurePeakIds() {{
@@ -958,17 +1057,25 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
         else if (sourceChannel === "DATA1") area = blueArea;
         else area = computePeakAreaForChannel(x, sourceChannel || manualTraceChannels[0] || null);
       }}
-      return {{
-        x: x,
-        y: y,
-        area: area,
-        active: !(p && p.active === false),
-        peak_id: makePeakId(p, idx),
-        blue_area: blueArea,
-        green_area: greenArea,
-        source_channel: sourceChannel,
-        curve_number: Number(p && p.curve_number)
-      }};
+      return window.HemaFragTraceMarkers.normalize(
+        {{
+          x: x,
+          y: y,
+          area: area,
+          active: !(p && p.active === false),
+          marker_id: p && (p.marker_id || p.peak_id),
+          peak_id: p && p.peak_id,
+          source_kind: p && p.source_kind,
+          requested_x: p && p.requested_x,
+          sample_index: p && p.sample_index,
+          blue_area: blueArea,
+          green_area: greenArea,
+          source_channel: sourceChannel,
+          curve_number: Number(p && p.curve_number)
+        }},
+        idx,
+        {{ prefix: divId, source_kind: "detected" }}
+      );
     }}
 
     function cloneSelection(selection) {{
@@ -996,23 +1103,51 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
           out.wt_peak_ids = [String(selection.wt.peak_id)];
         }}
       }}
+      out.wt_peak_ids = uniqueWtPeakIdsByChannel(out.wt_peak_ids);
       return out;
+    }}
+
+    function uniqueWtPeakIdsByChannel(peakIds) {{
+      var seenChannels = {{}};
+      var selectedIds = [];
+      // Keep the last choice, matching the WT previously used in the ratio.
+      for (var i = peakIds.length - 1; i >= 0; i--) {{
+        var peak = findPeakById(peakIds[i]);
+        if (!peak || !peak.active || !peak.source_channel) {{
+          selectedIds.push(peakIds[i]);
+          continue;
+        }}
+        if (seenChannels[peak.source_channel]) continue;
+        seenChannels[peak.source_channel] = true;
+        selectedIds.push(peakIds[i]);
+      }}
+      return selectedIds.reverse();
     }}
 
     var peaks = [];
     var initialPeakData = (window.PeakManager && window.PeakManager.getInitialPeakDataForPlot)
       ? window.PeakManager.getInitialPeakDataForPlot(divId)
       : null;
+    // An explicitly saved empty list means every marker was deleted.
+    var hasSavedPeaks = false;
+    if (window.PeakManager && window.PeakManager.hasInitialPeakDataForPlot) {{
+      hasSavedPeaks = window.PeakManager.hasInitialPeakDataForPlot(divId);
+    }} else if (window.PeakManager && window.PeakManager._readPeakData) {{
+      var savedPeakData = window.PeakManager._readPeakData();
+      var savedPayload = savedPeakData && Object.prototype.hasOwnProperty.call(savedPeakData, divId)
+        ? savedPeakData[divId] : null;
+      hasSavedPeaks = Array.isArray(savedPayload) || !!(savedPayload && Array.isArray(savedPayload.peaks));
+    }}
     if (initialPeakData && Array.isArray(initialPeakData.peaks) && initialPeakData.peaks.length) {{
       peaks = initialPeakData.peaks.slice();
     }} else if (window.PeakManager) {{
       peaks = window.PeakManager.getInitialPeaksForPlot(divId);
     }}
-    if (!peaks || peaks.length === 0) {{ peaks = (initialPeaks && Array.isArray(initialPeaks)) ? initialPeaks.slice() : []; }}
+    if ((!peaks || peaks.length === 0) && !hasSavedPeaks) {{ peaks = (initialPeaks && Array.isArray(initialPeaks)) ? initialPeaks.slice() : []; }}
     peaks = peaks.map(function(p, idx) {{ return normalizePeak(p, idx); }}).filter(function(p) {{ return Number.isFinite(p.x) && Number.isFinite(p.y); }});
     ensurePeakIds();
 
-    var manualSelection = cloneSelection(initialPeakData && initialPeakData.flt3_manual_ratio_selection ? initialPeakData.flt3_manual_ratio_selection : flt3InitialSelection);
+    var manualSelection = cloneSelection(isManualRatioAssay && initialPeakData && initialPeakData.flt3_manual_ratio_selection ? initialPeakData.flt3_manual_ratio_selection : flt3InitialSelection);
 
     function updatePeakManagerRegistration() {{
       if (!window.PeakManager) return;
@@ -1020,6 +1155,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
       window.PeakManager.registerPlot(divId, {{
         getPeaks: function() {{ return peaks; }},
         getPeakData: function() {{
+          if (assayName === "NPM1") return {{ peaks: peaks }};
           return {{
             peaks: peaks,
             flt3_manual_ratio_selection: {{
@@ -1085,18 +1221,17 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
       var parts = [];
       for (var i = 0; i < selectedMutants.length; i++) {{
         var mutant = selectedMutants[i];
-        var wtPeak = wtMap[mutant.source_channel] || wtPeaks[0];
+        var wtPeak = wtMap[mutant.source_channel];
         if (!wtPeak || !Number.isFinite(Number(mutant.x)) || !Number.isFinite(Number(wtPeak.x))) continue;
         var delta = Number(mutant.x) - Number(wtPeak.x);
         var roundedDelta = Math.round(delta);
         var remainder = Math.abs(roundedDelta) % 3;
         var channelPrefix = mutant.source_channel ? channelLabel(mutant.source_channel) + ": " : "";
         var sign = delta >= 0 ? "+" : "";
-        var roundedSign = roundedDelta >= 0 ? "+" : "";
         var frameText = remainder === 0
-          ? (Math.abs(roundedDelta) / 3).toFixed(0) + " kodon" + (Math.abs(roundedDelta) === 3 ? "" : "er") + "; delbar med 3"
-          : "ikke delbar med 3; rest " + remainder;
-        parts.push(channelPrefix + sign + delta.toFixed(1) + " bp (≈" + roundedSign + roundedDelta + " bp; " + frameText + ")");
+          ? " (" + (Math.abs(roundedDelta) / 3).toFixed(0) + " kodon" + (Math.abs(roundedDelta) === 3 ? "" : "er") + ")"
+          : "";
+        parts.push(channelPrefix + sign + delta.toFixed(1) + " bp" + frameText);
       }}
       return parts.length ? parts.join("; ") : "—";
     }}
@@ -1158,7 +1293,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
         numerator: numerator,
         denominator: denominator,
         ratio: denominator > 0 ? numerator / denominator : 0.0,
-        distanceText: bpDistanceText(selectedMutants, wtMap),
+        distanceText: manualSelection.wt_peak_ids.length > 0 ? bpDistanceText(selectedMutants, wtMap) : "—",
         valid: selectedMutants.length > 0 && missingWtChannels.length === 0 && denominator > 0
       }};
     }}
@@ -1451,8 +1586,12 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
     gd.on("plotly_click", function(ev) {{
       if (!ev.points || !ev.points.length) return;
       var pt = ev.points[0];
-      var xVal = pt.x;
+      var requestedX = Number(pt.x);
+      var xVal = requestedX;
       var yVal = pt.y;
+      var sampleIndex = Number.isFinite(Number(pt.pointNumber))
+        ? Number(pt.pointNumber)
+        : null;
       var isShift = !!(ev.event && ev.event.shiftKey);
       var requestedChannel = manualClickChannel === "AUTO" ? normalizeSourceChannel(null, pt.curveNumber) : manualClickChannel;
       if (!requestedChannel && manualTraceChannels.length === 1) {{
@@ -1469,7 +1608,17 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
 
       if (isShift) {{
         var idxDel = nearestPeakIdx(xVal, requestedChannel);
-        if (idxDel >= 0) {{
+        var deleteDistance = idxDel >= 0
+          ? Math.abs(Number(peaks[idxDel].x) - Number(xVal))
+          : Infinity;
+        if (
+          idxDel >= 0
+          && window.HemaFragTraceMarkers.confirmDelete(
+            peaks[idxDel],
+            deleteDistance,
+            0.4
+          )
+        ) {{
           var removedPeakId = peaks[idxDel].peak_id;
           peaks.splice(idxDel, 1);
           manualSelection.mutant_peak_ids = manualSelection.mutant_peak_ids.filter(function(id) {{ return id !== removedPeakId; }});
@@ -1480,13 +1629,20 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
         return;
       }}
 
-      var idx = nearestPeakIdx(xVal, requestedChannel);
-      if (idx >= 0 && Math.abs(peaks[idx].x - xVal) < 0.4) {{
-        peaks[idx].active = !peaks[idx].active;
-        if (!peaks[idx].active) {{
-          manualSelection.mutant_peak_ids = manualSelection.mutant_peak_ids.filter(function(id) {{ return id !== peaks[idx].peak_id; }});
-          manualSelection.enabled = manualSelection.mutant_peak_ids.length > 0;
-        }}
+      var collisions = window.HemaFragTraceMarkers.collisionIndices(
+        peaks,
+        xVal,
+        requestedChannel,
+        0.4
+      );
+      var collisionChoice = window.HemaFragTraceMarkers.chooseCollision(
+        peaks,
+        collisions,
+        xVal
+      );
+      if (collisionChoice.action === "cancel") return;
+      if (collisionChoice.action === "use") {{
+        peaks[collisionChoice.index].active = true;
         redrawPeaks();
         return;
       }}
@@ -1495,17 +1651,24 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
       var blueArea = computePeakAreaForChannel(xVal, "DATA1");
       var greenArea = computePeakAreaForChannel(xVal, "DATA2");
       var peakArea = sourceChannel ? computePeakAreaForChannel(xVal, sourceChannel) : computePeakArea(xVal, pt.curveNumber);
-      var newPeak = {{
-        x: xVal,
-        y: yVal,
-        area: peakArea,
-        blue_area: blueArea,
-        green_area: greenArea,
-        source_channel: sourceChannel,
-        curve_number: pt.curveNumber,
-        active: true
-      }};
-      newPeak.peak_id = makePeakId(newPeak, peaks.length);
+      var newPeak = window.HemaFragTraceMarkers.normalize(
+        {{
+          x: xVal,
+          y: yVal,
+          area: peakArea,
+          blue_area: blueArea,
+          green_area: greenArea,
+          source_channel: sourceChannel,
+          curve_number: pt.curveNumber,
+          active: true,
+          marker_id: window.HemaFragTraceMarkers.newMarkerId(divId),
+          source_kind: "manual_exact",
+          requested_x: requestedX,
+          sample_index: sampleIndex
+        }},
+        peaks.length,
+        {{ prefix: divId, source_kind: "manual_exact", sample_index: sampleIndex }}
+      );
       peaks.push(newPeak);
       redrawPeaks();
     }});
@@ -1524,6 +1687,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
               if (manualSelection.wt_peak_ids.indexOf(peakId) < 0) {{
                 manualSelection.wt_peak_ids.push(peakId);
               }}
+              manualSelection.wt_peak_ids = uniqueWtPeakIdsByChannel(manualSelection.wt_peak_ids);
               manualSelection.mutant_peak_ids = manualSelection.mutant_peak_ids.filter(function(id) {{ return id !== peakId; }});
             }} else {{
               manualSelection.wt_peak_ids = manualSelection.wt_peak_ids.filter(function(id) {{ return id !== peakId; }});
@@ -1838,8 +2002,8 @@ def build_interactive_assay_batch_plot_html(
             "<tbody></tbody></table></div>"
         )
         html_parts.append(
-            "<p class='small'>Klikk på tracen for å legge til peaks. "
-            "Shift+klikk for å slette nærmeste peak.</p>"
+            "<p class='small'>Klikk på tracen for å plassere en ny markør ved valgt x. "
+            "Kollisjoner krever eksplisitt valg. Shift+klikk sletter bare en nær markør etter bekreftelse.</p>"
         )
         # Skjult JSON-buffer – ikke synlig, men lar vi stå for evt. senere bruk
         html_parts.append(
@@ -1855,6 +2019,7 @@ def build_interactive_assay_batch_plot_html(
         # JS for akkurat denne editoren – synka med PeakManager
         html_parts.append(f"""
 <script type="text/javascript">
+{TRACE_MARKER_RUNTIME_JS}
 (function() {{
   var fig = {fig_json};
   var divId = "{div_id}";
@@ -1956,16 +2121,24 @@ def build_interactive_assay_batch_plot_html(
       return total;
     }}
 
-    function normalizePeak(p) {{
+    function normalizePeak(p, idx) {{
       var x = Number(p && p.x);
       var y = Number(p && p.y);
       var area = Number(p && p.area);
-      return {{
-        x: x,
-        y: y,
-        area: Number.isFinite(area) ? area : computePeakArea(x, primaryTraceIndex),
-        active: !(p && p.active === false)
-      }};
+      return window.HemaFragTraceMarkers.normalize(
+        {{
+          x: x,
+          y: y,
+          area: Number.isFinite(area) ? area : computePeakArea(x, primaryTraceIndex),
+          active: !(p && p.active === false),
+          marker_id: p && (p.marker_id || p.peak_id),
+          source_kind: p && p.source_kind,
+          requested_x: p && p.requested_x,
+          sample_index: p && p.sample_index
+        }},
+        idx,
+        {{ prefix: divId, source_kind: "detected" }}
+      );
     }}
 
     var peaks = [];
@@ -1977,7 +2150,9 @@ def build_interactive_assay_batch_plot_html(
     }} else if (window.PeakManager) {{
       peaks = window.PeakManager.getInitialPeaksForPlot(divId);
     }}
-    peaks = (Array.isArray(peaks) ? peaks : []).map(normalizePeak).filter(function(p) {{
+    peaks = (Array.isArray(peaks) ? peaks : []).map(function(peak, index) {{
+      return normalizePeak(peak, index);
+    }}).filter(function(p) {{
       return Number.isFinite(p.x) && Number.isFinite(p.y);
     }});
 
@@ -2006,7 +2181,7 @@ def build_interactive_assay_batch_plot_html(
       }}, [1]); // peaks-trace er index 1
 
       var arr = peaks.map(function(p) {{
-        return {{ x: p.x, y: p.y, area: p.area, active: p.active }};
+        return Object.assign({{}}, p);
       }});
       var pre = document.getElementById(divId + "_peaks_json");
       if (pre) {{
@@ -2050,27 +2225,52 @@ def build_interactive_assay_batch_plot_html(
     gd.on("plotly_click", function(ev) {{
       if (!ev || !ev.points || !ev.points.length) return;
       var pt = ev.points[0];
-      var xVal = pt.x;
-      var yVal = pt.y;
+      var xVal = Number(pt.x);
+      var yVal = Number(pt.y);
+      var sampleIndex = Number.isFinite(Number(pt.pointNumber))
+        ? Number(pt.pointNumber)
+        : null;
       var isShift = !!(ev.event && ev.event.shiftKey);
 
       if (isShift) {{
         var idx = findNearestPeakIdx(xVal);
-        if (idx >= 0) {{
+        var distance = idx >= 0 ? Math.abs(peaks[idx].x - xVal) : Infinity;
+        if (
+          idx >= 0
+          && window.HemaFragTraceMarkers.confirmDelete(peaks[idx], distance, 0.4)
+        ) {{
           peaks.splice(idx, 1);
           redrawPeaks();
         }}
         return;
       }}
 
-      var idx = findNearestPeakIdx(xVal);
-      if (idx >= 0 && Math.abs(peaks[idx].x - xVal) < 0.4) {{
-        peaks[idx].active = !peaks[idx].active;
+      var collisionChoice = window.HemaFragTraceMarkers.chooseCollision(
+        peaks,
+        window.HemaFragTraceMarkers.collisionIndices(peaks, xVal, null, 0.4),
+        xVal
+      );
+      if (collisionChoice.action === "cancel") return;
+      if (collisionChoice.action === "use") {{
+        peaks[collisionChoice.index].active = true;
         redrawPeaks();
         return;
       }}
 
-      peaks.push({{ x: xVal, y: yVal, area: computePeakArea(xVal, pt.curveNumber), active: true }});
+      peaks.push(window.HemaFragTraceMarkers.normalize(
+        {{
+          x: xVal,
+          y: yVal,
+          area: computePeakArea(xVal, pt.curveNumber),
+          active: true,
+          marker_id: window.HemaFragTraceMarkers.newMarkerId(divId),
+          source_kind: "manual_exact",
+          requested_x: xVal,
+          sample_index: sampleIndex
+        }},
+        peaks.length,
+        {{ prefix: divId, source_kind: "manual_exact", sample_index: sampleIndex }}
+      ));
       redrawPeaks();
     }});
   }});

@@ -54,7 +54,13 @@ def _gold_approval(path: Path, content_hash: str, *, run: str = "run-a"):
     }
 
 
-def test_fit_gold_contains_only_usable_explicitly_approved_complete_ladders(tmp_path):
+@pytest.mark.parametrize(
+    "excluded_label",
+    ["excluded_missing_ladder_signal", "excluded_unusable_ladder"],
+)
+def test_fit_gold_contains_only_usable_explicitly_approved_complete_ladders(
+    tmp_path, excluded_label: str
+):
     approved_file = tmp_path / "approved.fsa"
     approved_file.write_bytes(b"approved")
     approved_hash = hashlib.sha256(approved_file.read_bytes()).hexdigest()
@@ -64,7 +70,7 @@ def test_fit_gold_contains_only_usable_explicitly_approved_complete_ladders(tmp_
             _reviewed_outcome(approved_hash),
             {
                 **_reviewed_outcome(excluded_hash, run="run-excluded"),
-                "label": "excluded_missing_ladder_signal",
+                "label": excluded_label,
                 "review_scan_indices": [],
                 "fitting_evaluation_eligible": False,
             },
@@ -557,6 +563,36 @@ def test_finalize_fit_development_accepts_exactly_40_resolved_verified_cases(tmp
     payload = json.loads(result.outcomes_path.read_text(encoding="utf-8"))
     assert len(payload["cases"]) == 40
     assert all(case["review_scan_indices"] for case in payload["cases"])
+
+
+def test_finalize_fit_development_excludes_unusable_ladder(tmp_path):
+    workspace, roots = _published_workspace(tmp_path)
+    experiment = prepare_fit_improvement_experiment(workspace, seed=7, roots=roots)
+    bundle = experiment.development.bundle_dir
+    _resolve_wave_as_no_change(bundle)
+    cases_path = bundle / "ladder_review_cases.csv"
+    with cases_path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+    rows[0]["label"] = "excluded_unusable_ladder"
+    rows[0]["label_note"] = "Ladder does not fit the measured peaks"
+    with cases_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    result = finalize_fit_improvement_wave(workspace, "development", roots=roots)
+
+    assert result.excluded_count == 1
+    assert result.fitting_evaluation_count == 39
+    assert result.ml_eligible_count == 39
+    payload = json.loads(result.outcomes_path.read_text(encoding="utf-8"))
+    excluded_case = next(
+        case for case in payload["cases"] if case["label"] == "excluded_unusable_ladder"
+    )
+    assert excluded_case["review_scan_indices"] == []
+    assert excluded_case["anchor_deltas"] == []
 
 
 def test_finalize_fit_wave_refuses_unresolved_or_mutated_copy(tmp_path):

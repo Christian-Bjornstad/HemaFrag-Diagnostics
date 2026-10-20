@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from html import escape as html_escape_builtin
 
 import numpy as np
 

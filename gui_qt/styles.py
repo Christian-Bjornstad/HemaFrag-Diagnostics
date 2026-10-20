@@ -28,6 +28,32 @@ PALETTE = {
     "idle_bg":      "#f1f5f9",   # StatusPill idle background
 }
 
+INPUT_FOLDERS_QSS = f"""
+QDialog#InputFoldersDialog {{
+    background-color: {PALETTE['background']};
+}}
+QTreeView#InputFoldersTree {{
+    background-color: {PALETTE['card_bg']};
+    alternate-background-color: {PALETTE['empty_state']};
+    color: {PALETTE['neutral_text']};
+    border: 1px solid {PALETTE['empty_border']};
+    border-radius: 8px;
+    selection-background-color: {PALETTE['primary']};
+    selection-color: {PALETTE['card_bg']};
+}}
+QTreeView#InputFoldersTree::item {{
+    padding: 5px 4px;
+}}
+QTreeView#InputFoldersTree QHeaderView::section {{
+    background-color: {PALETTE['idle_bg']};
+    color: {PALETTE['neutral_text']};
+    border: none;
+    border-bottom: 1px solid {PALETTE['empty_border']};
+    padding: 8px 6px;
+    font-weight: 600;
+}}
+"""
+
 VIBRANT_PRO_QSS = """
 /* Global Application Settings */
 QWidget {

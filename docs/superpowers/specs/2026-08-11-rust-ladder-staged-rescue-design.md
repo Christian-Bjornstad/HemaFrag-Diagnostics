@@ -1,5 +1,9 @@
 # Rust Ladder Staged-Rescue Design
 
+> **Status update 2026-09-22:** Ladder-fittingdesignet forblir relevant. Den
+> avgrensede referansen til senere ML-trening er historisk og er superseded av
+> `2026-09-19-remove-ml-labeling-design.md`.
+
 Date: 2026-08-11
 
 ## Goal

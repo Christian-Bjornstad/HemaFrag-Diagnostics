@@ -156,8 +156,8 @@ def __getattr__(name: str) -> Any:
 # --------------------------------------------------
 # Farger per kanal (brukes i både Matplotlib & Plotly)
 # --------------------------------------------------
-from core.utils import CHANNEL_COLORS, DEFAULT_TRACE_COLOR
- 
+from core.utils import CHANNEL_COLORS, DEFAULT_TRACE_COLOR  # noqa: F401 – re-eksport
+
 # --------------------------------------------------
 # Output directory names
 # --------------------------------------------------

@@ -1,9 +1,10 @@
 from pathlib import Path
 import copy
 import csv
-import json
 import subprocess
+import threading
 import sys
+import uuid
 from datetime import datetime, timezone
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -12,7 +13,9 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFrame, QGridLayout, QLayout, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QThreadPool, QEvent, QSignalBlocker, QPoint, QRect, QSize
+from gui_qt.operation_coordinator import OperationStartRejected
 from gui_qt.worker import Worker
+from gui_qt.input_folders import choose_input_directories
 from config import (
     APP_SETTINGS,
     get_analysis_settings,
@@ -21,6 +24,11 @@ from config import (
     GENERAL_DEFAULT_TRACE_CHANNELS,
     GENERAL_DEFAULT_PRIMARY_CHANNEL,
 )
+from core.ladder_review_bundle_store import (
+    review_bundle_transaction,
+    save_review_bundle,
+)
+from core.run_context import RunContext
 from core.analyses.clonality.ladder_review_labels import is_review_resolved
 from . import GENERAL_LADDER_OPTIONS, GENERAL_TRACE_OPTIONS, ANALYSIS_LABELS
 
@@ -177,10 +185,16 @@ class TabBatch(QWidget):
         self._job_states = {}
         self._scan_request_counter = 0
         self._active_scan_request_id = 0
+        self._active_scan_context: RunContext | None = None
         self._current_analysis_id = APP_SETTINGS.get("active_analysis", "clonality")
         self._workflow_state = "ready"
         self._active_run_jobs = []
         self._active_run_output_root: Path | None = None
+        self._active_run_rows: list[int] = []
+        self._progress_job_rows: list[int] = []
+        self._active_run_cancel_event: threading.Event | None = None
+        self._active_run_context: RunContext | None = None
+        self._last_run_result: dict = {}
         self._review_session_active = False
         self._review_session_jobs = []
         self._review_session_entries_by_path: dict[Path, dict] = {}
@@ -188,12 +202,16 @@ class TabBatch(QWidget):
         self._review_session_output_root: Path | None = None
         self._review_session_aggregate_outdir_name: str | None = None
         self._review_session_run_manifest_path: Path | None = None
+        self._review_session_context: RunContext | None = None
+        self._review_session_incomplete = False
         self._review_corrected_paths: set[Path] = set()
         self._review_finalize_request_id = 0
+        self._review_finalize_active = False
+        self.operation_coordinator = None
         
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(18)
+        main_layout.setSpacing(12)
         
         # Header
         header = QVBoxLayout()
@@ -215,16 +233,23 @@ class TabBatch(QWidget):
         # 2. Folders / Files Card
         f_card = QWidget()
         f_card.setObjectName("Card")
+        self.input_card = f_card
         f_layout = QVBoxLayout(f_card)
         f_layout.setSpacing(12)
         
+        input_header = QHBoxLayout()
         l_ftitle = QLabel("INPUT SOURCES")
         l_ftitle.setObjectName("CardTitle")
+        self.source_count_lbl = QLabel("0 sources")
+        self.source_count_lbl.setObjectName("MutedText")
+        input_header.addWidget(l_ftitle)
+        input_header.addStretch()
+        input_header.addWidget(self.source_count_lbl)
 
         row1 = QHBoxLayout()
         row1.setSpacing(10)
         self.folder_list = QListWidget()
-        self.folder_list.setMaximumHeight(100)
+        self.folder_list.setMaximumHeight(72)
         self.folder_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.folder_list.setAcceptDrops(True)
         self.folder_list.setAlternatingRowColors(True)
@@ -246,9 +271,9 @@ class TabBatch(QWidget):
         self.folder_list.dropEvent = _dropEvent
         
         btn_layout = QVBoxLayout()
-        self.btn_add_folders = QPushButton("Add Folder...")
+        self.btn_add_folders = QPushButton("Add Folders...")
         self.btn_add_folders.setToolTip(
-            "Uses the native folder picker so Windows Quick Access and pinned locations are available. Click again to add another folder."
+            "Select several input folders at once with Ctrl or Shift. The saved start folder is only a browser location."
         )
         self.btn_add_files = QPushButton("Add Files...")
         self.btn_remove_sources = QPushButton("Remove Selected")
@@ -292,7 +317,7 @@ class TabBatch(QWidget):
         # og vises i HTML-rapporten — ingen GUI-velger lenger.
         row3.addStretch()
 
-        f_layout.addWidget(l_ftitle)
+        f_layout.addLayout(input_header)
         f_layout.addLayout(row1)
         f_layout.addLayout(row2)
         f_layout.addLayout(row3)
@@ -300,12 +325,21 @@ class TabBatch(QWidget):
         self.btn_scan = QPushButton("Find Jobs")
         self.btn_run = QPushButton("Run Batch")
         self.btn_run.setObjectName("PrimaryButton")
+        self.btn_stop = QPushButton("Stop Batch")
+        self.btn_stop.setToolTip(
+            "Stop scheduling new jobs. Active jobs finish at a safe boundary; completed outputs are preserved."
+        )
+        self.btn_stop.setVisible(False)
+        self.btn_stop.setEnabled(False)
         self.btn_run_reviewed = QPushButton("Run Manual Fixes + Build DIT")
         self.btn_run_reviewed.setToolTip(
             "After ladder review, rerun corrected files in their original job context and build final DIT reports."
         )
         self.btn_run_reviewed.setEnabled(False)
         self.btn_run_reviewed.setVisible(False)
+        self.btn_open_review_queue = QPushButton("Open Review Queue")
+        self.btn_open_review_queue.setVisible(False)
+        self.btn_open_review_queue.setEnabled(False)
         self.btn_open = QPushButton("Open Output")
         self.progress = QProgressBar()
         self.progress.setValue(0)
@@ -317,6 +351,7 @@ class TabBatch(QWidget):
         # 3. Jobs Table
         t_card = QWidget()
         t_card.setObjectName("Card")
+        self.queue_card = t_card
         t_layout = QVBoxLayout(t_card)
         t_title = QLabel("RUN QUEUE")
         t_title.setObjectName("CardTitle")
@@ -347,7 +382,7 @@ class TabBatch(QWidget):
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setAutoScroll(False)
-        self.table.setMinimumHeight(280)
+        self.table.setMinimumHeight(220)
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -362,6 +397,8 @@ class TabBatch(QWidget):
         self.btn_scan.clicked.connect(self.on_scan)
         self.btn_run.clicked.connect(self.on_run)
         self.btn_run_reviewed.clicked.connect(self.on_run_reviewed)
+        self.btn_stop.clicked.connect(self.on_stop)
+        self.btn_open_review_queue.clicked.connect(self.on_open_review_queue)
         self.btn_open.clicked.connect(self.on_open_output)
         self.output_base.textChanged.connect(self._refresh_dashboard)
         self.table.itemSelectionChanged.connect(self._refresh_dashboard)
@@ -372,9 +409,9 @@ class TabBatch(QWidget):
         
         # Add to main
         main_layout.addLayout(header)
-        main_layout.addWidget(self.dashboard_card)
         main_layout.addWidget(self.general_card)
         main_layout.addWidget(f_card)
+        main_layout.addWidget(self.dashboard_card)
         main_layout.addWidget(t_card, stretch=1)
 
         self.set_analysis(self._current_analysis_id, force_replace_inputs=True)
@@ -384,8 +421,8 @@ class TabBatch(QWidget):
         card = QWidget()
         card.setObjectName("Card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
 
         title = QLabel("General Workflow Controls")
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #0f172a;")
@@ -465,8 +502,8 @@ class TabBatch(QWidget):
         card.setObjectName("DashboardCard")
 
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
 
         header_row = QHBoxLayout()
         header_row.setSpacing(12)
@@ -474,71 +511,41 @@ class TabBatch(QWidget):
         self.dashboard_title = QLabel("Workflow")
         self.dashboard_title.setObjectName("DashboardTitle")
         header_row.addWidget(self.dashboard_title)
-        header_row.addStretch()
-
         self.status_badge = QLabel("READY")
         self.status_badge.setObjectName("WorkflowStatusBadge")
         self.status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_badge.setMinimumWidth(120)
         header_row.addWidget(self.status_badge, alignment=Qt.AlignmentFlag.AlignVCenter)
-        layout.addLayout(header_row)
-
-        actions_row = QHBoxLayout()
-        actions_row.setSpacing(10)
-        actions_row.addWidget(self.btn_scan)
-        actions_row.addWidget(self.btn_run)
-        actions_row.addWidget(self.btn_run_reviewed)
-        actions_row.addWidget(self.btn_open)
-        actions_row.addStretch()
-        layout.addLayout(actions_row)
-
-        metrics_layout = QHBoxLayout()
-        metrics_layout.setSpacing(10)
-        self.metric_analysis = self._build_metric_card("Analysis")
-        self.metric_sources = self._build_metric_card("Inputs")
-        self.metric_jobs = self._build_metric_card("Queue")
-        self.metric_output = self._build_metric_card("Output")
-        for card_widget in (
-            self.metric_analysis["card"],
-            self.metric_sources["card"],
-            self.metric_jobs["card"],
-            self.metric_output["card"],
+        header_row.addSpacing(8)
+        for button in (
+            self.btn_scan,
+            self.btn_run,
+            self.btn_stop,
+            self.btn_open_review_queue,
+            self.btn_run_reviewed,
+            self.btn_open,
         ):
-            metrics_layout.addWidget(card_widget, stretch=1)
-        layout.addLayout(metrics_layout)
+            header_row.addWidget(button)
+        header_row.addStretch()
+        layout.addLayout(header_row)
 
         self.queue_summary_lbl = QLabel("")
         self.queue_summary_lbl.setObjectName("WorkflowSummaryText")
-        layout.addWidget(self.queue_summary_lbl)
+        self.review_queue_lbl = QLabel("")
+        self.review_queue_lbl.setObjectName("WorkflowSummaryText")
+        self.review_queue_lbl.setWordWrap(True)
+        self.review_queue_lbl.setVisible(False)
+        layout.addWidget(self.review_queue_lbl)
 
         status_block = QVBoxLayout()
-        status_block.setSpacing(8)
-        status_block.addWidget(self.status_lbl)
+        status_block.setSpacing(6)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.status_lbl, stretch=1)
+        status_row.addWidget(self.queue_summary_lbl)
+        status_block.addLayout(status_row)
         status_block.addWidget(self.progress)
         layout.addLayout(status_block)
         return card
-
-    def _build_metric_card(self, label_text: str) -> dict[str, QWidget | QLabel]:
-        card = QFrame()
-        card.setObjectName("DashboardMetricCard")
-
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(6)
-
-        label = QLabel(label_text)
-        label.setObjectName("DashboardMetricLabel")
-        value = QLabel("—")
-        value.setObjectName("DashboardMetricValue")
-        value.setWordWrap(True)
-        detail = QLabel("")
-        detail.setObjectName("DashboardMetricDetail")
-        detail.setWordWrap(True)
-
-        layout.addWidget(label)
-        layout.addWidget(value)
-        layout.addWidget(detail)
-        return {"card": card, "value": value, "detail": detail}
 
     def _restyle_widget(self, widget: QWidget) -> None:
         widget.style().unpolish(widget)
@@ -546,8 +553,14 @@ class TabBatch(QWidget):
         widget.update()
 
     def _reset_queue_state(self, message: str = "Ready", state: str = "ready") -> None:
-        """Clear queued jobs so the next run must start from a fresh scan."""
+        """Cancel scan ownership, then clear the queue unless a run owns it."""
+        scan_was_active = self.is_scan_active()
         self._active_scan_request_id = 0
+        self._active_scan_context = None
+        if self._active_run_cancel_event is not None or getattr(self, "_review_finalize_active", False):
+            return
+        if scan_was_active:
+            self.btn_scan.setEnabled(True)
         self._detected_jobs = []
         self._job_states = {}
         self._clear_review_session()
@@ -555,6 +568,8 @@ class TabBatch(QWidget):
         self.btn_run.setEnabled(False)
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
+        self._active_run_rows = []
+        self._progress_job_rows = []
         self._set_workflow_status(message, state)
 
     def _clear_review_session(self) -> None:
@@ -567,10 +582,39 @@ class TabBatch(QWidget):
         self._review_session_output_root = None
         self._review_session_aggregate_outdir_name = None
         self._review_session_run_manifest_path = None
+        self._review_session_context = None
+        self._review_session_incomplete = False
         self._review_corrected_paths = set()
         self.btn_run_reviewed.setVisible(False)
         self.btn_run_reviewed.setEnabled(False)
         self.btn_run_reviewed.setText("Run Manual Fixes + Build DIT")
+        self.btn_open_review_queue.setVisible(False)
+        self.btn_open_review_queue.setEnabled(False)
+        self.review_queue_lbl.clear()
+        self.review_queue_lbl.setVisible(False)
+
+    def _set_batch_controls_busy(self, busy: bool) -> None:
+        for widget in (
+            self.btn_scan,
+            self.btn_run,
+            self.btn_add_folders,
+            self.btn_add_files,
+            self.btn_remove_sources,
+            self.btn_sel_all,
+            self.btn_sel_none,
+            self.folder_list,
+            self.table,
+            self.input_scope_combo,
+            self.output_base,
+            self.general_ladder_combo,
+            self.general_primary_combo,
+            *self._general_trace_checkboxes.values(),
+        ):
+            widget.setEnabled(not busy)
+        if not busy:
+            self.btn_run.setEnabled(bool(self._detected_jobs))
+        self.btn_stop.setVisible(busy)
+        self.btn_stop.setEnabled(busy)
 
     def _set_workflow_status(self, message: str, state: str) -> None:
         self._workflow_state = state
@@ -582,19 +626,35 @@ class TabBatch(QWidget):
         self._restyle_widget(self.status_badge)
         self._refresh_dashboard()
 
+    def set_operation_coordinator(self, coordinator) -> None:
+        """Attach the app-level worker lifecycle coordinator."""
+        self.operation_coordinator = coordinator
+
+    def _register_worker_operation(
+        self, worker: Worker, kind: str, *, cancel, run_id: str | None = None
+    ):
+        coordinator = self.operation_coordinator
+        if coordinator is None:
+            return None
+        handle = coordinator.register(kind, cancel=cancel, run_id=run_id)
+        worker.signals.finished.connect(handle.settle)
+        return handle
+
+    def _start_registered_worker(self, worker: Worker, handle) -> None:
+        if handle is not None:
+            handle.mark_running()
+        try:
+            self.threadpool.start(worker)
+        except Exception:
+            if handle is not None:
+                handle.settle()
+            raise
+
     def _selected_row_count(self) -> int:
         selection_model = self.table.selectionModel()
         if selection_model is None:
             return 0
         return len(selection_model.selectedRows())
-
-    def _set_metric(self, metric: dict[str, QWidget | QLabel], value: str, detail: str = "", tooltip: str = "") -> None:
-        metric["value"].setText(value)
-        metric["detail"].setText(detail)
-        target_text = tooltip or detail or value
-        metric["card"].setToolTip(target_text)
-        metric["value"].setToolTip(target_text)
-        metric["detail"].setToolTip(target_text)
 
     @staticmethod
     def _resolve_cache_key(file_path: Path) -> Path:
@@ -635,6 +695,11 @@ class TabBatch(QWidget):
         if bundle_dir is None:
             return {}
         cases_path = Path(bundle_dir) / "ladder_review_cases.csv"
+        with review_bundle_transaction(cases_path):
+            return cls._resolved_review_rows_from_cases(cases_path)
+
+    @classmethod
+    def _resolved_review_rows_from_cases(cls, cases_path: Path) -> dict[str, dict]:
         if not cases_path.exists():
             return {}
 
@@ -658,6 +723,13 @@ class TabBatch(QWidget):
         if bundle_dir is None:
             return 0, 0
         cases_path = Path(bundle_dir) / "ladder_review_cases.csv"
+        with review_bundle_transaction(cases_path):
+            return cls._review_bundle_resolution_counts_locked(cases_path)
+
+    @classmethod
+    def _review_bundle_resolution_counts_locked(cls, cases_path: Path) -> tuple[int, int]:
+        from core.analyses.clonality.ladder_review_gate import is_empty_review_row
+
         if not cases_path.exists():
             return 0, 0
 
@@ -667,6 +739,8 @@ class TabBatch(QWidget):
             with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
                 reader = csv.DictReader(handle)
                 for row in reader:
+                    if is_empty_review_row(row):
+                        continue
                     if is_review_resolved(row.get("label")):
                         resolved += 1
                     else:
@@ -674,6 +748,75 @@ class TabBatch(QWidget):
         except Exception:
             return 0, 0
         return resolved, unresolved
+    @staticmethod
+    def _review_queue_paths(bundle_dir: Path | None) -> list[Path]:
+        if bundle_dir is None:
+            return []
+        cases_path = Path(bundle_dir) / "ladder_review_cases.csv"
+        with review_bundle_transaction(cases_path):
+            return TabBatch._review_queue_paths_locked(cases_path)
+
+    @staticmethod
+    def _review_queue_paths_locked(cases_path: Path) -> list[Path]:
+        try:
+            with cases_path.open(
+                "r",
+                encoding="utf-8",
+                errors="replace",
+                newline="",
+            ) as handle:
+                rows = list(csv.DictReader(handle))
+        except Exception:
+            return []
+        paths: list[Path] = []
+        for row in rows:
+            raw_path = str(row.get("full_path") or "").strip()
+            if raw_path:
+                paths.append(Path(raw_path).expanduser())
+        return paths
+
+    def _refresh_review_queue_actions(self) -> None:
+        paths = self._review_queue_paths(self._review_session_bundle_dir)
+        has_queue = bool(paths)
+        self.btn_open_review_queue.setVisible(has_queue)
+        self.btn_open_review_queue.setEnabled(has_queue)
+        self.review_queue_lbl.setVisible(has_queue)
+        if not has_queue:
+            self.review_queue_lbl.clear()
+            return
+        resolved, unresolved = self._review_bundle_resolution_counts(
+            self._review_session_bundle_dir
+        )
+        names = ", ".join(path.name for path in paths[:5])
+        suffix = " …" if len(paths) > 5 else ""
+        self.review_queue_lbl.setText(
+            f"Ladder review queue: {len(paths)} file(s), {unresolved} unresolved, "
+            f"{resolved} resolved — {names}{suffix}"
+        )
+
+    def on_open_review_queue(self) -> None:
+        bundle_dir = self._review_session_bundle_dir
+        if bundle_dir is None:
+            return
+        window = self.window()
+        ladder_tab = getattr(window, "tab_ladder", None)
+        if ladder_tab is not None and hasattr(
+            ladder_tab,
+            "load_review_bundle_from_path",
+        ):
+            ladder_tab.load_review_bundle_from_path(
+                bundle_dir,
+                preloaded_entries=list(
+                    self._last_run_result.get("dit_report_entries")
+                    or self._last_run_result.get("collected_entries")
+                    or []
+                ),
+                auto_open_first=True,
+            )
+            if hasattr(window, "on_sub_tab_clicked"):
+                window.on_sub_tab_clicked(self._current_analysis_id, 1)
+            return
+        self.on_open_output()
 
     @staticmethod
     def _carry_resolved_labels_to_gate(gate: dict, resolved_review_rows: dict[str, dict]) -> int:
@@ -682,6 +825,23 @@ class TabBatch(QWidget):
             return raw_count
 
         cases_path = Path(str(gate.get("cases_path") or "")).expanduser()
+        with review_bundle_transaction(cases_path):
+            return TabBatch._carry_resolved_labels_to_gate_locked(
+                gate,
+                resolved_review_rows,
+                cases_path,
+                raw_count,
+            )
+
+    @staticmethod
+    def _carry_resolved_labels_to_gate_locked(
+        gate: dict,
+        resolved_review_rows: dict[str, dict],
+        cases_path: Path,
+        raw_count: int,
+    ) -> int:
+        from core.analyses.clonality.ladder_review_gate import is_empty_review_row
+
         if not cases_path.exists():
             return raw_count
 
@@ -698,6 +858,8 @@ class TabBatch(QWidget):
         changed = False
         now = datetime.now(timezone.utc).isoformat()
         for row in rows:
+            if is_empty_review_row(row):
+                continue
             raw_path = str(row.get("full_path", "") or "").strip()
             resolved_row = None
             if raw_path:
@@ -713,21 +875,27 @@ class TabBatch(QWidget):
                 unresolved += 1
 
         if changed:
-            with cases_path.open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(rows)
-            gate["review_case_count"] = unresolved
-            gate["resolved_carried_from_previous_review"] = True
-            summary_path = gate.get("summary_path")
-            if summary_path:
-                try:
-                    Path(str(summary_path)).write_text(
-                        json.dumps({k: v for k, v in gate.items() if k != "summary_path"}, indent=2, ensure_ascii=True),
-                        encoding="utf-8",
-                    )
-                except Exception:
-                    pass
+            updated_gate = dict(gate)
+            updated_gate["review_case_count"] = unresolved
+            updated_gate["resolved_carried_from_previous_review"] = True
+            summary_path_raw = updated_gate.get("summary_path")
+            summary_path = (
+                Path(str(summary_path_raw)).expanduser()
+                if summary_path_raw
+                else None
+            )
+            save_review_bundle(
+                cases_path,
+                rows,
+                fieldnames,
+                summary_path,
+                {
+                    key: value
+                    for key, value in updated_gate.items()
+                    if key != "summary_path"
+                },
+            )
+            gate.update(updated_gate)
         return unresolved
 
     def _refresh_review_finalize_button(self) -> None:
@@ -739,11 +907,26 @@ class TabBatch(QWidget):
         corrected_count = len(self._review_corrected_paths)
         resolved_count, unresolved_count = self._review_bundle_resolution_counts(self._review_session_bundle_dir)
         self.btn_run_reviewed.setVisible(True)
+        self._refresh_review_queue_actions()
+        if self._review_session_incomplete:
+            self.btn_run_reviewed.setText("Rerun Cancelled Batch First")
+            self.btn_run_reviewed.setEnabled(False)
+            self.btn_run_reviewed.setToolTip(
+                "This review queue came from an incomplete cancelled batch. "
+                "Rerun the selected batch before publishing final reports."
+            )
+            return
         if corrected_count and unresolved_count <= 0:
             self.btn_run_reviewed.setText(f"Run Manual Fixes + Build DIT ({corrected_count})")
             self.btn_run_reviewed.setEnabled(True)
             self.btn_run_reviewed.setToolTip(
                 "Reruns corrected files with their original patient/job group and rebuilds final DIT reports."
+            )
+        elif resolved_count and unresolved_count <= 0 and self._review_session_entries_by_path:
+            self.btn_run_reviewed.setText("Build DIT After Review")
+            self.btn_run_reviewed.setEnabled(True)
+            self.btn_run_reviewed.setToolTip(
+                "Builds final reports from the retained entries after every ladder review is resolved."
             )
         elif unresolved_count > 0:
             self.btn_run_reviewed.setText(f"Finish Ladder Review ({unresolved_count} left)")
@@ -804,38 +987,14 @@ class TabBatch(QWidget):
 
     def _refresh_dashboard(self) -> None:
         analysis_name = ANALYSIS_LABELS.get(self._current_analysis_id, self._current_analysis_id.capitalize())
-        self._set_metric(
-            self.metric_analysis,
-            analysis_name,
-            "",
-            tooltip=analysis_name,
-        )
-
         inputs_loaded = self.folder_list.count()
-        self._set_metric(
-            self.metric_sources,
-            str(inputs_loaded),
-            "",
+        self.source_count_lbl.setText(
+            f"{inputs_loaded} source" if inputs_loaded == 1 else f"{inputs_loaded} sources"
         )
 
         total_jobs = len(self._detected_jobs)
         selected_jobs = self._selected_row_count()
-        self._set_metric(
-            self.metric_jobs,
-            str(total_jobs),
-            "",
-            tooltip=f"{selected_jobs} selected for run" if total_jobs else "No queue yet.",
-        )
-
         output_path = self._resolve_output_path_str().strip()
-        output_display = "Auto" if not output_path else Path(output_path).expanduser().name
-        output_detail = "Uses saved/default output." if not output_path else output_path
-        self._set_metric(
-            self.metric_output,
-            output_display,
-            "",
-            tooltip=output_detail,
-        )
 
         counts = {"pending": 0, "running": 0, "success": 0, "error": 0, "collected": 0}
         for state in self._job_states.values():
@@ -850,10 +1009,15 @@ class TabBatch(QWidget):
             else:
                 counts["pending"] += 1
 
-        self.queue_summary_lbl.setText(
-            f"Pending {counts['pending']}   •   Running {counts['running']}   •   Collected {counts['collected']}   •   Complete {counts['success']}   •   Errors {counts['error']}"
-        )
-        self.dashboard_title.setText(f"{analysis_name} Workflow")
+        if total_jobs:
+            self.queue_summary_lbl.setText(
+                f"{total_jobs} jobs ({selected_jobs} selected)   •   Pending {counts['pending']}   •   Running {counts['running']}   •   Complete {counts['success']}   •   Errors {counts['error']}"
+            )
+        else:
+            self.queue_summary_lbl.setText("No jobs yet — add sources, choose an output, then select Find Jobs.")
+        output_tooltip = output_path or "Uses the saved output or first source folder."
+        self.queue_summary_lbl.setToolTip(output_tooltip)
+        self.dashboard_title.setText(analysis_name)
         
     def _build_general_selector_card(self, title: str, subtitle: str, field: QWidget) -> QWidget:
         card = QFrame()
@@ -878,15 +1042,37 @@ class TabBatch(QWidget):
     def _profile_for(self, analysis_id: str | None = None) -> dict:
         return get_analysis_settings(analysis_id or self._current_analysis_id)
 
-    def set_analysis(self, analysis_id: str, force_replace_inputs: bool = False) -> None:
-        previous_profile = self._profile_for(self._current_analysis_id)
-        previous_default = previous_profile.get("batch", {}).get("base_input_dir", "")
-        current_items = [self.folder_list.item(i).text() for i in range(self.folder_list.count())]
-        should_replace_inputs = force_replace_inputs or not current_items or current_items == [previous_default]
+    def _capture_run_context(
+        self, *, parent: RunContext | None = None, run_id: str | None = None
+    ) -> RunContext:
+        if parent is not None:
+            return RunContext.create(
+                analysis_id=parent.analysis_id,
+                settings=parent.settings_snapshot,
+                parent_run_id=parent.run_id,
+                run_id=run_id,
+            )
+        settings = copy.deepcopy(APP_SETTINGS)
+        settings["active_analysis"] = self._current_analysis_id
+        return RunContext.create(
+            analysis_id=self._current_analysis_id,
+            settings=settings,
+            run_id=run_id,
+        )
 
+    def is_scan_active(self) -> bool:
+        return self._active_scan_request_id != 0
+
+    def set_analysis(self, analysis_id: str, force_replace_inputs: bool = False) -> bool:
+        if (
+            self.is_scan_active()
+            or self._active_run_cancel_event is not None
+            or getattr(self, "_review_finalize_active", False)
+        ):
+            return False
         self._current_analysis_id = analysis_id
         self._reset_queue_state("Ready", "ready")
-        self.load_from_settings(replace_inputs=should_replace_inputs)
+        self.load_from_settings(replace_inputs=force_replace_inputs)
         pretty_name = ANALYSIS_LABELS.get(analysis_id, analysis_id.capitalize())
         self.title_lbl.setText(f"Run {pretty_name}")
         self.subtitle_lbl.setText("")
@@ -895,12 +1081,13 @@ class TabBatch(QWidget):
         self.general_card.setVisible(is_general)
         self.input_scope_label.setVisible(not is_general)
         self.input_scope_combo.setVisible(not is_general)
-        self.btn_add_files.setVisible(is_general)
-        self.input_label.setText("Files / Folders:" if is_general else "Samples:")
+        self.btn_add_files.setVisible(True)
+        self.input_label.setText("Files / Folders:")
         self._set_workflow_status(
             "Ready",
             "ready",
         )
+        return True
 
     def load_from_settings(self, replace_inputs: bool = False):
         """Reload analysis-specific defaults from APP_SETTINGS."""
@@ -914,11 +1101,8 @@ class TabBatch(QWidget):
             saved_output or "/path/to/output (leave empty to use the saved output or the first sample folder)"
         )
 
-        default_dir = batch_settings.get("base_input_dir", "")
         if replace_inputs:
             self.folder_list.clear()
-        if default_dir and self.folder_list.count() == 0:
-            self.folder_list.addItem(default_dir)
 
         run_date_filter = str(batch_settings.get("run_date_filter", "all") or "all")
         idx = self.input_scope_combo.findData(run_date_filter)
@@ -1032,12 +1216,16 @@ class TabBatch(QWidget):
     def _on_general_runtime_changed(self, *_args) -> None:
         if not self._is_general_analysis() or not self._general_controls_ready:
             return
+        if self._active_run_cancel_event is not None or getattr(self, "_review_finalize_active", False):
+            return
         preferred = self.general_primary_combo.currentData() or self.general_primary_combo.currentText()
         self._refresh_general_primary_combo(preferred=str(preferred) if preferred else None)
         self._persist_general_runtime_settings()
 
     def _on_general_trace_toggled(self, *_args) -> None:
         if not self._is_general_analysis() or not self._general_controls_ready:
+            return
+        if self._active_run_cancel_event is not None or getattr(self, "_review_finalize_active", False):
             return
         selected = self._selected_general_trace_channels(fallback=False)
         if not selected:
@@ -1051,6 +1239,8 @@ class TabBatch(QWidget):
     def _on_input_scope_changed(self, *_args) -> None:
         if self._is_general_analysis():
             return
+        if self._active_run_cancel_event is not None or getattr(self, "_review_finalize_active", False):
+            return
         profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(self._current_analysis_id, {})
         batch_settings = profile.setdefault("batch", {})
         batch_settings["run_date_filter"] = self.input_scope_combo.currentData() or "all"
@@ -1059,36 +1249,34 @@ class TabBatch(QWidget):
 
     def _add_folders(self):
         batch_settings = self._profile_for().get("batch", {})
-        start = str(batch_settings.get("last_input_directory") or "").strip()
-        if not start and self.folder_list.count():
-            candidate = Path(self.folder_list.item(self.folder_list.count() - 1).text()).expanduser()
-            start = str(candidate if candidate.is_dir() else candidate.parent)
-        if not start:
-            start = str(batch_settings.get("base_input_dir") or Path.home())
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "Add Input Folder",
-            start,
-            QFileDialog.Option.ShowDirsOnly,
+        start = str(
+            batch_settings.get("base_input_dir")
+            or batch_settings.get("last_input_directory") or Path.home()
         )
-        if not folder:
+        folders = choose_input_directories(self, start)
+        if not folders:
             return
-        existing = {
-            self.folder_list.item(i).text()
-            for i in range(self.folder_list.count())
-        }
-        if folder not in existing:
+        for folder in folders:
             self._add_source_item(folder)
         profile = APP_SETTINGS.setdefault("analyses", {}).setdefault(
             self._current_analysis_id,
             {},
         )
-        profile.setdefault("batch", {})["last_input_directory"] = folder
+        settings = profile.setdefault("batch", {})
+        settings["last_input_directory"] = str(Path(folders[0]).parent)
+        directory_count = sum(Path(self.folder_list.item(i).text()).is_dir() for i in range(self.folder_list.count()))
+        if directory_count > 1:
+            # Keep the operator's explicit cohort instead of dropping older
+            # selected folders under the saved "latest run date" default.
+            settings["run_date_filter"] = "all"
+            scope_blocker = QSignalBlocker(self.input_scope_combo)
+            self.input_scope_combo.setCurrentIndex(self.input_scope_combo.findData("all"))
+            del scope_blocker
         save_settings(APP_SETTINGS)
 
     def _add_files(self):
         batch_settings = self._profile_for().get("batch", {})
-        start = str(batch_settings.get("last_input_directory") or Path.home())
+        start = str(batch_settings.get("base_input_dir") or batch_settings.get("last_input_directory") or Path.home())
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Add .fsa Files",
@@ -1123,8 +1311,7 @@ class TabBatch(QWidget):
             return
         if path.is_file() and path.suffix.lower() != ".fsa":
             return
-        if not self._is_general_analysis() and path.is_file():
-            return
+
         existing = {self.folder_list.item(i).text() for i in range(self.folder_list.count())}
         normalized = str(path)
         if normalized not in existing:
@@ -1141,58 +1328,57 @@ class TabBatch(QWidget):
         return paths
 
     def _rebuild_table(self):
-        selected_names = {
-            self.table.item(index.row(), 0).text()
+        selected_rows = {
+            index.row()
             for index in self.table.selectionModel().selectedRows()
-            if self.table.item(index.row(), 0) is not None
         } if self.table.selectionModel() else set()
         v_scroll = self.table.verticalScrollBar().value()
         h_scroll = self.table.horizontalScrollBar().value()
 
         self.table.setUpdatesEnabled(False)
         self.table.setRowCount(0)
-        for row_idx, j in enumerate(self._detected_jobs):
+        for row_idx, job in enumerate(self._detected_jobs):
             self.table.insertRow(row_idx)
-            
-            state = self._job_states.get(j["name"], "pending")
-            
-            item_name = QTableWidgetItem(j["name"])
-            
-            jtype = j.get("type", "unknown")
-            item_type = QTableWidgetItem(jtype.upper())
-            if jtype == "qc":
+            state = self._job_states.get(row_idx, "pending")
+            item_name = QTableWidgetItem(job["name"])
+
+            job_type = job.get("type", "unknown")
+            item_type = QTableWidgetItem(job_type.upper())
+            if job_type == "qc":
                 item_type.setForeground(Qt.GlobalColor.darkMagenta)
             else:
                 item_type.setForeground(Qt.GlobalColor.darkCyan)
-            
-            src = str(j["path"]) if j.get("path") else "[Aggregated]"
-            item_src = QTableWidgetItem(src)
-            
-            files = str(len(j.get("files", []))) if j.get("files") else "auto"
+
+            source = str(job["path"]) if job.get("path") else "[Aggregated]"
+            item_src = QTableWidgetItem(source)
+            files = str(len(job.get("files", []))) if job.get("files") else "auto"
             item_files = QTableWidgetItem(files)
-            
-            display_state = state.upper()
-            if ":" in display_state:
-                display_state = display_state.split(":", 1)[0]
+
+            display_state = state.upper().split(":", 1)[0]
             item_state = QTableWidgetItem(display_state)
-            if state == "success" or state == "done":
+            if state in {"success", "done"}:
                 item_state.setForeground(Qt.GlobalColor.darkGreen)
             elif state == "error" or state.startswith("error"):
                 item_state.setForeground(Qt.GlobalColor.red)
             elif state == "running":
                 item_state.setForeground(Qt.GlobalColor.blue)
-            elif state == "collected":
-                # Data collected but final reports still pending — not green yet.
+            elif state in {
+                "collected",
+                "cancelled",
+                "unprocessed",
+                "queued",
+                "cancelling",
+            }:
                 item_state.setForeground(Qt.GlobalColor.darkYellow)
             else:
                 item_state.setForeground(Qt.GlobalColor.darkGray)
-                
+
             self.table.setItem(row_idx, 0, item_name)
             self.table.setItem(row_idx, 1, item_type)
             self.table.setItem(row_idx, 2, item_src)
             self.table.setItem(row_idx, 3, item_files)
             self.table.setItem(row_idx, 4, item_state)
-            if j["name"] in selected_names:
+            if row_idx in selected_rows:
                 self.table.selectRow(row_idx)
 
         self.table.setUpdatesEnabled(True)
@@ -1204,25 +1390,24 @@ class TabBatch(QWidget):
         paths = self._general_selected_paths()
         if not paths:
             self._set_workflow_status(
-                "No files or folders selected." if self._is_general_analysis() else "No input folders selected.",
+                "No files or folders selected.",
                 "error",
             )
             return
             
-        self.btn_scan.setEnabled(False)
-        self.btn_run.setEnabled(False)
-        self.progress.setRange(0, 0) # Indeterminate spinner
-        self._set_workflow_status("Finding jobs...", "running")
-
         from core.batch import generate_jobs
 
         batch_settings = self._profile_for().get("batch", {})
         agg_pat = bool(batch_settings.get("aggregate_by_patient", True))
         regex = batch_settings.get("patient_id_regex", r"\d{2}OUM\d{5}")
         run_date_filter = str(batch_settings.get("run_date_filter", "all") or "all")
+        if any(path.is_file() for path in paths):
+            # Explicit file selection is the operator's cohort; a folder-date
+            # filter must never silently remove chosen files.
+            run_date_filter = "all"
         self._scan_request_counter += 1
         scan_request_id = self._scan_request_counter
-        self._active_scan_request_id = scan_request_id
+        scan_context = self._capture_run_context()
 
         worker = Worker(
             generate_jobs,
@@ -1230,6 +1415,7 @@ class TabBatch(QWidget):
             aggregate_patients=agg_pat,
             patient_regex=regex,
             run_date_filter=run_date_filter,
+            run_context=scan_context,
         )
         worker.signals.result.connect(
             lambda jobs, request_id=scan_request_id: self._on_scan_result(jobs, request_id)
@@ -1237,14 +1423,44 @@ class TabBatch(QWidget):
         worker.signals.error.connect(
             lambda err_tuple, request_id=scan_request_id: self._on_scan_error(err_tuple, request_id)
         )
-        
-        self.threadpool.start(worker)
+        try:
+            operation_handle = self._register_worker_operation(
+                worker,
+                "Run scan",
+                # Directory enumeration has no safe interruption boundary yet.
+                cancel=lambda: None,
+                run_id=scan_context.run_id,
+            )
+        except OperationStartRejected:
+            self._set_workflow_status(
+                "Application is closing — scan was not started.", "warning"
+            )
+            return
+
+        self._active_scan_request_id = scan_request_id
+        self._active_scan_context = scan_context
+        self.btn_scan.setEnabled(False)
+        self.btn_run.setEnabled(False)
+        self.progress.setRange(0, 0)  # Indeterminate spinner
+        self._set_workflow_status("Finding jobs...", "running")
+        try:
+            self._start_registered_worker(worker, operation_handle)
+        except Exception as exc:
+            self._active_scan_request_id = 0
+            self._active_scan_context = None
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            self.btn_scan.setEnabled(True)
+            self.btn_run.setEnabled(bool(self._detected_jobs))
+            self._set_workflow_status(f"Scan could not start: {exc}", "error")
         
     def _on_scan_result(self, jobs, request_id: int | None = None):
         if request_id != self._active_scan_request_id:
             return
+        self._active_scan_request_id = 0
+        self._active_scan_context = None
         self._detected_jobs = jobs
-        self._job_states = {j["name"]: "pending" for j in jobs}
+        self._job_states = {index: "pending" for index, _job in enumerate(jobs)}
         
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -1280,6 +1496,8 @@ class TabBatch(QWidget):
     def _on_scan_error(self, err_tuple, request_id: int | None = None):
         if request_id != self._active_scan_request_id:
             return
+        self._active_scan_request_id = 0
+        self._active_scan_context = None
         self._set_workflow_status(f"Scan error: {err_tuple[1]}", "error")
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -1287,15 +1505,36 @@ class TabBatch(QWidget):
         self.btn_run.setEnabled(bool(self._detected_jobs))
 
     def _on_run_error(self, err_tuple):
+        self._active_run_cancel_event = None
+        for row in self._progress_job_rows:
+            if self._job_states.get(row) in {"queued", "running", "cancelling"}:
+                self._job_states[row] = "error"
+        self._rebuild_table()
+        self._set_batch_controls_busy(False)
         self._set_workflow_status(f"Run error: {err_tuple[1]}", "error")
         self.progress.setRange(0, max(len(self._detected_jobs), 1))
-        self.btn_scan.setEnabled(True)
-        self.btn_run.setEnabled(True)
+
+    def on_stop(self) -> None:
+        cancellation = self._active_run_cancel_event
+        if cancellation is None or cancellation.is_set():
+            return
+        cancellation.set()
+        for row in self._progress_job_rows:
+            if self._job_states.get(row) in {"queued", "running"}:
+                self._job_states[row] = "cancelling"
+        self._rebuild_table()
+        self.btn_stop.setEnabled(False)
+        self._set_workflow_status(
+            "Stop requested — active jobs will finish safely; no new jobs will start.",
+            "warning",
+        )
         
     def on_run(self):
         from core.batch import run_batch_jobs
         
-        selected_rows = [index.row() for index in self.table.selectionModel().selectedRows()]
+        selected_rows = sorted(
+            index.row() for index in self.table.selectionModel().selectedRows()
+        )
         if not selected_rows:
             self._set_workflow_status(
                 "No files or folders selected — check rows in the table."
@@ -1314,21 +1553,6 @@ class TabBatch(QWidget):
         if not out_path_obj or not out_path_obj.exists():
             self._set_workflow_status("Output folder does not exist — set it before running.", "error")
             return
-
-        self._clear_review_session()
-        self._active_run_jobs = [copy.deepcopy(job) for job in jobs_to_run]
-        self._active_run_output_root = out_path_obj
-            
-        for j in jobs_to_run:
-            self._job_states[j["name"]] = "running"
-        self._rebuild_table()
-        
-        self.btn_scan.setEnabled(False)
-        self.btn_run.setEnabled(False)
-        self.progress.setRange(0, len(jobs_to_run))
-        self.progress.setValue(0)
-
-        self._set_workflow_status(f"Running {len(jobs_to_run)} jobs...", "running")
         
         profile = self._profile_for()
         s_pipe = profile.get("pipeline", {})
@@ -1336,14 +1560,13 @@ class TabBatch(QWidget):
         p_scope = s_pipe.get("mode", "all")
         a_filter = s_pipe.get("assay_filter_substring", "")
         aggregate_dit_reports = bool(s_batch.get("aggregate_dit_reports", True))
-        if self._is_general_analysis():
-            self._persist_general_runtime_settings()
-        
+
+        cancel_event = threading.Event()
         worker = Worker(
             run_batch_jobs,
             jobs=jobs_to_run,
             output_base=out_path_obj,
-            out_folder_tmpl="ASSAY_REPORTS",
+            out_folder_tmpl="",
             outfile_html_tmpl="QC_REPORT_{name}.html",
             excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
             pipeline_scope=p_scope,
@@ -1351,6 +1574,7 @@ class TabBatch(QWidget):
             aggregate_dit_reports=aggregate_dit_reports,
             continue_on_error=True,
             update_callback=None, # Passed explicitly as kwarg below
+            cancel_event=cancel_event,
         )
         # Assign the emit method of our new progress_ext signal as the callback
         worker.kwargs['update_callback'] = worker.signals.progress_ext.emit
@@ -1358,8 +1582,81 @@ class TabBatch(QWidget):
         worker.signals.result.connect(self._on_run_finished)
         worker.signals.progress_ext.connect(self._update_progress_from_thread)
         worker.signals.error.connect(self._on_run_error)
-        
-        self.threadpool.start(worker)
+
+        run_id = uuid.uuid4().hex
+        self._active_run_cancel_event = cancel_event
+        try:
+            operation_handle = self._register_worker_operation(
+                worker,
+                "Run batch",
+                cancel=self.on_stop,
+                run_id=run_id,
+            )
+        except OperationStartRejected:
+            self._active_run_cancel_event = None
+            self._set_workflow_status(
+                "Application is closing — batch was not started.",
+                "warning",
+            )
+            return
+
+        try:
+            if self._is_general_analysis():
+                self._persist_general_runtime_settings()
+        except Exception as exc:
+            if operation_handle is not None:
+                operation_handle.settle()
+            self._active_run_cancel_event = None
+            self._set_workflow_status(
+                f"Batch settings could not be saved: {exc}",
+                "error",
+            )
+            return
+
+        run_context = self._capture_run_context(run_id=run_id)
+        worker.kwargs["run_context"] = run_context
+
+        previous_job_states = {
+            row: self._job_states.get(row, "pending") for row in selected_rows
+        }
+        previous_progress_job_rows = list(self._progress_job_rows)
+        self._progress_job_rows = list(selected_rows)
+        for row in selected_rows:
+            self._job_states[row] = "queued"
+        self._rebuild_table()
+
+        self._set_batch_controls_busy(True)
+        self.progress.setRange(0, len(jobs_to_run))
+        self.progress.setValue(0)
+        self._set_workflow_status(f"Running {len(jobs_to_run)} jobs...", "running")
+
+        previous_context = self._active_run_context
+        self._active_run_context = run_context
+        try:
+            self._start_registered_worker(worker, operation_handle)
+        except Exception as exc:
+            self._active_run_context = previous_context
+            self._active_run_cancel_event = None
+            for row, state in previous_job_states.items():
+                self._job_states[row] = state
+            self._progress_job_rows = previous_progress_job_rows
+            self._rebuild_table()
+            self._set_batch_controls_busy(False)
+            self.progress.setRange(0, max(len(self._detected_jobs), 1))
+            self.progress.setValue(0)
+            self._set_workflow_status(
+                f"Batch could not start: {exc}",
+                "error",
+            )
+            return
+
+        # Only replace a prior review session once the new worker was accepted
+        # by the thread pool. A synchronous start failure must be lossless.
+        self._clear_review_session()
+        self._active_run_jobs = [copy.deepcopy(job) for job in jobs_to_run]
+        self._active_run_rows = list(selected_rows)
+        self._progress_job_rows = list(selected_rows)
+        self._active_run_output_root = out_path_obj
 
     def _start_review_session(self, result: dict, bundle_dir: Path) -> None:
         report_dir = bundle_dir.parent
@@ -1375,11 +1672,14 @@ class TabBatch(QWidget):
         self._review_session_run_manifest_path = (
             Path(raw_manifest_path) if raw_manifest_path else None
         )
+        self._review_session_context = self._active_run_context
+        self._review_session_incomplete = bool((result or {}).get("cancelled"))
         self._review_corrected_paths = set()
         self._set_review_session_entries(
             list((result or {}).get("dit_report_entries") or (result or {}).get("collected_entries") or [])
         )
         self._refresh_review_finalize_button()
+        self._refresh_review_queue_actions()
 
     def _linked_jobs_for_corrected_files(self, corrected_paths: set[Path]) -> list[dict]:
         if not corrected_paths:
@@ -1395,13 +1695,37 @@ class TabBatch(QWidget):
             linked_job["files"] = job_files
             linked_jobs.append(linked_job)
         return linked_jobs
+    def _detected_rows_for_jobs(self, jobs: list[dict]) -> list[int]:
+        remaining = list(range(len(self._detected_jobs)))
+        matched: list[int] = []
+        for target in jobs:
+            target_files = tuple(
+                self._resolve_cache_key(Path(path))
+                for path in (target.get("files") or [])
+            )
+            for row in remaining:
+                candidate = self._detected_jobs[row]
+                candidate_files = tuple(
+                    self._resolve_cache_key(Path(path))
+                    for path in (candidate.get("files") or [])
+                )
+                if (
+                    candidate.get("name") == target.get("name")
+                    and candidate.get("type") == target.get("type")
+                    and candidate_files == target_files
+                ):
+                    matched.append(row)
+                    remaining.remove(row)
+                    break
+        return matched
+
 
     def on_run_reviewed(self):
         if not self._review_session_active:
             self._set_workflow_status("No active ladder review session.", "error")
             return
-        if not self._review_corrected_paths:
-            self._set_workflow_status("No manual ladder corrections are ready yet.", "error")
+        if not self._review_corrected_paths and not self._review_session_entries_by_path:
+            self._set_workflow_status("No reportable entries are available after review.", "error")
             return
         if self._review_session_output_root is None:
             self._set_workflow_status("Review session output folder is missing.", "error")
@@ -1425,11 +1749,15 @@ class TabBatch(QWidget):
             return
 
         linked_jobs = self._linked_jobs_for_corrected_files(set(self._review_corrected_paths))
-        if not linked_jobs:
+        if self._review_corrected_paths and not linked_jobs:
             self._set_workflow_status("Could not find linked jobs for the corrected files.", "error")
             return
 
-        profile = self._profile_for()
+        parent_context = self._review_session_context or self._capture_run_context()
+        child_context = self._capture_run_context(parent=parent_context)
+        profile_settings = parent_context.settings_copy()
+        profile_settings.setdefault("active_analysis", parent_context.analysis_id)
+        profile = get_analysis_settings(parent_context.analysis_id, profile_settings)
         s_pipe = profile.get("pipeline", {})
         s_batch = profile.get("batch", {})
         p_scope = s_pipe.get("mode", "all")
@@ -1438,19 +1766,6 @@ class TabBatch(QWidget):
 
         self._review_finalize_request_id += 1
         request_id = self._review_finalize_request_id
-        self.btn_scan.setEnabled(False)
-        self.btn_run.setEnabled(False)
-        self.btn_run_reviewed.setEnabled(False)
-        self.progress.setRange(0, len(linked_jobs))
-        self.progress.setValue(0)
-        for job in linked_jobs:
-            self._job_states[job["name"]] = "running"
-        self._rebuild_table()
-        self._set_workflow_status(
-            f"Rerunning {len(linked_jobs)} linked job(s) and preparing final DIT reports...",
-            "running",
-        )
-
         worker = Worker(
             self._review_finalize_worker,
             jobs_to_run=linked_jobs,
@@ -1464,13 +1779,71 @@ class TabBatch(QWidget):
             aggregate_dit_reports=aggregate_dit_reports,
             aggregate_outdir_name=self._review_session_aggregate_outdir_name,
             parent_run_manifest_path=self._review_session_run_manifest_path,
+            run_context=child_context,
             update_callback=None,
         )
         worker.kwargs["update_callback"] = worker.signals.progress_ext.emit
         worker.signals.result.connect(lambda payload, rid=request_id: self._on_review_finalize_finished(rid, payload))
         worker.signals.progress_ext.connect(self._update_progress_from_thread)
         worker.signals.error.connect(lambda err, rid=request_id: self._on_review_finalize_error(rid, err))
-        self.threadpool.start(worker)
+        try:
+            operation_handle = self._register_worker_operation(
+                worker,
+                "Run review finalization",
+                # Final report publication has no safe mid-write boundary yet.
+                # Keep the operation registered so close waits for completion.
+                cancel=lambda: None,
+                run_id=child_context.run_id,
+            )
+        except OperationStartRejected:
+            self._review_finalize_active = False
+            self._set_workflow_status(
+                "Application is closing — review finalization was not started.",
+                "warning",
+            )
+            return
+
+        previous_job_states = {
+            row: self._job_states.get(row, "pending")
+            for row in self._detected_rows_for_jobs(linked_jobs)
+        }
+        previous_progress_job_rows = list(self._progress_job_rows)
+        review_button_was_enabled = self.btn_run_reviewed.isEnabled()
+        self._review_finalize_active = True
+        self.btn_scan.setEnabled(False)
+        self.btn_run.setEnabled(False)
+        self.btn_run_reviewed.setEnabled(False)
+        self.progress.setRange(0, max(len(linked_jobs), 1))
+        self.progress.setValue(0)
+        self._progress_job_rows = list(previous_job_states)
+        for row in self._progress_job_rows:
+            self._job_states[row] = "running"
+        self._rebuild_table()
+        self._set_workflow_status(
+            (
+                f"Rerunning {len(linked_jobs)} linked job(s) and preparing final DIT reports..."
+                if linked_jobs
+                else "Building final DIT reports from reviewed entries..."
+            ),
+            "running",
+        )
+        try:
+            self._start_registered_worker(worker, operation_handle)
+        except Exception as exc:
+            self._review_finalize_active = False
+            for row, state in previous_job_states.items():
+                self._job_states[row] = state
+            self._progress_job_rows = previous_progress_job_rows
+            self._rebuild_table()
+            self.btn_scan.setEnabled(True)
+            self.btn_run.setEnabled(bool(self._detected_jobs))
+            self.btn_run_reviewed.setEnabled(review_button_was_enabled)
+            self.progress.setRange(0, max(len(self._review_session_jobs), 1))
+            self.progress.setValue(0)
+            self._set_workflow_status(
+                f"Review finalization could not start: {exc}",
+                "error",
+            )
 
     @staticmethod
     def _review_finalize_worker(
@@ -1486,29 +1859,42 @@ class TabBatch(QWidget):
         aggregate_dit_reports: bool,
         aggregate_outdir_name: str | None,
         parent_run_manifest_path: Path | None = None,
+        run_context: RunContext | None = None,
         update_callback=None,
     ) -> dict:
         from config import APP_SETTINGS, resolve_analysis_excel_output_path
         from core.batch import run_batch_jobs
 
-        APP_SETTINGS["active_analysis"] = analysis_id
-        result = run_batch_jobs(
-            jobs=jobs_to_run,
-            output_base=output_root,
-            out_folder_tmpl="ASSAY_REPORTS",
-            outfile_html_tmpl="QC_REPORT_{name}.html",
-            excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
-            pipeline_scope=pipeline_scope,
-            assay_filter=assay_filter,
-            aggregate_dit_reports=aggregate_dit_reports,
-            continue_on_error=True,
-            update_callback=update_callback,
-            aggregate_outdir_name=aggregate_outdir_name,
-            defer_tracking_workbook_refresh=True,
-            defer_dit_html_reports=True,
-            preserve_deferred_entries=True,
-            parent_run_manifest_path=parent_run_manifest_path,
-        )
+        if run_context is None:
+            APP_SETTINGS["active_analysis"] = analysis_id
+        elif run_context.analysis_id != analysis_id:
+            raise ValueError("Review analysis does not match run context")
+        if jobs_to_run or not session_entries:
+            result = run_batch_jobs(
+                jobs=jobs_to_run,
+                output_base=output_root,
+                out_folder_tmpl="",
+                outfile_html_tmpl="QC_REPORT_{name}.html",
+                excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
+                pipeline_scope=pipeline_scope,
+                assay_filter=assay_filter,
+                aggregate_dit_reports=aggregate_dit_reports,
+                continue_on_error=True,
+                update_callback=update_callback,
+                aggregate_outdir_name=aggregate_outdir_name,
+                defer_tracking_workbook_refresh=True,
+                defer_dit_html_reports=True,
+                preserve_deferred_entries=True,
+                parent_run_manifest_path=parent_run_manifest_path,
+                **({"run_context": run_context} if run_context is not None else {}),
+            )
+        else:
+            result = {
+                "collected_entries": [],
+                "qc_report_entries": [],
+                "failed_jobs": [],
+                "ladder_review_gate": {},
+            }
 
         combined_by_path: dict[Path, dict] = {}
         for entry in session_entries:
@@ -1595,6 +1981,7 @@ class TabBatch(QWidget):
                     "clonality",
                     agg_outdir,
                     CLONALITY_TRACKING_FILENAME,
+                    settings=(run_context.settings_copy() if run_context is not None else None),
                 ),
                 combined_entries,
             )
@@ -1629,16 +2016,49 @@ class TabBatch(QWidget):
         }
         
     def _update_progress_from_thread(self, idx, total, name, state):
-        self._job_states[name] = state
+        if name not in {"DIT aggregation", "Done", "Batch"}:
+            candidates = [
+                row
+                for row in self._progress_job_rows
+                if 0 <= row < len(self._detected_jobs)
+                and self._detected_jobs[row].get("name") == name
+            ]
+            preferred_states = (
+                {"queued", "pending", "cancelling"}
+                if state == "running"
+                else {"running", "queued", "cancelling", "collected"}
+            )
+            row = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if self._job_states.get(candidate) in preferred_states
+                ),
+                candidates[0] if candidates else None,
+            )
+            if row is not None:
+                self._job_states[row] = state
         self._rebuild_table()
         self.progress.setValue(idx)
+        cancellation_pending = bool(
+            self._active_run_cancel_event
+            and self._active_run_cancel_event.is_set()
+        )
         if state.startswith("error"):
             self._set_workflow_status(f"Run error in {name} ({idx}/{total})", "error")
+        elif state == "cancelled":
+            self._set_workflow_status(
+                f"Batch stopped after {idx}/{total} job(s); remaining jobs were not run.",
+                "warning",
+            )
+        elif cancellation_pending:
+            self._set_workflow_status(
+                "Stop requested — active jobs are finishing safely; no new jobs will start.",
+                "warning",
+            )
         elif state == "done":
             pass
         elif name == "DIT aggregation" and state == "running":
-            # All sample/QC jobs are finished; final reports + tracking workbook
-            # are still being built. This is NOT "complete" yet.
             self._set_workflow_status(
                 f"All {idx}/{idx} jobs collected — building final DIT reports…",
                 "running",
@@ -1646,8 +2066,6 @@ class TabBatch(QWidget):
         elif state == "success":
             self._set_workflow_status(f"Completed: {name} ({idx}/{total})", "success")
         elif state == "collected":
-            # Aggregated mode: job data collected, but final reports are still
-            # pending. Keep the banner in a running state — no premature green.
             remaining = max(total - idx, 0)
             if remaining:
                 self._set_workflow_status(
@@ -1661,22 +2079,69 @@ class TabBatch(QWidget):
                 )
         else:
             self._set_workflow_status(f"Running: {name} ({idx}/{total})", "running")
-        
+
     def _on_run_finished(self, result):
-        self.progress.setRange(0, 100)
-        self.progress.setValue(100)
-        failed_jobs = (result or {}).get("failed_jobs", [])
-        if failed_jobs:
-            self._set_workflow_status(f"Batch finished with {len(failed_jobs)} failed job(s).", "error")
+        result = result or {}
+        self._last_run_result = result
+        self._active_run_cancel_event = None
+        completed_indexes = list(result.get("completed_job_indexes") or [])
+        failed_indexes = list(result.get("failed_job_indexes") or [])
+        cancelled_indexes = list(result.get("cancelled_job_indexes") or [])
+        unprocessed_indexes = set(result.get("unprocessed_job_indexes") or [])
+        for index in completed_indexes:
+            if 0 <= index < len(self._active_run_rows):
+                self._job_states[self._active_run_rows[index]] = "success"
+        for index in failed_indexes:
+            if 0 <= index < len(self._active_run_rows):
+                self._job_states[self._active_run_rows[index]] = "error"
+        for index in cancelled_indexes:
+            if 0 <= index < len(self._active_run_rows):
+                self._job_states[self._active_run_rows[index]] = (
+                    "unprocessed" if index in unprocessed_indexes else "cancelled"
+                )
+        self._rebuild_table()
+        self._set_batch_controls_busy(False)
+        total_jobs = int(result.get("total_jobs") or 0)
+        completed_count = len(completed_indexes)
+        failed_count = len(failed_indexes)
+        failed_jobs = list(result.get("failed_jobs") or [])
+        output_failures = failed_jobs[failed_count:]
+        unprocessed_count = len(unprocessed_indexes)
+        self.progress.setRange(0, max(total_jobs, 1))
+        self.progress.setValue(completed_count + failed_count)
+        if result.get("cancelled"):
+            self._set_workflow_status(
+                f"Batch stopped: {completed_count} completed, "
+                f"{failed_count} failed, {unprocessed_count} not run. "
+                "Completed outputs and provenance were preserved.",
+                "warning",
+            )
+        elif failed_count and output_failures:
+            self._set_workflow_status(
+                f"Batch finished with {failed_count} failed job(s); "
+                f"output/report error(s): {', '.join(map(str, output_failures))}.",
+                "error",
+            )
+        elif failed_count:
+            self._set_workflow_status(
+                f"Batch finished with {failed_count} failed job(s).",
+                "error",
+            )
+        elif output_failures:
+            self._set_workflow_status(
+                f"Batch finished with output/report error(s): "
+                f"{', '.join(map(str, output_failures))}.",
+                "error",
+            )
         else:
+            self.progress.setValue(self.progress.maximum())
             self._set_workflow_status("Batch complete.", "success")
-        self.btn_scan.setEnabled(True)
-        self.btn_run.setEnabled(True)
-        self._show_ladder_review_gate_prompt(result or {})
+        self._show_ladder_review_gate_prompt(result)
 
     def _on_review_finalize_finished(self, request_id: int, payload: dict) -> None:
         if request_id != self._review_finalize_request_id:
             return
+        self._review_finalize_active = False
 
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
@@ -1730,6 +2195,7 @@ class TabBatch(QWidget):
     def _on_review_finalize_error(self, request_id: int, err_tuple) -> None:
         if request_id != self._review_finalize_request_id:
             return
+        self._review_finalize_active = False
         self.btn_scan.setEnabled(True)
         self.btn_run.setEnabled(True)
         self._refresh_review_finalize_button()
@@ -1753,7 +2219,15 @@ class TabBatch(QWidget):
         message = QMessageBox(self)
         message.setIcon(QMessageBox.Icon.Warning)
         message.setWindowTitle("Ladder Review Needed")
-        if blocked:
+        if result.get("cancelled"):
+            message.setText(
+                f"{review_count} completed file(s) need ladder review; the batch itself is incomplete."
+            )
+            message.setInformativeText(
+                "The standard review bundle was preserved and can be corrected in Ladder Studio. "
+                "Final reports cannot be published from this partial cohort; rerun the selected batch afterward."
+            )
+        elif blocked:
             message.setText(f"{review_count} file(s) need ladder review before DIT reports can be built.")
             message.setInformativeText(
                 "DIT HTML report generation was stopped by the ladder review gate. "
@@ -1774,24 +2248,7 @@ class TabBatch(QWidget):
         if message.clickedButton() != open_btn:
             return
 
-        window = self.window()
-        ladder_tab = getattr(window, "tab_ladder", None)
-        if ladder_tab is not None and hasattr(ladder_tab, "load_review_bundle_from_path"):
-            ladder_tab.load_review_bundle_from_path(
-                bundle_dir,
-                preloaded_entries=list((result or {}).get("collected_entries") or []),
-                auto_open_first=True,
-            )
-            if hasattr(window, "on_sub_tab_clicked"):
-                window.on_sub_tab_clicked(self._current_analysis_id, 1)
-            return
-
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", str(bundle_dir)])
-        elif sys.platform == "win32":
-            subprocess.Popen(["explorer", str(bundle_dir)])
-        else:
-            subprocess.Popen(["xdg-open", str(bundle_dir)])
+        self.on_open_review_queue()
         
     def on_open_output(self):
         p_str = self._resolve_output_path_str()

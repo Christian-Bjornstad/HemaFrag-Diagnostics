@@ -26,6 +26,7 @@ from core.analyses.clonality.config import (
     IGHV_REFERENCE_RANGES,
     IGHV_RFU_PEAK_THRESHOLD,
 )
+from fraggler.fraggler import print_warning
 
 # Minste avstand mellom godkjente topper (bp) – undertrykker skuldre.
 _MIN_PEAK_SEPARATION_BP = 2.0
@@ -90,12 +91,21 @@ def apply_sample_type(assay: str, sample_type: str) -> tuple[float, float]:
 
 
 def _trace_arrays(fsa: Any, channel: str = "DATA1") -> tuple[np.ndarray, np.ndarray]:
-    """Returner (signal_rfus, basepairs) justert mot samme lengde."""
+    """Pair the sized domain with its observed raw channel scans."""
     signal = np.asarray(fsa.fsa[channel], dtype=float)
     raw_df = getattr(fsa, "sample_data_with_basepairs", None)
     if raw_df is None or getattr(raw_df, "empty", True) or "basepairs" not in raw_df.columns:
         raise ValueError("sample_data_with_basepairs mangler basepairs – kan ikke lokalisere topper.")
     bp = raw_df["basepairs"].to_numpy(dtype=float)
+    if "time" in raw_df.columns:
+        times = raw_df["time"].to_numpy(dtype=float)
+        valid = (
+            np.isfinite(times) & np.isfinite(bp)
+            & (times >= 0) & (times < signal.size)
+            & (times == np.floor(times))
+        )
+        return signal[times[valid].astype(int)], bp[valid]
+    # Older callers may provide only an already aligned base-pair array.
     n = min(len(signal), len(bp))
     return signal[:n], bp[:n]
 
@@ -251,8 +261,8 @@ def attach_ighv_results(
             effective = "RNA"
             apply_sample_type(assay, "RNA")
             entry["ighv_sample_type_from_filename"] = True
-    except Exception:
-        pass
+    except Exception as exc:  # pragma: no cover - defensiv: aldri la prøvetype-tumfe krasje rapporten
+        print_warning(f"[IGHV] Kunne ikke sjekke filnavn for RNA-markør: {exc}")
     entry["ighv_sample_type"] = effective
     try:
         entry["ighv_clonal_peaks"] = detect_clonal_peaks(fsa, assay, sample_type=effective)

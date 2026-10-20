@@ -8,16 +8,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-from openpyxl.utils.dataframe import dataframe_to_rows
 
 from core.qc.qc_rules import QCRules
 
 _qc_excel_lock = threading.Lock()
 from core.qc.qc_markers import (
-    markers_for_entry,
-    find_peak_near_bp,
     parse_run_code_from_filename,
     parse_pcr_date_from_filename,
     parse_well_from_filename,

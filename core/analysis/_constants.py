@@ -8,6 +8,7 @@ unchanged so all downstream `from core.analysis import CONST` keep working.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 

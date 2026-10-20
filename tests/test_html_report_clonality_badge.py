@@ -1,178 +1,64 @@
-"""Tests for the clonality ML HTML badge helpers in core/html_reports/_legacy."""
+"""Regression coverage for retired clonality ML content in HTML reports."""
 from __future__ import annotations
 
-import json
+from types import SimpleNamespace
 
-from core.html_reports._legacy import (
-    _clonality_ml_confidence_for_entry,
-    _clonality_ml_label_for_entry,
-    _clonality_ml_threshold_for_entry,
-    _render_clonality_channel_ml_results,
-    _render_clonality_ml_badge,
-)
+import core.html_reports._legacy as html_reports
 
 
-class _FakeFSA:
-    def __init__(self, file_name: str):
-        self.file_name = file_name
-
-
-def _entry(
-    *,
-    label: str = "",
-    confidence: float | str = 0.0,
-    review_needed: bool = False,
-    threshold: float | str = "",
-    evidence: str = "",
-    rule_label: str = "",
-    file_name: str = "test_FR1.fsa",
-    dit: str = "26OUM00005",
-    assay: str = "FR1",
-) -> dict:
-    """Build a minimal entry dict suitable for the badge renderer."""
-    e: dict = {
-        "fsa": _FakeFSA(file_name),
-        "file_name": file_name,
-        "assay": assay,
-        "dit": dit,
-        "ClonalitySuggestion": rule_label,
-    }
-    if label:
-        e["ClonalityMLSuggestion"] = label
-    if confidence:
-        e["ClonalityMLConfidence"] = confidence
-    if review_needed:
-        e["ClonalityMLReviewNeeded"] = True
-    if threshold != "":
-        e["ClonalityMLThreshold"] = threshold
-    if evidence:
-        e["ClonalityMLEvidence"] = evidence
-    return e
-
-
-def test_label_helper_returns_empty_when_absent():
-    assert _clonality_ml_label_for_entry(_entry()) == ""
-
-
-def test_label_helper_strips_whitespace():
-    assert _clonality_ml_label_for_entry(_entry(label="  monoklonal  ")) == "monoklonal"
-
-
-def test_confidence_helper_returns_empty_when_blank():
-    assert _clonality_ml_confidence_for_entry(_entry(confidence="")) == ""
-    assert _clonality_ml_confidence_for_entry(_entry(confidence=0)) == ""
-
-
-def test_confidence_helper_formats_two_decimals():
-    assert _clonality_ml_confidence_for_entry(_entry(confidence=0.93)) == "0.93"
-    assert _clonality_ml_confidence_for_entry(_entry(confidence=0.867)) == "0.87"
-
-
-def test_threshold_helper_formats_two_decimals():
-    assert _clonality_ml_threshold_for_entry(_entry(threshold=0.85)) == "0.85"
-
-
-def test_render_badge_emits_dml_div_when_label_present():
-    out = []
-    entry = _entry(label="monoklonal", confidence=0.84, rule_label="polyklonal")
-    _render_clonality_ml_badge(entry, out)
-    html = "\n".join(out)
-    assert html.startswith("<div")
-    assert html.endswith("</div>")
-    assert "monoklonal" in html
-    assert "0.84" in html
-    assert "polyklonal" in html
-
-
-def test_render_badge_emits_warning_when_review_needed():
-    out = []
-    entry = _entry(label="monoklonal", confidence=0.55, review_needed=True)
-    _render_clonality_ml_badge(entry, out)
-    html = "\n".join(out)
-    assert "ml-review-flagged" in html
-
-
-def test_channel_results_render_both_mixed_technical_labels():
-    out = []
-    entry = _entry(assay="IGK")
-    entry["ClonalityMLChannelResults"] = [
-        {
-            "channel": "DATA1",
-            "target_name": "Jk5",
-            "label": "polyklonal",
-            "confidence": 0.91,
-            "review_needed": False,
-        },
-        {
-            "channel": "DATA2",
-            "target_name": "Jk1-4",
-            "label": "monoklonal",
-            "confidence": 0.94,
-            "review_needed": False,
-        },
-    ]
-
-    _render_clonality_channel_ml_results(entry, out)
-    html = "".join(out)
-
-    assert "DATA1" in html
-    assert "DATA2" in html
-    assert "polyklonal" in html
-    assert "monoklonal" in html
-    assert "Vurder" not in html
-
-
-def test_render_badge_shows_threshold_and_review_reason():
-    out = []
-    entry = _entry(
-        label="monoklonal",
-        confidence=0.70,
-        threshold=0.85,
-        review_needed=True,
-        evidence="rule_ml_disagreement",
+def test_historical_ml_fields_are_not_rendered_in_new_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        html_reports,
+        "_build_report_plot_fragment",
+        lambda *_args, **_kwargs: "<div id='active-peak-editor'>peak editor</div>",
     )
-    _render_clonality_ml_badge(entry, out)
-    html = "\n".join(out)
-    assert "grense: 0.85" in html
-    assert "rule_ml_disagreement" in html
+    monkeypatch.setattr(
+        html_reports,
+        "_resolve_report_display_name",
+        lambda _entries: "Klonalitet",
+    )
+    entry = {
+        "fsa": SimpleNamespace(file_name="26OUM00005_FR1_A01.fsa"),
+        "file_name": "26OUM00005_FR1_A01.fsa",
+        "dit": "26OUM00005",
+        "assay": "FR1",
+        "primary_peak_channel": "DATA1",
+        "ladder": "LIZ500",
+        "bp_min": 100,
+        "bp_max": 400,
+        "ladder_qc_status": "ok",
+        "ladder_r2": 0.9999,
+        "ClonalitySuggestion": "polyklonal",
+        "ClonalityMLSuggestion": "external-ml-monoclonal",
+        "ClonalityMLConfidence": 0.97,
+        "ClonalityMLChannelResults": [
+            {
+                "channel": "DATA1",
+                "target_name": "historical-channel-target",
+                "label": "external-channel-prediction",
+                "confidence": 0.96,
+            }
+        ],
+    }
 
+    html_reports.build_dit_html_reports([entry], tmp_path)
+    html = (tmp_path / "26OUM00005_Klonalitet_Resultater.html").read_text(
+        encoding="utf-8"
+    )
 
-def test_render_badge_noop_when_no_label():
-    """Empty label → nothing appended (avoids blank badges in HTML)."""
-    out: list[str] = []
-    entry = _entry()  # no ClonalityMLSuggestion
-    _render_clonality_ml_badge(entry, out)
-    assert out == []
+    assert "external-ml-monoclonal" not in html
+    assert "historical-channel-target" not in html
+    assert "external-channel-prediction" not in html
+    assert "clonality-ml-badge" not in html
+    assert "clonality-channel-ml" not in html
+    assert "Skjul for patolog" not in html
+    assert "Gjenopprett" not in html
+    assert "ClonalityDecisionLog" not in html
+    assert "clonality-decisions" not in html
 
-
-def test_render_badge_includes_stable_dataset_attrs():
-    """Attributes the JS dismissal serialiser relies on."""
-    out = []
-    entry = _entry(label="monoklonal", file_name="foo.fsa", dit="26OUM00060")
-    _render_clonality_ml_badge(entry, out)
-    html = "\n".join(out)
-    assert "data-file='foo.fsa'" in html
-    assert "data-dit='26OUM00060'" in html
-    assert "data-assay='FR1'" in html
-    assert "data-ml-label='monoklonal'" in html
-    assert "data-state='active'" in html
-
-
-def test_render_badge_is_deterministic_for_same_input():
-    """Same input ⇒ same id (re-runs land on same badge)."""
-    out_a: list[str] = []
-    out_b: list[str] = []
-    entry = _entry(label="monoklonal", file_name="x.fsa", dit="Z")
-    _render_clonality_ml_badge(entry, out_a)
-    _render_clonality_ml_badge(entry, out_b)
-    assert out_a == out_b
-
-
-def test_render_badge_emits_both_buttons():
-    """Both 'Skjul for patolog' and (initially hidden) 'Gjenopprett' present."""
-    out = []
-    entry = _entry(label="monoklonal")
-    _render_clonality_ml_badge(entry, out)
-    html = "\n".join(out)
-    assert "Skjul for patolog" in html
-    assert "Gjenopprett" in html
+    assert "26OUM00005_FR1_A01.fsa" in html
+    assert "active-peak-editor" in html
+    assert 'id="peak-data"' in html
+    assert 'id="plot-state"' in html
+    assert "PeakManager.downloadUpdatedHtml()" in html
+    assert "Save Peaks" in html

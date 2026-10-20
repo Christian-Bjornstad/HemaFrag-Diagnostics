@@ -9,11 +9,13 @@ class BrandLockup(QWidget):
     def __init__(
         self,
         icon: QIcon | None = None,
-        icon_size: QSize = QSize(30, 30),
+        icon_size: QSize | None = None,
         descriptor: str = "Diagnostics",
         parent=None,
     ):
         super().__init__(parent)
+        if icon_size is None:
+            icon_size = QSize(30, 30)
         self.setObjectName("SidebarBrandLockup")
 
         layout = QHBoxLayout(self)

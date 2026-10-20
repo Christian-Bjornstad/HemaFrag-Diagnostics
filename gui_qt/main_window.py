@@ -2,23 +2,23 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QStackedWidget, QPushButton, QLabel, QFrame, QComboBox, QScrollArea,
-    QApplication,
+    QStackedWidget, QPushButton, QFrame, QScrollArea,
+    QApplication, QMessageBox,
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QShortcut, QKeySequence
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QCloseEvent, QShortcut, QKeySequence
 
 from app_meta import APP_VERSION
 from gui_qt.styles import VIBRANT_PRO_QSS
 from gui_qt.tabs.tab_batch import TabBatch
 from gui_qt.tabs.tab_archive_runner import TabArchiveRunner
-from gui_qt.tabs.tab_labeling import TabLabeling
 from gui_qt.tabs.tab_ladder import TabLadder
 from gui_qt.tabs.tab_log import TabLog
 from gui_qt.tabs.tab_about import TabAbout
-from gui_qt.tabs.tab_compare import TabCompare
 from gui_qt.tabs.tab_settings import TabAnalysisSettings
+from gui_qt.tabs.tab_app_settings import TabAppSettings
 from gui_qt.widgets.brand_lockup import BrandLockup
+from gui_qt.operation_coordinator import OperationCoordinator
 from config import APP_SETTINGS, get_analysis_settings, save_settings
 
 class SidebarButton(QPushButton):
@@ -109,6 +109,26 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"HemaFrag Diagnostics v{APP_VERSION}")
         self.setStyleSheet(VIBRANT_PRO_QSS)
+
+        # C1 owns only registered operations. Worker entry points are migrated
+        # separately, so this must not be treated as a global thread-pool count.
+        self.operation_coordinator = OperationCoordinator(self)
+        self._shutdown_requested = False
+        self._shutdown_ready = False
+        self._shutdown_waiting_for_user = False
+        self._shutdown_deadline_ms = 30_000
+        self._shutdown_prompt: QMessageBox | None = None
+        self._shutdown_deadline_timer = QTimer(self)
+        self._shutdown_deadline_timer.setSingleShot(True)
+        self._shutdown_deadline_timer.timeout.connect(
+            self._on_shutdown_deadline
+        )
+        self.operation_coordinator.operations_changed.connect(
+            self._update_shutdown_progress
+        )
+        self.operation_coordinator.drained.connect(
+            self._on_registered_operations_drained
+        )
         
         # Central widget
         central = QWidget()
@@ -144,9 +164,7 @@ class MainWindow(QMainWindow):
                 "Run",
                 "Ladder",
                 "Archive Runner",
-                "Compare",
                 "Log",
-                "Labeling",
                 "Settings",
             ],
         )
@@ -158,7 +176,6 @@ class MainWindow(QMainWindow):
                 "Run",
                 "Ladder",
                 "Archive Runner",
-                "Compare",
                 "Log",
                 "Settings",
             ],
@@ -170,8 +187,6 @@ class MainWindow(QMainWindow):
             sub_buttons=[
                 "Run",
                 "Ladder",
-                "Archive Runner",
-                "Compare",
                 "Log",
                 "Settings",
             ],
@@ -186,6 +201,9 @@ class MainWindow(QMainWindow):
 
         self.btn_about = SidebarButton("About")
         self.btn_about.clicked.connect(self.on_about_clicked)
+        self.btn_app_settings = SidebarButton("App Settings")
+        self.btn_app_settings.clicked.connect(self._activate_settings)
+        sidebar_layout.addWidget(self.btn_app_settings)
         sidebar_layout.addWidget(self.btn_about)
         
         # --- Stacked Widget (Content) ---
@@ -195,18 +213,23 @@ class MainWindow(QMainWindow):
         self.tab_run = TabBatch()
         self.tab_ladder = TabLadder()
         self.tab_archive_runner = TabArchiveRunner()
-        self.tab_labeling = TabLabeling()
         self.tab_log = TabLog()
         self.tab_about = TabAbout()
-        self.tab_compare = TabCompare()
+        self.tab_app_settings = TabAppSettings()
         self.tab_settings_clonality = TabAnalysisSettings("clonality")
         self.tab_settings_flt3 = TabAnalysisSettings("flt3")
         self.tab_settings_general = TabAnalysisSettings("general")
+
+        # One lifecycle owner must see work from every shared thread-pool tab.
+        self.tab_run.set_operation_coordinator(self.operation_coordinator)
+        self.tab_ladder.set_operation_coordinator(self.operation_coordinator)
+        self.tab_archive_runner.set_operation_coordinator(self.operation_coordinator)
 
         # Connect settings saved to reload run defaults
         self.tab_settings_clonality.settings_saved.connect(self._on_settings_saved)
         self.tab_settings_flt3.settings_saved.connect(self._on_settings_saved)
         self.tab_settings_general.settings_saved.connect(self._on_settings_saved)
+        self.tab_app_settings.settings_saved.connect(self._on_settings_saved)
         self.tab_archive_runner.ladderReviewRequested.connect(
             self._open_archive_ladder_review
         )
@@ -224,13 +247,12 @@ class MainWindow(QMainWindow):
         self.tab_run_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_run))
         self.tab_ladder_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_ladder))
         self.tab_archive_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_archive_runner))
-        self.tab_labeling_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_labeling))
         self.tab_log_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_log))
         self.tab_about_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_about))
+        self.tab_app_settings_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_app_settings))
         self.tab_settings_clonality_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_clonality))
         self.tab_settings_flt3_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_flt3))
         self.tab_settings_general_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_settings_general))
-        self.tab_compare_idx = self.stacked_widget.addWidget(self._wrap_scroll_page(self.tab_compare))
 
         # Per-analysis sub-button → stack index. Scoped by analysis_id so a
         # single ``tab_run_idx`` index can be shared cleanly. Built from a
@@ -241,24 +263,19 @@ class MainWindow(QMainWindow):
                 "Run": self.tab_run_idx,
                 "Ladder": self.tab_ladder_idx,
                 "Archive Runner": self.tab_archive_idx,
-                "Compare": self.tab_compare_idx,
                 "Log": self.tab_log_idx,
-                "Labeling": self.tab_labeling_idx,
                 "Settings": self.tab_settings_clonality_idx,
             },
             "flt3": {
                 "Run": self.tab_run_idx,
                 "Ladder": self.tab_ladder_idx,
                 "Archive Runner": self.tab_archive_idx,
-                "Compare": self.tab_compare_idx,
                 "Log": self.tab_log_idx,
                 "Settings": self.tab_settings_flt3_idx,
             },
             "general": {
                 "Run": self.tab_run_idx,
                 "Ladder": self.tab_ladder_idx,
-                "Archive Runner": self.tab_archive_idx,
-                "Compare": self.tab_compare_idx,
                 "Log": self.tab_log_idx,
                 "Settings": self.tab_settings_general_idx,
             },
@@ -292,9 +309,138 @@ class MainWindow(QMainWindow):
         # --- Keyboard shortcuts ---
         self._setup_shortcuts()
 
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Drain registered work without blocking or terminating worker threads."""
+        active = self.operation_coordinator.active_handles()
+        if self._shutdown_ready or not active:
+            self._shutdown_deadline_timer.stop()
+            event.accept()
+            return
+
+        event.ignore()
+        if self._shutdown_requested:
+            self._update_shutdown_progress()
+            return
+
+        self._shutdown_requested = True
+        self._shutdown_waiting_for_user = False
+        self.operation_coordinator.begin_draining()
+        self._shutdown_deadline_timer.start(self._shutdown_deadline_ms)
+        self._update_shutdown_progress()
+
+    def cancel_pending_close(self) -> None:
+        """Keep the app open and allow new work after a delayed close attempt."""
+        self._shutdown_deadline_timer.stop()
+        self._shutdown_requested = False
+        self._shutdown_ready = False
+        self._shutdown_waiting_for_user = False
+        self.operation_coordinator.cancel_draining()
+        self._dismiss_shutdown_prompt()
+        self.statusBar().showMessage(
+            "Close cancelled. Registered operations may continue finishing.",
+            8000,
+        )
+
+    def _update_shutdown_progress(self) -> None:
+        if not self._shutdown_requested:
+            return
+        handles = self.operation_coordinator.active_handles()
+        if not handles:
+            return
+        kinds = ", ".join(dict.fromkeys(handle.kind for handle in handles))
+        if self._shutdown_waiting_for_user:
+            message = (
+                f"App remains open: {len(handles)} registered operation(s) "
+                f"still finishing ({kinds}). Choose Wait longer or Cancel close."
+            )
+        else:
+            message = (
+                f"Closing safely: waiting for {len(handles)} registered "
+                f"operation(s) ({kinds})."
+            )
+        self.statusBar().showMessage(message)
+
+    def _on_registered_operations_drained(self) -> None:
+        if not self._shutdown_requested:
+            return
+        self._shutdown_deadline_timer.stop()
+        if self._shutdown_waiting_for_user:
+            self.statusBar().showMessage(
+                "Registered operations finished. Choose Wait longer to close "
+                "or Cancel close to keep the app open."
+            )
+            return
+        self._shutdown_ready = True
+        QTimer.singleShot(0, self.close)
+
+    def _on_shutdown_deadline(self) -> None:
+        if not self._shutdown_requested:
+            return
+        self._shutdown_waiting_for_user = True
+        self._update_shutdown_progress()
+        self._show_shutdown_prompt()
+
+    def _show_shutdown_prompt(self) -> None:
+        if self._shutdown_prompt is not None:
+            return
+        prompt = QMessageBox(self)
+        prompt.setIcon(QMessageBox.Icon.Information)
+        prompt.setWindowTitle("Background work is still finishing")
+        prompt.setText("HemaFrag remains open while registered work finishes safely.")
+        prompt.setInformativeText(
+            "Wait longer and close automatically when it finishes, or cancel "
+            "this close attempt and keep using the app."
+        )
+        wait_button = prompt.addButton(
+            "Wait longer",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        cancel_button = prompt.addButton(
+            "Cancel close",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+
+        def on_clicked(button) -> None:
+            if button is wait_button:
+                self._resume_shutdown_wait()
+            elif button is cancel_button:
+                self.cancel_pending_close()
+
+        prompt.buttonClicked.connect(on_clicked)
+        prompt.finished.connect(
+            lambda _result: self._on_shutdown_prompt_finished(prompt)
+        )
+        self._shutdown_prompt = prompt
+        prompt.open()
+
+    def _resume_shutdown_wait(self) -> None:
+        self._shutdown_waiting_for_user = False
+        self._dismiss_shutdown_prompt()
+        if not self.operation_coordinator.active_handles():
+            self._shutdown_ready = True
+            QTimer.singleShot(0, self.close)
+            return
+        self._shutdown_deadline_timer.start(self._shutdown_deadline_ms)
+        self._update_shutdown_progress()
+
+    def _dismiss_shutdown_prompt(self) -> None:
+        prompt = self._shutdown_prompt
+        self._shutdown_prompt = None
+        if prompt is not None:
+            prompt.close()
+
+    def _on_shutdown_prompt_finished(self, prompt: QMessageBox) -> None:
+        if self._shutdown_prompt is not prompt:
+            return
+        self._shutdown_prompt = None
+        # Closing the prompt with its title-bar button or Escape means the
+        # conservative choice: keep the application open.
+        if self._shutdown_waiting_for_user:
+            self.cancel_pending_close()
+
     def _setup_shortcuts(self) -> None:
         """Alt+1..N activates each analysis group's Run tab.
-        Ctrl+, opens Settings for the current analysis.
+        Ctrl+, opens the single global App Settings page.
         Alt+letter jumps to named sub-tabs of the current group."""
         for i in range(min(len(self.groups), 9)):
             sc = QShortcut(QKeySequence(f"Alt+{i + 1}"), self)
@@ -306,7 +452,6 @@ class MainWindow(QMainWindow):
             ("L", "Ladder"),
             ("A", "Archive Runner"),
             ("G", "Log"),
-            ("B", "Labeling"),
             ("S", "Settings"),
         ):
             sc = QShortcut(QKeySequence(f"Alt+{letter}"), self)
@@ -352,26 +497,19 @@ class MainWindow(QMainWindow):
         self._activate_sub(index)
 
     def _activate_settings(self) -> None:
-        """Jump to the Settings page for the current analysis."""
-        active = APP_SETTINGS.get("active_analysis", "clonality")
-        group_map = {
-            "clonality": self.group_clonality,
-            "flt3": self.group_flt3,
-            "general": self.group_general,
-        }
-        group = group_map.get(active, self.group_clonality)
-        # Expand the group so the sidebar reflects the navigation
-        self.on_group_clicked(group)
-        sub_idx = len(group.sub_buttons) - 1
-        if 0 <= sub_idx < len(group.sub_buttons):
-            self.btn_about.setChecked(False)
-            for other_group in self.groups:
-                for button in other_group.sub_buttons:
-                    button.setChecked(button is group.sub_buttons[sub_idx])
-            self.on_sub_tab_clicked(group.internal_id, sub_idx)
+        """Jump to the single owner of global application settings."""
+        if not self.settings_changes_allowed():
+            self.btn_app_settings.setChecked(False)
+            self._restore_sidebar_selection()
+            return
+        self._clear_sidebar_selection()
+        self.btn_app_settings.setChecked(True)
+        self.tab_app_settings.refresh_from_settings()
+        self.stacked_widget.setCurrentIndex(self.tab_app_settings_idx)
 
     def _clear_sidebar_selection(self) -> None:
         self.btn_about.setChecked(False)
+        self.btn_app_settings.setChecked(False)
         for group in self.groups:
             for button in group.sub_buttons:
                 button.setChecked(False)
@@ -386,6 +524,9 @@ class MainWindow(QMainWindow):
         analysis_id: str,
         bundle_path: str,
     ) -> None:
+        if self.active_operation() is not None:
+            self._blocked_operation_message()
+            return
         self._activate_analysis(analysis_id)
         self.tab_run.set_analysis(analysis_id)
         self.tab_ladder.set_analysis(analysis_id)
@@ -415,6 +556,8 @@ class MainWindow(QMainWindow):
 
     def _activate_analysis(self, analysis_id: str) -> bool:
         """Switch the active analysis and persist the related settings."""
+        if not self._navigation_allowed(analysis_id, None):
+            return False
         if APP_SETTINGS.get("active_analysis") == analysis_id:
             return False
 
@@ -425,9 +568,63 @@ class MainWindow(QMainWindow):
         save_settings(APP_SETTINGS)
         print(f"[UI] Analysis switched to: {analysis_id}")
         return True
+
+    def active_operation(self) -> str | None:
+        """Return the worker-backed operation currently protecting UI context."""
+        if self.tab_run._active_run_cancel_event is not None or getattr(self.tab_run, "_review_finalize_active", False):
+            return "Run"
+        if self.tab_run.is_scan_active():
+            return "Run scan"
+        if self.tab_archive_runner._active_worker is not None:
+            return "Archive Runner"
+        if self.tab_ladder.is_operation_active():
+            return "ladder rerun"
+        active_handles = self.operation_coordinator.active_handles()
+        if active_handles:
+            return active_handles[0].kind
+        return None
+
+    def _blocked_operation_message(self) -> None:
+        operation = self.active_operation()
+        self.statusBar().showMessage(
+            f"{operation} is active. Wait for it to finish or stop it before changing analysis or settings.",
+            8000,
+        )
+
+    def settings_changes_allowed(self) -> bool:
+        """Settings pages call this immediately before applying or saving edits."""
+        if self.active_operation() is not None:
+            self._blocked_operation_message()
+            return False
+        return True
+
+    def _navigation_allowed(self, analysis_id: str, label: str | None) -> bool:
+        if self.active_operation() is None:
+            return True
+        if analysis_id != APP_SETTINGS.get("active_analysis") or label == "Settings":
+            self._blocked_operation_message()
+            self._restore_sidebar_selection()
+            return False
+        return True
+
+    def _restore_sidebar_selection(self) -> None:
+        active = APP_SETTINGS.get("active_analysis")
+        current_page = self.stacked_widget.currentIndex()
+        for group in self.groups:
+            for label, button in zip(group.sub_button_labels, group.sub_buttons):
+                target = self._sub_button_map.get(group.internal_id, {}).get(label)
+                button.setChecked(group.internal_id == active and target == current_page)
+            group.header.setChecked(group.internal_id == active)
         
     def on_group_clicked(self, group):
+        # A same-group header click normally redirects to Run. Keep the current
+        # progress/review page intact while a worker is active.
+        if self.active_operation() is not None:
+            self._blocked_operation_message()
+            self._restore_sidebar_selection()
+            return
         self.btn_about.setChecked(False)
+        self.btn_app_settings.setChecked(False)
         # Update active analysis in core
         new_ana = group.internal_id
         changed = self._activate_analysis(new_ana)
@@ -447,6 +644,15 @@ class MainWindow(QMainWindow):
                 self.on_sub_tab_clicked(g.internal_id, 0)
             
     def on_sub_tab_clicked(self, analysis_id, tab_idx):
+        group_lookup = {
+            "clonality": self.group_clonality,
+            "flt3": self.group_flt3,
+            "general": self.group_general,
+        }
+        group = group_lookup.get(analysis_id)
+        label = group.sub_button_labels[tab_idx] if group is not None and 0 <= tab_idx < len(group.sub_button_labels) else None
+        if not self._navigation_allowed(analysis_id, label):
+            return
         # Ensure we are on the right analysis
         changed = self._activate_analysis(analysis_id)
         if changed or getattr(self.tab_run, "_current_analysis_id", None) != analysis_id:
@@ -457,23 +663,25 @@ class MainWindow(QMainWindow):
             self.tab_archive_runner.set_analysis(analysis_id)
 
         analysis_sub_map = self._sub_button_map.get(analysis_id, {})
-        group_lookup = {
-            "clonality": self.group_clonality,
-            "flt3": self.group_flt3,
-            "general": self.group_general,
-        }
-        group = group_lookup.get(analysis_id)
         if group is None:
             return
-        label = group.sub_button_labels[tab_idx] if 0 <= tab_idx < len(group.sub_button_labels) else None
         if label is None or label not in analysis_sub_map:
             return
         page_idx = analysis_sub_map[label]
         self.btn_about.setChecked(False)
+        self.btn_app_settings.setChecked(False)
+        if label == "Settings":
+            {
+                "clonality": self.tab_settings_clonality,
+                "flt3": self.tab_settings_flt3,
+                "general": self.tab_settings_general,
+            }[analysis_id].refresh_from_settings()
         self.stacked_widget.setCurrentIndex(page_idx)
 
     def _on_settings_saved(self, analysis_id):
-        if APP_SETTINGS.get("active_analysis") == analysis_id:
+        if not self.settings_changes_allowed():
+            return
+        if analysis_id != "app" and APP_SETTINGS.get("active_analysis") == analysis_id:
             self.tab_run.set_analysis(analysis_id)
             self.tab_ladder.set_analysis(analysis_id)
             self.tab_archive_runner.set_analysis(analysis_id)

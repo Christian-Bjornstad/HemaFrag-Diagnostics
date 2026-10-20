@@ -126,7 +126,7 @@ def manual_adjustment_consumption(
     )
     entry_claims_consumed = bool(
         provenance.get("manual_adjustment_consumed")
-        or strategy == "manual_adjustment"
+        or strategy in {"manual_adjustment", "manual_partial"}
     )
     analyzed_adjustment_hash = str(
         provenance.get("manual_adjustment_sha256") or ""
@@ -298,6 +298,11 @@ def chip_state(row: dict, *, check_filesystem: bool = False) -> str:
     Tests pin the precedence contract — see
     `tests/test_tab_ladder_submodules.py::ChipStateHelperTests`.
     """
+    # An explicit missing-source exclusion resolves the unreachable source;
+    # it must not keep showing as a pending red case after the saved decision.
+    if str(row.get("label") or "").strip().casefold() == "excluded_missing_source":
+        return "reviewed"
+
     # 1. File unreachable — Phase 12.0 tags row["_path_unreachable"].
     if check_filesystem:
         raw_path = str(row.get("full_path", "") or "")

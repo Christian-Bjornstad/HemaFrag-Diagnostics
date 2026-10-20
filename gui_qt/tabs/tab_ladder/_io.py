@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 from pathlib import Path
-import tempfile
 import threading
 from typing import Any
 
 from core.ladder_adjustment_store import load_ladder_adjustment_record
+from core.analyses.clonality.ladder_review_gate import is_empty_review_row
+from core.ladder_review_bundle_store import (
+    review_bundle_transaction,
+    save_review_bundle,
+)
 from core.analyses.clonality.ladder_review_labels import (
     is_review_rerunnable,
     is_review_resolved,
@@ -62,134 +65,20 @@ def _read_bundle_csv(cases_path: Path) -> tuple[list[str], list[dict[str, Any]]]
     and the parsed rows. Errors fall through to the Worker error
     signal in the GUI.
     """
-    with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
-        reader = csv.DictReader(handle)
-        fieldnames = list(reader.fieldnames or [])
-        rows = list(reader)
-    return fieldnames, rows
-
-
-def _write_bundle_csv_temporary(
-    cases_path: Path,
-    fieldnames: list[str],
-    rows: list[dict[str, Any]],
-) -> Path:
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=cases_path.parent,
-            prefix=f".{cases_path.name}.",
-            suffix=".tmp",
-            mode="w",
-            encoding="utf-8",
-            newline="",
-            delete=False,
-        ) as handle:
-            temporary_path = Path(handle.name)
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-        result = temporary_path
-        temporary_path = None
-        return result
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-
-
-def _write_bundle_csv_atomic(
-    cases_path: Path,
-    fieldnames: list[str],
-    rows: list[dict[str, Any]],
-) -> None:
-    temporary_path = _write_bundle_csv_temporary(cases_path, fieldnames, rows)
-    try:
-        os.replace(temporary_path, cases_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-
-
-def _write_json_temporary(path: Path, value: Any) -> Path:
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            mode="w",
-            encoding="utf-8",
-            delete=False,
-        ) as handle:
-            temporary_path = Path(handle.name)
-            json.dump(value, handle, indent=2, ensure_ascii=True)
-        result = temporary_path
-        temporary_path = None
-        return result
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-
-
-def _publish_bundle_files_atomically(
-    replacements: list[tuple[Path, Path]],
-) -> None:
-    backups: dict[Path, Path | None] = {}
-    backed_up: set[Path] = set()
-    published: list[Path] = []
-    try:
-        for _temporary, target in replacements:
-            backup: Path | None = None
-            if target.exists():
-                with tempfile.NamedTemporaryFile(
-                    dir=target.parent,
-                    prefix=f".{target.name}.",
-                    suffix=".backup",
-                    delete=False,
-                ) as handle:
-                    backup = Path(handle.name)
-                backups[target] = backup
-                os.replace(target, backup)
-                backed_up.add(target)
-            else:
-                backups[target] = None
-
-        for temporary, target in replacements:
-            os.replace(temporary, target)
-            published.append(target)
-    except Exception:
-        for target in published:
-            target.unlink(missing_ok=True)
-        try:
-            for _temporary, target in reversed(replacements):
-                backup = backups.get(target)
-                if (
-                    target in backed_up
-                    and backup is not None
-                    and backup.exists()
-                ):
-                    os.replace(backup, target)
-        except Exception as rollback_error:
-            raise RuntimeError(
-                "Review annotation publication and rollback both failed"
-            ) from rollback_error
-        raise
-    else:
-        for backup in backups.values():
-            if backup is not None:
-                backup.unlink(missing_ok=True)
-    finally:
-        for temporary, _target in replacements:
-            temporary.unlink(missing_ok=True)
-        for target, backup in backups.items():
-            if target not in backed_up and backup is not None:
-                backup.unlink(missing_ok=True)
+    with review_bundle_transaction(cases_path):
+        with cases_path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
+        return fieldnames, rows
 
 
 def load_review_bundle_worker(bundle_dir: Path) -> dict:
     """Read a ladder-review bundle folder into a tagged case-list.
 
     Phase 12.0 contract: keep every row whose `full_path` is
-    non-empty, even when the FSA is not currently on disk. Unreachable
+    non-empty, even when the FSA is not currently on disk. Legacy rows
+    without a path retain their filename and can be relocated. Unreachable
     rows are tagged `_path_unreachable=true` and collected into
     `missing_paths` so the GUI can surface them.
 
@@ -197,19 +86,41 @@ def load_review_bundle_worker(bundle_dir: Path) -> dict:
     missing — caller surfaces that to the chemist via the red status
     bar.
     """
-    assert_review_bundle_open_allowed(bundle_dir)
     cases_path = bundle_dir / "ladder_review_cases.csv"
+    with review_bundle_transaction(cases_path):
+        return _load_review_bundle_worker_locked(bundle_dir, cases_path)
+
+
+def _load_review_bundle_worker_locked(bundle_dir: Path, cases_path: Path) -> dict:
+    assert_review_bundle_open_allowed(bundle_dir)
     if not cases_path.exists():
         raise FileNotFoundError(f"Missing review bundle file: {cases_path.name}")
 
     rows: list[dict] = []
     missing_paths: list[str] = []
-    with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+    warnings: list[str] = []
+    repaired_paths = False
+    with cases_path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
         reader = csv.DictReader(handle)
-        for row in reader:
+        fieldnames = list(reader.fieldnames or [])
+        for row_number, row in enumerate(reader, start=2):
+            if is_empty_review_row(row):
+                warnings.append(f"Ignored empty CSV row {row_number}; it contains no review case.")
+                continue
             raw_path = str(row.get("full_path", "") or "").strip()
             if not raw_path:
-                continue
+                filename = str(row.get("file", "") or "").strip()
+                if not filename:
+                    warnings.append(
+                        f"Review bundle row {row_number} has neither a file path nor a filename. "
+                        "Use Locate File to restore its source path or Exclude Missing File."
+                    )
+                    filename = f"__missing_review_path_row_{row_number}__.fsa"
+                    row["file"] = f"Unknown file (CSV row {row_number})"
+                # Persist the identity used by the editor so Locate File and
+                # annotation writes can find this same row afterwards.
+                raw_path = str((bundle_dir / filename).expanduser().resolve())
+                repaired_paths = True
             full_path = Path(raw_path).expanduser()
             if not full_path.exists():
                 missing_paths.append(raw_path)
@@ -218,6 +129,23 @@ def load_review_bundle_worker(bundle_dir: Path) -> dict:
                 row["_path_unreachable"] = "false"
             row["full_path"] = raw_path
             rows.append(row)
+
+    if repaired_paths:
+        if "full_path" not in fieldnames:
+            fieldnames.append("full_path")
+        try:
+            save_review_bundle(
+                cases_path=cases_path,
+                rows=[{key: value for key, value in row.items() if key in fieldnames} for row in rows],
+                fieldnames=fieldnames,
+                summary_path=None,
+                summary={},
+            )
+        except (OSError, RuntimeError) as exc:
+            warnings.append(
+                f"Missing-path repairs could not be saved: {exc}. "
+                "Existing files are available; unlock the CSV and reload before locating missing files."
+            )
 
     run_manifest_path: Path | None = None
     summary_path = bundle_dir / "ladder_review_summary.json"
@@ -237,6 +165,7 @@ def load_review_bundle_worker(bundle_dir: Path) -> dict:
         "cases_path": cases_path,
         "rows": rows,
         "missing_paths": missing_paths,
+        "warnings": warnings,
         "run_manifest_path": run_manifest_path,
     }
 
@@ -248,12 +177,17 @@ def review_case_paths_from_bundle(bundle_dir: Path) -> set[Path]:
     references (regardless of whether they currently exist on disk).
     """
     cases_path = bundle_dir / "ladder_review_cases.csv"
+    with review_bundle_transaction(cases_path):
+        return _review_case_paths_from_bundle_locked(cases_path)
+
+
+def _review_case_paths_from_bundle_locked(cases_path: Path) -> set[Path]:
     if not cases_path.exists():
         return set()
 
     paths: set[Path] = set()
     try:
-        with cases_path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        with cases_path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 raw_path = str(row.get("full_path", "") or "").strip()
@@ -306,7 +240,68 @@ def save_missing_ladder_exclusion_worker(
     )
 
 
+def save_missing_source_exclusion_worker(
+    bundle_dir: Path,
+    full_path: Path,
+    *,
+    note: str,
+    reviewed_at_utc: str,
+) -> dict:
+    """Resolve an unavailable source explicitly, retaining the row and audit."""
+    if not str(note or "").strip() or not str(reviewed_at_utc or "").strip():
+        raise ValueError("Missing-source exclusion requires a note and review timestamp")
+    return save_review_bundle_annotation_worker(
+        bundle_dir,
+        full_path,
+        build_review_annotation("excluded_missing_source", note.strip(), reviewed_at_utc=reviewed_at_utc),
+        _require_unresolved_without_adjustment=True,
+    )
+
+
+def save_unusable_ladder_exclusion_worker(
+    bundle_dir: Path,
+    full_path: Path,
+    *,
+    note: str,
+    reviewed_at_utc: str,
+) -> dict:
+    """Record an operator decision that the ladder cannot be fitted safely."""
+    label = "excluded_unusable_ladder"
+    if not is_review_resolved(label) or is_review_rerunnable(label):
+        raise RuntimeError("Unusable-ladder exclusion label policy is invalid")
+    if not str(note or "").strip() or not str(reviewed_at_utc or "").strip():
+        raise ValueError("Unusable-ladder exclusion requires a note and review timestamp")
+    annotation = build_review_annotation(
+        label,
+        str(note).strip(),
+        reviewed_at_utc=reviewed_at_utc,
+    )
+    return save_review_bundle_annotation_worker(
+        bundle_dir,
+        full_path,
+        annotation,
+        _require_unresolved_without_adjustment=True,
+    )
+
+
 def save_review_bundle_annotation_worker(
+    bundle_dir: Path,
+    full_path: Path,
+    annotation: dict,
+    *,
+    _require_unresolved_without_adjustment: bool = False,
+) -> dict:
+    cases_path = bundle_dir / "ladder_review_cases.csv"
+    with review_bundle_transaction(cases_path):
+        return _save_review_bundle_annotation_locked(
+            bundle_dir,
+            full_path,
+            annotation,
+            _require_unresolved_without_adjustment=_require_unresolved_without_adjustment,
+        )
+
+
+def _save_review_bundle_annotation_locked(
     bundle_dir: Path,
     full_path: Path,
     annotation: dict,
@@ -348,14 +343,21 @@ def save_review_bundle_annotation_worker(
             if not row_matches:
                 continue
             if _require_unresolved_without_adjustment:
+                exclusion_name = (
+                    "Unusable-ladder"
+                    if annotation.get("label") == "excluded_unusable_ladder"
+                    else "Missing-ladder"
+                )
                 if str(row.get("label") or "").strip() or str(
                     row.get("adjustment_path") or ""
                 ).strip():
                     raise ValueError(
-                        "Missing-ladder exclusion requires an unresolved row "
+                        f"{exclusion_name} exclusion requires an unresolved row "
                         "without an adjustment"
                     )
                 source_path = Path(row_path_text).expanduser()
+                if annotation.get("label") == "excluded_missing_source" and source_path.exists():
+                    raise ValueError("Source exists; use ladder review instead of missing-source exclusion")
                 if source_path.with_suffix(".ladder_adj.json").exists() or (
                     load_ladder_adjustment_record(
                         source_path,
@@ -364,7 +366,7 @@ def save_review_bundle_annotation_worker(
                     is not None
                 ):
                     raise ValueError(
-                        "Missing-ladder exclusion cannot replace an existing adjustment"
+                        f"{exclusion_name} exclusion cannot replace an existing adjustment"
                     )
             row["label"] = annotation.get("label", "")
             row["label_note"] = annotation.get("label_note", "")
@@ -387,22 +389,34 @@ def save_review_bundle_annotation_worker(
                 raise ValueError("Review annotations must contain a JSON object")
             existing = loaded
         existing[matched_path_text] = annotation
-        csv_temporary = _write_bundle_csv_temporary(cases_path, fieldnames, rows)
-        try:
-            json_temporary = _write_json_temporary(annotations_path, existing)
-        except Exception:
-            csv_temporary.unlink(missing_ok=True)
-            raise
-        _publish_bundle_files_atomically(
-            [
-                (csv_temporary, cases_path),
-                (json_temporary, annotations_path),
-            ]
+        save_review_bundle(
+            cases_path,
+            rows,
+            fieldnames,
+            annotations_path,
+            existing,
         )
     return annotation
 
 
 def save_review_bundle_rerun_status_worker(
+    bundle_dir: Path,
+    consumption_by_file: dict[str, dict[str, Any]],
+    *,
+    run_manifest_path: Path | None,
+    rerun_at_utc: str,
+) -> int:
+    cases_path = bundle_dir / "ladder_review_cases.csv"
+    with review_bundle_transaction(cases_path):
+        return _save_review_bundle_rerun_status_locked(
+            bundle_dir,
+            consumption_by_file,
+            run_manifest_path=run_manifest_path,
+            rerun_at_utc=rerun_at_utc,
+        )
+
+
+def _save_review_bundle_rerun_status_locked(
     bundle_dir: Path,
     consumption_by_file: dict[str, dict[str, Any]],
     *,
@@ -447,5 +461,5 @@ def save_review_bundle_rerun_status_worker(
         )
         updated += 1
 
-    _write_bundle_csv_atomic(cases_path, fieldnames, rows)
+    save_review_bundle(cases_path, rows, fieldnames, None, {})
     return updated

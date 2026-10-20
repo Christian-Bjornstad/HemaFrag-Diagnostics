@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -87,6 +88,7 @@ def run_yearly_validation(
     skip_html_reports: bool = True,
     progress_callback: Callable | None = None,
     status_callback: Callable | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     del folder_workers, refresh_each_folder, include_sl, cleanup_staging_root
     year = str(year_label).strip()
@@ -143,6 +145,7 @@ def run_yearly_validation(
 
     settings_backup = copy.deepcopy(APP_SETTINGS)
     failures: list[str] = []
+    cancelled = False
     try:
         APP_SETTINGS["active_analysis"] = "flt3"
         APP_SETTINGS.setdefault("engine", {})["use_rust"] = bool(use_rust)
@@ -157,6 +160,9 @@ def run_yearly_validation(
         )
 
         for month_key in month_keys:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
             prior = manifest["months"].get(month_key) or {}
             if resume_existing and prior.get("status") == "done":
                 _emit(
@@ -236,7 +242,26 @@ def run_yearly_validation(
                     tracking_excel_path=month_dir / "FLT3_Tracking.xlsx",
                     aggregate_outdir_name="reports_archive",
                     skip_html_reports=bool(skip_html_reports),
+                    cancel_event=cancel_event,
                 )
+                if bool(result.get("cancelled")) or bool(
+                    cancel_event and cancel_event.is_set()
+                ):
+                    month_state["status"] = "cancelled"
+                    month_state["finished_at_utc"] = _utc_now()
+                    manifest["updated_at_utc"] = _utc_now()
+                    _write_json(manifest_path, manifest)
+                    _emit(
+                        progress_callback,
+                        {
+                            "event": "month_finished",
+                            "month": month_key,
+                            "run_dir": str(month_dir),
+                            "status": "cancelled",
+                        },
+                    )
+                    cancelled = True
+                    break
                 gate = _write_review_bundle(result, month_dir)
                 failed_jobs = list(result.get("failed_jobs") or [])
                 month_state.update(
@@ -274,20 +299,32 @@ def run_yearly_validation(
                     "status": month_state["status"],
                 },
             )
+            if cancelled or bool(cancel_event and cancel_event.is_set()):
+                cancelled = True
+                break
     finally:
         APP_SETTINGS.clear()
         APP_SETTINGS.update(settings_backup)
 
     workbook_path: Path | None = None
-    try:
-        workbook_path = combine_run_root(
-            run_root,
-            run_root / f"track-flt3-{year}-overview.xlsx",
-            year_label=year,
-        )
-    except FileNotFoundError:
-        workbook_path = None
-    manifest["status"] = "completed_with_errors" if failures else "completed"
+    cancelled = cancelled or bool(cancel_event and cancel_event.is_set())
+    if not cancelled:
+        try:
+            workbook_path = combine_run_root(
+                run_root,
+                run_root / f"track-flt3-{year}-overview.xlsx",
+                year_label=year,
+            )
+        except FileNotFoundError:
+            workbook_path = None
+    manifest["status"] = (
+        "cancelled"
+        if cancelled
+        else "completed_with_errors" if failures else "completed"
+    )
+    manifest["cancellation_requested"] = cancelled or bool(
+        cancel_event and cancel_event.is_set()
+    )
     manifest["failed_items"] = failures
     manifest["combined_workbook_path"] = (
         str(workbook_path.resolve()) if workbook_path else ""
@@ -299,6 +336,15 @@ def run_yearly_validation(
     manifest["updated_at_utc"] = _utc_now()
     manifest["completed_at_utc"] = _utc_now()
     _write_json(manifest_path, manifest)
+    if cancelled:
+        _emit(
+            progress_callback,
+            {
+                "event": "run_cancelled",
+                "manifest_path": str(manifest_path),
+                "run_dir": str(run_root),
+            },
+        )
     _emit(
         progress_callback,
         {
@@ -315,7 +361,14 @@ def run_yearly_validation(
             "run_dir": str(run_root),
         },
     )
-    _emit(status_callback, "FLT3 yearly archive run finished")
+    _emit(
+        status_callback,
+        (
+            "FLT3 yearly archive run cancelled at a safe boundary"
+            if cancelled
+            else "FLT3 yearly archive run finished"
+        ),
+    )
     return manifest
 
 

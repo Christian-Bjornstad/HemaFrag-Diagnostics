@@ -1,5 +1,10 @@
 # Plan 11 — Clonality Interpretation Assist
 
+> **Historical plan — retired 2026-09-22.** The ML, annotation, and training
+> work described here was removed under
+> `docs/superpowers/specs/2026-09-19-remove-ml-labeling-design.md`. Do not use
+> this file as an active implementation backlog.
+
 > **Branch:** TBD (will be `codex-clonality-interp-v1-2026-06-XX` once we start).
 > **Lead reviewer:** Christian + Hermes.
 > **Why this exists:** clonality interpretation today is rule-based (`clonality_interpretation_rules_v1`) and uses ~12 hand-picked features. With ~22 000 historical `.fsa` files already labelled by clinical scientists, this is the dataset where an ML-assisted second opinion starts to pay off — but only if it stays research-only until validated per assay.

@@ -17,6 +17,12 @@ import param
 
 from core.log import log
 from config import APP_SETTINGS
+from core.run_context import RunContext
+
+
+def _pipeline_context_kwargs(run_context: RunContext | None) -> dict:
+    """Keep legacy pipeline spies/callers unchanged when no context was supplied."""
+    return {"run_context": run_context} if run_context is not None else {}
 
 # We lazy import the analysis engine inside the job functions to prevent 
 # `fraggler` from immediately executing `pn.extension(template="fast")` 
@@ -108,18 +114,21 @@ def _stamp_entry_source_provenance(
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        fsa = entry.get("fsa")
-        staged_name = str(
-            getattr(fsa, "file_name", "")
-            or entry.get("file_name")
-            or ""
-        )
-        source = by_name.get(strip_stage_prefix(staged_name))
-        if source is None:
-            continue
-        entry["file_name"] = source.name
-        entry["source_run_dir"] = source.parent.name
-        entry["original_file_path"] = str(source.resolve())
+        for candidate in (entry, *(entry.get("_alternate_ladder_review_entries") or [])):
+            if not isinstance(candidate, dict):
+                continue
+            fsa = candidate.get("fsa")
+            staged_name = str(
+                getattr(fsa, "file_name", "")
+                or candidate.get("file_name")
+                or ""
+            )
+            source = by_name.get(strip_stage_prefix(staged_name))
+            if source is None:
+                continue
+            candidate["file_name"] = source.name
+            candidate["source_run_dir"] = source.parent.name
+            candidate["original_file_path"] = str(source.resolve())
     return entries
 
 
@@ -203,6 +212,7 @@ def run_pipeline_job(
     *,
     tracking_excel_path: Path | None = None,
     update_tracking_workbook: bool = True,
+    run_context: RunContext | None = None,
 ) -> Optional[list]:
     """
     Run pipeline on a folder or an explicit file list.
@@ -233,6 +243,7 @@ def run_pipeline_job(
                 mode=effective_mode,
                 tracking_excel_path=tracking_excel_path,
                 update_tracking_workbook=update_tracking_workbook,
+                **_pipeline_context_kwargs(run_context),
             )
         finally:
             cleanup_temp(tmp_input)
@@ -250,7 +261,8 @@ def run_pipeline_job(
         if not files:
             raise ValueError(f"No .fsa files matched '{needle}'.")
 
-    if APP_SETTINGS.get("active_analysis") == "general":
+    analysis_id = run_context.analysis_id if run_context is not None else APP_SETTINGS.get("active_analysis")
+    if analysis_id == "general":
         tmp_input = None
         try:
             tmp_input = stage_files(files)
@@ -262,6 +274,7 @@ def run_pipeline_job(
                 mode=effective_mode,
                 tracking_excel_path=tracking_excel_path,
                 update_tracking_workbook=update_tracking_workbook,
+                **_pipeline_context_kwargs(run_context),
             )
         finally:
             cleanup_temp(tmp_input)
@@ -283,6 +296,7 @@ def run_pipeline_job(
                 make_dit_reports=False,
                 tracking_excel_path=tracking_excel_path,
                 update_tracking_workbook=update_tracking_workbook,
+                **_pipeline_context_kwargs(run_context),
             )
         finally:
             cleanup_temp(tmp_input)
@@ -307,6 +321,7 @@ def run_pipeline_job(
                 make_dit_reports=False,
                 tracking_excel_path=tracking_excel_path,
                 update_tracking_workbook=update_tracking_workbook,
+                **_pipeline_context_kwargs(run_context),
             )
             collected_entries.extend(chunk_entries or [])
             ok_chunks += 1
@@ -321,10 +336,12 @@ def run_pipeline_job(
             f"Pipeline completed with errors: {ok_chunks} ok, {failed_chunks} failed."
         )
     if collected_entries and effective_mode != "controls":
-        from core.assay_config import OUTDIR_NAME
+        from core.analyses.shared_pipeline import normalize_pipeline_paths
         from core.html_reports import build_dit_html_reports
 
-        assay_outdir = base_outdir / (out_folder_name or OUTDIR_NAME)
+        _, assay_outdir = normalize_pipeline_paths(
+            fsa_dir or files[0].parent, base_outdir, out_folder_name,
+        )
         build_dit_html_reports(collected_entries, assay_outdir)
     return None
 
@@ -348,6 +365,7 @@ def run_pipeline_job_collect(
     return_entries: bool = True,
     make_dit_reports: bool = False,
     update_tracking_workbook: bool = False,
+    run_context: RunContext | None = None,
 ) -> List[Dict[str, Any]]:
     """Run a pipeline job and optionally collect entries for DIT aggregation."""
     effective_files = files
@@ -404,6 +422,7 @@ def run_pipeline_job_collect(
                         tracking_excel_path=tracking_excel_path,
                         update_tracking_workbook=update_tracking_workbook,
                         progress_callback=progress_callback,
+                        **_pipeline_context_kwargs(run_context),
                     )
                     return _stamp_entry_source_provenance(
                         entries or [],
@@ -433,6 +452,7 @@ def run_pipeline_job_collect(
                         tracking_excel_path=tracking_excel_path,
                         update_tracking_workbook=update_tracking_workbook,
                         progress_callback=progress_callback,
+                        **_pipeline_context_kwargs(run_context),
                     )
                     return _stamp_entry_source_provenance(
                         entries or [],
@@ -456,8 +476,8 @@ def run_pipeline_job_collect(
                 )
                 tmp_input = stage_files(chunk)
                 try:
-                    def _chunk_progress(event):
-                        files_done = int(event.get("files_done", 0)) + offset
+                    def _chunk_progress(event, _offset=offset):
+                        files_done = int(event.get("files_done", 0)) + _offset
                         _emit_progress(
                             progress_callback,
                             **{
@@ -477,6 +497,7 @@ def run_pipeline_job_collect(
                         tracking_excel_path=tracking_excel_path,
                         update_tracking_workbook=update_tracking_workbook,
                         progress_callback=_chunk_progress,
+                        **_pipeline_context_kwargs(run_context),
                     )
                     all_entries.extend(
                         _stamp_entry_source_provenance(entries or [], chunk)
@@ -506,6 +527,7 @@ def run_pipeline_job_collect(
             tracking_excel_path=tracking_excel_path,
             update_tracking_workbook=update_tracking_workbook,
             progress_callback=progress_callback,
+            **_pipeline_context_kwargs(run_context),
         )
         return entries or []
     finally:
@@ -530,6 +552,7 @@ def run_qc_job(
     return_entries: bool = False,
     skip_html_reports: bool = False,
     progress_callback=None,
+    run_context: RunContext | None = None,
 ) -> Optional[Path] | Tuple[Optional[Path], List[Dict[str, Any]]]:
     """Run QC analysis and return the path to the HTML report."""
     from datetime import datetime
@@ -574,6 +597,7 @@ def run_qc_job(
             tracking_excel_path=tracking_excel_path,
             update_tracking_workbook=update_tracking_workbook,
             progress_callback=progress_callback,
+            **_pipeline_context_kwargs(run_context),
         )
         if files:
             entries = _stamp_entry_source_provenance(entries or [], files)
@@ -606,6 +630,8 @@ def run_dit_job(
     scope: str,
     needle: str,
     files: Optional[List[Path]] = None,
+    *,
+    run_context: RunContext | None = None,
 ) -> None:
     """Run DIT report generation."""
     tmp_input = None
@@ -634,6 +660,7 @@ def run_dit_job(
             base_outdir=base_outdir,
             assay_folder_name=out_folder_name,
             mode=effective_mode if effective_mode != "controls" else "all",
+            **_pipeline_context_kwargs(run_context),
         )
     finally:
         cleanup_temp(tmp_input)

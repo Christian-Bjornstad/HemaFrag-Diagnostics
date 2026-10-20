@@ -12,15 +12,11 @@ import numpy as np
 import pandas as pd
 
 from config import APP_SETTINGS
+from collections.abc import Mapping
 from core.analyses.clonality.interpretation import (
     TRACKING_COLUMNS as CLONALITY_INTERPRETATION_COLUMNS,
     interpretation_enabled,
 )
-from core.analyses.clonality.interpretation_units import (
-    CHANNEL_CHEMIST_LABEL_COLUMNS,
-    CHANNEL_ML_COLUMNS,
-)
-from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
 from fraggler.fraggler import print_green, print_warning
 from core.analyses.clonality.tracking_dashboard import refresh_clonality_tracking_dashboard
 from core.html_reports import extract_dit_from_name
@@ -36,7 +32,9 @@ from core.qc.qc_markers import (
     parse_well_from_filename,
 )
 from core.tracking_workbook_io import (
+    carry_forward_tracking_identities,
     publish_workbook_contents,
+    read_tracking_frames,
     write_tracking_frames,
 )
 from core.qc.qc_rules import QCRules
@@ -76,19 +74,8 @@ RUN_SHEET_COLUMNS = [
     "LadderLinearMaxResidualBp",
     "LadderCurvature",
     "LadderMedianAnchorIntensity",
-    CHEMIST_LABEL_COLUMN,
-    *CHANNEL_CHEMIST_LABEL_COLUMNS,
 ]
 RUN_SHEET_COLUMNS_WITH_INTERPRETATION = RUN_SHEET_COLUMNS + CLONALITY_INTERPRETATION_COLUMNS
-RUN_SHEET_COLUMNS_WITH_ML = RUN_SHEET_COLUMNS_WITH_INTERPRETATION + [
-    "ClonalityMLSuggestion",
-    "ClonalityMLConfidence",
-    "ClonalityMLThreshold",
-    "ClonalityMLReviewNeeded",
-    "ClonalityMLEvidence",
-    "ClonalityMLModelVersion",
-    *CHANNEL_ML_COLUMNS,
-]
 PEAK_SHEET_COLUMNS = [
     "Month",
     "IdentityKey",
@@ -118,8 +105,9 @@ PEAK_SHEET_COLUMNS = [
 ]
 
 
-def build_clonality_qc_rules() -> QCRules:
-    qc_settings = APP_SETTINGS.get("qc", {})
+def build_clonality_qc_rules(settings: Mapping | None = None) -> QCRules:
+    source = APP_SETTINGS if settings is None else settings
+    qc_settings = source.get("qc", {})
     sample_window = qc_settings.get("sample_peak_window_bp", qc_settings.get("w_sample", 3.0))
     ladder_window = qc_settings.get("ladder_peak_window_bp", qc_settings.get("w_ladder", 3.0))
     return QCRules(
@@ -181,42 +169,42 @@ def update_clonality_tracking_workbook(
     entries: list[dict],
     rules: QCRules | None = None,
     refresh_dashboard: bool = True,
+    *,
+    settings: Mapping | None = None,
 ) -> None:
     excel_path.parent.mkdir(parents=True, exist_ok=True)
 
-    rules = rules or build_clonality_qc_rules()
-    run_columns = _run_sheet_columns_for_entries(entries)
+    rules = build_clonality_qc_rules(settings) if rules is None else rules
+    run_columns = _run_sheet_columns()
     df_runs, df_peaks, pk_identity_keys = _build_tracking_frames(entries, rules, run_columns=run_columns)
     # If no data and file exists, nothing to do. If no data and file MISSING, we create the skeleton below.
     if df_runs.empty and df_peaks.empty and excel_path.exists():
         return
 
     with _clonality_excel_lock:
-        if excel_path.exists():
-            try:
-                with pd.ExcelFile(excel_path, engine="openpyxl") as xls:
-                    has_runs = "Runs" in xls.sheet_names
-                    has_peaks = "PK_Peaks" in xls.sheet_names
-            except Exception:
-                has_runs = False
-                has_peaks = False
-                from fraggler.fraggler import print_warning # Import if not already globally available
-                print_warning(f"Kunne ikke lese eksisterende {excel_path.name}, kanskje korrupt. Lager ny...")
-
-            try:
-                old_runs = pd.read_excel(excel_path, sheet_name="Runs", engine="openpyxl") if has_runs else pd.DataFrame(columns=run_columns)
-                old_peaks = pd.read_excel(excel_path, sheet_name="PK_Peaks", engine="openpyxl") if has_peaks else pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
-            except Exception:
-                old_runs = pd.DataFrame(columns=run_columns)
-                old_peaks = pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
-        else:
-            old_runs = pd.DataFrame(columns=run_columns)
-            old_peaks = pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
+        frames = read_tracking_frames(
+            excel_path, ("Runs", "Run", "Patient_Runs", "Control_Runs", "PK_Peaks"),
+        )
+        histories = [
+            _normalize_run_frame(frames[name], run_columns=run_columns)
+            for name in ("Patient_Runs", "Control_Runs", "Run", "Runs")
+            if name in frames and not frames[name].empty
+        ]
+        old_runs = (
+            pd.concat(histories, ignore_index=True).drop_duplicates("IdentityKey", keep="last")
+            if histories else pd.DataFrame(columns=run_columns)
+        )
+        old_peaks = frames.get("PK_Peaks", pd.DataFrame(columns=PEAK_SHEET_COLUMNS))
 
         old_runs = _normalize_run_frame(old_runs, run_columns=run_columns)
         old_peaks = _reindex_columns(old_peaks, PEAK_SHEET_COLUMNS)
-        df_runs = _carry_forward_chemist_labels(old_runs, df_runs)
-
+        old_peaks = carry_forward_tracking_identities(old_runs, old_peaks)
+        carried_runs = carry_forward_tracking_identities(old_runs, df_runs)
+        identity_changes = dict(zip(df_runs["IdentityKey"], carried_runs["IdentityKey"]))
+        df_runs = carried_runs
+        if not df_peaks.empty:
+            df_peaks["IdentityKey"] = df_peaks["IdentityKey"].map(identity_changes).fillna(df_peaks["IdentityKey"])
+        pk_identity_keys = {identity_changes.get(key, key) for key in pk_identity_keys}
         if not df_runs.empty and "IdentityKey" in old_runs.columns:
             old_runs = old_runs[~old_runs["IdentityKey"].isin(df_runs["IdentityKey"])]
         if pk_identity_keys and "IdentityKey" in old_peaks.columns:
@@ -255,10 +243,6 @@ def update_clonality_tracking_workbook(
                     ("Control_Runs", control_runs, ("IdentityKey",), True),
                     ("PK_Peaks", all_peaks, ("IdentityKey", "MarkerName")),
                 ),
-            )
-            _apply_reference_tracking_headers(
-                temporary_path,
-                run_columns=run_columns,
             )
             if refresh_dashboard:
                 refresh_clonality_tracking_dashboard(temporary_path)
@@ -435,7 +419,8 @@ def _build_run_row(entry: dict) -> dict:
         "LadderQC": entry.get("ladder_qc_status") or "",
         "LadderFitStrategy": entry.get("ladder_fit_strategy") or "",
         "ManualAdjustmentUsed": (
-            str(entry.get("ladder_fit_strategy") or "") == "manual_adjustment"
+            str(entry.get("ladder_fit_strategy") or "")
+            in {"manual_adjustment", "manual_partial"}
         ),
         "LadderExpectedStepCount": int(entry.get("ladder_expected_step_count", 0) or 0),
         "LadderFittedStepCount": int(entry.get("ladder_fitted_step_count", 0) or 0),
@@ -454,16 +439,6 @@ def _build_run_row(entry: dict) -> dict:
         "ClonalitySLFragmentedPercent": entry.get("ClonalitySLFragmentedPercent", ""),
         "ClonalitySLQualityPhrase": entry.get("ClonalitySLQualityPhrase", ""),
         "ClonalityModelVersion": entry.get("ClonalityModelVersion", ""),
-        "ClonalityMLSuggestion": entry.get("ClonalityMLSuggestion", ""),
-        "ClonalityMLConfidence": entry.get("ClonalityMLConfidence", ""),
-        "ClonalityMLThreshold": entry.get("ClonalityMLThreshold", ""),
-        "ClonalityMLReviewNeeded": entry.get("ClonalityMLReviewNeeded", ""),
-        "ClonalityMLEvidence": entry.get("ClonalityMLEvidence", ""),
-        "ClonalityMLModelVersion": entry.get("ClonalityMLModelVersion", ""),
-        **{
-            column: entry.get(column, "")
-            for column in (*CHANNEL_CHEMIST_LABEL_COLUMNS, *CHANNEL_ML_COLUMNS)
-        },
     }
 
 
@@ -576,7 +551,7 @@ def sanitize_clonality_tracking_workbook(excel_path: Path, *, refresh_dashboard:
         if not any([has_runs, has_peaks]):
             return False
 
-        run_columns = RUN_SHEET_COLUMNS_WITH_INTERPRETATION if interpretation_enabled() else RUN_SHEET_COLUMNS
+        run_columns = _run_sheet_columns()
         runs = pd.read_excel(excel_path, sheet_name="Runs", engine="openpyxl") if has_runs else pd.DataFrame(columns=run_columns)
         peaks = pd.read_excel(excel_path, sheet_name="PK_Peaks", engine="openpyxl") if has_peaks else pd.DataFrame(columns=PEAK_SHEET_COLUMNS)
 
@@ -591,8 +566,6 @@ def sanitize_clonality_tracking_workbook(excel_path: Path, *, refresh_dashboard:
             patient_runs.to_excel(writer, sheet_name="Patient_Runs", index=False)
             control_runs.to_excel(writer, sheet_name="Control_Runs", index=False)
             peaks.to_excel(writer, sheet_name="PK_Peaks", index=False)
-        _apply_reference_tracking_headers(excel_path, run_columns=run_columns)
-
         if refresh_dashboard:
             refresh_clonality_tracking_dashboard(excel_path)
     return True
@@ -618,17 +591,19 @@ def _normalize_run_frame(df: pd.DataFrame, *, run_columns: list[str] | None = No
     for src, fname, legacy, skind, ctrl in zip(source_run_dir.tolist(), file_name.tolist(), legacy_identity.tolist(), sample_kind.tolist(), control.tolist()):
         legacy_value = str(legacy or "").strip()
         entry_is_control = ctrl in CONTROL_IDS or skind == "control"
-        
-        if entry_is_control:
+
+        # The selected workbook owns its existing keys. Rehashing them with the
+        # current machine's salt would detach operator columns from their rows.
+        if legacy_value:
+            normalized_identity.append(legacy_value)
+        elif entry_is_control:
             normalized_identity.append(f"{src}::{fname}")
         else:
-            if legacy_value.startswith("PT-") and not str(fname or "").strip().lower().endswith(".fsa"):
-                normalized_identity.append(legacy_value)
-                continue
             normalized_identity.append(_build_patient_identity_key(src, fname or legacy))
             
     normalized["IdentityKey"] = normalized_identity
     normalized["SourceRunDir"] = source_run_dir
+    normalized["File"] = file_name
     dit = (
         normalized.get("DIT", pd.Series("", index=normalized.index))
         .fillna("")
@@ -650,53 +625,6 @@ def _normalize_run_frame(df: pd.DataFrame, *, run_columns: list[str] | None = No
     return _reindex_columns(normalized, run_columns)
 
 
-def _carry_forward_chemist_labels(
-    old_runs: pd.DataFrame,
-    new_runs: pd.DataFrame,
-) -> pd.DataFrame:
-    """Preserve reviewed labels when a batch refresh replaces an injection."""
-    if (
-        old_runs.empty
-        or new_runs.empty
-        or "IdentityKey" not in old_runs.columns
-        or "IdentityKey" not in new_runs.columns
-    ):
-        return new_runs
-
-    carried = new_runs.copy()
-    label_columns = (
-        CHEMIST_LABEL_COLUMN,
-        *CHANNEL_CHEMIST_LABEL_COLUMNS,
-    )
-    for label_column in label_columns:
-        if label_column not in old_runs.columns:
-            continue
-        old_labels = old_runs[["IdentityKey", label_column]].copy()
-        old_labels["IdentityKey"] = old_labels["IdentityKey"].fillna("").astype(str)
-        old_labels[label_column] = (
-            old_labels[label_column].fillna("").astype(str).str.strip()
-        )
-        old_labels = old_labels.loc[
-            old_labels["IdentityKey"].str.strip().ne("")
-            & old_labels[label_column].ne("")
-        ].drop_duplicates(subset=["IdentityKey"], keep="last")
-        if old_labels.empty:
-            continue
-        label_by_identity = old_labels.set_index("IdentityKey")[label_column]
-        if label_column not in carried.columns:
-            carried[label_column] = ""
-        current = carried[label_column].fillna("").astype(str).str.strip()
-        inherited = (
-            carried["IdentityKey"]
-            .fillna("")
-            .astype(str)
-            .map(label_by_identity)
-            .fillna("")
-        )
-        carried[label_column] = current.where(current.ne(""), inherited)
-    return carried
-
-
 def _split_run_frames(runs: pd.DataFrame, *, run_columns: list[str] | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     run_columns = run_columns or RUN_SHEET_COLUMNS
     runs = _normalize_run_frame(runs, run_columns=run_columns)
@@ -715,25 +643,31 @@ def _split_run_frames(runs: pd.DataFrame, *, run_columns: list[str] | None = Non
     return patient_runs, control_runs
 
 
-def resolve_global_clonality_tracking_path() -> Path | None:
-    batch_settings = APP_SETTINGS.get("analyses", {}).get("clonality", {}).get("batch", {})
+def resolve_global_clonality_tracking_path(settings: Mapping | None = None) -> Path | None:
+    source = APP_SETTINGS if settings is None else settings
+    batch_settings = source.get("analyses", {}).get("clonality", {}).get("batch", {})
     configured = str(batch_settings.get("global_tracking_excel_path") or "").strip()
     if configured:
         return Path(configured).expanduser()
     return None
 
 
-def update_global_clonality_tracking_workbook(entries: list[dict]) -> Path | None:
+def update_global_clonality_tracking_workbook(
+    entries: list[dict], *, settings: Mapping | None = None,
+) -> Path | None:
     if not entries:
         return None
-    path = resolve_global_clonality_tracking_path()
+    path = resolve_global_clonality_tracking_path(settings)
     if path is None:
         print_warning(
             "[TRACKING] Clonality master workbook is disabled. Set 'Master Tracking Excel File' in Clonality Settings to enable it."
         )
         return None
     try:
-        update_clonality_tracking_workbook(path, entries)
+        if settings is None:
+            update_clonality_tracking_workbook(path, entries)
+        else:
+            update_clonality_tracking_workbook(path, entries, settings=settings)
     except Exception as exc:
         print_warning(
             f"[TRACKING] Could not update optional clonality master workbook {path}: {exc}. "
@@ -802,53 +736,7 @@ def _month_bucket(run_date: str) -> str:
     return ""
 
 
-_ML_INTERPRETATION_COLUMNS = (
-    "ClonalityMLSuggestion",
-    "ClonalityMLConfidence",
-    "ClonalityMLThreshold",
-    "ClonalityMLReviewNeeded",
-    "ClonalityMLEvidence",
-    "ClonalityMLModelVersion",
-    *CHANNEL_ML_COLUMNS,
-)
-
-
-def _has_ml_interpretation(entries: list[dict] | None) -> bool:
-    if not entries:
-        return False
-    for entry in entries:
-        if any(column in entry for column in _ML_INTERPRETATION_COLUMNS):
-            return True
-    return False
-
-
-def _run_sheet_columns_for_entries(entries: list[dict] | None = None) -> list[str]:
-    has_ml = _has_ml_interpretation(entries)
+def _run_sheet_columns() -> list[str]:
     if interpretation_enabled():
-        # Rule layer is on — always include interpretation cols.
-        return RUN_SHEET_COLUMNS_WITH_ML if has_ml else RUN_SHEET_COLUMNS_WITH_INTERPRETATION
-    if has_ml:
-        # Rule layer disabled but ML fields came in (rare but supported).
-        return RUN_SHEET_COLUMNS_WITH_ML
+        return RUN_SHEET_COLUMNS_WITH_INTERPRETATION
     return RUN_SHEET_COLUMNS
-
-
-def _apply_reference_tracking_headers(excel_path: Path, *, run_columns: list[str] | None = None) -> None:
-    from openpyxl import load_workbook
-
-    run_columns = run_columns or RUN_SHEET_COLUMNS
-    wb = load_workbook(excel_path)
-    if "Runs" in wb.sheetnames:
-        ws = wb["Runs"]
-        for col, header in enumerate(run_columns, start=1):
-            ws.cell(1, col).value = header
-    for sheet_name in ("Patient_Runs", "Control_Runs"):
-        if sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            for col, header in enumerate(run_columns, start=1):
-                ws.cell(1, col).value = header
-    if "PK_Peaks" in wb.sheetnames:
-        ws = wb["PK_Peaks"]
-        for col, header in enumerate(PEAK_SHEET_COLUMNS, start=1):
-            ws.cell(1, col).value = header
-    wb.save(excel_path)

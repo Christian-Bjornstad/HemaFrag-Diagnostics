@@ -7,22 +7,25 @@ Compatible with Python 3.10+.
 """
 from __future__ import annotations
 
-import os
 import re
 import time
 import yaml
 import json
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Dict, List, Any
 from datetime import date, datetime
 
 from config import resolve_analysis_excel_output_path
+from core.run_context import RunContext
 from core.log import log
 from core.runner import run_pipeline_job, run_pipeline_job_collect, run_qc_job, run_dit_job
 
 # Lazy load fraggler modules to prevent global Panel state pollution on import
 
+# Historical diagnostics only. Normal job discovery must include these files:
+# prior hangs are not evidence that their analysis or review is complete.
 KNOWN_CLONALITY_BACKFILL_SKIP_FILES = {
     # User-requested overnight guardrail: this historical KDE file repeatedly
     # entered an unbounded fallback path during the 2026-05-18 T7 backfill.
@@ -158,6 +161,27 @@ def scan_jobs_from_yaml(yaml_path: Path) -> List[Path]:
 # PATIENT AGGREGATION UTILITIES
 # ============================================================
 
+def _release_entry_runtime_data(entry: dict) -> None:
+    """Keep source identity when dropping large runtime objects before review."""
+    from core.analyses.clonality.tracking_excel import resolve_original_input_path
+
+    fsa = entry.get("fsa")
+    if fsa is not None:
+        source = (
+            getattr(fsa, "file", None) or getattr(fsa, "path", None)
+            or getattr(fsa, "file_path", None) or getattr(fsa, "filepath", None)
+        )
+        if not entry.get("original_file_path") and source:
+            entry["original_file_path"] = str(resolve_original_input_path(source) or source)
+        if not entry.get("file_name"):
+            entry["file_name"] = str(
+                getattr(fsa, "file_name", "")
+                or (Path(entry["original_file_path"]).name if entry.get("original_file_path") else "")
+            )
+    entry["fsa"] = None
+    entry.pop("peaks_by_channel", None)
+    entry.pop("size_standard", None)
+
 def _scan_folder_fsa_files(path: Path, folder_files: Dict[Path, List[Path]]) -> List[Path]:
     """Return cached .fsa files for a folder/file, scanning only once per call site."""
     if path not in folder_files:
@@ -165,9 +189,6 @@ def _scan_folder_fsa_files(path: Path, folder_files: Dict[Path, List[Path]]) -> 
 
         def _is_usable_fsa(candidate: Path) -> bool:
             if candidate.suffix.lower() != ".fsa" or is_water_file(candidate.name):
-                return False
-            if candidate.name in KNOWN_CLONALITY_BACKFILL_SKIP_FILES:
-                log(f"[WARN] Skipping known clonality backfill hang file: {candidate.name}")
                 return False
             try:
                 if candidate.stat().st_size <= 0:
@@ -261,6 +282,7 @@ def generate_jobs(
     aggregate_patients: bool = True,
     patient_regex: str = r"\d{2}OUM\d{5}",
     run_date_filter: str = "all",
+    run_context: RunContext | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Generate a list of standard job dicts from a list of folders.
@@ -274,7 +296,11 @@ def generate_jobs(
 
     folders_to_scan = []
     folder_files: Dict[Path, List[Path]] = {}
-    active_analysis = APP_SETTINGS.get("active_analysis", "clonality")
+    active_analysis = (
+        run_context.analysis_id
+        if run_context is not None
+        else APP_SETTINGS.get("active_analysis", "clonality")
+    )
     for p in input_paths:
         if p.is_file():
             if p.suffix.lower() == ".yaml":
@@ -449,20 +475,29 @@ def run_batch_jobs(
     skip_html_reports: bool = False,
     preserve_deferred_entries: bool = False,
     parent_run_manifest_path: Path | None = None,
+    cancel_event: threading.Event | None = None,
+    run_context: RunContext | None = None,
 ) -> dict[str, Any]:
     """
     Run all generated jobs.
-    Reads QC parameters from APP_SETTINGS and uses explicit per-analysis batch flags.
+    Reads QC and analysis settings from the queued context when provided.
     """
     from config import APP_SETTINGS
     from core.qc.qc_rules import QCRules
     from core.assay_config import OUTDIR_NAME
-    s_qc = APP_SETTINGS.get("qc", {})
-    active_analysis = APP_SETTINGS.get("active_analysis", "clonality")
+    settings = run_context.settings_snapshot if run_context is not None else APP_SETTINGS
+    runner_context_kwargs = {"run_context": run_context} if run_context is not None else {}
+    tracking_context_kwargs = {"settings": settings} if run_context is not None else {}
+    s_qc = settings.get("qc", {})
+    active_analysis = (
+        run_context.analysis_id
+        if run_context is not None
+        else settings.get("active_analysis", "clonality")
+    )
     aggregate_dit_reports = bool(aggregate_dit_reports) and active_analysis != "general"
-    analysis_batch = APP_SETTINGS.get("analyses", {}).get(active_analysis, {}).get("batch", {})
+    analysis_batch = settings.get("analyses", {}).get(active_analysis, {}).get("batch", {})
     gate_settings = analysis_batch.get("ladder_review_gate", {})
-    if not isinstance(gate_settings, dict):
+    if not isinstance(gate_settings, Mapping):
         gate_settings = {}
     ladder_review_gate_enabled = bool(gate_settings.get("enabled", True))
     ladder_review_gate_blocks_dit = bool(gate_settings.get("block_dit_reports", False))
@@ -485,8 +520,6 @@ def run_batch_jobs(
         ladder_peak_window_bp=ladder_window,
     )
     
-    from concurrent.futures import ThreadPoolExecutor
-
     total = len(jobs)
     log(f"[BATCH] Starting batch run of {total} jobs.")
 
@@ -502,7 +535,7 @@ def run_batch_jobs(
             output_dir=agg_outdir or output_base,
             jobs=jobs,
             analysis=active_analysis,
-            settings=APP_SETTINGS,
+            settings=settings,
             execution={
                 "output_base": str(output_base),
                 "aggregate_output_dir": str(agg_outdir) if agg_outdir else None,
@@ -516,6 +549,13 @@ def run_batch_jobs(
                 "skip_html_reports": skip_html_reports,
             },
             parent_manifest_path=parent_run_manifest_path,
+            run_id=run_context.run_id if run_context is not None else None,
+            created_at_utc=(
+                run_context.created_at_utc if run_context is not None else None
+            ),
+            parent_run_id=(
+                run_context.parent_run_id if run_context is not None else None
+            ),
         )
         log(f"[BATCH] Run manifest: {run_manifest.path}")
     except Exception as exc:
@@ -524,6 +564,14 @@ def run_batch_jobs(
     def _clonality_tracking_path(default_dir: Path) -> Path:
         from core.analyses.clonality.tracking_excel import CLONALITY_TRACKING_FILENAME
 
+        if run_context is not None:
+            configured = str(analysis_batch.get("tracking_excel_path") or "").strip()
+            if not configured:
+                return tracking_excel_path or default_dir / CLONALITY_TRACKING_FILENAME
+            path = Path(configured).expanduser()
+            if configured.endswith(("/", "\\")) or path.suffix.lower() != ".xlsx":
+                path /= CLONALITY_TRACKING_FILENAME
+            return tracking_excel_path or path
         return tracking_excel_path or resolve_analysis_excel_output_path(
             "clonality",
             default_dir,
@@ -534,9 +582,18 @@ def run_batch_jobs(
         if active_analysis != "clonality" or not entries:
             return
         try:
-            from core.analyses.clonality.tracking_excel import update_global_clonality_tracking_workbook
+            from core.analyses.clonality.tracking_excel import (
+                update_clonality_tracking_workbook,
+                update_global_clonality_tracking_workbook,
+            )
 
-            global_path = update_global_clonality_tracking_workbook(entries)
+            if run_context is None:
+                global_path = update_global_clonality_tracking_workbook(entries)
+            else:
+                configured = str(analysis_batch.get("global_tracking_excel_path") or "").strip()
+                global_path = Path(configured).expanduser() if configured else None
+                if global_path is not None:
+                    update_clonality_tracking_workbook(global_path, entries, **tracking_context_kwargs)
             if global_path is not None:
                 log(f"[BATCH] Updated global clonality tracking workbook: {global_path}")
         except Exception as exc:
@@ -546,8 +603,14 @@ def run_batch_jobs(
     all_collected_entries_by_job: dict[int, list[Any]] = {}
     qc_report_entries_by_job: dict[int, list[Any]] = {}
     deferred_tracking_entries_by_job: dict[int, list[Any]] | None = {} if defer_tracking_workbook_refresh else None
-    failed_jobs = []
-    completed_jobs = []
+    failed_jobs: list[str] = []
+    failed_job_indexes: list[int] = []
+    completed_jobs: list[str] = []
+    completed_job_indexes: list[int] = []
+    cancelled_jobs: list[str] = []
+    cancelled_job_indexes: list[int] = []
+    unprocessed_jobs: list[str] = []
+    unprocessed_job_indexes: list[int] = []
     aggregation_failed = False
     
     # Thread safety locks
@@ -587,6 +650,7 @@ def run_batch_jobs(
         job_name: str,
         phase: str,
         *,
+        job_index: int | None = None,
         file_name: str = "",
         files_done: int | None = None,
         files_total: int | None = None,
@@ -600,6 +664,7 @@ def run_batch_jobs(
         payload = {
             "folder_name": folder_name,
             "job_name": job_name,
+            "job_index": job_index,
             "phase": phase,
             "file_name": file_name,
             "files_done": None if files_done is None else int(files_done),
@@ -660,6 +725,7 @@ def run_batch_jobs(
         _emit_progress(
             job_name,
             "job_start",
+            job_index=i,
             files_done=0,
             files_total=job_file_total,
             note="job_started",
@@ -677,6 +743,7 @@ def run_batch_jobs(
                 _emit_progress(
                     job_name,
                     event.get("phase", "analyze"),
+                    job_index=i,
                     file_name=str(event.get("file_name", "") or ""),
                     files_done=int(event.get("files_done", 0) or 0),
                     files_total=int(event.get("files_total", job_file_total) or job_file_total),
@@ -701,14 +768,13 @@ def run_batch_jobs(
                         chunk_files=(active_analysis != "flt3"),
                         tracking_excel_path=tracking_excel_path,
                         progress_callback=_job_progress,
+                        **runner_context_kwargs,
                     )
                     if stream_aggregated_dit and agg_outdir is not None:
                         from core.html_reports import build_dit_html_reports
                         if (defer_dit_html_reports or skip_html_reports) and not preserve_deferred_entries:
                             for entry in entries:
-                                entry["fsa"] = None
-                                entry.pop("peaks_by_channel", None)
-                                entry.pop("size_standard", None)
+                                _release_entry_runtime_data(entry)
                             with data_lock:
                                 _extend_entries(all_collected_entries_by_job, i, entries)
                             _emit_progress(
@@ -736,7 +802,6 @@ def run_batch_jobs(
                             )
                         if active_analysis == "clonality":
                             from core.analyses.clonality.tracking_excel import (
-                                CLONALITY_TRACKING_FILENAME,
                                 update_clonality_tracking_workbook,
                             )
 
@@ -759,6 +824,7 @@ def run_batch_jobs(
                                         update_clonality_tracking_workbook,
                                         _clonality_tracking_path(agg_outdir),
                                         entries,
+                                        **tracking_context_kwargs,
                                     )
                         if defer_dit_html_reports:
                             log(f"[BATCH] Deferred aggregated DIT report for {job_name} with {len(entries)} entries.")
@@ -767,9 +833,7 @@ def run_batch_jobs(
                     else:
                         if (defer_dit_html_reports or skip_html_reports) and not preserve_deferred_entries:
                             for entry in entries:
-                                entry["fsa"] = None
-                                entry.pop("peaks_by_channel", None)
-                                entry.pop("size_standard", None)
+                                _release_entry_runtime_data(entry)
                         with data_lock:
                             _extend_entries(all_collected_entries_by_job, i, entries)
                             if defer_tracking_workbook_refresh and deferred_tracking_entries_by_job is not None:
@@ -792,6 +856,7 @@ def run_batch_jobs(
                         needle=assay_filter,
                         files=job_files,
                         tracking_excel_path=tracking_excel_path,
+                        **runner_context_kwargs,
                     )
             
             elif job_type == "qc":
@@ -814,13 +879,12 @@ def run_batch_jobs(
                         skip_html_reports=skip_html_reports,
                         update_qc_trends=False,
                         progress_callback=_job_progress,
+                        **runner_context_kwargs,
                     )
                     if qc_entries:
                         if (defer_dit_html_reports or skip_html_reports) and not preserve_deferred_entries:
                             for entry in qc_entries:
-                                entry["fsa"] = None
-                                entry.pop("peaks_by_channel", None)
-                                entry.pop("size_standard", None)
+                                _release_entry_runtime_data(entry)
                         with data_lock:
                             _extend_entries(qc_report_entries_by_job, i, qc_entries)
                         if defer_tracking_workbook_refresh and deferred_tracking_entries_by_job is not None:
@@ -829,7 +893,6 @@ def run_batch_jobs(
                             log(f"[BATCH] Deferred {len(qc_entries)} tracking entries from QC job {job_name}.")
                         else:
                             from core.analyses.clonality.tracking_excel import (
-                                CLONALITY_TRACKING_FILENAME,
                                 update_clonality_tracking_workbook,
                             )
 
@@ -848,6 +911,7 @@ def run_batch_jobs(
                                     update_clonality_tracking_workbook,
                                     _clonality_tracking_path(agg_outdir or output_base),
                                     qc_entries,
+                                    **tracking_context_kwargs,
                                 )
                             _update_global_clonality_tracking(qc_entries)
                         log(f"[BATCH] Collected {len(qc_entries)} tracking entries from QC job {job_name}.")
@@ -860,6 +924,7 @@ def run_batch_jobs(
                         rules=qc_rules,
                         files=job_files,
                         skip_html_reports=skip_html_reports,
+                        **runner_context_kwargs,
                     )
                 
             elif job_type == "dit":
@@ -878,6 +943,7 @@ def run_batch_jobs(
                         chunk_files=(active_analysis != "flt3"),
                         tracking_excel_path=tracking_excel_path,
                         progress_callback=_job_progress,
+                        **runner_context_kwargs,
                     )
                     if stream_aggregated_dit and agg_outdir is not None:
                         from core.html_reports import build_dit_html_reports
@@ -909,7 +975,6 @@ def run_batch_jobs(
                             )
                         if active_analysis == "clonality":
                             from core.analyses.clonality.tracking_excel import (
-                                CLONALITY_TRACKING_FILENAME,
                                 update_clonality_tracking_workbook,
                             )
 
@@ -932,6 +997,7 @@ def run_batch_jobs(
                                         update_clonality_tracking_workbook,
                                         _clonality_tracking_path(agg_outdir),
                                         entries,
+                                        **tracking_context_kwargs,
                                     )
                         if defer_dit_html_reports:
                             log(f"[BATCH] Deferred aggregated DIT report for {job_name} with {len(entries)} entries.")
@@ -950,7 +1016,8 @@ def run_batch_jobs(
                         out_folder_name=resolved_out_folder,
                         scope=pipeline_scope,
                         needle=assay_filter,
-                        files=job_files
+                        files=job_files,
+                        **runner_context_kwargs,
                     )
             
             else:
@@ -958,6 +1025,7 @@ def run_batch_jobs(
                     
             with data_lock:
                 completed_jobs.append(job_name)
+                completed_job_indexes.append(i)
             with callback_lock:
                 if update_callback:
                     # Honest status: in aggregated mode DIT reports + tracking
@@ -971,6 +1039,7 @@ def run_batch_jobs(
             _emit_progress(
                 job_name,
                 "done",
+                job_index=i,
                 files_done=job_file_total,
                 files_total=job_file_total,
                 note="job_complete",
@@ -982,12 +1051,14 @@ def run_batch_jobs(
             job_status = "failed"
             with data_lock:
                 failed_jobs.append(job_name)
+                failed_job_indexes.append(i)
             with callback_lock:
                 if update_callback:
                     update_callback(i + 1, total, job_name, f"error: {e}")
             _emit_progress(
                 job_name,
                 "failed",
+                job_index=i,
                 files_done=job_file_total,
                 files_total=job_file_total,
                 note=str(e),
@@ -998,8 +1069,10 @@ def run_batch_jobs(
         finally:
             log(f"[BATCH] Job {job_name} finished in {time.monotonic() - started:.1f}s ({job_status}).")
 
-    # Perform multi-threaded patient processing
-    # Max workers = 3 (modest to prevent over-subscription of child Pool processes)
+    # Keep only a bounded set of futures in flight. Submitting the whole batch
+    # up front makes Stop ineffective because the executor already owns every
+    # job. Active jobs finish at their safe job boundary; no thread is killed.
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
     from core.concurrency import concurrency_environment, resolve_concurrency_plan
 
     concurrency_plan = resolve_concurrency_plan(
@@ -1007,28 +1080,60 @@ def run_batch_jobs(
         task_count=len(jobs),
     )
     max_patient_workers = concurrency_plan.outer_workers
-    
+    cancellation = cancel_event or threading.Event()
+    next_job_index = 0
+
     try:
         with concurrency_environment(concurrency_plan):
             with ThreadPoolExecutor(max_workers=max_patient_workers) as executor:
-                futures = [
-                    executor.submit(process_job, i, job)
-                    for i, job in enumerate(jobs)
-                ]
-                from concurrent.futures import as_completed
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as ex:
-                        if not continue_on_error:
-                            raise
-                        log(f"[BATCH] Worker future failed: {ex}")
+                running: dict[Any, tuple[int, dict[str, Any]]] = {}
+                while running or next_job_index < total:
+                    while (
+                        not cancellation.is_set()
+                        and next_job_index < total
+                        and len(running) < max_patient_workers
+                    ):
+                        job_index = next_job_index
+                        job = jobs[job_index]
+                        future = executor.submit(process_job, job_index, job)
+                        running[future] = (job_index, job)
+                        next_job_index += 1
+
+                    if not running:
+                        break
+
+                    done, _pending = wait(
+                        tuple(running),
+                        return_when=FIRST_COMPLETED,
+                    )
+                    for future in done:
+                        _job_index, _job = running.pop(future)
+                        try:
+                            future.result()
+                        except Exception as ex:
+                            if not continue_on_error:
+                                raise
+                            log(f"[BATCH] Worker future failed: {ex}")
+
+                if cancellation.is_set() and next_job_index < total:
+                    remaining = list(
+                        enumerate(
+                            jobs[next_job_index:],
+                            start=next_job_index,
+                        )
+                    )
+                    unprocessed_jobs.extend(
+                        str(job.get("name") or f"job_{index + 1}")
+                        for index, job in remaining
+                    )
+                    unprocessed_job_indexes.extend(index for index, _job in remaining)
+                    cancelled_jobs.extend(unprocessed_jobs)
+                    cancelled_job_indexes.extend(unprocessed_job_indexes)
     except Exception as ex:
         if not continue_on_error:
             log(f"[BATCH] Batch execution halted after error: {ex}")
         else:
-            log(f"[BATCH] Batch execution completed with some errors.")
-                
+            log("[BATCH] Batch execution completed with some errors.")
     # --- CROSS-FOLDER DIT AGGREGATION ---
     all_collected_entries = _materialize_entries(all_collected_entries_by_job)
     qc_report_entries = _materialize_entries(qc_report_entries_by_job)
@@ -1036,6 +1141,9 @@ def run_batch_jobs(
     deferred_tracking_entries = _materialize_entries(deferred_tracking_entries_by_job)
     ladder_review_gate: dict[str, Any] | None = None
     block_dit_for_ladder_review = False
+    run_cancelled = bool(cancelled_job_indexes) or bool(
+        cancellation.is_set() and aggregate_dit_reports and total > 0
+    )
 
     if (
         active_analysis in {"clonality", "flt3"}
@@ -1069,11 +1177,23 @@ def run_batch_jobs(
                     )
             review_count = int(ladder_review_gate.get("review_case_count") or 0)
             if review_count:
-                block_dit_for_ladder_review = ladder_review_gate_blocks_dit
+                # A Rust guardrail rejection needs an operator decision before
+                # the aggregated clinical report can be published, even while
+                # less severe review cases still run in shadow mode.
+                rejected_ladder_count = int(
+                    ladder_review_gate.get("rejected_ladder_case_count") or 0
+                )
+                block_dit_for_ladder_review = (
+                    ladder_review_gate_blocks_dit or rejected_ladder_count > 0
+                )
                 if block_dit_for_ladder_review:
                     ladder_review_gate["blocked"] = True
                     ladder_review_gate["mode"] = "blocking"
-                    ladder_review_gate["block_reason"] = "unresolved_ladder_review_cases"
+                    ladder_review_gate["block_reason"] = (
+                        "rejected_ladder_requires_review"
+                        if rejected_ladder_count
+                        else "unresolved_ladder_review_cases"
+                    )
                     summary_path = ladder_review_gate.get("summary_path")
                     if summary_path:
                         Path(str(summary_path)).write_text(
@@ -1087,11 +1207,23 @@ def run_batch_jobs(
                 log(
                     "[BATCH] Ladder review gate "
                     f"{'blocking mode' if block_dit_for_ladder_review else 'shadow mode'}: "
-                    f"{review_count} file(s) require review before DIT reporting. "
+                    f"{review_count} file(s) flagged for review"
+                    f"{' before DIT reporting' if block_dit_for_ladder_review else '; DIT reporting may continue'}. "
                     f"Bundle: {ladder_review_gate.get('cases_path')}"
                 )
         except Exception as e:
-            log(f"[WARN] Failed to write ladder review gate artifact: {e}")
+            # A failed gate write must not silently publish a report whose
+            # underlying ladder cases could not be made reviewable.
+            block_dit_for_ladder_review = True
+            aggregation_failed = True
+            failed_jobs.append("ladder review gate")
+            log(f"[ERROR] Failed to write ladder review gate artifact; DIT reporting stopped: {e}")
+    # Stop may be requested after the last job finishes while review artifacts
+    # are being written. Re-check at the final publication boundary.
+    run_cancelled = run_cancelled or bool(
+        cancellation.is_set() and aggregate_dit_reports and total > 0
+    )
+
 
     if (
         aggregate_dit_reports
@@ -1099,6 +1231,7 @@ def run_batch_jobs(
         and not defer_dit_html_reports
         and not skip_html_reports
         and not block_dit_for_ladder_review
+        and not run_cancelled
     ):
         log("\n[BATCH] Final step: Building aggregated DIT HTML reports...")
 
@@ -1119,7 +1252,6 @@ def run_batch_jobs(
                 )
             if active_analysis == "clonality" and not defer_tracking_workbook_refresh:
                 from core.analyses.clonality.tracking_excel import (
-                    CLONALITY_TRACKING_FILENAME,
                     update_clonality_tracking_workbook,
                 )
 
@@ -1130,6 +1262,7 @@ def run_batch_jobs(
                     update_clonality_tracking_workbook,
                     _clonality_tracking_path(agg_outdir),
                     dit_report_entries,
+                    **tracking_context_kwargs,
                 )
                 _update_global_clonality_tracking(dit_report_entries)
             log(f"[BATCH] Successfully built aggregated DIT reports in {agg_outdir}")
@@ -1137,12 +1270,19 @@ def run_batch_jobs(
             aggregation_failed = True
             failed_jobs.append("DIT aggregation")
             log(f"[ERROR] Failed to build aggregated DIT reports: {e}")
-    elif aggregate_dit_reports and all_collected_entries and (
-        defer_dit_html_reports or skip_html_reports or block_dit_for_ladder_review
+    elif run_cancelled and aggregate_dit_reports:
+        log(
+            "[BATCH] Final aggregate reports were not published because the batch "
+            "was cancelled before every selected job was processed."
+        )
+    elif (
+        aggregate_dit_reports
+        and all_collected_entries
+        and not run_cancelled
+        and (defer_dit_html_reports or skip_html_reports or block_dit_for_ladder_review)
     ):
         if active_analysis == "clonality" and not defer_tracking_workbook_refresh:
             from core.analyses.clonality.tracking_excel import (
-                CLONALITY_TRACKING_FILENAME,
                 update_clonality_tracking_workbook,
             )
 
@@ -1153,6 +1293,7 @@ def run_batch_jobs(
                 update_clonality_tracking_workbook,
                 _clonality_tracking_path(agg_outdir),
                 dit_report_entries,
+                **tracking_context_kwargs,
             )
             _update_global_clonality_tracking(dit_report_entries)
         if block_dit_for_ladder_review:
@@ -1162,49 +1303,43 @@ def run_batch_jobs(
     elif aggregate_dit_reports and stream_aggregated_dit:
         log("[BATCH] Aggregated DIT reports were streamed job-by-job to reduce memory pressure.")
 
-    learning_annotation_seed: dict[str, str] | None = None
-    if active_analysis == "clonality" and dit_report_entries:
-        try:
-            from config import APP_SETTINGS
-            from core.analyses.clonality.interpretation import (
-                learning_mode_enabled,
-                learning_output_dir,
-                write_learning_annotation_seed,
-            )
-
-            if learning_mode_enabled():
-                configured_dir = learning_output_dir()
-                target_dir = Path(configured_dir).expanduser() if configured_dir else Path(agg_outdir or output_base) / "clonality_learning_annotations"
-                annotator = str(APP_SETTINGS.get("general", {}).get("author", "") or "")
-                learning_annotation_seed = write_learning_annotation_seed(
-                    dit_report_entries,
-                    target_dir,
-                    annotator=annotator,
-                    source="batch_run",
-                )
-                log(
-                    "[BATCH] Wrote clonality learning annotation seed "
-                    f"({learning_annotation_seed.get('rows')} rows): {learning_annotation_seed.get('json')}"
-                )
-        except Exception as exc:
-            log(f"[WARN] Failed to write clonality learning annotation seed: {exc}")
-
-    if aggregation_failed:
+    if run_cancelled:
+        log(
+            f"[BATCH] Batch cancelled: {len(completed_jobs)} completed, "
+            f"{len(failed_jobs)} failed, {len(unprocessed_jobs)} not started."
+        )
+    elif aggregation_failed:
         log("[BATCH] Batch run complete with aggregation errors.")
     else:
         log("[BATCH] Batch run complete.")
     if update_callback:
-        update_callback(total, total, "Done", "done")
+        if run_cancelled:
+            update_callback(
+                len(completed_jobs) + len(failed_jobs),
+                total,
+                "Batch",
+                "cancelled",
+            )
+        else:
+            update_callback(total, total, "Done", "done")
     result_payload = {
         "total_jobs": total,
         "completed_jobs": completed_jobs,
         "failed_jobs": failed_jobs,
+        "completed_job_indexes": completed_job_indexes,
+        "failed_job_indexes": failed_job_indexes,
+        "cancelled": run_cancelled,
+        "cancellation_requested": cancellation.is_set(),
+        "cancelled_jobs": cancelled_jobs,
+        "unprocessed_jobs": unprocessed_jobs,
+        "cancelled_job_indexes": cancelled_job_indexes,
+        "unprocessed_job_indexes": unprocessed_job_indexes,
         "collected_entries": deferred_tracking_entries if defer_tracking_workbook_refresh else all_collected_entries,
         "dit_report_entries": dit_report_entries,
         "qc_report_entries": qc_report_entries,
         "ladder_review_gate": ladder_review_gate,
         "dit_reports_blocked": block_dit_for_ladder_review,
-        "learning_annotation_seed": learning_annotation_seed,
+        "final_reports_skipped_reason": "cancelled" if run_cancelled else "",
     }
     if run_manifest is not None:
         try:

@@ -297,7 +297,7 @@ def run_clonality_backfill(
                 result = run_batch_jobs(
                     jobs=jobs,
                     output_base=folder_output_base,
-                    out_folder_tmpl="ASSAY_REPORTS",
+                    out_folder_tmpl="",
                     outfile_html_tmpl="QC_REPORT_{name}.html",
                     excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
                     pipeline_scope=pipeline_settings.get("mode", "all"),

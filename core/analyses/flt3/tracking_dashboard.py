@@ -173,8 +173,10 @@ def _prepared_runs(runs: pd.DataFrame) -> pd.DataFrame:
     )
     work["_LadderStatus"] = _text(work, "LadderQC").str.lower()
     work["_Manual"] = (
-        work["_LadderStatus"].eq("manual_adjustment")
-        | _text(work, "LadderFitStrategy").str.lower().eq("manual_adjustment")
+        work["_LadderStatus"].isin({"manual_adjustment", "manual_partial_reviewed"})
+        | _text(work, "LadderFitStrategy")
+        .str.lower()
+        .isin({"manual_adjustment", "manual_partial"})
     )
     work["_LadderReview"] = _review_mask(
         work["_LadderStatus"],
@@ -504,7 +506,7 @@ def _ensure_manual_adjustment_column(ws) -> None:
             row_idx,
             target_col,
             str(ws.cell(row_idx, strategy_col).value or "").strip().lower()
-            == "manual_adjustment",
+            in {"manual_adjustment", "manual_partial"},
         )
 
 

@@ -11,9 +11,7 @@ import pandas as pd
 from openpyxl import load_workbook
 
 from config import APP_SETTINGS
-from core.analyses.clonality.ml_data_contract import CHEMIST_LABEL_COLUMN
 from core.analyses.clonality.tracking_excel import update_clonality_tracking_workbook
-from core.labeling.labeling_session import LabelingSession
 
 
 def _entry(file_name: str, *, assay: str = "FR1", dit: str = "") -> dict:
@@ -157,133 +155,175 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             self.assertEqual(dashboard["F17"].value, 1)
             wb.close()
 
-    def test_tracking_workbook_writes_ml_columns_when_present(self) -> None:
-        import math
+    def test_new_tracking_workbook_ignores_retired_ml_and_chemist_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workbook = Path(tmp) / "Clonality_Tracking.xlsx"
             patient_entry = _entry(
                 "26OUM00001_FR1__220526_A01_H9TEST01.fsa", dit="26OUM00001"
             )
-            # Stamp ML fields onto the entry
+            APP_SETTINGS["analyses"]["clonality"]["interpretation"]["enabled"] = True
+            patient_entry["ClonalityInterpretationEnabled"] = True
             patient_entry["ClonalitySuggestion"] = "monoklonal"
             patient_entry["ClonalityConfidence"] = 0.93
             patient_entry["ClonalityReviewNeeded"] = False
+            patient_entry["ClonalityModelVersion"] = "clonality_interpretation_rules_v1"
+            patient_entry["Chemist_Label"] = "historical-free-text"
+            patient_entry["ClonalityChemistLabel"] = "monoklonal"
+            patient_entry["ClonalityChemistLabel_DATA1"] = "monoklonal"
             patient_entry["ClonalityMLSuggestion"] = "monoklonal"
             patient_entry["ClonalityMLConfidence"] = 0.86
-            patient_entry["ClonalityMLThreshold"] = 0.8
-            patient_entry["ClonalityMLReviewNeeded"] = False
-            patient_entry["ClonalityMLEvidence"] = "rule_ml_agree"
-            patient_entry["ClonalityMLModelVersion"] = "ml_training_pipeline_v9"
-            entries = [
-                patient_entry,
-                # Control entry does NOT carry ML fields (chemist usually
-                # only stamps ML onto patient samples). The Tracking
-                # Excel writer must not invent values for absent ML keys.
-                _entry("PK_FR1__220526_E08_H9TEST01.fsa"),
-            ]
-            marker = {
-                "name": "FR1_PK",
-                "kind": "sample",
-                "channel": "DATA1",
-                "expected_bp": 100.0,
-                "window_bp": 3.0,
-            }
-            with patch(
-                "core.analyses.clonality.tracking_excel.markers_for_entry",
-                return_value=[marker],
-            ):
-                update_clonality_tracking_workbook(workbook, entries)
-            patients = pd.read_excel(workbook, sheet_name="Patient_Runs", engine="openpyxl")
-            self.assertEqual(len(patients), 1)
-            # All ML columns are present and round-trip
-            self.assertIn("ClonalityMLSuggestion", patients.columns)
-            self.assertIn("ClonalityMLConfidence", patients.columns)
-            self.assertIn("ClonalityMLThreshold", patients.columns)
-            self.assertIn("ClonalityMLReviewNeeded", patients.columns)
-            self.assertIn("ClonalityMLEvidence", patients.columns)
-            self.assertIn("ClonalityMLModelVersion", patients.columns)
-            self.assertEqual(patients.iloc[0]["ClonalityMLSuggestion"], "monoklonal")
-            self.assertEqual(float(patients.iloc[0]["ClonalityMLConfidence"]), 0.86)
-            self.assertEqual(float(patients.iloc[0]["ClonalityMLThreshold"]), 0.8)
-            self.assertEqual(patients.iloc[0]["ClonalityMLEvidence"], "rule_ml_agree")
-            # Control row: nothing was stamped ⇒ empty cell (Excel NaN read is fine)
-            controls = pd.read_excel(workbook, sheet_name="Control_Runs", engine="openpyxl")
-            self.assertEqual(len(controls), 1)
-            for col in (
-                "ClonalityMLSuggestion",
-                "ClonalityMLConfidence",
-                "ClonalityMLThreshold",
-                "ClonalityMLReviewNeeded",
-                "ClonalityMLEvidence",
-                "ClonalityMLModelVersion",
-            ):
-                val = controls.iloc[0][col]
-                # Empty string OR NaN both acceptable — both signal "no ML".
-                if isinstance(val, float):
-                    self.assertTrue(math.isnan(val), f"{col} expected empty, got {val!r}")
-                else:
-                    self.assertEqual(val, "")
+            update_clonality_tracking_workbook(workbook, [patient_entry])
 
-    def test_batch_refresh_preserves_chemist_label(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            workbook = Path(tmp) / "Clonality_Tracking.xlsx"
-            entry = _entry(
-                "26OUM00001_FR1__220526_A01_H9TEST01.fsa",
-                dit="26OUM00001",
-            )
-            update_clonality_tracking_workbook(workbook, [entry])
-
-            session = LabelingSession(excel_path=str(workbook))
-            session.load()
-            session.label_sample(0, "monoklonal")
-            self.assertEqual(session.save_to_excel(), 1)
-
-            update_clonality_tracking_workbook(workbook, [entry])
+            for sheet_name in ("Runs", "Patient_Runs", "Control_Runs"):
+                frame = pd.read_excel(workbook, sheet_name=sheet_name, engine="openpyxl")
+                self.assertFalse(
+                    any(column.startswith("ClonalityML") for column in frame.columns)
+                )
+                self.assertNotIn("Chemist_Label", frame.columns)
+                self.assertFalse(
+                    any("ChemistLabel" in column for column in frame.columns)
+                )
+                self.assertIn("LadderQC", frame.columns)
+                self.assertIn("LadderR2", frame.columns)
+                self.assertIn("ClonalitySuggestion", frame.columns)
+                self.assertIn("ClonalityModelVersion", frame.columns)
 
             runs = pd.read_excel(workbook, sheet_name="Runs", engine="openpyxl")
-            patients = pd.read_excel(
-                workbook,
-                sheet_name="Patient_Runs",
-                engine="openpyxl",
+            self.assertEqual(runs.iloc[0]["ClonalitySuggestion"], "monoklonal")
+            self.assertEqual(
+                runs.iloc[0]["ClonalityModelVersion"],
+                "clonality_interpretation_rules_v1",
             )
-            self.assertEqual(runs.iloc[0][CHEMIST_LABEL_COLUMN], "monoklonal")
-            self.assertEqual(patients.iloc[0][CHEMIST_LABEL_COLUMN], "monoklonal")
 
-    def test_batch_refresh_preserves_independent_dual_channel_labels(self) -> None:
+    def test_refresh_preserves_historical_unknown_columns_only_on_existing_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            workbook = Path(tmp) / "Clonality_Tracking.xlsx"
-            entry = _entry(
+            workbook_path = Path(tmp) / "Clonality_Tracking.xlsx"
+            APP_SETTINGS["analyses"]["clonality"]["interpretation"]["enabled"] = True
+            existing = _entry(
                 "26OUM00001_IGK__220526_A01_H9TEST01.fsa",
                 assay="IGK",
                 dit="26OUM00001",
             )
-            update_clonality_tracking_workbook(workbook, [entry])
+            existing.update(
+                {
+                    "ClonalityChemistLabel": "monoklonal",
+                    "ClonalityChemistLabel_DATA1": "polyklonal",
+                    "ClonalityMLSuggestion": "monoklonal",
+                    "ClonalityMLConfidence": 0.86,
+                }
+            )
+            update_clonality_tracking_workbook(workbook_path, [existing])
 
-            session = LabelingSession(excel_path=str(workbook))
-            session.load()
-            session.label_sample(0, "polyklonal", channel="DATA1")
-            session.label_sample(0, "monoklonal", channel="DATA2")
-            self.assertEqual(session.save_to_excel(), 2)
+            workbook = load_workbook(workbook_path, data_only=False)
+            for sheet_name in ("Runs", "Patient_Runs"):
+                sheet = workbook[sheet_name]
+                headers = {
+                    str(cell.value): cell.column
+                    for cell in sheet[1]
+                    if cell.value is not None
+                }
+                historical_values = {
+                    "Chemist_Label": "historical-free-text",
+                    "ClonalityChemistLabel": "monoklonal",
+                    "ClonalityChemistLabel_DATA1": "polyklonal",
+                    "ClonalityMLSuggestion": "monoklonal",
+                    "ClonalityMLConfidence": 0.86,
+                }
+                missing_labels = [
+                    column
+                    for column in (
+                        "Chemist_Label",
+                        "ClonalityChemistLabel",
+                        "ClonalityChemistLabel_DATA1",
+                    )
+                    if column not in headers
+                ]
+                if missing_labels:
+                    insert_at = headers["ClonalityInterpretationEnabled"]
+                    sheet.insert_cols(insert_at, amount=len(missing_labels))
+                    for offset, column in enumerate(missing_labels):
+                        sheet.cell(1, insert_at + offset, column)
+                headers = {
+                    str(cell.value): cell.column
+                    for cell in sheet[1]
+                    if cell.value is not None
+                }
+                for column, value in historical_values.items():
+                    if column not in headers:
+                        headers[column] = sheet.max_column + 1
+                        sheet.cell(1, headers[column], column)
+                    sheet.cell(2, headers[column], value)
+                formula_column = sheet.max_column + 1
+                sheet.cell(1, formula_column, "CustomFormula")
+                sheet.cell(2, formula_column, "=LEN(C2)")
+            workbook.save(workbook_path)
+            workbook.close()
 
-            update_clonality_tracking_workbook(workbook, [entry])
+            refreshed = _entry(
+                "26OUM00001_IGK__220526_A01_H9TEST01.fsa",
+                assay="IGK",
+                dit="26OUM00001",
+            )
+            refreshed["ladder_qc_status"] = "warning"
+            new = _entry(
+                "26OUM00002_IGK__220526_A02_H9TEST01.fsa",
+                assay="IGK",
+                dit="26OUM00002",
+            )
+            update_clonality_tracking_workbook(workbook_path, [refreshed, new])
 
-            runs = pd.read_excel(
-                workbook,
-                sheet_name="Runs",
-                engine="openpyxl",
-            )
-            self.assertEqual(
-                runs.iloc[0]["ClonalityChemistLabel_DATA1"],
-                "polyklonal",
-            )
-            self.assertEqual(
-                runs.iloc[0]["ClonalityChemistLabel_DATA2"],
-                "monoklonal",
-            )
-            self.assertTrue(
-                pd.isna(runs.iloc[0][CHEMIST_LABEL_COLUMN])
-                or runs.iloc[0][CHEMIST_LABEL_COLUMN] == ""
-            )
+            workbook = load_workbook(workbook_path, data_only=False)
+            for sheet_name in ("Runs", "Patient_Runs"):
+                sheet = workbook[sheet_name]
+                headers = {
+                    str(cell.value): cell.column
+                    for cell in sheet[1]
+                    if cell.value is not None
+                }
+                rows_by_file = {
+                    sheet.cell(row, headers["File"]).value: row
+                    for row in range(2, sheet.max_row + 1)
+                }
+                existing_row = rows_by_file[existing["file_name"]]
+                new_row = rows_by_file[new["file_name"]]
+
+                self.assertEqual(
+                    sheet.cell(existing_row, headers["Chemist_Label"]).value,
+                    "historical-free-text",
+                )
+                self.assertEqual(
+                    sheet.cell(existing_row, headers["ClonalityChemistLabel"]).value,
+                    "monoklonal",
+                )
+                self.assertEqual(
+                    sheet.cell(existing_row, headers["ClonalityChemistLabel_DATA1"]).value,
+                    "polyklonal",
+                )
+                self.assertEqual(
+                    sheet.cell(existing_row, headers["ClonalityMLSuggestion"]).value,
+                    "monoklonal",
+                )
+                self.assertEqual(
+                    sheet.cell(existing_row, headers["ClonalityMLConfidence"]).value,
+                    0.86,
+                )
+                self.assertEqual(
+                    sheet.cell(existing_row, headers["CustomFormula"]).value,
+                    "=LEN(C2)",
+                )
+                for column in (
+                    "Chemist_Label",
+                    "ClonalityChemistLabel",
+                    "ClonalityChemistLabel_DATA1",
+                    "ClonalityMLSuggestion",
+                    "ClonalityMLConfidence",
+                ):
+                    self.assertIsNone(sheet.cell(new_row, headers[column]).value)
+                self.assertEqual(
+                    sheet.cell(existing_row, headers["LadderQC"]).value,
+                    "warning",
+                )
+            workbook.close()
 
     def test_tracking_workbook_derives_missing_dit_case_insensitively(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

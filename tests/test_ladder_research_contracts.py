@@ -26,17 +26,16 @@ def test_backup_path_is_rejected():
     roots = ResearchRoots.default()
 
     with pytest.raises(ValueError, match="backup"):
-        assert_allowed_raw_path(Path(r"D:\DATA\backup\x.fsa"), roots)
+        assert_allowed_raw_path(roots.excluded_backup_root / "x.fsa", roots)
 
 
 def test_allowed_year_path_is_accepted():
     roots = ResearchRoots.default()
 
-    accepted = assert_allowed_raw_path(
-        Path(r"D:\DATA\2025_data\run\x.fsa"), roots
-    )
+    source = roots.raw_roots[1] / "run" / "x.fsa"
+    accepted = assert_allowed_raw_path(source, roots)
 
-    assert accepted == Path(r"D:\DATA\2025_data\run\x.fsa").resolve()
+    assert accepted == source.resolve()
 
 
 def test_path_outside_allowed_roots_is_rejected():

@@ -11,8 +11,10 @@ Fix contract:
 """
 from __future__ import annotations
 
+import csv
 import copy
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -189,6 +191,254 @@ class BatchStatusHonestyTests(unittest.TestCase):
             any(s == "success" or s.startswith("success") for s in states),
             f"no success may be emitted on failed run, got {states}",
         )
+
+    def test_cancel_stops_scheduling_and_preserves_review_bundle_and_manifest(self) -> None:
+        import core.batch as batch
+        from core.run_manifest import load_run_manifest
+
+        cancellation = threading.Event()
+        events: list[tuple[int, int, str, str]] = []
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "run"
+            APP_SETTINGS["active_analysis"] = "clonality"
+            APP_SETTINGS.setdefault("analyses", {}).setdefault(
+                "clonality", {}
+            ).setdefault("batch", {}).update(
+                {"ladder_review_gate": {"enabled": True}}
+            )
+            review_path = Path(tmp) / "review.fsa"
+            okay_path = Path(tmp) / "okay.fsa"
+            review_path.write_bytes(b"review")
+            okay_path.write_bytes(b"okay")
+            jobs = [
+                {
+                    "name": name,
+                    "type": "pipeline",
+                    "path": None,
+                    "files": [Path(tmp) / f"{name}.fsa"],
+                }
+                for name in ("first", "second", "third")
+            ]
+
+            review_entry = {
+                **_entry(review_path.name, dit="26OUM00001"),
+                "original_file_path": str(review_path),
+                "ladder_qc_status": "review_required",
+                "ladder_review_required": True,
+            }
+            okay_entry = {
+                **_entry(okay_path.name, dit="26OUM00001"),
+                "original_file_path": str(okay_path),
+            }
+
+            def collect_once(**kwargs):
+                calls.append(str(kwargs["files"][0]))
+                cancellation.set()
+                return [review_entry, okay_entry]
+
+            with (
+                patch.object(batch, "run_pipeline_job_collect", side_effect=collect_once),
+                patch("core.html_reports.build_dit_html_reports") as build_reports,
+            ):
+                result = batch.run_batch_jobs(
+                    jobs=jobs,
+                    output_base=output_root,
+                    out_folder_tmpl="ASSAY_REPORTS",
+                    outfile_html_tmpl="QC_REPORT_{name}.html",
+                    excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
+                    pipeline_scope="all",
+                    assay_filter="",
+                    aggregate_dit_reports=True,
+                    continue_on_error=True,
+                    aggregate_outdir_name="reports_test",
+                    max_workers=1,
+                    defer_tracking_workbook_refresh=True,
+                    defer_dit_html_reports=True,
+                    preserve_deferred_entries=True,
+                    cancel_event=cancellation,
+                    update_callback=lambda i, t, n, s: events.append((i, t, n, s)),
+                )
+
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(result["completed_jobs"], ["first"])
+            self.assertEqual(result["failed_jobs"], [])
+            self.assertEqual(result["cancelled_jobs"], ["second", "third"])
+            self.assertEqual(result["unprocessed_jobs"], ["second", "third"])
+            self.assertTrue(result["cancelled"])
+            self.assertEqual(events[-1], (1, 3, "Batch", "cancelled"))
+            build_reports.assert_not_called()
+
+            gate = result["ladder_review_gate"]
+            with Path(gate["cases_path"]).open(
+                "r", encoding="utf-8", newline=""
+            ) as handle:
+                review_rows = list(csv.DictReader(handle))
+            self.assertEqual([row["file"] for row in review_rows], [review_path.name])
+
+            manifest = load_run_manifest(Path(result["run_manifest_path"]))
+            self.assertEqual(manifest["status"], "cancelled")
+            self.assertEqual(
+                [job["status"] for job in manifest["jobs"]],
+                ["completed", "unprocessed", "unprocessed"],
+            )
+            self.assertEqual(manifest["counts"]["completed_jobs"], 1)
+            self.assertEqual(manifest["counts"]["unprocessed_jobs"], 2)
+    def test_cancel_with_multiple_workers_finishes_active_duplicate_names_only(self) -> None:
+        import core.batch as batch
+        from core.run_manifest import load_run_manifest
+
+        cancellation = threading.Event()
+        both_started = threading.Barrier(2)
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "run"
+            APP_SETTINGS["active_analysis"] = "clonality"
+            APP_SETTINGS.setdefault("analyses", {}).setdefault(
+                "clonality", {}
+            ).setdefault("batch", {}).update(
+                {"ladder_review_gate": {"enabled": False}}
+            )
+            jobs = [
+                {
+                    "name": "duplicate",
+                    "type": "pipeline",
+                    "path": None,
+                    "files": [Path(tmp) / f"{index}.fsa"],
+                }
+                for index in range(4)
+            ]
+
+            def collect_active(**kwargs):
+                file_name = Path(kwargs["files"][0]).name
+                calls.append(file_name)
+                both_started.wait(timeout=5)
+                if file_name == "0.fsa":
+                    cancellation.set()
+                return []
+
+            with patch.object(
+                batch,
+                "run_pipeline_job_collect",
+                side_effect=collect_active,
+            ):
+                result = batch.run_batch_jobs(
+                    jobs=jobs,
+                    output_base=output_root,
+                    out_folder_tmpl="ASSAY_REPORTS",
+                    outfile_html_tmpl="QC_REPORT_{name}.html",
+                    excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
+                    pipeline_scope="all",
+                    assay_filter="",
+                    aggregate_dit_reports=True,
+                    continue_on_error=True,
+                    aggregate_outdir_name="reports_test",
+                    max_workers=2,
+                    defer_tracking_workbook_refresh=True,
+                    defer_dit_html_reports=True,
+                    cancel_event=cancellation,
+                )
+
+            self.assertCountEqual(calls, ["0.fsa", "1.fsa"])
+            self.assertCountEqual(result["completed_job_indexes"], [0, 1])
+            self.assertEqual(result["unprocessed_job_indexes"], [2, 3])
+            self.assertEqual(result["completed_jobs"], ["duplicate", "duplicate"])
+            manifest = load_run_manifest(Path(result["run_manifest_path"]))
+            self.assertEqual(
+                [job["status"] for job in manifest["jobs"]],
+                ["completed", "completed", "unprocessed", "unprocessed"],
+            )
+            self.assertEqual(manifest["counts"]["completed_jobs"], 2)
+            self.assertEqual(manifest["counts"]["unprocessed_jobs"], 2)
+
+    def test_stop_after_job_collection_skips_final_aggregation(self) -> None:
+        import core.batch as batch
+        from core.run_manifest import load_run_manifest
+
+        cancellation = threading.Event()
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "run"
+            APP_SETTINGS["active_analysis"] = "clonality"
+            APP_SETTINGS.setdefault("analyses", {}).setdefault(
+                "clonality", {}
+            ).setdefault("batch", {}).update(
+                {"ladder_review_gate": {"enabled": False}}
+            )
+            jobs = [
+                {
+                    "name": "patient",
+                    "type": "pipeline",
+                    "path": None,
+                    "files": [Path(tmp) / "patient.fsa"],
+                }
+            ]
+
+            def update(_index, _total, _name, state):
+                if state == "collected":
+                    cancellation.set()
+
+            with (
+                patch.object(
+                    batch,
+                    "run_pipeline_job_collect",
+                    return_value=[_entry("patient.fsa", dit="26OUM00001")],
+                ),
+                patch("core.html_reports.build_dit_html_reports") as build_reports,
+            ):
+                result = batch.run_batch_jobs(
+                    jobs=jobs,
+                    output_base=output_root,
+                    out_folder_tmpl="ASSAY_REPORTS",
+                    outfile_html_tmpl="QC_REPORT_{name}.html",
+                    excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
+                    pipeline_scope="all",
+                    assay_filter="",
+                    aggregate_dit_reports=True,
+                    continue_on_error=True,
+                    aggregate_outdir_name="reports_test",
+                    max_workers=1,
+                    cancel_event=cancellation,
+                    update_callback=update,
+                )
+
+            self.assertTrue(result["cancelled"])
+            self.assertEqual(result["completed_job_indexes"], [0])
+            self.assertEqual(result["unprocessed_job_indexes"], [])
+            self.assertEqual(result["final_reports_skipped_reason"], "cancelled")
+            build_reports.assert_not_called()
+            manifest = load_run_manifest(Path(result["run_manifest_path"]))
+            self.assertEqual(manifest["status"], "cancelled")
+            self.assertEqual(manifest["jobs"][0]["status"], "completed")
+
+    def test_empty_batch_completes_without_cancellation_or_false_counts(self) -> None:
+        import core.batch as batch
+        from core.run_manifest import load_run_manifest
+
+        events: list[tuple[int, int, str, str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            result = batch.run_batch_jobs(
+                jobs=[],
+                output_base=Path(tmp),
+                out_folder_tmpl="ASSAY_REPORTS",
+                outfile_html_tmpl="QC_REPORT_{name}.html",
+                excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
+                pipeline_scope="all",
+                assay_filter="",
+                aggregate_dit_reports=True,
+                continue_on_error=True,
+                aggregate_outdir_name="reports_test",
+                cancel_event=threading.Event(),
+                update_callback=lambda i, t, n, s: events.append((i, t, n, s)),
+            )
+
+            self.assertFalse(result["cancelled"])
+            self.assertEqual(result["total_jobs"], 0)
+            self.assertEqual(events, [(0, 0, "Done", "done")])
+            manifest = load_run_manifest(Path(result["run_manifest_path"]))
+            self.assertEqual(manifest["status"], "completed")
+            self.assertEqual(manifest["counts"]["expected_jobs"], 0)
+            self.assertEqual(manifest["counts"]["completed_jobs"], 0)
+
 
 
 if __name__ == "__main__":

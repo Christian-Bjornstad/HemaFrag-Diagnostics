@@ -15,9 +15,19 @@ class ReviewLabelPolicy:
 
 REVIEW_LABEL_POLICIES = {
     "manual_adjusted": ReviewLabelPolicy(True, True, True, True),
+    "manual_partial_adjusted": ReviewLabelPolicy(True, True, True, False),
+    "manual_partial_draft": ReviewLabelPolicy(False, False, False, False),
     "reviewed_no_change": ReviewLabelPolicy(True, True, True, True),
     "excluded_missing_ladder_signal": ReviewLabelPolicy(True, False, False, False),
+    "excluded_unusable_ladder": ReviewLabelPolicy(True, False, False, False),
+    "excluded_missing_source": ReviewLabelPolicy(True, False, False, False),
 }
+
+EXCLUDED_LADDER_LABELS = frozenset({
+    "excluded_missing_ladder_signal",
+    "excluded_unusable_ladder",
+    "excluded_missing_source",
+})
 
 _UNRECOGNIZED_LABEL_POLICY = ReviewLabelPolicy(False, False, False, False)
 

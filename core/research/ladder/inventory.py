@@ -147,9 +147,9 @@ def load_canonical_review_cases(
                 annotations = loaded
         seen_paths: set[str] = set()
 
-        def append_record(row: dict[str, Any]) -> None:
-            row["review_bundle_path"] = str(path.parent)
-            row["review_cases_path"] = str(path)
+        def append_record(row: dict[str, Any], _path=path) -> None:
+            row["review_bundle_path"] = str(_path.parent)
+            row["review_cases_path"] = str(_path)
             try:
                 resolved = resolve_archived_path(row.get("full_path", ""), roots)
             except ValueError as exc:

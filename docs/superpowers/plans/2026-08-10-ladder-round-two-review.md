@@ -1,5 +1,9 @@
 # Ladder Round-Two Blind Review Implementation Plan
 
+> **Status update 2026-09-22:** Ladder-reviewarbeidet beholdes som aktiv
+> historikk. Alle ML-trenings-/eligibilityreferanser er superseded av
+> `../specs/2026-09-19-remove-ml-labeling-design.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an explicit no-ladder/human-error outcome, select a deterministic blind 12-suspicious-plus-6-control cohort, publish it safely, and launch Ladder Studio for round-two review.

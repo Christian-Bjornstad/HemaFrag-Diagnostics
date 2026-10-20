@@ -5,9 +5,6 @@ Builds per-patient DIT HTML reports with embedded interactive Plotly figures.
 """
 from __future__ import annotations
 
-import re
-import uuid
-import json
 import os
 import tempfile
 import time
@@ -33,7 +30,6 @@ pd = _PandasModuleProxy()
 
 from core.analyses.registry import get_active_analysis_name
 from core.analyses.flt3.distance import (
-    calculate_bp_distance_metrics,
     calculate_entry_bp_distance_metrics,
 )
 
@@ -44,10 +40,7 @@ from fraggler.fraggler import print_green, print_warning
 import core.assay_config as assay_config
 from core.html_reports._constants import (DIT_PATTERN, DIT_QC_CONTROL_IDS, REPORT_STYLE, D835_DIGEST_HEIGHT_MIN, D835_DIGEST_AREA_MIN)
 from core.assay_config import (
-    CHANNEL_COLORS,
-    DEFAULT_TRACE_COLOR,
     merged_analysis_attr,
-    OUTDIR_NAME,
 )
 from core.plotly_offline import local_plotly_tag as _local_plotly_tag
 from core.plotting_plotly import (
@@ -593,23 +586,9 @@ def _format_report_metrics_summary(label: str, report_metrics: dict[str, float |
     )
 
 
-def _create_html_header(
-    dit: str,
-    year: int | None,
-    num_entries: int,
-    dit_root: Path,
-    html_lines: list[str],
-    *,
-    display_name: str,
-):
-    """Appends the HTML head and page header to html_lines."""
-    html_lines.extend(["<!DOCTYPE html>", "<html lang='no'>", "<head>", "<meta charset='utf-8'>"])
-    html_lines.append(f"<title>{escape(dit)}_{display_name}_Resultater</title>")
-    html_lines.append(REPORT_STYLE)
-    html_lines.append('<script id="peak-data" type="application/json">{}</script>')
-    html_lines.append('<script id="plot-state" type="application/json">{}</script>')
-    html_lines.append('<script id="clonality-decisions" type="application/json">{}</script>')
-    html_lines.append(r"""
+def _build_peak_manager_script() -> str:
+    """Shared manual marker persistence for patient and control reports."""
+    return r"""
 <script>
 // Toggle comment boxes
 function toggleComment(btn) {
@@ -667,6 +646,12 @@ window.PeakManager = {
         }
         return all;
     },
+    hasInitialPeakDataForPlot: function(id) {
+        var data = this._readPeakData();
+        if (!data || !Object.prototype.hasOwnProperty.call(data, id)) return false;
+        var payload = data[id];
+        return Array.isArray(payload) || !!(payload && Array.isArray(payload.peaks));
+    },
     getInitialPeakDataForPlot: function(id) {
         var data = this._readPeakData();
         return this._normalizePeakPayload(data[id]);
@@ -700,106 +685,40 @@ window.PeakManager = {
         var currentHtml = document.documentElement.outerHTML;
         var peakDataStr = JSON.stringify(allPeaks);
         var plotStateStr = JSON.stringify(allPlotStates);
-        var decisionsStr = (window.ClonalityDecisionLog && window.ClonalityDecisionLog.serializeDecisions)
-            ? JSON.stringify(window.ClonalityDecisionLog.serializeDecisions())
-            : '{}';
         var pattern = /<script id="peak-data" type="application\/json">[\s\S]*?<\/script>/;
         var newTag = '<script id="peak-data" type="application/json">\n' + peakDataStr + '\n<\/script>';
         var plotPattern = /<script id="plot-state" type="application\/json">[\s\S]*?<\/script>/;
         var newPlotTag = '<script id="plot-state" type="application/json">\n' + plotStateStr + '\n<\/script>';
-        var decisionsPattern = /<script id="clonality-decisions" type="application\/json">[\s\S]*?<\/script>/;
-        var newDecisionsTag = '<script id="clonality-decisions" type="application/json">\n' + decisionsStr + '\n<\/script>';
         var updatedHtml = currentHtml
             .replace(pattern, newTag)
-            .replace(plotPattern, newPlotTag)
-            .replace(decisionsPattern, newDecisionsTag);
+            .replace(plotPattern, newPlotTag);
         var blob = new Blob(['<!DOCTYPE html>\n' + updatedHtml], {type: 'text/html'});
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a'); a.href = url; a.download = document.title + '.html'; a.click(); URL.revokeObjectURL(url);
     }
 };
 
-// Clonality ML badge dismissal — chemist-presses-button to hide a
-// single ML badge from the printed page.  Restore is the inverse.
-window.ClonalityDecisionLog = {
-    _store: {},
-    _readSaved: function() {
-        try {
-            var tag = document.getElementById('clonality-decisions');
-            var saved = tag ? JSON.parse(tag.textContent || '{}') : {};
-            return (saved && typeof saved === 'object') ? saved : {};
-        } catch(e) { return {}; }
-    },
-    applySaved: function() {
-        var saved = this._readSaved();
-        var nodes = document.querySelectorAll('.clonality-ml-badge');
-        for (var i = 0; i < nodes.length; i++) {
-            var node = nodes[i];
-            var id = node.id;
-            if (!id) continue;
-            var entry = saved[id];
-            if (entry && entry.dismissed) {
-                node.dataset.state = 'dismissed';
-                var dismissBtn = node.querySelector('.ml-dismiss');
-                var restoreBtn = node.querySelector('.ml-restore');
-                if (dismissBtn) dismissBtn.hidden = true;
-                if (restoreBtn) restoreBtn.hidden = false;
-            }
-        }
-    },
-    dismiss: function(btn) {
-        var badge = btn.closest('.clonality-ml-badge');
-        if (!badge) return;
-        badge.dataset.state = 'dismissed';
-        var dismissBtn = badge.querySelector('.ml-dismiss');
-        var restoreBtn = badge.querySelector('.ml-restore');
-        if (dismissBtn) dismissBtn.hidden = true;
-        if (restoreBtn) restoreBtn.hidden = false;
-    },
-    restore: function(btn) {
-        var badge = btn.closest('.clonality-ml-badge');
-        if (!badge) return;
-        badge.dataset.state = 'active';
-        var dismissBtn = badge.querySelector('.ml-dismiss');
-        var restoreBtn = badge.querySelector('.ml-restore');
-        if (dismissBtn) dismissBtn.hidden = false;
-        if (restoreBtn) restoreBtn.hidden = true;
-    },
-    serializeDecisions: function() {
-        var decisions = {};
-        var nodes = document.querySelectorAll('.clonality-ml-badge');
-        for (var i = 0; i < nodes.length; i++) {
-            var node = nodes[i];
-            if (!node.id) continue;
-            decisions[node.id] = {
-                dit: node.dataset.dit || '',
-                assay: node.dataset.assay || '',
-                file: node.dataset.file || '',
-                ml_label: node.dataset.mlLabel || '',
-                dismissed: node.dataset.state === 'dismissed'
-            };
-        }
-        return decisions;
-    }
-};
-
-// On load, reapply any previously-saved dismissal state
-(function() {
-    function ready() {
-        if (window.ClonalityDecisionLog) {
-            window.ClonalityDecisionLog.applySaved();
-        }
-    }
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', ready);
-    } else {
-        ready();
-    }
-})();
-
 function printReport() { window.print(); }
 </script>
-""")
+"""
+
+
+def _create_html_header(
+    dit: str,
+    year: int | None,
+    num_entries: int,
+    dit_root: Path,
+    html_lines: list[str],
+    *,
+    display_name: str,
+):
+    """Appends the HTML head and page header to html_lines."""
+    html_lines.extend(["<!DOCTYPE html>", "<html lang='no'>", "<head>", "<meta charset='utf-8'>"])
+    html_lines.append(f"<title>{escape(dit)}_{display_name}_Resultater</title>")
+    html_lines.append(REPORT_STYLE)
+    html_lines.append('<script id="peak-data" type="application/json">{}</script>')
+    html_lines.append('<script id="plot-state" type="application/json">{}</script>')
+    html_lines.append(_build_peak_manager_script())
     html_lines.append(_local_plotly_tag(dit_root, version="2.35.2"))
     html_lines.append(_build_plotly_reflow_script())
     html_lines.extend(["</head>", "<body>"])
@@ -823,6 +742,17 @@ function printReport() { window.print(); }
 def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
     """Renders the overview table of all analyzed files."""
     html_lines.append("<h2>Oversikt over analyserte filer</h2>")
+    if dit_entries and all(e.get("assay") == "NPM1" for e in dit_entries):
+        html_lines.append("<table><tr><th>Filnavn</th><th>Assay</th><th>Ladder QC</th><th>R²</th></tr>")
+        for e in sorted(dit_entries, key=lambda item: item["fsa"].file_name):
+            r2 = e.get("ladder_r2")
+            r2_text = f"{r2:.4f}" if r2 is not None and np.isfinite(r2) else "&mdash;"
+            html_lines.append(
+                f"<tr><td>{escape(e['fsa'].file_name)}</td><td>NPM1</td>"
+                f"<td>{_render_ladder_status_badge(e)}</td><td>{r2_text}</td></tr>"
+            )
+        html_lines.append("</table>")
+        return
     is_flt3 = {e.get("assay") for e in dit_entries}.issubset({"FLT3-ITD", "FLT3-D835", "NPM1"})
     if is_flt3:
         html_lines.append(
@@ -848,6 +778,8 @@ def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
             fname = escape(e['fsa'].file_name)
             fname_safe = e['fsa'].file_name.replace('.', '_').replace(' ', '_')
             distance_text = _format_flt3_bp_distance_html(_flt3_bp_distance_metrics(e, peaks))
+            if e.get("assay") == "NPM1":
+                wt_text = mut_text = ratio_str = distance_text = "&mdash;"
             html_lines.append(
                 f"<tr data-filename='{fname}'>"
                 f"<td>{fname}</td><td>{escape(e['assay'])}</td>"
@@ -874,7 +806,14 @@ def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
 
 def _ladder_status_payload(entry: dict) -> tuple[str, str, str]:
     status = str(entry.get("ladder_qc_status", "unknown"))
-    if status == "manual_adjustment":
+    if status == "manual_partial_reviewed":
+        label = "Manual partial"
+        css = "warning"
+        note = str(
+            entry.get("ladder_fit_note")
+            or "Operator-approved partial ladder fit; missing anchors were not fabricated."
+        )
+    elif status == "manual_adjustment":
         label = "Manual"
         css = "manual"
         note = str(entry.get("ladder_fit_note") or "Manual ladder correction was used.")
@@ -917,6 +856,8 @@ def _flt3_qc_status_badge(row: dict) -> str:
     details = str(row.get("Details") or "")
     if status == "PASS":
         return _render_status_badge("PASS", "ok", details or "Kontrollen bestod.")
+    if status == "MANUAL_REVIEW":
+        return _render_status_badge("Manuell", "warning", details)
     if status == "REVIEW":
         return _render_status_badge("REVIEW", "warning", details or "Kontrollen krever vurdering.")
     return _render_status_badge("FAIL", "failed", details or "Kontrollen feilet.")
@@ -1062,19 +1003,14 @@ def _flt3_manual_mutant_text(entry: dict, peaks: pd.DataFrame) -> str | None:
 
 
 def _flt3_bp_distance_metrics(entry: dict, peaks: pd.DataFrame | None = None) -> list[dict[str, object]]:
-    metrics = calculate_entry_bp_distance_metrics(entry)
-    if metrics or peaks is None or peaks.empty:
-        return metrics
-
-    wt_rows = peaks[peaks.label == "WT"].sort_values("peaks", ascending=False)
-    mut_rows = peaks[peaks.label.isin(["MUT", "ITD"])].sort_values("area", ascending=False)
-    wt_main = _dominant_peak(wt_rows)
-    if wt_main is None or mut_rows.empty:
-        return []
-    return calculate_bp_distance_metrics(
-        [float(wt_main.basepairs)],
-        [float(value) for value in mut_rows.basepairs.tolist()],
-    )
+    selection = entry.get("manual_ratio_selection")
+    if isinstance(selection, dict):
+        wt_ids = selection.get("wt_peak_ids")
+        if wt_ids is None:
+            wt_ids = [selection.get("wt_peak_id") or (selection.get("wt") or {}).get("peak_id")]
+        if not any(wt_ids):
+            return []
+    return calculate_entry_bp_distance_metrics(entry)
 
 
 def _format_flt3_bp_distance_html(metrics: list[dict[str, object]]) -> str:
@@ -1086,12 +1022,11 @@ def _format_flt3_bp_distance_html(metrics: list[dict[str, object]]) -> str:
         rounded_delta = int(metric["rounded_delta_bp"])
         channel = _flt3_channel_label(str(metric.get("channel") or ""))
         channel_prefix = f"{escape(channel)}: " if channel != "auto" else ""
+        suffix = ""
         if metric["divisible_by_3"]:
             codons = abs(rounded_delta) // 3
-            frame = f"{codons} kodon{'er' if codons != 1 else ''}; delbar med 3"
-        else:
-            frame = f"ikke delbar med 3; rest {int(metric['frame_remainder'])}"
-        parts.append(f"{channel_prefix}{delta:+.1f} bp <span class='small'>(≈{rounded_delta:+d} bp; {frame})</span>")
+            suffix = f" <span class='small'>({codons} kodon{'er' if codons != 1 else ''})</span>"
+        parts.append(f"{channel_prefix}{delta:+.1f} bp{suffix}")
     return "<br>".join(parts)
 
 
@@ -1191,6 +1126,9 @@ def _d835_digest_status(peaks: pd.DataFrame, wt_row: pd.Series | None, mut_row: 
 def _build_flt3_summary_table(e: dict) -> str:
     """Validation-oriented FLT3/NPM1 table below each figure."""
     assay = e["assay"]
+    if assay == "NPM1":
+        # NPM1 uses the live generic marker table (bp/RFU/area) in the plot.
+        return ""
     ratio = float(e.get("ratio", 0.0))
     ratio_str = f"{ratio:.4f}" if ratio > 0 else "&mdash;"
     positive_ratio = float(_assay_config().get(assay, {}).get("positive_ratio", 0.01))
@@ -1283,165 +1221,7 @@ def _build_flt3_summary_table(e: dict) -> str:
             f"<td>{validation_text}</td></tr></table></div>"
         )
 
-    if assay == "NPM1":
-        label = "Positiv" if ratio >= positive_ratio else "Negativ" if mut_main is None else "Manuell vurdering"
-        distance_text = _flt3_distance_summary_span(e, peaks)
-        return (
-            "<div style='margin-top:10px; margin-bottom:24px;'>"
-            "<table style='width:100%; border:1px solid #e2e8f0; table-layout:fixed;'>"
-            "<tr><th>Villtype</th><th>Mutert</th><th>Δbp / kodoner</th><th>Ratio</th><th>Validering</th></tr>"
-            f"<tr><td>{_peak_text(wt_main)}</td><td>{_format_peak_list(mut_rows, max_peaks=4)}</td>"
-            f"<td>{distance_text}</td><td><strong>{ratio_str}</strong></td><td><strong>{label}</strong></td></tr></table></div>"
-        )
-
     return ""
-
-
-def _clonality_ml_label_for_entry(entry: dict) -> str:
-    """Return the ML suggestion label for an entry, or '' if absent.
-
-    Pure helper — no HTML, no I/O. Used by the badge renderer and
-    by the JS dismissal serialiser so they share a single source
-    of truth for what counts as 'present'.
-    """
-    label = str(entry.get("ClonalityMLSuggestion") or "").strip()
-    return label
-
-
-def _clonality_ml_confidence_for_entry(entry: dict) -> str:
-    raw = entry.get("ClonalityMLConfidence", "")
-    if raw in (None, "", 0):
-        return ""
-    try:
-        return f"{float(raw):.2f}"
-    except (TypeError, ValueError):
-        return ""
-
-
-def _clonality_ml_threshold_for_entry(entry: dict) -> str:
-    raw = entry.get("ClonalityMLThreshold", "")
-    if raw in (None, ""):
-        return ""
-    try:
-        return f"{float(raw):.2f}"
-    except (TypeError, ValueError):
-        return ""
-
-
-def _render_clonality_ml_badge(entry: dict, html_lines: list[str]) -> None:
-    """Render a dismissible ML badge for a single sample.
-
-    No-op when ``entry['ClonalityMLSuggestion']`` is empty. Otherwise
-    the badge carries:
-        - the label (e.g. "monoklonal") and confidence
-        - a "Skjul for patolog" button that hides the badge from the
-          pathologist's view without re-running the pipeline
-        - a hidden "Gjenopprett" button that pops back when dismissed
-        - dataset attributes the JS uses to persist dismissal state
-          when the chemist presses Save Peaks.
-
-    ID is keyed on identity_key + assay + file_name so re-running
-    the same sample lands on the same badge after the chart re-render.
-    """
-    label = _clonality_ml_label_for_entry(entry)
-    if not label:
-        return
-    confidence = _clonality_ml_confidence_for_entry(entry)
-    threshold = _clonality_ml_threshold_for_entry(entry)
-    review_needed = entry.get("ClonalityMLReviewNeeded", False)
-    evidence = str(entry.get("ClonalityMLEvidence") or "").strip()
-    rule_label = str(entry.get("ClonalitySuggestion") or "").strip()
-    identity_key = (
-        str(entry.get("dit") or entry.get("DIT") or "")
-        or str(getattr(entry.get("fsa"), "file_name", "") or entry.get("file_name") or "")
-    )
-    assay = str(entry.get("assay") or "")
-    file_name = str(getattr(entry.get("fsa"), "file_name", "") or entry.get("file_name") or "")
-    import hashlib
-    badge_id_src = f"{identity_key}|{assay}|{file_name}".encode("utf-8")
-    badge_id = "ml-" + hashlib.md5(badge_id_src).hexdigest()[:16]
-    rule_gloss = (
-        f"<span class='ml-rule-gloss'>regel: {escape(rule_label or 'ukjent')}</span>"
-        if rule_label
-        else ""
-    )
-    review_gloss = (
-        "<span class='ml-review-tag ml-review-flagged' "
-        f"title='{escape(evidence or 'Lav konfidens eller uenighet med regellaget')}'"
-        ">&#9888; vurder</span>"
-        if review_needed
-        else ""
-    )
-    confidence_text = f" ({confidence})" if confidence else ""
-    threshold_gloss = (
-        f"<span class='ml-rule-gloss'>grense: {escape(threshold)}</span>"
-        if threshold
-        else ""
-    )
-    html_lines.append(
-        f"<div class='clonality-ml-badge' "
-        f"id='{badge_id}' data-state='active' "
-        f"data-dit='{escape(identity_key)}' data-assay='{escape(assay)}' "
-        f"data-file='{escape(file_name)}' data-ml-label='{escape(label)}' "
-        f"data-ml-review='{1 if review_needed else 0}'>"
-        f"<span class='ml-badge-label'>ML: <strong>{escape(label)}</strong>"
-        f"{escape(confidence_text)}</span>"
-        f"{review_gloss}"
-        f"{rule_gloss}"
-        f"{threshold_gloss}"
-        f"<button class='ml-dismiss no-print' type='button' "
-        f"onclick='ClonalityDecisionLog.dismiss(this)'>Skjul for patolog</button>"
-        f"<button class='ml-restore no-print' type='button' hidden "
-        f"onclick='ClonalityDecisionLog.restore(this)'>Gjenopprett</button>"
-        f"</div>"
-    )
-
-
-def _render_clonality_channel_ml_results(
-    entry: dict,
-    html_lines: list[str],
-) -> None:
-    """Render independent channel-level technical suggestions in shadow mode."""
-    results = entry.get("ClonalityMLChannelResults")
-    if not isinstance(results, list) or not results:
-        return
-    rows = []
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        channel = str(result.get("channel") or "")
-        target = str(result.get("target_name") or channel)
-        label = str(result.get("label") or "")
-        if not label:
-            continue
-        try:
-            confidence = f"{float(result.get('confidence')):.2f}"
-        except (TypeError, ValueError):
-            confidence = ""
-        status = (
-            "Vurder"
-            if bool(result.get("review_needed", False))
-            else "Akseptert skyggeforslag"
-        )
-        rows.append(
-            "<tr>"
-            f"<td>{escape(channel)}</td>"
-            f"<td>{escape(target)}</td>"
-            f"<td><strong>{escape(label)}</strong></td>"
-            f"<td>{escape(confidence)}</td>"
-            f"<td>{escape(status)}</td>"
-            "</tr>"
-        )
-    if not rows:
-        return
-    html_lines.append(
-        "<div class='clonality-channel-ml' style='margin:8px 0 14px;'>"
-        "<table style='width:100%;border:1px solid #e2e8f0;'>"
-        "<tr><th>Kanal</th><th>Teknisk mal</th><th>ML-forslag</th>"
-        "<th>Konfidens</th><th>Status</th></tr>"
-        + "".join(rows)
-        + "</table></div>"
-    )
 
 
 def _render_ighv_peak_table(peaks: list[dict], html_lines: list[str]) -> None:
@@ -1600,15 +1380,8 @@ def _render_assay_block(
         if reference_assay.startswith("IGHV"):
             # Prøvetype (DNA/RNA) + aktivt referanseområde per fil.
             html_lines.append(_render_ighv_sample_type_line(e))
-            _render_ighv_peak_table(peaks or [], html_lines)
+            _render_ighv_peak_table(e.get("ighv_clonal_peaks") or [], html_lines)
             _render_ighv_qc_table(e.get("ighv_qc_rows") or {}, html_lines)
-        # ML badge (clonality only) — inserts before the FLT3 summary
-        # table so the dismiss buttons line up vertically. We also call
-        # this for FLT3 entries; they just won't render anything since
-        # the entry has no ClonalityML* keys.
-        _render_clonality_channel_ml_results(e, html_lines)
-        _render_clonality_ml_badge(e, html_lines)
-
         if reference_assay in {"FLT3-ITD", "FLT3-D835", "NPM1"}:
             html_lines.append(_build_flt3_summary_table(e))
 
@@ -1777,7 +1550,9 @@ def _render_relevant_qc_section(
     plot_fragments: dict[int, str] = {}
 
     for idx, entry in enumerate(relevant_controls):
-        plot_fragments[idx] = _build_report_plot_fragment(entry, report_metrics, qc_rules=rules)
+        plot_fragments[idx] = _build_report_plot_fragment(
+            entry, report_metrics, qc_rules=None if entry.get("assay") == "NPM1" else rules,
+        )
 
     assay_label = ", ".join(sorted(patient_assays))
     html_lines.append("<details class='dit-qc-section'>")
@@ -1821,6 +1596,9 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
     html_lines.extend(["<!DOCTYPE html>", "<html lang='no'>", "<head>", "<meta charset='utf-8'>"])
     html_lines.append(f"<title>{escape(title)}</title>")
     html_lines.append(REPORT_STYLE)
+    html_lines.append('<script id="peak-data" type="application/json">{}</script>')
+    html_lines.append('<script id="plot-state" type="application/json">{}</script>')
+    html_lines.append(_build_peak_manager_script())
     html_lines.append(_local_plotly_tag(assay_outdir, version="2.35.2"))
     html_lines.append(_build_plotly_reflow_script())
     html_lines.extend(["</head>", "<body>"])
@@ -1843,17 +1621,26 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
 
     pass_count = sum(1 for row in qc_rows if str(row.get("Status", "")).upper() == "PASS")
     fail_count = sum(1 for row in qc_rows if str(row.get("Status", "")).upper() == "FAIL")
+    npm1_only = all(entry.get("assay") == "NPM1" for entry in control_entries)
     html_lines.append("<h2>QC-oversikt</h2>")
-    html_lines.append(
-        "<table><tr><th>Rapport</th><th>Kontroller</th><th>Bestatt</th><th>Feilet</th><th>Kjoringer</th></tr>"
-        f"<tr><td>{escape(report_name)}</td><td>{len(qc_rows)}</td><td>{pass_count}</td><td>{fail_count}</td>"
-        f"<td>{', '.join(escape(r) for r in run_dirs) if run_dirs else '&mdash;'}</td></tr></table>"
-    )
+    if npm1_only:
+        html_lines.append(
+            "<table><tr><th>Rapport</th><th>Kontroller</th><th>Kjoringer</th></tr>"
+            f"<tr><td>{escape(report_name)}</td><td>{len(qc_rows)}</td>"
+            f"<td>{', '.join(escape(r) for r in run_dirs) if run_dirs else '&mdash;'}</td></tr></table>"
+        )
+    else:
+        html_lines.append(
+            "<table><tr><th>Rapport</th><th>Kontroller</th><th>Bestatt</th><th>Feilet</th><th>Kjoringer</th></tr>"
+            f"<tr><td>{escape(report_name)}</td><td>{len(qc_rows)}</td><td>{pass_count}</td><td>{fail_count}</td>"
+            f"<td>{', '.join(escape(r) for r in run_dirs) if run_dirs else '&mdash;'}</td></tr></table>"
+        )
 
     html_lines.append("<h2>Kontrolltabell</h2>")
+    ratio_heading = "" if npm1_only else "<th>Ratio</th>"
     html_lines.append(
         "<table><tr><th>Filnavn</th><th>Assay</th><th>Kontroll</th><th>Status</th><th>Forventning</th>"
-        "<th>Valgt injeksjon</th><th>Ratio</th><th>Ladder QC</th><th>Detaljer</th></tr>"
+        f"<th>Valgt injeksjon</th>{ratio_heading}<th>Ladder QC</th><th>Detaljer</th></tr>"
     )
     entry_map = {e["fsa"].file_name: e for e in control_entries}
     for row in sorted(qc_rows, key=lambda item: (item.get("Assay", ""), item.get("ControlGroup", ""), item.get("File", ""))):
@@ -1861,6 +1648,7 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
         ladder_badge = _render_ladder_status_badge(entry) if entry is not None else _render_status_badge("Unknown", "unknown")
         ratio = float(row.get("Ratio", 0.0))
         ratio_text = f"{ratio:.4f}" if ratio > 0 else "&mdash;"
+        ratio_cell = "" if npm1_only else f"<td>{ratio_text}</td>"
         html_lines.append(
             f"<tr><td>{escape(str(row.get('File', '')))}</td>"
             f"<td>{escape(str(row.get('Assay', '')))}</td>"
@@ -1868,7 +1656,7 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
             f"<td>{_flt3_qc_status_badge(row)}</td>"
             f"<td>{escape(str(row.get('Expectation', '')))}</td>"
             f"<td>{escape(str(row.get('SelectedInjection', '') or ''))}</td>"
-            f"<td>{ratio_text}</td>"
+            f"{ratio_cell}"
             f"<td>{ladder_badge}</td>"
             f"<td>{escape(str(row.get('Details', '') or '')) or '&mdash;'}</td></tr>"
         )
@@ -1888,6 +1676,10 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
             f"Run: {entry.get('source_run_dir') or '—'}",
         ]
         html_lines.append(f"<p class='small'>{escape(' | '.join(meta_parts))}</p>")
+        if entry.get("assay") == "NPM1":
+            html_lines.append(_build_report_plot_fragment(entry, report_metrics))
+            html_lines.append("</div>")
+            continue
         html_lines.append(
             "<table><tr><th>QC-status</th><th>Forventning</th><th>WT area</th><th>Mutant area</th><th>Ratio</th><th>Ladder QC</th></tr>"
             f"<tr><td>{_flt3_qc_status_badge(row)}</td>"
@@ -1906,6 +1698,7 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
 
     html_lines.append("""
 <div class="print-fab no-print">
+  <button class="print-btn save-peaks-btn" onclick="PeakManager.downloadUpdatedHtml()">💾&nbsp; Save Peaks</button>
   <button class="print-btn" onclick="window.print()">🖨&nbsp; Print / PDF</button>
 </div>
 </body></html>""")

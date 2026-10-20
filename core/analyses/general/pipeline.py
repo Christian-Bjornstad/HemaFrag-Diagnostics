@@ -10,6 +10,7 @@ from core.analyses.general.classification import classify_fsa
 from core.analyses.general.config import DEFAULT_BP_MAX, DEFAULT_BP_MIN, LIZ_LADDER, ROX_LADDER
 from core.analyses.general.reporting import build_general_html_report
 from core.analyses.shared_pipeline import finalize_pipeline_run, normalize_pipeline_paths, scan_fsa_files
+from core.run_context import RunContext
 from fraggler.fraggler import print_green, print_warning
 
 
@@ -96,12 +97,20 @@ def _build_ladder_review_only_entry(fsa_path: Path, fsa, classified: dict) -> di
     return attach_analysis_provenance(entry)
 
 
-def _analyze_files(fsa_files: list[Path]) -> tuple[list[dict], int]:
+def _analyze_files(
+    fsa_files: list[Path],
+    *,
+    run_context: RunContext | None = None,
+) -> tuple[list[dict], int]:
     entries: list[dict] = []
     skipped = 0
 
     for fsa_path in fsa_files:
-        classified = classify_fsa(fsa_path)
+        classified = (
+            classify_fsa(fsa_path, settings=run_context.settings_snapshot)
+            if run_context is not None
+            else classify_fsa(fsa_path)
+        )
         if classified is None:
             skipped += 1
             continue
@@ -137,7 +146,13 @@ def _analyze_files(fsa_files: list[Path]) -> tuple[list[dict], int]:
         ladder_strategy = str(getattr(fsa, "ladder_fit_strategy", "auto_full"))
         ladder_missing = list(map(float, getattr(fsa, "ladder_missing_expected_steps", [])))
         ladder_status = str(getattr(fsa, "ladder_qc_status", "ok") or "ok")
-        if ladder_strategy == "manual_adjustment":
+        if ladder_strategy == "manual_partial":
+            ladder_status = (
+                "manual_partial_reviewed"
+                if getattr(fsa, "manual_ladder_partial_approved", False)
+                else "review_required"
+            )
+        elif ladder_strategy == "manual_adjustment":
             ladder_status = "manual_adjustment"
         elif bool(getattr(fsa, "ladder_missing_signal", False)):
             ladder_status = "missing_ladder"
@@ -209,6 +224,8 @@ def run_pipeline(
     tracking_excel_path: Path | None = None,
     update_tracking_workbook: bool = True,
     progress_callback=None,
+    *,
+    run_context: RunContext | None = None,
 ) -> list[dict] | None:
     fsa_dir, assay_dir = normalize_pipeline_paths(fsa_dir, base_outdir, assay_folder_name)
 
@@ -216,7 +233,7 @@ def run_pipeline(
     if not fsa_files:
         return [] if return_entries else None
 
-    entries, _ = _analyze_files(fsa_files)
+    entries, _ = _analyze_files(fsa_files, run_context=run_context)
     if not entries:
         print_warning("Ingen gyldige entries etter analyse – avslutter.")
         return [] if return_entries else None

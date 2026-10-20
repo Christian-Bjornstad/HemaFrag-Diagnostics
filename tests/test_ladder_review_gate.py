@@ -81,6 +81,30 @@ class LadderReviewGateTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["full_path"], "/tmp/review.fsa")
         self.assertEqual(rows[0]["reason_codes"], "poor_linear_liz_fit")
+    def test_review_queue_excludes_generic_failures_without_ladder_review_evidence(self) -> None:
+        rows = collect_ladder_review_cases(
+            [
+                {
+                    "file_name": "analysis_failed.fsa",
+                    "analysis_status": "failed",
+                    "ladder_qc_status": "ok",
+                    "ladder_review_required": False,
+                },
+                {
+                    "file_name": "manual_ladder_needed.fsa",
+                    "analysis_status": "failed",
+                    "ladder_qc_status": "ok",
+                    "ladder_review_required": True,
+                    "ladder_review_reason": "operator_correction_required",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [row["file"] for row in rows],
+            ["manual_ladder_needed.fsa"],
+        )
+
 
     def test_write_gate_and_count_unresolved(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -256,7 +280,7 @@ class TabLadderBundleLoaderTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 self._loader_result(td)
 
-    def test_bundle_loader_drops_only_truly_empty_paths(self) -> None:
+    def test_bundle_loader_keeps_filename_when_path_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             real = Path(td) / "real.fsa"
             real.write_bytes(b"x")
@@ -268,8 +292,10 @@ class TabLadderBundleLoaderTests(unittest.TestCase):
                 ],
             )
             result = self._loader_result(td)
-            self.assertEqual(len(result["rows"]), 1)
-            self.assertEqual(result["rows"][0]["file"], "real.fsa")
+            self.assertEqual(len(result["rows"]), 2)
+            self.assertEqual(result["rows"][0]["file"], "blank.fsa")
+            self.assertEqual(result["rows"][0]["_path_unreachable"], "true")
+            self.assertEqual(result["rows"][1]["file"], "real.fsa")
 
 
 class RelocateReviewCaseTests(unittest.TestCase):
