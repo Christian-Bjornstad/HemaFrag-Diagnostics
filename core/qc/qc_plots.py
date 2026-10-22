@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import numpy as np
 import plotly.graph_objects as go
-import json
 
 from core.qc.qc_rules import QCRules
 from core.qc.qc_markers import (
@@ -20,15 +19,14 @@ from core.assay_config import (
     reference_shade_rgba,
 )
 from core.baseline import estimate_running_baseline
-from core.plotting_plotly._legacy import TRACE_MARKER_RUNTIME_JS
+from core.plotting_plotly._legacy import (
+    TRACE_MARKER_RUNTIME_JS,
+    _json_dumps_compact as _qc_json_dumps_compact,
+)
 
 
 def _assay_reference_ranges() -> dict:
     return merged_analysis_attr("ASSAY_REFERENCE_RANGES")
-
-
-def _qc_json_dumps_compact(value: object) -> str:
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
 def _get_qc_entry_cache(entry: dict) -> dict:
@@ -528,8 +526,7 @@ def build_interactive_peak_plot_for_entry_qc(entry: dict, rules: QCRules) -> str
     fig.update_xaxes(range=[x_min, x_max], showgrid=False, zeroline=False)
 
     fig_json = _qc_json_dumps_compact(fig.to_plotly_json())
-    safe_id = (sample_id.replace(" ", "_").replace(".", "_").replace("/", "_").replace("\\", "_").replace(":", "_"))
-    div_id = f"qc_peakplot_{safe_id}_{uuid.uuid4().hex}"
+    div_id = f"qc_peakplot_{uuid.uuid4().hex}"
 
     html_fragment = f"""
 <div id="{div_id}" class="peak-editor-block"></div>

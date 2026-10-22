@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -484,18 +485,21 @@ def update_flt3_npm1_qc_tracker_workbook(
     update_flt3_npm1_qc_tracker(excel_path, runs_df, peaks_df)
 
 
-def resolve_global_flt3_tracking_path() -> Path | None:
-    batch_settings = APP_SETTINGS.get("analyses", {}).get("flt3", {}).get("batch", {})
+def resolve_global_flt3_tracking_path(settings: Mapping | None = None) -> Path | None:
+    source = APP_SETTINGS if settings is None else settings
+    batch_settings = source.get("analyses", {}).get("flt3", {}).get("batch", {})
     configured = str(batch_settings.get("global_tracking_excel_path") or "").strip()
     if configured:
         return Path(configured).expanduser()
     return None
 
 
-def update_global_flt3_tracking_workbook(entries: list[dict]) -> Path | None:
+def update_global_flt3_tracking_workbook(
+    entries: list[dict], *, settings: Mapping | None = None,
+) -> Path | None:
     if not entries:
         return None
-    path = resolve_global_flt3_tracking_path()
+    path = resolve_global_flt3_tracking_path(settings)
     if path is None:
         print_warning(
             "[TRACKING] FLT3 master workbook is disabled. Set 'Master Tracking Excel File' in FLT3 Settings to enable it."

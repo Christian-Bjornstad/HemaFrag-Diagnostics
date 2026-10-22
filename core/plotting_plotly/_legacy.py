@@ -189,8 +189,12 @@ def _nonspecific_peaks() -> dict:
 
 
 def _json_dumps_compact(value: object) -> str:
-    """Serialize JSON without extra whitespace to keep report HTML smaller."""
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    """Serialize compact JSON that remains data inside an HTML script element."""
+    return (
+        json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+        .replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    )
 
 
 def _get_entry_plot_cache(entry: dict) -> dict:
@@ -677,7 +681,7 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
     final_peaks_trace_index = len(fig.data) - 1
     primary_trace_index = data["channels_to_plot"].index(data["primary_ch"]) if data["primary_ch"] in data["channels_to_plot"] else 0
 
-    div_id = f"peakplot_{data['sample_id'].replace('.','_')}_{uuid.uuid4().hex}"
+    div_id = f"peakplot_{uuid.uuid4().hex}"
     entry["_report_plot_id"] = div_id
     fig_json = _json_dumps_compact(fig.to_plotly_json())
     initial_peaks_json = _json_dumps_compact(initial_peaks)
@@ -783,17 +787,17 @@ def build_interactive_peak_plot_for_entry(entry: dict) -> str | None:
   var gd = document.getElementById(divId);
   if (!gd) return;
 
-  var areaWindowBp = (assayName === "SL") ? 20.0 : 5.0;
   var peaksTraceIndex = {final_peaks_trace_index};
   var primaryTraceIndex = {primary_trace_index};
-  var assayName = {json.dumps(data["assay_name"])};
+  var assayName = {_json_dumps_compact(data["assay_name"])};
+  var areaWindowBp = (assayName === "SL") ? 20.0 : 5.0;
   var isFlt3ItD = assayName === "FLT3-ITD";
   var isManualRatioAssay = assayName === "FLT3-ITD" || assayName === "FLT3-D835";
   var manualTraceChannels = {manual_trace_channels_json};
   var manualClickChannel = manualTraceChannels.length > 1 ? "AUTO" : (manualTraceChannels[0] || "AUTO");
-  var expectedWtBp = {json.dumps(data.get("wt_bp"))};
-  var expectedMutBp = {json.dumps(data.get("mut_bp"))};
-  var plotFileName = {json.dumps(data.get("file_name", ""))};
+  var expectedWtBp = {_json_dumps_compact(data.get("wt_bp"))};
+  var expectedMutBp = {_json_dumps_compact(data.get("mut_bp"))};
+  var plotFileName = {_json_dumps_compact(data.get("file_name", ""))};
   var overviewIdPrefix = "overview_" + plotFileName.replace(/\\./g, "_").replace(/ /g, "_");
   var initialPlotState = (window.ReportPlotManager && window.ReportPlotManager.getInitialStateForPlot)
     ? window.ReportPlotManager.getInitialStateForPlot(divId)
@@ -1981,14 +1985,7 @@ def build_interactive_assay_batch_plot_html(
         fig_json = _json_dumps_compact(fig.to_plotly_json())
 
         # Unik div-id per entry
-        safe_name = (
-            f"{fsa.file_name}_{primary_ch}_{idx}"
-            .replace(" ", "_")
-            .replace(".", "_")
-            .replace("/", "_")
-            .replace("\\", "_")
-            .replace(":", "_")
-        )
+        safe_name = uuid.uuid5(uuid.NAMESPACE_URL, f"{fsa.file_name}_{primary_ch}_{idx}").hex
         div_id = f"assay_peak_editor_{safe_name}"
 
         # --- HTML for denne editoren ---
@@ -2025,11 +2022,11 @@ def build_interactive_assay_batch_plot_html(
   var divId = "{div_id}";
   var gd = document.getElementById(divId);
   if (!gd) return;
-  var areaWindowBp = 5.0;
   var primaryTraceIndex = 0;
-  var assayName = {json.dumps(e.get("assay"))};
-  var expectedWtBp = {json.dumps(e.get("wt_bp"))};
-  var expectedMutBp = {json.dumps(e.get("mut_bp"))};
+  var assayName = {_json_dumps_compact(e.get("assay"))};
+  var areaWindowBp = (assayName === "SL") ? 20.0 : 5.0;
+  var expectedWtBp = {_json_dumps_compact(e.get("wt_bp"))};
+  var expectedMutBp = {_json_dumps_compact(e.get("mut_bp"))};
   var initialPlotState = (window.ReportPlotManager && window.ReportPlotManager.getInitialStateForPlot)
     ? window.ReportPlotManager.getInitialStateForPlot(divId)
     : null;
