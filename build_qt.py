@@ -150,11 +150,25 @@ def _post_build_windows() -> None:
     print(f"Created Windows bundle: {zip_path}")
 
 
+def _prioritize_windows_system_libraries() -> None:
+    # Qt uses Windows' ICU API. A tool such as Poppler/Conda on PATH can
+    # otherwise cause PyInstaller to bundle an incompatible same-named DLL.
+    system_dir = Path(os.environ["SystemRoot"]) / "System32"
+    if not system_dir.is_dir():
+        raise FileNotFoundError(f"Windows system library directory is missing: {system_dir}")
+    other_paths = [
+        entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry and os.path.normcase(os.path.normpath(entry)) != os.path.normcase(str(system_dir))
+    ]
+    os.environ["PATH"] = os.pathsep.join([str(system_dir), *other_paths])
+
+
 def build_app() -> None:
     if sys.platform != "win32":
         raise RuntimeError("HemaFrag desktop packaging requires Windows 10 or 11 (x64).")
     if not (3, 12) <= sys.version_info[:2] < (3, 15) or sys.maxsize <= 2**32:
         raise RuntimeError("Use 64-bit Python 3.12, 3.13, or 3.14 to build HemaFrag.")
+    _prioritize_windows_system_libraries()
     import PyInstaller.__main__
 
     print(f"Building HemaFrag Diagnostics desktop app for {sys.platform}...")

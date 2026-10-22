@@ -20,6 +20,8 @@ The wrapper creates `.venv-build`, installs runtime/build requirements and the
 checked-in native engine, verifies the native version, and stops on any failed
 step. The build always invokes Cargo with `--locked` so the recovery CLI matches
 the source. Build-tool requirements are in `packaging/build-requirements.txt`.
+Windows system libraries take precedence over unrelated tools on `PATH`, so a
+Poppler/Conda ICU DLL cannot replace the Windows ICU API required by Qt.
 
 Outputs:
 

@@ -16,6 +16,8 @@
 - Initialize the SL manual peak editor with its intended 20 bp area window.
 - Update FLT3 tracking after review without writing to Clonality destinations.
 - Include repository notices and upstream license text in Python/desktop builds.
+- Prevent unrelated ICU DLLs on the build machine's PATH from breaking packaged
+  Qt startup.
 
 ### Changed
 

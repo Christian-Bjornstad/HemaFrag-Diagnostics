@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import shutil
 
 import build_qt
 import pytest
@@ -57,3 +59,18 @@ def test_build_does_not_continue_when_rust_artifact_is_missing(monkeypatch, tmp_
     monkeypatch.setattr(build_qt.subprocess, "run", lambda *args, **kwargs: None)
     with pytest.raises(FileNotFoundError, match="Rust build did not produce"):
         build_qt._build_pyinstaller_args()
+
+
+def test_windows_system_icu_is_not_shadowed_by_tools_on_path(monkeypatch, tmp_path):
+    from PyInstaller.depend import bindepend
+
+    system_dir = Path(os.environ["SystemRoot"]) / "System32"
+    foreign_dir = tmp_path / "unrelated-tool"
+    foreign_dir.mkdir()
+    shutil.copyfile(system_dir / "icuuc.dll", foreign_dir / "icuuc.dll")
+    monkeypatch.setenv("PATH", os.pathsep.join((str(foreign_dir), str(system_dir))))
+    assert Path(bindepend.resolve_library_path("icuuc.dll")) == foreign_dir / "icuuc.dll"
+
+    build_qt._prioritize_windows_system_libraries()
+
+    assert Path(bindepend.resolve_library_path("icuuc.dll")) == system_dir / "icuuc.dll"
