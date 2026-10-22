@@ -51,7 +51,11 @@ fn analyze_fsa<'py>(
     let kind = parse_analysis_kind(analysis_kind)?;
     let utf8_path = camino::Utf8Path::new(path);
 
-    let result = analyze_fsa_primitives(utf8_path, kind.as_ref()).map_err(engine_error_to_py)?;
+    // The numerical work does not access Python objects. Release the GIL so
+    // Qt's Python slots and other analysis workers can continue to run.
+    let result = py
+        .detach(|| analyze_fsa_primitives(utf8_path, kind.as_ref()))
+        .map_err(engine_error_to_py)?;
 
     let value = serde_json::to_value(&result)
         .map_err(|e| PyRuntimeError::new_err(format!("convert PrimitiveAnalysisResult: {}", e)))?;

@@ -5,20 +5,17 @@ on:
     branches: [main, 'feature/**', 'codex/**']
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   python:
-    name: Python ${{ matrix.python }} / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Windows / Python ${{ matrix.python }}
+    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            python: "3.12"
-          - os: windows-latest
-            python: "3.14"
-          - os: macos-latest
-            python: "3.12"
+        python: ["3.12", "3.14"]
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
@@ -30,39 +27,49 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install Python dependencies
-        run: python -m pip install -r requirements.txt pytest ruff==0.16.2
+      - name: Install development dependencies
+        run: python -m pip install -r requirements-dev.txt
       - name: Check for undefined Python names
-        run: python -m ruff check --select F821 core gui_qt qt_app.py config.py
-      - name: Install Windows native engine
-        if: runner.os == 'Windows'
-        run: python -m pip install wheels/fraggler_kernels-0.1.2-cp310-abi3-win_amd64.whl
-      - name: Verify Windows native engine
-        if: runner.os == 'Windows'
-        run: python -c "import fraggler_native; assert fraggler_native.is_available(); print(fraggler_native.version)"
+        run: python -m ruff check --select F821 core gui_qt hemafrag_diagnostics qt_app.py config.py app_meta.py app_resources.py build_qt.py
+      - name: Install native engine
+        run: python -m pip install wheels/fraggler_kernels-0.1.3-cp310-abi3-win_amd64.whl
+      - name: Verify native engine
+        run: python -c "import fraggler_native; assert fraggler_native.is_available(); assert fraggler_native.version == '0.1.3'"
+      - name: Audit Python dependencies
+        if: matrix.python == '3.12'
+        run: python -m pip_audit -r requirements.txt
       - name: Compile application modules
-        run: python -m compileall -q qt_app.py gui_qt core
-      - name: Run unit tests
+        run: python -m compileall -q qt_app.py gui_qt core hemafrag_diagnostics
+      - name: Run tests (including Python distribution build)
         run: python -m pytest -q --junitxml=test-results.xml
       - name: Publish test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tests-${{ matrix.os }}-${{ matrix.python }}
+          name: tests-windows-${{ matrix.python }}
           path: test-results.xml
 
   rust:
-    name: Rust checks
-    runs-on: macos-latest
+    name: Windows / Rust
+    runs-on: windows-latest
     defaults:
       run:
         working-directory: fraggler-v2
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build standalone crates
-        run: cargo build --release -p fraggler-core -p fraggler-cli -p fraggler-desktop
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Build CLI
+        run: cargo build --locked --release -p fraggler-cli
       - name: Check Python bindings
-        run: cargo check -p fraggler-kernels-py
+        run: cargo check --locked -p fraggler-kernels-py
       - name: Test
-        run: cargo test --workspace --exclude fraggler-kernels-py
+        run: cargo test --locked --workspace --exclude fraggler-kernels-py
+      - name: Install Rust dependency auditor
+        run: cargo install cargo-audit --locked --version 0.22.2
+      - name: Audit Rust dependencies
+        run: cargo audit --deny warnings

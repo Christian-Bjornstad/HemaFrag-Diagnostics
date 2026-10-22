@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import shutil
 
 import build_qt
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -29,14 +32,45 @@ def test_data_sources_remain_rooted_when_specs_are_generated_under_build():
     assert any(str(PROJECT_ROOT / "app.py") in arg and arg.startswith("--add-data=") for arg in args)
 
 
-def test_linux_desktop_entry_and_python_shortcut_assets_are_portable():
-    desktop = (PROJECT_ROOT / "packaging" / "linux" / "hemafrag.desktop").read_text(encoding="utf-8")
-    assert "Name=HemaFrag Diagnostics" in desktop
-    assert "Exec=HemaFrag" in desktop
-    assert "Icon=hemafrag" in desktop
-    assert "Terminal=false" in desktop
+def test_desktop_bundle_includes_the_repository_and_upstream_notices():
+    args = build_qt._build_pyinstaller_args(include_rust_engine=False)
+    for relative in ("THIRD_PARTY_NOTICES.md", "LICENSES"):
+        assert any(
+            arg.startswith(f"--add-data={PROJECT_ROOT / relative}")
+            for arg in args
+        )
 
+
+def test_python_shortcut_uses_the_application_assets():
     shortcut = (PROJECT_ROOT / "packaging" / "create_windows_shortcut.ps1").read_text(encoding="utf-8")
     assert "app_icon.ico" in shortcut
     assert "qt_app.py" in shortcut
     assert ".exe" not in shortcut.lower()
+
+
+def test_build_rejects_unsupported_platforms_before_running_tools(monkeypatch):
+    monkeypatch.setattr(build_qt.sys, "platform", "linux")
+    with pytest.raises(RuntimeError, match="requires Windows"):
+        build_qt.build_app()
+
+
+def test_build_does_not_continue_when_rust_artifact_is_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(build_qt, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(build_qt.subprocess, "run", lambda *args, **kwargs: None)
+    with pytest.raises(FileNotFoundError, match="Rust build did not produce"):
+        build_qt._build_pyinstaller_args()
+
+
+def test_windows_system_icu_is_not_shadowed_by_tools_on_path(monkeypatch, tmp_path):
+    from PyInstaller.depend import bindepend
+
+    system_dir = Path(os.environ["SystemRoot"]) / "System32"
+    foreign_dir = tmp_path / "unrelated-tool"
+    foreign_dir.mkdir()
+    shutil.copyfile(system_dir / "icuuc.dll", foreign_dir / "icuuc.dll")
+    monkeypatch.setenv("PATH", os.pathsep.join((str(foreign_dir), str(system_dir))))
+    assert Path(bindepend.resolve_library_path("icuuc.dll")) == foreign_dir / "icuuc.dll"
+
+    build_qt._prioritize_windows_system_libraries()
+
+    assert Path(bindepend.resolve_library_path("icuuc.dll")) == system_dir / "icuuc.dll"

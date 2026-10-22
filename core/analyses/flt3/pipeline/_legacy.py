@@ -3922,6 +3922,7 @@ def _analyse_fsa_candidate(
             fsa_path,
             sample_channel,
             ladder_name=FLT3_LIZ_LADDER,
+            analysis_id="flt3",
             ladder_fit_profile=LADDER_FIT_PROFILE_CLONALITY_LIZ500,
             rust_analysis_kind="general",
         )

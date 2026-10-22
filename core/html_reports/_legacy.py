@@ -484,7 +484,8 @@ window.ReportPlotManager = (function() {
             return initialStates[id] || null;
         },
         getAllStates: function() {
-            var all = {};
+            loadInitialStates();
+            var all = Object.assign({}, initialStates);
             for (var id in plots) {
                 if (!Object.prototype.hasOwnProperty.call(plots, id)) continue;
                 var state = captureState(plots[id]);
@@ -634,7 +635,8 @@ window.PeakManager = {
         return all;
     },
     getAllPeakData: function() {
-        var all = {};
+        // A save may happen while other editors are still mounting.
+        var all = Object.assign({}, this._readPeakData());
         for (var id in this.plots) {
             if (!Object.prototype.hasOwnProperty.call(this.plots, id)) continue;
             var plot = this.plots[id];
@@ -660,11 +662,11 @@ window.PeakManager = {
         return this.getInitialPeakDataForPlot(id).peaks;
     },
     downloadUpdatedHtml: function() {
-        // Force textareas back to innerHTML so they persist
+        // Persist literal comment text without interpreting HTML entities.
         var tas = document.querySelectorAll('textarea.report-comment');
         for (var i = 0; i < tas.length; i++) {
             var val = tas[i].value.trim();
-            tas[i].innerHTML = val;
+            tas[i].textContent = val;
             
             var container = tas[i].closest('.comment-box-container');
             var body = tas[i].closest('.comment-body');
@@ -682,16 +684,13 @@ window.PeakManager = {
         var allPlotStates = (window.ReportPlotManager && window.ReportPlotManager.getAllStates)
             ? window.ReportPlotManager.getAllStates()
             : {};
-        var currentHtml = document.documentElement.outerHTML;
-        var peakDataStr = JSON.stringify(allPeaks);
-        var plotStateStr = JSON.stringify(allPlotStates);
-        var pattern = /<script id="peak-data" type="application\/json">[\s\S]*?<\/script>/;
-        var newTag = '<script id="peak-data" type="application/json">\n' + peakDataStr + '\n<\/script>';
-        var plotPattern = /<script id="plot-state" type="application\/json">[\s\S]*?<\/script>/;
-        var newPlotTag = '<script id="plot-state" type="application/json">\n' + plotStateStr + '\n<\/script>';
-        var updatedHtml = currentHtml
-            .replace(pattern, newTag)
-            .replace(plotPattern, newPlotTag);
+        function storeJson(id, data) {
+            var tag = document.getElementById(id);
+            if (tag) tag.textContent = JSON.stringify(data).replace(/</g, '\\u003c');
+        }
+        storeJson('peak-data', allPeaks);
+        storeJson('plot-state', allPlotStates);
+        var updatedHtml = document.documentElement.outerHTML;
         var blob = new Blob(['<!DOCTYPE html>\n' + updatedHtml], {type: 'text/html'});
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a'); a.href = url; a.download = document.title + '.html'; a.click(); URL.revokeObjectURL(url);
@@ -776,7 +775,7 @@ def _render_file_summary_table(dit_entries: list[dict], html_lines: list[str]):
             if e.get("ratio_mode") == "manual":
                 ratio_str += " <span class='status-badge manual'>Manual</span>"
             fname = escape(e['fsa'].file_name)
-            fname_safe = e['fsa'].file_name.replace('.', '_').replace(' ', '_')
+            fname_safe = escape(e['fsa'].file_name.replace('.', '_').replace(' ', '_'))
             distance_text = _format_flt3_bp_distance_html(_flt3_bp_distance_metrics(e, peaks))
             if e.get("assay") == "NPM1":
                 wt_text = mut_text = ratio_str = distance_text = "&mdash;"

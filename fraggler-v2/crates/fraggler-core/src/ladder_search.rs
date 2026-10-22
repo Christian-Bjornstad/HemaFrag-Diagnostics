@@ -624,10 +624,7 @@ mod tests {
                 .selected_over_incumbent_improvement
                 .is_some_and(|improvement| improvement > 0.05)
         );
-        assert_eq!(
-            outcome.diagnostics.minimum_required_improvement,
-            Some(0.05)
-        );
+        assert_eq!(outcome.diagnostics.minimum_required_improvement, Some(0.05));
     }
 
     #[test]

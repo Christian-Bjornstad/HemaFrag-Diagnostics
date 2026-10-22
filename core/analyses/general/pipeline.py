@@ -26,11 +26,15 @@ def _load_fsa(fsa_path: Path, meta: dict):
             fsa_path,
             sample_channel,
             ladder_name=ladder,
+            size_standard_channel=meta.get("size_standard_channel"),
+            analysis_id="general",
         )
     return analyse_fsa_rox(
         fsa_path,
         sample_channel,
         ladder_name=ladder,
+        size_standard_channel=meta.get("size_standard_channel"),
+        analysis_id="general",
     )
 
 

@@ -3,8 +3,7 @@
 Refresh the slim plotly-basic bundle used for self-contained per-patient
 HTML reports.
 
-This script is run as part of Plan 07 PR-A / PR-B. It downloads the
-canonical basic partial from unpkg.com, saves it to
+Downloads the pinned basic partial from unpkg.com, saves it to
 `assets/plotly-3.1.0-basic.min.js`, and re-runs the size + API
 coverage tests in `tests/test_html_report_size.py`.
 
@@ -28,7 +27,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ASSETS_DIR = REPO_ROOT / "assets"
 SLIM_JS_PATH = ASSETS_DIR / "plotly-3.1.0-basic.min.js"
-URL = "https://unpkg.com/plotly.js-basic-dist-min/plotly-basic.min.js"
+PLOTLY_BASIC_VERSION = "3.6.0"
+URL = f"https://unpkg.com/plotly.js-basic-dist-min@{PLOTLY_BASIC_VERSION}/plotly-basic.min.js"
 SIZE_BUDGET_BYTES = 1_500_000  # generous; actual ~1.1 MB
 
 
@@ -59,7 +59,7 @@ def check_size() -> None:
 def check_api_coverage() -> None:
     print("Running API coverage test in tests/test_html_report_size.py")
     r = subprocess.run(
-        ["python3", "-m", "unittest", "tests.test_html_report_size"],
+        [sys.executable, "-m", "pytest", "-q", "tests/test_html_report_size.py"],
         cwd=REPO_ROOT,
     )
     if r.returncode != 0:

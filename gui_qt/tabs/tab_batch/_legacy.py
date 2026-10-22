@@ -1862,7 +1862,7 @@ class TabBatch(QWidget):
         run_context: RunContext | None = None,
         update_callback=None,
     ) -> dict:
-        from config import APP_SETTINGS, resolve_analysis_excel_output_path
+        from config import APP_SETTINGS
         from core.batch import run_batch_jobs
 
         if run_context is None:
@@ -1967,28 +1967,15 @@ class TabBatch(QWidget):
         if aggregate_dit_reports and not failed_jobs and review_count <= 0 and combined_entries:
             from core.assay_config import OUTDIR_NAME
             from core.html_reports import build_dit_html_reports
-            from core.analyses.clonality.tracking_excel import (
-                CLONALITY_TRACKING_FILENAME,
-                update_global_clonality_tracking_workbook,
-                update_clonality_tracking_workbook,
-            )
+            from ._tracking import update_review_tracking_workbooks
 
             agg_outdir = output_root / (aggregate_outdir_name or OUTDIR_NAME)
             agg_outdir.mkdir(parents=True, exist_ok=True)
             build_dit_html_reports(combined_entries, agg_outdir)
-            update_clonality_tracking_workbook(
-                resolve_analysis_excel_output_path(
-                    "clonality",
-                    agg_outdir,
-                    CLONALITY_TRACKING_FILENAME,
-                    settings=(run_context.settings_copy() if run_context is not None else None),
-                ),
-                combined_entries,
+            update_review_tracking_workbooks(
+                combined_entries, agg_outdir, analysis_id,
+                run_context=run_context,
             )
-            try:
-                update_global_clonality_tracking_workbook(combined_entries)
-            except Exception:
-                pass
             final_reports_built = True
 
         child_manifest_path = result.get("run_manifest_path")

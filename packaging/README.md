@@ -1,154 +1,75 @@
-# HemaFrag Diagnostics — Desktop Packaging
+# Windows packaging
 
-HemaFrag is packaged as a **native PyQt desktop app** on all supported platforms.
-The canonical packaged entrypoint is `qt_app.py`.
+HemaFrag supports Windows 10 and Windows 11 on x64. `qt_app.py` is the
+application entry point; `build_qt.py` builds the PyInstaller bundle and ZIP.
 
-The embedded/local Panel server is now treated as legacy support only:
-- it is not the default packaged startup path
-- packaged builds disable it by default via a runtime hook
-- it can still be re-enabled explicitly with `HEMAFRAG_ENABLE_LEGACY_PANEL=1`
+## Build prerequisites
 
-## Supported Release Outputs
+- 64-bit Python 3.12–3.14 on Windows.
+- Rust/MSVC toolchain matching `fraggler-v2/rust-toolchain.toml`, with Visual Studio
+  C++ build tools and the Windows SDK.
+- Network access or approved cached wheels for runtime and build dependencies.
 
-Every platform is built from the same desktop packaging contract in `build_qt.py`.
+From the repository root in Command Prompt or PowerShell:
 
-Artifacts:
-- macOS: `dist/HemaFrag.app` and `dist/releases/HemaFrag_macOS.zip`
-- Linux: `dist/HemaFrag_Linux` and `dist/releases/HemaFrag_Linux_offline.zip`
-- Windows: `dist/HemaFrag_Windows` and `dist/releases/HemaFrag_Windows.zip`
+```powershell
+.\packaging\build_windows.bat
+```
 
-## Platform Targets
+The wrapper creates `.venv-build`, installs runtime/build requirements and the
+checked-in native engine, verifies the native version, and stops on any failed
+step. The build always invokes Cargo with `--locked` so the recovery CLI matches
+the source. Build-tool requirements are in `packaging/build-requirements.txt`.
+Windows system libraries take precedence over unrelated tools on `PATH`, so a
+Poppler/Conda ICU DLL cannot replace the Windows ICU API required by Qt.
 
-### macOS
-- Native `.app` bundle
-- Includes `qt.conf` post-build fix for macOS translocation compatibility
+Outputs:
 
-### Linux
-- Primary target: **offline Fedora 35 x86_64 machine**
-- Runtime assumption: **glibc 2.31 or newer**
-- Desktop startup forces **`QT_QPA_PLATFORM=xcb`**
-- Offline bundle includes critical XCB/Qt runtime libraries inside the artifact
+| Path | Purpose |
+|---|---|
+| `dist/HemaFrag_Windows/HemaFrag.exe` | Desktop launcher |
+| `dist/HemaFrag_Windows/_internal/` | Python, Qt, native engine, assets, and recovery CLI |
+| `dist/releases/HemaFrag_Windows.zip` | Portable distribution |
 
-### Windows
-- Native desktop bundle with `HemaFrag.exe`
-- Same packaged app behavior as macOS/Linux
+The ZIP contains the entire portable folder. Do not distribute the executable
+alone. Clinical input, local settings, reports, and private validation datasets
+are excluded from the bundle.
 
-For the hospital/work-computer deployment where a new packaged executable is
-not allowed, run the source tree with the approved Python 3.14 environment and
-the installed `fraggler-kernels` wheel.  A Windows shortcut with the HemaFrag
-icon can be created without installing or distributing another executable:
+## Verify a build
+
+```powershell
+python -m zipfile -t dist\releases\HemaFrag_Windows.zip
+Get-FileHash dist\releases\HemaFrag_Windows.zip -Algorithm SHA256
+```
+
+Extract it into a separate directory, launch `HemaFrag.exe`, and verify the
+version, icon, About notices, and a representative analysis/review/report
+workflow. Repeat on the intended Windows 10/11 machine before operational use.
+CI runs source tests on Windows; it does not replace this packaged-app check.
+
+The runtime hook prevents extra GUI launches from Python multiprocessing and
+keeps the legacy Panel server disabled by default. Windowed launches provide
+safe stdout/stderr streams. Native Rust analysis runs in process; the bundled
+CLI is the recovery path.
+
+## Approved Python source deployment
+
+If the work computer uses an approved Python environment, follow the root
+[README](../README.md#quick-start). No new HemaFrag executable is required.
+Create its shortcut with:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File packaging\create_windows_shortcut.ps1 `
-  -PythonPath "C:\path\to\approved-python-3.14\python.exe"
+  -PythonPath "C:\path\to\approved-python\python.exe"
 ```
 
-The shortcut points to that existing Python interpreter, launches `qt_app.py`,
-uses the repository as its working directory, and uses `assets/app_icon.ico`.
-The app also sets a stable Windows AppUserModelID before Qt starts, so a source
-launch uses the HemaFrag taskbar identity instead of the generic Python group.
+If Windows retains an old pinned icon, unpin that shortcut, launch through the
+new shortcut, and pin the running HemaFrag window again.
 
-## Quick Start
+## Updating or rolling back
 
-### Build macOS
-```bash
-cd /path/to/OUS
-./packaging/build_mac.sh
-```
-
-### Build Linux Offline Bundle
-```bash
-cd /path/to/OUS
-./packaging/build_linux.sh
-```
-
-### Build Windows on Windows
-```cmd
-packaging\build_windows.bat
-```
-
-### Build Windows via Docker
-```bash
-cd /path/to/OUS
-./packaging/build_windows.sh
-```
-
-Build-tool reproducibility:
-- `packaging/build-requirements.txt` pins the packaging toolchain separately from runtime dependencies.
-- The wrapper scripts and Docker build images install both `requirements.txt` and `packaging/build-requirements.txt`.
-- Full CI/release automation is still out of scope; artifact launch validation remains a manual release check.
-
-## Linux Offline Deployment
-
-Use `dist/releases/HemaFrag_Linux_offline.zip`.
-
-Target machine:
-- Fedora 35
-- x86_64
-- offline supported
-
-Run on Linux:
-```bash
-unzip HemaFrag_Linux_offline.zip -d ~/HemaFrag
-cd ~/HemaFrag/HemaFrag_Linux
-chmod +x HemaFrag
-./HemaFrag
-```
-
-Validation checklist:
-```bash
-ldd --version
-ldd ./HemaFrag
-```
-
-Expected:
-- glibc 2.31+
-- no unresolved bundled XCB/Qt runtime dependencies
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `build_qt.py` | Canonical PyInstaller desktop build contract |
-| `packaging/build_mac.sh` | macOS wrapper around the shared desktop build |
-| `packaging/build_linux.sh` | Docker-based Linux offline bundle build |
-| `packaging/build_windows.bat` | Native Windows desktop build |
-| `packaging/build_windows.sh` | Docker/Wine-based Windows desktop build |
-| `packaging/hooks/runtime_desktop.py` | Packaged runtime defaults |
-| `packaging/Dockerfile.linux` | Older-compatible Linux build image |
-| `LINUX_GUIDE.md` | Fedora 35 deployment notes merged into mainline docs |
-
-## Release Uploads
-
-Recommended GitHub release assets:
-- `HemaFrag_macOS.zip`
-- `HemaFrag_Linux_offline.zip`
-- `HemaFrag_Windows.zip`
-
-## Troubleshooting
-
-### The old icon still appears on Windows
-
-1. Confirm the title bar and Alt-Tab entry show HemaFrag while the app is open.
-2. Unpin only the old HemaFrag/Python shortcut, close the app, then start it
-   from the newly generated shortcut and pin that running HemaFrag window.
-3. Confirm the shortcut's **Properties → Change Icon** path points to the
-   current `assets\app_icon.ico`.
-
-Windows can cache a pinned shortcut's old icon even when the running Qt window
-is correct.  Do not delete the global Windows icon cache or unrelated pinned
-items as a first troubleshooting step.
-
-### Linux launch fails with missing library errors
-- Ensure the full zip was extracted, including `_internal`
-- Run `ldd ./HemaFrag`
-- Keep the offline bundle contents together; do not move the binary out of the folder
-
-### Linux opens with Wayland/X11 issues
-HemaFrag forces `QT_QPA_PLATFORM=xcb` in packaged Linux builds for compatibility.
-
-### macOS unsigned app warning
-Use right-click → `Open` the first time, or sign/notarize the zip before release.
-
-### Windows or Linux build size is large
-Expected. The bundle includes Python, scientific libraries, Qt, and packaged assets.
+Install a new portable bundle in its own directory and retain the previous
+validated bundle. Close HemaFrag before switching versions. Preserve the
+operator's settings, adjustment database, raw input, and outputs; these are
+separate from application binaries. Reverting source changes uses normal Git
+revert commits rather than rewriting shared history.

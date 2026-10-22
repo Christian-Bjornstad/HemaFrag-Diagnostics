@@ -1,125 +1,53 @@
-# HemaFrag Rust Engine
+# Rust analysis engine
 
-`fraggler-v2` is the Rust-first engine workspace for HemaFrag Diagnostics.
+This workspace supplies the native engine for HemaFrag on Windows 10/11 x64.
+The supported application interface is the Python/PyQt6 desktop app in the
+repository root.
 
-Current scope in this scaffold:
-- establish the new workspace layout
-- define the first version of the engine/desktop JSON contract
-- stand up the CLI and desktop shell entrypoints
-- freeze Python reference timings and outputs before engine porting begins
-- start Phase 2 engine porting in `fraggler-core`
-- wire the Slint desktop shell to real Rust analyze runs
+| Crate | Purpose |
+|---|---|
+| `fraggler-core` | ABIF parsing, traces, peak detection, ladder selection/sizing, and analysis previews |
+| `fraggler-cli` | Headless analysis and recovery path used by the Python bridge |
+| `fraggler-kernels-py` | PyO3 extension distributed as the `fraggler-kernels` ABI3 wheel |
 
-## Phase 2 status
+Python handles full assay workflows, manual review, manifests, HTML reports, QC,
+and tracking. The Rust `qc`, `validate-flt3`, and `build-report` commands are
+contract scaffolds and do not replace those Python workflows.
 
-Implemented in Rust so far:
-- native ABIF/FSA directory parsing
-- raw signal extraction for `DATA*` channels and `DyeN*` metadata
-- baseline correction primitives
-- peak detection primitives
-- first-pass ladder candidate generation and curvature scoring
-- first-pass sizing-model fit and ladder QC metrics for the best candidate
-- conservative local refinement around the best ladder candidate when QC suggests it
-- sample-trace to basepair mapping preview from the fitted sizing model
-- sample-peak preview in basepair space from the mapped sample trace
-- assay-agnostic sample peak grouping preview in basepair space
-- first-pass clonality assay matching using filename, channel compatibility, bp overlap, and group-level dominance signals
-- first-pass FLT3 assay preview using filename-aware assay detection, preferred channel selection, and WT/mutant peak preview
-- Willros-style monotone spline ladder sizing as the primary Rust sizing strategy, with polynomial fallback
-- multi-file `analyze` request handling in the core engine
-- desktop shell fields for analysis, input path, output path, and live Rust engine log/status updates
-- desktop shell browse buttons for input/output selection, run summary, clear-log action, and direct open-output/open-artifact actions
-- persisted analyze artifacts (`analyze_summary.json`, `primitive_result_preview.json`) with desktop open-output/open-artifact actions
+## Build and test
 
-Current limitation:
-- the engine does not yet reproduce the full Python ladder-fit/refinement/rescue workflow
-- QC, FLT3 validation, and report generation remain scaffold-only in Rust
-
-## Workspace layout
-
-- `crates/fraggler-core`
-  - shared contract types
-  - engine boundary
-  - report payload types
-- `crates/fraggler-cli`
-  - headless commands for `analyze`, `qc`, `validate-flt3`, `build-report`
-- `crates/fraggler-desktop`
-  - Slint desktop shell scaffold
-- `schemas/fraggler-contract-v1.schema.json`
-  - v1 JSON contract for desktop ↔ core/CLI communication
-- `baselines/scenarios.example.json`
-  - example baseline-freeze scenarios for the Python reference implementation
-
-## Product rules
-
-- Offline-first desktop delivery
-- Native support for macOS, Windows, and Linux
-- Standalone HTML/Plotly reports remain the report model
-- Python remains the reference implementation until Rust passes parity + performance gates
-
-## Expected development flow
-
-1. Freeze baseline outputs and timings with the Python implementation.
-2. Port the engine into `fraggler-core`.
-3. Drive the engine through `fraggler-cli`.
-4. Attach the Slint shell after the engine reaches parity.
-
-## Baseline freeze
-
-Use the existing Python application to freeze reference timings and artifacts:
-
-```bash
-python scripts/freeze_v2_baseline.py \
-  --scenario-file fraggler-v2/baselines/scenarios.example.json \
-  --output-dir validation_outputs/fraggler_v2_baseline \
-  --repeats 3
-```
-
-The example scenarios resolve local data through environment variables. On
-Windows PowerShell:
+Use Windows with the MSVC C++ build tools, Windows SDK, and the Rust toolchain
+declared in `rust-toolchain.toml`. From this directory:
 
 ```powershell
-$env:HEMAFRAG_DATA_ROOT = "C:\path\to\clonality"
-$env:HEMAFRAG_FLT3_ROOT = "C:\path\to\flt3"
-python scripts/freeze_v2_baseline.py `
-  --scenario-file fraggler-v2/baselines/scenarios.example.json `
-  --output-dir validation_outputs/fraggler_v2_baseline `
-  --repeats 3
+cargo build --locked --release -p fraggler-cli
+cargo test --locked --workspace --exclude fraggler-kernels-py
+cargo check --locked -p fraggler-kernels-py
+cargo fmt --all -- --check
 ```
 
-The script writes:
-- `baseline_manifest.json`
-- per-scenario summaries with deterministic result fingerprints
-- p50/p95 wall times and optional process-RSS observations
-- compact file/content hashes without copying raw FSA data
-- aggregate batch-stage timings for the combined QC/DIT scenario
+The CLI is produced at `target/release/fraggler-cli.exe`. The Python extension is
+built separately with maturin; see its [build guide](crates/fraggler-kernels-py/README.md).
 
-Missing local data is recorded as `unavailable`. Add `--strict-missing` when a
-scheduled validation run should fail if any required corpus path is absent.
+## Contracts and examples
 
-## Example requests
+`schemas/fraggler-contract-v1.schema.json` describes the JSON contract. Request
+examples are in `examples/`. For CLI usage:
 
-Example v1 request payloads live in `fraggler-v2/examples/`:
-- `analyze_request.json`
-- `qc_request.json`
-- `build_report_request.json`
-
-Use them with:
-
-```bash
-cd fraggler-v2
-cargo run -p fraggler-cli -- analyze --json-request examples/analyze_request.json
+```powershell
+cargo run --locked -p fraggler-cli -- analyze --help
+cargo run --locked -p fraggler-cli -- analyze --json-request examples/analyze_request.json
 ```
 
-## Build intent
+Replace example input/output paths with local synthetic or approved data paths.
+Automatic inference in the engine is checked against the requested Python
+ladder/channel contract before its result is consumed. A mismatch routes to
+review rather than silently changing the size standard.
 
-Current local verification commands:
+## Validation tools
 
-```bash
-cd fraggler-v2
-cargo fmt
-cargo check
-cargo test -p fraggler-core
-cargo run -p fraggler-cli -- analyze --help
-cargo run -p fraggler-desktop
-```
+`../scripts/freeze_v2_baseline.py` records reference timings, hashes, and output
+fingerprints using the scenario format in `baselines/scenarios.example.json`.
+Use local environment variables for private dataset roots; never commit source
+data or generated validation output. Synthetic engine tests are engineering
+checks, not a clinical validation claim.

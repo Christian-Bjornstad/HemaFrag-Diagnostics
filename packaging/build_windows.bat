@@ -1,55 +1,24 @@
 @echo off
-REM ============================================================
-REM Build HemaFrag Diagnostics — Windows Desktop Bundle
-REM ============================================================
-REM Prerequisites:
-REM   - Python 3.10+ installed
-REM   - Run from the OUS\ project root
-REM
-REM Usage:
-REM   packaging\build_windows.bat
-REM
-REM Output:
-REM   dist\HemaFrag_Windows and dist\releases\HemaFrag_Windows.zip
-REM ============================================================
-
-echo ============================================================
-echo   Building HemaFrag Diagnostics for Windows
-echo ============================================================
-
+setlocal
 cd /d "%~dp0\.."
 
-REM Create and activate venv if needed
-if not exist "fraggler-win-venv" (
-    echo Creating virtual environment...
-    python -m venv fraggler-win-venv
+REM Build on Windows 10/11 x64 with Python 3.12-3.14 and Rust/MSVC installed.
+python -c "import sys; assert (3,12) <= sys.version_info[:2] < (3,15) and sys.maxsize > 2**32, 'Use 64-bit Python 3.12-3.14'"
+if errorlevel 1 exit /b 1
+
+if not exist ".venv-build\Scripts\python.exe" (
+    python -m venv .venv-build
+    if errorlevel 1 exit /b 1
 )
+set "BUILD_PYTHON=.venv-build\Scripts\python.exe"
+"%BUILD_PYTHON%" -m pip install -r requirements.txt -r packaging\build-requirements.txt
+if errorlevel 1 exit /b 1
+"%BUILD_PYTHON%" -m pip install --force-reinstall --no-deps wheels\fraggler_kernels-0.1.3-cp310-abi3-win_amd64.whl
+if errorlevel 1 exit /b 1
+"%BUILD_PYTHON%" -c "import fraggler_native; assert fraggler_native.is_available(); assert fraggler_native.version == '0.1.3'"
+if errorlevel 1 exit /b 1
+"%BUILD_PYTHON%" build_qt.py
+if errorlevel 1 exit /b 1
 
-call fraggler-win-venv\Scripts\activate.bat
-
-REM Install dependencies
-pip install -r requirements.txt
-pip install -r packaging\build-requirements.txt
-
-REM Clean previous builds
-if exist build rmdir /s /q build
-if exist dist rmdir /s /q dist
-
-REM Build
-echo.
-echo Running unified desktop build...
-echo.
-
-python build_qt.py
-
-echo.
-echo ============================================================
-echo   Build complete!
-echo   Folder: dist\HemaFrag_Windows
-echo   Zip   : dist\releases\HemaFrag_Windows.zip
-echo.
-echo   To run:
-echo     dist\HemaFrag_Windows\HemaFrag.exe
-echo ============================================================
-
-pause
+echo Build complete: dist\releases\HemaFrag_Windows.zip
+exit /b 0

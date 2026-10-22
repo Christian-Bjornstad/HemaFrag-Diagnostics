@@ -3905,6 +3905,8 @@ def analyse_fsa_liz(
     sample_channel: str,
     *,
     ladder_name: str | None = None,
+    size_standard_channel: str | None = None,
+    analysis_id: str | None = None,
     min_distance_between_peaks: float | None = None,
     min_size_standard_height: float | None = None,
     ladder_fit_profile: str | None = None,
@@ -3916,6 +3918,7 @@ def analyse_fsa_liz(
     and iterative outlier removal for robust ladder fitting.
     """
     ladder_name = ladder_name or DEFAULT_LIZ_LADDER
+    analysis_id = analysis_id or "clonality"
     base_min_distance = float(
         MIN_DISTANCE_BETWEEN_PEAKS_LIZ if min_distance_between_peaks is None else min_distance_between_peaks
     )
@@ -3924,7 +3927,7 @@ def analyse_fsa_liz(
     )
     ladder_fit_profile = _normalize_ladder_fit_profile(
         ladder_fit_profile,
-        analysis_id="clonality",
+        analysis_id=analysis_id,
         ladder_name=ladder_name,
     )
 
@@ -3939,7 +3942,10 @@ def analyse_fsa_liz(
         {"min_h": 50, "min_d": 10},
     ]
 
-    ss_channel = _preferred_size_standard_channel_for_file(fsa_path, ladder_name)
+    ss_channel = (
+        size_standard_channel if size_standard_channel is not None
+        else _preferred_size_standard_channel_for_file(fsa_path, ladder_name)
+    )
 
     base_fsa = FsaFile(
         file=str(fsa_path),
@@ -3949,15 +3955,15 @@ def analyse_fsa_liz(
         min_size_standard_height=configs[0]["min_h"],
         size_standard_channel=ss_channel,
     )
-    base_fsa.analysis_id = "clonality"
-    _set_ladder_fit_profile(base_fsa, ladder_fit_profile, analysis_id="clonality")
+    base_fsa.analysis_id = analysis_id
+    _set_ladder_fit_profile(base_fsa, ladder_fit_profile, analysis_id=analysis_id)
     base_fsa = prepare_size_standard_trace(base_fsa)
 
     from config import APP_SETTINGS
     if APP_SETTINGS.get("engine", {}).get("use_rust", False):
         from core.rust_bridge import run_ladder_fit_hybrid
         print_green(f"[LIZ] Attempting Rust Engine hybrid analysis for {fsa_path.name}")
-        hybrid_fsa = run_ladder_fit_hybrid(base_fsa, rust_analysis_kind or "clonality")
+        hybrid_fsa = run_ladder_fit_hybrid(base_fsa, rust_analysis_kind or analysis_id)
         if hybrid_fsa is not None:
             qc = compute_ladder_qc_metrics(hybrid_fsa)
             hybrid_fsa = _finalize_auto_fit_metadata(hybrid_fsa)
@@ -4000,8 +4006,8 @@ def analyse_fsa_liz(
             min_size_standard_height=cfg["min_h"],
             size_standard_channel=ss_channel,
         )
-        fsa.analysis_id = "clonality"
-        _set_ladder_fit_profile(fsa, ladder_fit_profile, analysis_id="clonality")
+        fsa.analysis_id = analysis_id
+        _set_ladder_fit_profile(fsa, ladder_fit_profile, analysis_id=analysis_id)
         fsa = prepare_size_standard_trace(fsa)
         liz_data = np.asarray(fsa.size_standard, dtype=float)
         fsa = find_size_standard_peaks(fsa)
@@ -4260,6 +4266,8 @@ def analyse_fsa_rox(
     sample_channel: str,
     *,
     ladder_name: str | None = None,
+    size_standard_channel: str | None = None,
+    analysis_id: str | None = None,
     min_distance_between_peaks: float | None = None,
     min_size_standard_height: float | None = None,
     ladder_fit_profile: str | None = None,
@@ -4278,7 +4286,11 @@ def analyse_fsa_rox(
     )
     ladder_fit_profile = _normalize_ladder_fit_profile(
         ladder_fit_profile,
+        analysis_id=analysis_id,
         ladder_name=ladder_name,
+    )
+    analysis_id = analysis_id or (
+        "flt3" if ladder_fit_profile == LADDER_FIT_PROFILE_FLT3_GS500ROX else "clonality"
     )
 
     engine_label = (
@@ -4298,7 +4310,10 @@ def analyse_fsa_rox(
         {"min_h": 20, "min_d": 8},
     ]
 
-    ss_channel = _preferred_size_standard_channel_for_file(fsa_path, ladder_name)
+    ss_channel = (
+        size_standard_channel if size_standard_channel is not None
+        else _preferred_size_standard_channel_for_file(fsa_path, ladder_name)
+    )
 
     base_fsa = FsaFile(
         file=str(fsa_path),
@@ -4308,7 +4323,7 @@ def analyse_fsa_rox(
         min_size_standard_height=configs[0]["min_h"],
         size_standard_channel=ss_channel,
     )
-    base_fsa.analysis_id = "flt3" if ladder_fit_profile == LADDER_FIT_PROFILE_FLT3_GS500ROX else "clonality"
+    base_fsa.analysis_id = analysis_id
     _set_ladder_fit_profile(base_fsa, ladder_fit_profile, analysis_id=str(getattr(base_fsa, "analysis_id", "") or ""))
     base_fsa = prepare_size_standard_trace(base_fsa)
 
@@ -4385,7 +4400,7 @@ def analyse_fsa_rox(
             min_size_standard_height=cfg["min_h"],
             size_standard_channel=ss_channel,
         )
-        fsa.analysis_id = "flt3" if ladder_fit_profile == LADDER_FIT_PROFILE_FLT3_GS500ROX else "clonality"
+        fsa.analysis_id = analysis_id
         _set_ladder_fit_profile(fsa, ladder_fit_profile, analysis_id=str(getattr(fsa, "analysis_id", "") or ""))
         fsa = prepare_size_standard_trace(fsa)
         rox_data = np.asarray(fsa.size_standard, dtype=float)
