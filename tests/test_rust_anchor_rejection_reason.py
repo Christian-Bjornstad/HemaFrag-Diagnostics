@@ -26,6 +26,7 @@ def test_python_anchor_rejection_preserves_actual_reason_for_review(
         ladder_steps=np.asarray([35.0, 50.0, 75.0]),
     )
     result = {
+        "ladder": "LIZ500_250",
         "ladder_review_assessment": {
             "suggested_review": bool(prior_codes),
             "reason_codes": list(prior_codes),

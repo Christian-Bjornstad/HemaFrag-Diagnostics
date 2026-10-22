@@ -1182,6 +1182,9 @@ fn select_size_standard_channel(
                 if record.tags.contains_key("DATA105") {
                     return Some("DATA105".to_owned());
                 }
+                if record.tags.contains_key("DATA5") {
+                    return Some("DATA5".to_owned());
+                }
                 if record.tags.contains_key("DATA4") {
                     return Some("DATA4".to_owned());
                 }
@@ -1196,11 +1199,11 @@ fn select_size_standard_channel(
             }
         },
         Some(AnalysisKind::Flt3) => {
-            if record.tags.contains_key("DATA105") {
-                return Some("DATA105".to_owned());
-            }
             if record.tags.contains_key("DATA4") {
                 return Some("DATA4".to_owned());
+            }
+            if record.tags.contains_key("DATA105") {
+                return Some("DATA105".to_owned());
             }
         }
         _ => {}
@@ -19845,6 +19848,49 @@ mod tests {
         score_combination, select_best_combination, select_ladder_peaks,
         should_try_liz_tier_one_rescue, trace_has_negative_baseline,
     };
+
+    #[test]
+    fn flt3_rox_prefers_data4_when_data105_is_also_present() {
+        let record = crate::abif::AbifRecord {
+            path: "sample_ITD.fsa".into(),
+            file_name: "sample_ITD.fsa".to_owned(),
+            tags: BTreeMap::from([
+                ("DATA4".to_owned(), crate::abif::AbifValue::I16(vec![0; 10])),
+                (
+                    "DATA105".to_owned(),
+                    crate::abif::AbifValue::I16(vec![0; 10]),
+                ),
+            ]),
+        };
+        assert_eq!(
+            super::select_size_standard_channel(
+                &record,
+                &record.file_name,
+                Some(&crate::contract::AnalysisKind::Flt3),
+            ),
+            Some("DATA4".to_owned())
+        );
+    }
+
+    #[test]
+    fn clonality_liz_uses_data5_when_data105_is_absent() {
+        let record = crate::abif::AbifRecord {
+            path: "sample_IGK.fsa".into(),
+            file_name: "sample_IGK.fsa".to_owned(),
+            tags: BTreeMap::from([
+                ("DATA4".to_owned(), crate::abif::AbifValue::I16(vec![0; 10])),
+                ("DATA5".to_owned(), crate::abif::AbifValue::I16(vec![0; 10])),
+            ]),
+        };
+        assert_eq!(
+            super::select_size_standard_channel(
+                &record,
+                &record.file_name,
+                Some(&crate::contract::AnalysisKind::Clonality),
+            ),
+            Some("DATA5".to_owned())
+        );
+    }
 
     #[test]
     fn rox_deep_rescue_rejects_ambiguous_middle_quality_fit() {

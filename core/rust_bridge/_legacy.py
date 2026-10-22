@@ -1279,6 +1279,35 @@ def _apply_rust_result_to_fsa(fsa: FsaFile, res: dict[str, Any]) -> FsaFile | No
     if isinstance(clonality_preview, dict):
         fsa.rust_clonality_preview = clonality_preview
 
+    requested_ladder = str(getattr(fsa, "ladder", "") or "").strip().upper()
+    requested_channel = str(getattr(fsa, "size_standard_channel", "") or "").strip().upper()
+    contract_errors = []
+    if requested_ladder and str(detected_ladder or "").strip().upper() != requested_ladder:
+        contract_errors.append(f"requested ladder {requested_ladder}, native ladder {detected_ladder}")
+    if requested_channel and str(size_standard_guess or "").strip().upper() != requested_channel:
+        contract_errors.append(
+            f"requested size-standard channel {requested_channel}, native channel {size_standard_guess}"
+        )
+    if contract_errors:
+        reason = "; ".join(contract_errors)
+        reason_codes = list(getattr(fsa, "rust_review_reason_codes", []) or [])
+        if "rust_ladder_contract_mismatch" not in reason_codes:
+            reason_codes.append("rust_ladder_contract_mismatch")
+        fsa.rust_guardrail_review_required = True
+        fsa.ladder_review_required = True
+        fsa.rust_review_reason_codes = reason_codes
+        fsa.rust_review_primary_reason = "rust_ladder_contract_mismatch"
+        fsa.rust_review_summary = reason
+        fsa.rust_ladder_review_assessment = {
+            **(review_assessment if isinstance(review_assessment, dict) else {}),
+            "suggested_review": True,
+            "reason_codes": reason_codes,
+            "primary_reason": "rust_ladder_contract_mismatch",
+            "summary": reason,
+        }
+        log(f"[RUST GUARDRAIL] Rejected ladder contract for {fsa.file_name}: {reason}")
+        return None
+
     fit_preview = res.get("ladder_fit_preview")
     if not fit_preview:
         log("[RUST ERROR] ladder_fit_preview missing")

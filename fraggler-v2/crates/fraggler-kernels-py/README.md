@@ -9,7 +9,7 @@ two are intentionally kept independent:
 
 - `fraggler-cli` is the standalone headless CLI (unchanged).
 - `fraggler-kernels-py` exposes the same Rust engine primitives to Python
-  in-process. No JSON marshalling, no temp files, no subprocess forks.
+  in-process. No JSON text round trip, temporary files, or subprocess forks.
 
 ## Layout
 
@@ -25,18 +25,20 @@ crates/fraggler-kernels-py/
 
 ## Build
 
-From HemaFrag's repo root on Windows / macOS / Linux (needs Rust ≥ 1.75):
+From HemaFrag's repository root on Windows 10 or 11 (64-bit), using the
+MSVC build tools and a Rust toolchain supporting edition 2024 (Rust 1.85
+or newer):
 
 ```bash
-# 1. Install maturin in your project venv (one-time)
-pip install maturin
+# Install maturin in your project environment
+python -m pip install maturin
 
 # 2. Build + install in editable mode (fast for iteration)
-pip install -e fraggler-v2/crates/fraggler-kernels-py
+python -m pip install -e fraggler-v2/crates/fraggler-kernels-py
 
 # OR: build a wheel and install it
-maturin build --release -m fraggler-v2/crates/fraggler-kernels-py/Cargo.toml
-pip install target/wheels/fraggler_kernels-*.whl
+python -m maturin build --release --locked -m fraggler-v2/crates/fraggler-kernels-py/Cargo.toml --out wheels
+python -m pip install wheels/fraggler_kernels-0.1.3-cp310-abi3-win_amd64.whl
 ```
 
 ## Quick smoke test
@@ -66,14 +68,27 @@ the Python side.
 
 ## Companion: `fraggler-cli`
 
-After `maturin build --release`, both the standalone CLI
-(`fraggler-v2/target/release/fraggler-cli(.exe)`) and the wheel are
-produced. HemaFrag's existing `core.rust_bridge._resolve_cli_bin()` can
-find either one automatically.
+Maturin builds the Python extension. Build the standalone CLI separately:
 
-## Status (June 2026)
+```bash
+cargo build --release --locked --manifest-path fraggler-v2/Cargo.toml -p fraggler-cli
+```
 
-Code is written but **not built yet** — Docker sandbox has no Rust
-toolchain. The intent is for this to compile cleanly on Christian's
-Windows machine on the first `maturin build`. If you hit an issue, the
-likely fix is bumping `pyo3` to the latest patch release.
+HemaFrag searches `fraggler-v2/target/release/`, `fraggler-v2/target/debug/`,
+and `bin/` for the standalone executable when the native wheel is unavailable.
+
+## Validation
+
+The Windows ABI3 wheel is distributed in the root `wheels/` directory.
+Its version matches the Rust workspace and this crate's Python metadata.
+The analysis releases Python's GIL while running the Rust numerical engine.
+
+```bash
+cargo test --locked --manifest-path fraggler-v2/Cargo.toml -p fraggler-core -p fraggler-cli
+cargo check --locked --manifest-path fraggler-v2/Cargo.toml -p fraggler-kernels-py
+python -m fraggler_native._smoke path/to/synthetic.fsa
+```
+
+The Python bridge verifies that the native ladder and size-standard channel
+match the requested analysis. A mismatch requires review; native channel
+guesses do not replace a configured profile silently.

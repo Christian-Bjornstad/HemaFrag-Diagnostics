@@ -138,7 +138,7 @@ fn parse_abif_bytes(
             context: "read ABIF root element code",
             source,
         })?;
-    let root_element_size = cursor
+    let _root_element_size = cursor
         .read_u16::<BigEndian>()
         .map_err(|source| EngineError::Io {
             path: path.to_owned(),
@@ -168,7 +168,18 @@ fn parse_abif_bytes(
         })?;
 
     let directory_count = root_element_num as usize;
-    let directory_size = root_element_size as usize;
+    // Directory records are always 28 bytes. Per the ABIF specification,
+    // readers use the root count and offset and ignore its other fields.
+    let directory_size = 28;
+    let directory_start = root_data_offset as usize;
+    if directory_start > bytes.len()
+        || directory_count > (bytes.len() - directory_start) / directory_size
+    {
+        return Err(EngineError::InvalidAbif {
+            path: path.to_owned(),
+            message: "directory points outside the file".to_owned(),
+        });
+    }
     let mut tags = BTreeMap::new();
 
     for index in 0..directory_count {
@@ -257,6 +268,25 @@ fn parse_abif_bytes(
             data_size,
             data_offset,
         };
+        let numeric_element_size = match entry.element_code {
+            3 | 4 => Some(2),
+            5 | 7 => Some(4),
+            8 => Some(8),
+            _ => None,
+        };
+        if let Some(element_size) = numeric_element_size {
+            // Validate before allocating from the untrusted element count.
+            // ABIF permits padding, so the payload may be larger than needed.
+            if entry.element_num as usize > entry.data_size / element_size {
+                return Err(EngineError::InvalidAbif {
+                    path: path.to_owned(),
+                    message: format!(
+                        "tag {}{} has too few bytes for {} numeric elements",
+                        entry.tag_name, entry.tag_number, entry.element_num
+                    ),
+                });
+            }
+        }
         let raw = &bytes[entry.data_offset..entry.data_offset + entry.data_size];
         let key = format!("{}{}", entry.tag_name, entry.tag_number);
         tags.insert(
@@ -362,5 +392,58 @@ fn decode_string(raw: &[u8], count: usize) -> AbifValue {
         AbifValue::Bytes(raw.to_vec())
     } else {
         AbifValue::String(String::from_utf8_lossy(raw).to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AbifValue, parse_abif_bytes};
+    use camino::Utf8Path;
+
+    fn file_with_short_tags(count: u32, data_size: u32, directory_stride: u16) -> Vec<u8> {
+        let mut bytes = b"ABIF".to_vec();
+        bytes.extend(101_u16.to_be_bytes());
+        bytes.extend(b"tdir");
+        bytes.extend(1_u32.to_be_bytes());
+        bytes.extend(1023_u16.to_be_bytes());
+        bytes.extend(directory_stride.to_be_bytes());
+        bytes.extend(2_u32.to_be_bytes());
+        bytes.extend(56_u32.to_be_bytes());
+        bytes.extend(34_u32.to_be_bytes());
+        bytes.extend(0_u32.to_be_bytes());
+        for tag_number in [4_u32, 5_u32] {
+            bytes.extend(b"DATA");
+            bytes.extend(tag_number.to_be_bytes());
+            bytes.extend(4_u16.to_be_bytes());
+            bytes.extend(2_u16.to_be_bytes());
+            bytes.extend(count.to_be_bytes());
+            bytes.extend(data_size.to_be_bytes());
+            bytes.extend([0_u8, 1, 0, 2]);
+            bytes.extend(0_u32.to_be_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn truncated_numeric_payload_is_rejected() {
+        let bytes = file_with_short_tags(3, 4, 28);
+        assert!(parse_abif_bytes(&bytes, Utf8Path::new("truncated.fsa")).is_err());
+    }
+
+    #[test]
+    fn numeric_payload_padding_is_permitted() {
+        let bytes = file_with_short_tags(1, 4, 28);
+        let tags = parse_abif_bytes(&bytes, Utf8Path::new("padded.fsa")).unwrap();
+        assert_eq!(tags["DATA4"], AbifValue::I16(vec![1]));
+    }
+
+    #[test]
+    fn directory_records_use_fixed_abif_stride() {
+        // ABIF readers use the header's count/offset; its other directory
+        // fields are advisory and cannot change the 28-byte record format.
+        let bytes = file_with_short_tags(2, 4, 0);
+        let tags = parse_abif_bytes(&bytes, Utf8Path::new("directory.fsa")).unwrap();
+        assert_eq!(tags["DATA4"], AbifValue::I16(vec![1, 2]));
+        assert_eq!(tags["DATA5"], AbifValue::I16(vec![1, 2]));
     }
 }
