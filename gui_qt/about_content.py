@@ -1,13 +1,36 @@
 from __future__ import annotations
 
+from importlib import metadata
 from pathlib import Path
 
 from app_meta import APP_NAME, APP_VERSION
+from app_resources import application_resource_roots
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-THIRD_PARTY_NOTICE_PATH = REPO_ROOT / "THIRD_PARTY_NOTICES.md"
-UPSTREAM_LICENSE_PATH = REPO_ROOT / "LICENSES" / "fraggler_MIT.txt"
+
+
+def _legal_resource_path(relative: Path) -> Path:
+    for root in application_resource_roots():
+        candidate = root / relative
+        if candidate.is_file():
+            return candidate
+    # Installed wheels retain license files in their distribution metadata.
+    try:
+        distribution = metadata.distribution("hemafrag-diagnostics")
+    except metadata.PackageNotFoundError:
+        return REPO_ROOT / relative
+    suffix = f".dist-info/licenses/{relative.as_posix()}"
+    for record in distribution.files or ():
+        if record.as_posix().endswith(suffix):
+            candidate = Path(distribution.locate_file(record))
+            if candidate.is_file():
+                return candidate
+    return REPO_ROOT / relative
+
+
+THIRD_PARTY_NOTICE_PATH = _legal_resource_path(Path("THIRD_PARTY_NOTICES.md"))
+UPSTREAM_LICENSE_PATH = _legal_resource_path(Path("LICENSES/fraggler_MIT.txt"))
 
 APP_OVERVIEW = {
     "title": f"About {APP_NAME}",
@@ -39,7 +62,7 @@ THIRD_PARTY_SOFTWARE = [
         ),
         "derived_paths": [
             "fraggler/",
-            "core/analysis.py",
+            "core/analysis/",
         ],
     },
 ]

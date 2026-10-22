@@ -1,9 +1,6 @@
 """HemaFrag clonality analysis package.
 
-Per project memory, the clonality subsystem is **parked** and should NOT
-drive new context unless explicitly requested. This package contains the
-patient-sample clonality QC pipeline and supporting helpers but is not
-the focus of current FLT3 work.
+Patient-sample clonality analysis, QC, rule interpretation, and tracking.
 
 Public submodules:
 - `pipeline`              : main patient-sample QC pipeline

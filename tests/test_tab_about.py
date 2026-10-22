@@ -41,3 +41,25 @@ def test_about_keeps_identity_and_full_legal_sources(qapp):
     )
     assert "fraggler" in documents.lower()
     assert "MIT License" in documents
+    assert "Missing file:" not in documents
+
+
+def test_legal_resources_resolve_from_installed_distribution(monkeypatch, tmp_path):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import gui_qt.about_content as content
+
+    relative = Path("LICENSES/fraggler_MIT.txt")
+    installed = tmp_path / "hemafrag_diagnostics-1.2.0.dist-info/licenses" / relative
+    installed.parent.mkdir(parents=True)
+    installed.write_text("MIT License", encoding="utf-8")
+    record = installed.relative_to(tmp_path)
+    monkeypatch.setattr(content, "application_resource_roots", lambda: (tmp_path / "source",))
+    monkeypatch.setattr(
+        content.metadata,
+        "distribution",
+        lambda _name: SimpleNamespace(files=[record], locate_file=lambda path: tmp_path / path),
+    )
+
+    assert content._legal_resource_path(relative) == installed

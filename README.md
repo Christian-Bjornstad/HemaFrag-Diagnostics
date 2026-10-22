@@ -1,248 +1,133 @@
 <p align="center">
-  <img src="assets/app_icon_transparent.png" width="144" alt="HemaFrag Diagnostics application icon">
+  <img src="assets/app_icon_transparent.png" width="128" alt="HemaFrag Diagnostics">
 </p>
 
 <h1 align="center">HemaFrag Diagnostics</h1>
 
-<p align="center">
-  Offline-first fragment analysis, ladder quality control, review, and reporting in one desktop workflow.
-</p>
+<p align="center">Offline fragment analysis, ladder review, quality control, and reporting for Windows 10 and 11.</p>
 
 <p align="center">
-  <img alt="HemaFrag version 1.2.0" src="https://img.shields.io/badge/HemaFrag-v1.2.0-2563eb">
-  <img alt="Python 3.12 through 3.14" src="https://img.shields.io/badge/Python-3.12–3.14-3776AB?logo=python&amp;logoColor=white">
-  <img alt="PyQt6 desktop interface" src="https://img.shields.io/badge/Desktop-PyQt6-41CD52?logo=qt&amp;logoColor=white">
-  <img alt="Rust accelerated" src="https://img.shields.io/badge/Engine-Rust-CE422B?logo=rust&amp;logoColor=white">
+  <a href="https://github.com/Christian-Bjornstad/HemaFrag-Diagnostics/actions/workflows/ci.yml"><img src="https://github.com/Christian-Bjornstad/HemaFrag-Diagnostics/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/version-1.2.1-2563eb" alt="Version 1.2.1">
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4" alt="Windows 10 and 11">
+  <img src="https://img.shields.io/badge/Python-3.12–3.14-3776AB" alt="Python 3.12 through 3.14">
 </p>
 
-<p align="center">
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#supported-workflows">Workflows</a> ·
-  <a href="#safety-and-traceability">Safety</a> ·
-  <a href="#development-and-testing">Development</a> ·
-  <a href="packaging/README.md">Packaging</a>
-</p>
+HemaFrag combines a PyQt6 desktop interface with a Rust analysis engine. Runs,
+manual ladder corrections, reports, and tracking workbooks stay on the local
+computer or the operator's configured storage.
 
-> [!IMPORTANT]
-> HemaFrag supports a controlled laboratory workflow. Raw clinical `.fsa` files, patient data, generated reports, and private validation corpora are deliberately excluded from this repository. Algorithm changes require local review and validation before operational use.
-
-## Overview
-
-HemaFrag Diagnostics is a Python/PyQt6 desktop application for processing fragment-analysis runs without requiring a cloud service. It combines assay-specific pipelines, Rust-accelerated ladder fitting, explicit quality gates, manual ladder review, batch manifests, and report generation.
-
-| Area | Current implementation |
+| Workflow | Capabilities |
 |---|---|
-| Desktop interface | PyQt6 application with Clonality, FLT3, and General workflows |
-| Numerical engine | Rust-first ladder fitting through an in-process ABI3 wheel, with explicit recovery routes |
-| Review | Ladder Studio corrections, saved adjustment provenance, and manifest-based reruns |
-| Outputs | HTML plots/reports, DIT summaries, QC output, and Excel tracking |
-| Deployment | Source/Python installation or packaged desktop bundles for Windows, macOS, and Linux |
-| Data handling | Offline-first; raw clinical data and generated artifacts stay outside Git |
+| Clonality | Assay-specific peak analysis, patient/control grouping, ladder review, QC, and tracking |
+| FLT3 | GS500ROX/DATA4 by default, WT/mutant area ratios, ITD/TKD grouping, NPM1 manual review, and tracking |
+| General | Configurable ladder, size-standard channel, sample channels, and analysis range |
+| Reporting | Interactive HTML reports, saved manual peaks, batch manifests, and Excel workbooks |
 
-## Why HemaFrag
+Analysis results and algorithm changes require laboratory review and local
+validation before operational use. This repository contains no clinical input
+corpus. Automated tests use synthetic data and engineering regression cases.
 
-- **Fast ladder fitting:** numerical kernels run through the Rust engine when available.
-- **Peak-preserving preprocessing:** negative and drifting ladder traces are corrected without flattening diagnostic peaks.
-- **No silent disappearance:** failed or ambiguous inputs retain a reason, manifest state, and review route.
-- **Controlled correction:** manual ladder adjustments are validated, saved with provenance, and checked again when consumed by a rerun.
-- **Complete batch reporting:** patient and QC entries are tracked explicitly through finalization.
-- **Work-computer friendly:** the primary Windows source route supports Python 3.14 and the checked-in ABI3 wheel without requiring a local Rust toolchain.
+## Requirements
 
-## Workflow
-
-```mermaid
-flowchart LR
-    A["FSA input"] --> B["Immutable FSA artifact"]
-    B --> C["Rust-first ladder fitting"]
-    C -->|accepted| D["Assay analysis"]
-    C -->|review required| E["Ladder Studio"]
-    E --> F["Validated adjustment + rerun"]
-    F --> D
-    D --> G["Plots and HTML reports"]
-    D --> H["QC and Excel tracking"]
-    D --> I["Batch manifest and provenance"]
-```
-
-## Supported workflows
-
-### Clonality
-
-- patient and PK/RK/NK control grouping;
-- assay-specific peak analysis and interpretation;
-- DIT, QC, and tracking output;
-- explicit review handling for weak or rejected ladder fits.
-
-### FLT3
-
-- GS500ROX/DATA4 ladder workflow by default;
-- explicit LIZ/DATA105 override when configured;
-- WT/mutant area ratio and base-pair difference;
-- grouped ratio, TKD/D835, ITD, ITD 10×, and ITD 25× reporting;
-- manual ladder-review and rerun support.
-
-### General
-
-- profile-driven ladder and trace configuration;
-- support for non-patient identifiers;
-- report generation without requiring a DIT-style patient number.
-
-## Safety and traceability
-
-HemaFrag treats quality and completeness as part of the analysis contract:
-
-- ladder decisions carry engine, strategy, QC, and reason-code provenance;
-- ambiguous cases become review entries instead of being discarded;
-- strict Rust-only modes are available for validation and failure surfacing;
-- valid manual adjustments are source-, ladder-, channel-, and assay-specific;
-- batch manifests retain job membership, file hashes, stage state, outputs, and failure reasons;
-- finalization checks expected patient and QC counts;
-- writes to reports and tracking artifacts use guarded or atomic publication paths where supported.
-
-The architecture and current engineering validation boundaries are documented in [Plan 15 — Architecture, Risk, Performance, and Stability Review](docs/plan15_architecture_risk_and_results.md).
+- Windows 10 or Windows 11, **64-bit x86**.
+- For source installation: 64-bit Python **3.12, 3.13, or 3.14**; Python 3.14
+  is the work-computer route. CI tests Python 3.12 and 3.14.
+- Internet access for initial dependency installation, or an approved offline
+  wheel cache. Analysis and generated reports work offline.
+- Rust/MSVC build tools are needed only to rebuild the native engine or package
+  the desktop application. The checked-in ABI3 wheel needs no Rust installation.
 
 ## Quick start
 
-### Windows with Python 3.14
-
-The checked-in Windows wheel uses Python's stable ABI and is the preferred native-engine route on a work computer without a Rust toolchain.
+Run these commands in PowerShell:
 
 ```powershell
 git clone https://github.com/Christian-Bjornstad/HemaFrag-Diagnostics.git
 Set-Location HemaFrag-Diagnostics
-
 py -3.14 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install .\wheels\fraggler_kernels-0.1.2-cp310-abi3-win_amd64.whl
-python .\qt_app.py
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install --no-deps .\wheels\fraggler_kernels-0.1.3-cp310-abi3-win_amd64.whl
+.\.venv\Scripts\python.exe .\qt_app.py
 ```
 
-If the computer already has an approved Python 3.14 environment, activate that environment and skip the virtual-environment creation step.
-
-Verify the native wheel:
+If an approved Python environment is already available, use its interpreter and
+skip creating a virtual environment. Verify the engine in that environment:
 
 ```powershell
 python -c "import fraggler_native; print(fraggler_native.version, fraggler_native.is_available())"
 ```
 
-Expected availability is `True`.
+Expected output: `0.1.3 True`. The `cp310-abi3` filename denotes the stable Python
+ABI; the wheel also runs on the supported newer Python versions.
 
-To create a desktop shortcut that uses the approved Python environment and the HemaFrag icon—without packaging another HemaFrag executable—run:
+To create a shortcut for a source installation, using that same interpreter:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File packaging\create_windows_shortcut.ps1 `
-  -PythonPath "C:\path\to\approved-python-3.14\python.exe"
+  -PythonPath "C:\path\to\approved-python\python.exe"
 ```
 
-### macOS or Linux development
+For a packaged desktop application, extract the entire `HemaFrag_Windows.zip`
+folder and start `HemaFrag.exe`. Keep its `_internal` directory beside it.
+See the [Windows packaging guide](packaging/README.md).
 
-```bash
-git clone https://github.com/Christian-Bjornstad/HemaFrag-Diagnostics.git
-cd HemaFrag-Diagnostics
+## Using HemaFrag
 
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+1. Choose Clonality, FLT3, or General and configure input/output paths in Settings.
+2. Discover the inputs on **Run**, inspect the selected jobs, and start analysis.
+3. Review rejected or ambiguous ladder fits on **Ladder**. Save valid corrections
+   or mark unusable input, then rerun affected files.
+4. Finalize the batch when its review queue is resolved. Inspect the final report,
+   manifest state, and tracking output before using the results.
+5. Use **Archive Runner** to resume manifest-backed historical runs and **Log**
+   to inspect failures.
 
-cd fraggler-v2
-cargo build --release -p fraggler-cli
-cd ..
-python qt_app.py
-```
+See the [workflow guide](docs/usage.md) and the Norwegian
+[user manual](docs/HemaFrag_Brukerveiledning.docx).
 
-## Application navigation
+## Development and verification
 
-| Page | Purpose |
-|---|---|
-| Run | Discover files, build deterministic jobs, run analysis, and publish reports |
-| Ladder | Inspect review bundles, correct mappings, and rerun affected inputs |
-| Archive Runner | Recover and continue prior manifest-backed review work |
-| Log | Inspect application and analysis activity |
-| Settings | Store analysis-specific paths and defaults, including master-sheet locations |
-| About | Review the application identity, version, notices, and licenses |
-
-## Development and testing
-
-Run the complete Python suite:
-
-```bash
+```powershell
+python -m pip install -r requirements-dev.txt
 python -m pytest -q
+python -m ruff check --select F821 core gui_qt hemafrag_diagnostics qt_app.py config.py app_meta.py app_resources.py build_qt.py
+cargo test --locked --manifest-path fraggler-v2/Cargo.toml --workspace --exclude fraggler-kernels-py
+cargo check --locked --manifest-path fraggler-v2/Cargo.toml -p fraggler-kernels-py
 ```
 
-Run the Rust workspace tests and checks:
+Node.js is needed for JavaScript report interaction tests. Optional corpus or
+platform-specific tests explain their skip conditions. Synthetic tests do not
+establish clinical accuracy on the private laboratory corpus.
 
-```bash
-cd fraggler-v2
-cargo test --workspace --all-targets
-cargo check -p fraggler-kernels-py
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and validation expectations,
+[architecture](docs/architecture.md) for module responsibilities, and
+[CHANGELOG.md](CHANGELOG.md) for release changes.
 
-Run the repeatable non-clinical startup/baseline benchmark:
-
-```bash
-python scripts/benchmark_plan15_runtime.py \
-  --startup-repeats 5 \
-  --arpls-repeats 10 \
-  --output validation_outputs/plan15_runtime.json
-```
-
-Synthetic benchmarks do not replace review against the private real-FSA validation corpus.
-
-## Desktop packaging
-
-All desktop builds use `qt_app.py` as the canonical entry point and `build_qt.py` as the shared PyInstaller contract.
-
-| Platform | Build command | Release output |
-|---|---|---|
-| Windows | `packaging\build_windows.bat` | `dist/releases/HemaFrag_Windows.zip` |
-| macOS | `./packaging/build_mac.sh` | `dist/releases/HemaFrag_macOS.zip` |
-| Linux | `./packaging/build_linux.sh` | `dist/releases/HemaFrag_Linux_offline.zip` |
-
-See the [desktop packaging guide](packaging/README.md) for platform assumptions, offline deployment, icon behavior, and troubleshooting.
-
-## Repository structure
+## Repository layout
 
 ```text
-HemaFrag-Diagnostics/
-├── core/              Analysis pipelines, manifests, reporting, and provenance
-├── fraggler/          Legacy-compatible Python scientific helpers
-├── fraggler-v2/       Rust workspace and PyO3 native engine
-├── gui_qt/            Primary PyQt6 desktop interface
-├── assets/            Application icons and bundled report assets
-├── packaging/         Cross-platform build and deployment tooling
-├── scripts/           Benchmarks, validation, and maintenance tools
-├── tests/             Python regression and workflow tests
-├── wheels/            Verified native wheel for the Windows source deployment
-├── docs/              Architecture, decision history, and ladder-fitting documentation
-└── ObsidianVault/     Project memory, decisions, session log, and open items
+core/                    Analysis pipelines, provenance, reporting, and tracking
+fraggler/                Embedded Python scientific compatibility layer
+fraggler-v2/             Rust core, recovery CLI, and PyO3 extension
+gui_qt/                  PyQt6 desktop interface
+hemafrag_diagnostics/     Installed Python entry point
+assets/                  Application icons and offline Plotly bundles
+packaging/               Windows build tools and runtime hooks
+scripts/                 Validation, archive processing, and maintenance tools
+tests/                   Regression and workflow tests
+wheels/                  Versioned Windows native-engine wheel
+docs/                    Current architecture and user documentation
 ```
 
-Contributors should begin with [ObsidianVault/00_Start_Here.md](ObsidianVault/00_Start_Here.md) before changing diagnostic logic or operational contracts.
+Raw FSA data, patient identifiers, generated reports, local adjustment databases,
+validation outputs, build products, and personal development notes stay outside
+Git. Historical plans and session logs remain recoverable in Git history.
 
-## Data and generated files
+## Licenses and notices
 
-The following stay outside version control:
-
-- raw `.fsa` files and clinical datasets;
-- patient identifiers and generated clinical reports;
-- private validation corpora and local benchmark outputs;
-- `artifacts/`, `local_triage/`, review bundles, and scratch output;
-- Python caches, `build/`, `dist/`, and Rust `target/` directories;
-- local runtime binaries except explicitly distributed release artifacts.
-
-## Further documentation
-
-- [Architecture, risk, performance, and stability review](docs/plan15_architecture_risk_and_results.md)
-- [Clinical Workbench design](docs/superpowers/specs/2026-08-12-hemafrag-clinical-workbench-design.md)
-- [Clinical Workbench implementation plan](docs/superpowers/plans/2026-08-12-hemafrag-clinical-workbench.md)
-- [Historical: retired Clonality ML interpretation design](docs/ml-clonality-interpretation.md)
-- [Rust ladder-fitting plan](docs/ladder-fitting-rust-plan.md)
-- [Desktop packaging guide](packaging/README.md)
-- [Windows source-transfer guide](packaging/WINDOWS_TRANSFER_README.md)
-- [Project memory and working agreements](ObsidianVault/00_Start_Here.md)
-
-## Third-party notices
-
-The Python compatibility layer in `fraggler/` is derived from the upstream Fraggler project. Its MIT notice is retained in [LICENSES/fraggler_MIT.txt](LICENSES/fraggler_MIT.txt).
+The application has no single root open-source license. Embedded Fraggler-derived
+code retains its [MIT license](LICENSES/fraggler_MIT.txt). See
+[third-party notices](THIRD_PARTY_NOTICES.md) for the component notices distributed
+with HemaFrag.
