@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from core.runner import _stamp_entry_source_provenance
+from core.runner import _safe_link_name, _stamp_entry_source_provenance
 
 
 def test_stamp_entry_source_provenance_restores_staged_file(tmp_path):
@@ -64,3 +64,41 @@ def test_stamp_entry_source_provenance_restores_rejected_alternate(tmp_path):
     assert alternate["original_file_path"] == str(rejected.resolve())
     assert alternate["file_name"] == rejected.name
     assert alternate["source_run_dir"] == run_dir.name
+
+
+def test_same_named_staged_inputs_keep_their_original_run_identity(tmp_path):
+    sources = [tmp_path / run / "sample_FR1.fsa" for run in ("run_one", "run_two")]
+    entries = [
+        {"file_name": _safe_link_name(source, index)}
+        for index, source in enumerate(sources, start=1)
+    ]
+
+    _stamp_entry_source_provenance(entries, sources)
+
+    assert [entry["original_file_path"] for entry in entries] == [
+        str(source.resolve()) for source in sources
+    ]
+    assert [entry["source_run_dir"] for entry in entries] == ["run_one", "run_two"]
+
+
+def test_same_named_inputs_use_exact_source_path_when_names_are_unstaged(tmp_path):
+    sources = [tmp_path / run / "sample_FR1.fsa" for run in ("run_one", "run_two")]
+    entries = [
+        {"file_name": source.name, "original_file_path": str(source)}
+        for source in sources
+    ]
+
+    _stamp_entry_source_provenance(entries, sources)
+
+    assert [entry["original_file_path"] for entry in entries] == [
+        str(source.resolve()) for source in sources
+    ]
+
+
+def test_ambiguous_source_basename_is_not_guessed(tmp_path):
+    sources = [tmp_path / run / "sample_FR1.fsa" for run in ("run_one", "run_two")]
+    entry = {"file_name": "sample_FR1.fsa"}
+
+    _stamp_entry_source_provenance([entry], sources)
+
+    assert "original_file_path" not in entry

@@ -5,6 +5,22 @@ from core.analyses.flt3.pipeline import flt3_size_standard_mode
 from scripts.run_flt3_liz500_qc_all_injections import _size_standard_channel_for_path
 
 
+def test_liz_override_passes_flt3_scope_before_loading_adjustments(monkeypatch, tmp_path):
+    from core.analyses.flt3.pipeline import _legacy as pipeline
+
+    captured = []
+    monkeypatch.setattr(pipeline, "_flt3_uses_liz_ladder", lambda: True)
+
+    def load(*args, **kwargs):
+        captured.append(kwargs)
+        return None
+
+    monkeypatch.setattr(pipeline, "analyse_fsa_liz", load)
+    pipeline._analyse_fsa_candidate(tmp_path / "sample_ITD.fsa", "DATA1", "FLT3-ITD")
+
+    assert captured[0]["analysis_id"] == "flt3"
+
+
 class Flt3SizeStandardContractTests(unittest.TestCase):
     def setUp(self):
         self._old_ladder = os.environ.get("HEMAFRAG_FLT3_LADDER")

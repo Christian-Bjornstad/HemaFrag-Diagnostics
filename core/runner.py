@@ -110,7 +110,15 @@ def _stamp_entry_source_provenance(
     """Restore original paths after explicit files were staged."""
     from core.utils import strip_stage_prefix
 
-    by_name = {Path(path).name: Path(path) for path in source_files}
+    sources = sorted(Path(path) for path in source_files)
+    by_staged_name = {
+        _safe_link_name(path, index): path
+        for index, path in enumerate(sources, start=1)
+    }
+    by_path = {path.resolve(): path for path in sources}
+    by_name: dict[str, Path | None] = {}
+    for path in sources:
+        by_name[path.name] = path if path.name not in by_name else None
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -123,7 +131,14 @@ def _stamp_entry_source_provenance(
                 or candidate.get("file_name")
                 or ""
             )
-            source = by_name.get(strip_stage_prefix(staged_name))
+            source = by_staged_name.get(staged_name)
+            if source is None:
+                original_path = candidate.get("original_file_path") or getattr(fsa, "file", None)
+                if original_path:
+                    source = by_path.get(Path(original_path).expanduser().resolve())
+            if source is None:
+                # Basenames are only safe when unique across the selected runs.
+                source = by_name.get(strip_stage_prefix(staged_name))
             if source is None:
                 continue
             candidate["file_name"] = source.name
@@ -174,7 +189,9 @@ def _should_stage_explicit_files_once(fsa_dir: Optional[Path], files: List[Path]
 
 def _can_use_exact_source_dir(fsa_dir: Optional[Path], files: List[Path], *, chunk_files: bool) -> bool:
     """Reuse the original folder directly when the explicit file list already matches it exactly."""
-    if not _should_stage_explicit_files_once(fsa_dir, files, chunk_files=chunk_files):
+    # Disabling chunking permits one staging pass; it does not prove that the
+    # directory contains only the explicit selection.
+    if not _should_stage_explicit_files_once(fsa_dir, files, chunk_files=True):
         return False
     return fsa_dir is not None and Path(fsa_dir).is_dir()
 
@@ -293,7 +310,7 @@ def run_pipeline_job(
                 assay_folder_name=out_folder_name,
                 mode=effective_mode,
                 return_entries=True,
-                make_dit_reports=False,
+                make_dit_reports=True,
                 tracking_excel_path=tracking_excel_path,
                 update_tracking_workbook=update_tracking_workbook,
                 **_pipeline_context_kwargs(run_context),

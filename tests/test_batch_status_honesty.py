@@ -192,6 +192,55 @@ class BatchStatusHonestyTests(unittest.TestCase):
             f"no success may be emitted on failed run, got {states}",
         )
 
+    def test_stop_on_error_records_unprocessed_jobs_and_skips_partial_final_reports(self) -> None:
+        import core.batch as batch
+        from core.run_manifest import load_run_manifest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            APP_SETTINGS["active_analysis"] = "clonality"
+            APP_SETTINGS["analyses"]["clonality"]["batch"].update(
+                {"ladder_review_gate": {"enabled": False}}
+            )
+            jobs = [
+                {"name": name, "type": "pipeline", "path": None,
+                 "files": [Path(tmp) / f"{name}.fsa"]}
+                for name in ("first", "bad", "last")
+            ]
+            with (
+                patch.object(batch, "run_pipeline_job_collect", side_effect=[
+                    [_entry("first.fsa", dit="26OUM00001")], RuntimeError("boom"),
+                ]) as collect,
+                patch("core.html_reports.build_dit_html_reports") as build_reports,
+            ):
+                result = batch.run_batch_jobs(
+                    jobs=jobs,
+                    output_base=Path(tmp) / "output",
+                    out_folder_tmpl="ASSAY_REPORTS",
+                    outfile_html_tmpl="QC_REPORT_{name}.html",
+                    excel_name_tmpl="HemaFrag_QC_Trends.xlsx",
+                    pipeline_scope="all",
+                    assay_filter="",
+                    aggregate_dit_reports=True,
+                    continue_on_error=False,
+                    max_workers=1,
+                    defer_tracking_workbook_refresh=True,
+                    defer_dit_html_reports=False,
+                )
+
+            self.assertEqual(collect.call_count, 2)
+            self.assertEqual(result["failed_job_indexes"], [1])
+            self.assertEqual(result["unprocessed_job_indexes"], [2])
+            self.assertEqual(result["unprocessed_jobs"], ["last"])
+            self.assertFalse(result["cancelled"])
+            self.assertEqual(result["final_reports_skipped_reason"], "halted_after_error")
+            build_reports.assert_not_called()
+            manifest = load_run_manifest(Path(result["run_manifest_path"]))
+            self.assertEqual(manifest["status"], "completed_with_errors")
+            self.assertEqual(
+                [job["status"] for job in manifest["jobs"]],
+                ["completed", "failed", "unprocessed"],
+            )
+
     def test_cancel_stops_scheduling_and_preserves_review_bundle_and_manifest(self) -> None:
         import core.batch as batch
         from core.run_manifest import load_run_manifest

@@ -1082,6 +1082,7 @@ def run_batch_jobs(
     max_patient_workers = concurrency_plan.outer_workers
     cancellation = cancel_event or threading.Event()
     next_job_index = 0
+    halted_after_error = False
 
     try:
         with concurrency_environment(concurrency_plan):
@@ -1115,25 +1116,23 @@ def run_batch_jobs(
                                 raise
                             log(f"[BATCH] Worker future failed: {ex}")
 
-                if cancellation.is_set() and next_job_index < total:
-                    remaining = list(
-                        enumerate(
-                            jobs[next_job_index:],
-                            start=next_job_index,
-                        )
-                    )
-                    unprocessed_jobs.extend(
-                        str(job.get("name") or f"job_{index + 1}")
-                        for index, job in remaining
-                    )
-                    unprocessed_job_indexes.extend(index for index, _job in remaining)
-                    cancelled_jobs.extend(unprocessed_jobs)
-                    cancelled_job_indexes.extend(unprocessed_job_indexes)
     except Exception as ex:
+        halted_after_error = True
         if not continue_on_error:
             log(f"[BATCH] Batch execution halted after error: {ex}")
         else:
             log("[BATCH] Batch execution completed with some errors.")
+
+    # Both Stop and stop-on-error can leave jobs that were never submitted.
+    # Preserve those identities after active workers have reached their boundary.
+    remaining = list(enumerate(jobs[next_job_index:], start=next_job_index))
+    unprocessed_jobs.extend(
+        str(job.get("name") or f"job_{index + 1}") for index, job in remaining
+    )
+    unprocessed_job_indexes.extend(index for index, _job in remaining)
+    if cancellation.is_set():
+        cancelled_jobs.extend(unprocessed_jobs)
+        cancelled_job_indexes.extend(unprocessed_job_indexes)
     # --- CROSS-FOLDER DIT AGGREGATION ---
     all_collected_entries = _materialize_entries(all_collected_entries_by_job)
     qc_report_entries = _materialize_entries(qc_report_entries_by_job)
@@ -1232,6 +1231,7 @@ def run_batch_jobs(
         and not skip_html_reports
         and not block_dit_for_ladder_review
         and not run_cancelled
+        and not halted_after_error
     ):
         log("\n[BATCH] Final step: Building aggregated DIT HTML reports...")
 
@@ -1270,15 +1270,16 @@ def run_batch_jobs(
             aggregation_failed = True
             failed_jobs.append("DIT aggregation")
             log(f"[ERROR] Failed to build aggregated DIT reports: {e}")
-    elif run_cancelled and aggregate_dit_reports:
+    elif (run_cancelled or halted_after_error) and aggregate_dit_reports:
         log(
             "[BATCH] Final aggregate reports were not published because the batch "
-            "was cancelled before every selected job was processed."
+            + ("was halted after an error." if halted_after_error else "was cancelled.")
         )
     elif (
         aggregate_dit_reports
         and all_collected_entries
         and not run_cancelled
+        and not halted_after_error
         and (defer_dit_html_reports or skip_html_reports or block_dit_for_ladder_review)
     ):
         if active_analysis == "clonality" and not defer_tracking_workbook_refresh:
@@ -1308,7 +1309,7 @@ def run_batch_jobs(
             f"[BATCH] Batch cancelled: {len(completed_jobs)} completed, "
             f"{len(failed_jobs)} failed, {len(unprocessed_jobs)} not started."
         )
-    elif aggregation_failed:
+    elif aggregation_failed or halted_after_error:
         log("[BATCH] Batch run complete with aggregation errors.")
     else:
         log("[BATCH] Batch run complete.")
@@ -1319,6 +1320,13 @@ def run_batch_jobs(
                 total,
                 "Batch",
                 "cancelled",
+            )
+        elif halted_after_error:
+            update_callback(
+                len(completed_jobs) + len(failed_job_indexes),
+                total,
+                "Batch",
+                "error",
             )
         else:
             update_callback(total, total, "Done", "done")
@@ -1339,7 +1347,10 @@ def run_batch_jobs(
         "qc_report_entries": qc_report_entries,
         "ladder_review_gate": ladder_review_gate,
         "dit_reports_blocked": block_dit_for_ladder_review,
-        "final_reports_skipped_reason": "cancelled" if run_cancelled else "",
+        "final_reports_skipped_reason": (
+            "cancelled" if run_cancelled
+            else "halted_after_error" if halted_after_error else ""
+        ),
     }
     if run_manifest is not None:
         try:
