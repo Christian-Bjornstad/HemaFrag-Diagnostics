@@ -46,7 +46,7 @@ def test_review_finalize_updates_only_owning_assay_tracking(tmp_path, monkeypatc
 
     assert payload["final_reports_built"] is True
     assert [(assay, path) for assay, path, _entries, _kwargs in writes] == [
-        (analysis_id, local_path), (analysis_id, master_path),
+        (analysis_id, local_path),
     ]
     assert all(entries == [patient] for _assay, _path, entries, _kwargs in writes)
     if analysis_id == "clonality":

@@ -20,7 +20,7 @@ analysis through the in-process `fraggler_native` extension and a recovery CLI.
 6. Ambiguous or rejected ladders become review entries. Ladder Studio saves
    validated, source-specific adjustments; reruns verify them before use.
 7. `core.html_reports`, `core.plotting_plotly`, and `core.qc` generate output.
-   Assay-specific tracking writers publish local and configured master workbooks.
+   Assay-specific tracking writers publish to one explicitly configured workbook.
 
 ## Boundaries that must remain explicit
 
@@ -35,7 +35,7 @@ analysis through the in-process `fraggler_native` extension and a recovery CLI.
   a partial aggregate as its final report. Cancellation and failure remain distinct.
 - Manual peak edits are stored in reports. HTML/JavaScript serialization must
   preserve literal text and prevent user-derived strings from becoming script.
-- Report finalization updates the active assay's tracking destinations using the
+- Report finalization updates the active assay's tracking destination using the
   captured settings. FLT3 review must not write the Clonality master workbook.
 - Clonality rule interpretation remains available; the retired ML training and
   inference subsystems are absent.

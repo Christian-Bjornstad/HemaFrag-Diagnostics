@@ -49,6 +49,7 @@ TRACKING_IDENTITY_SALT_ENV = "FRAGGLER_TRACKING_IDENTITY_SALT"
 TRACKING_IDENTITY_SALT_PATH_ENV = "FRAGGLER_TRACKING_IDENTITY_SALT_PATH"
 DEFAULT_TRACKING_IDENTITY_SALT_PATH = Path.home() / ".config" / "fraggler" / "tracking_identity_salt.txt"
 RUN_SHEET_COLUMNS = [
+    "Operator",
     "Month",
     "IdentityKey",
     "File",
@@ -172,6 +173,8 @@ def update_clonality_tracking_workbook(
     *,
     settings: Mapping | None = None,
 ) -> None:
+    if excel_path is None:
+        return
     excel_path.parent.mkdir(parents=True, exist_ok=True)
 
     rules = build_clonality_qc_rules(settings) if rules is None else rules
@@ -402,6 +405,7 @@ def _build_run_row(entry: dict) -> dict:
     trend_evidence = build_entry_qc_trend_evidence(entry)
 
     return {
+        "Operator": str(entry.get("operator") or ""),
         "Month": _month_bucket(join_fields["run_date"]),
         "IdentityKey": join_fields["identity_key"],
         "File": join_fields["file_name"],
@@ -655,26 +659,8 @@ def resolve_global_clonality_tracking_path(settings: Mapping | None = None) -> P
 def update_global_clonality_tracking_workbook(
     entries: list[dict], *, settings: Mapping | None = None,
 ) -> Path | None:
-    if not entries:
-        return None
-    path = resolve_global_clonality_tracking_path(settings)
-    if path is None:
-        print_warning(
-            "[TRACKING] Clonality master workbook is disabled. Set 'Master Tracking Excel File' in Clonality Settings to enable it."
-        )
-        return None
-    try:
-        if settings is None:
-            update_clonality_tracking_workbook(path, entries)
-        else:
-            update_clonality_tracking_workbook(path, entries, settings=settings)
-    except Exception as exc:
-        print_warning(
-            f"[TRACKING] Could not update optional clonality master workbook {path}: {exc}. "
-            "The local run workbook and reports were kept."
-        )
-        return None
-    return path
+    """Retired secondary publication; tracking has a single destination."""
+    return None
 
 
 def _build_patient_identity_key(source_run_dir: str, file_name: str) -> str:

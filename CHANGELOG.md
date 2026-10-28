@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Include configured operator in reports and tracking rows.
+- Use a single optional tracking workbook per analysis, including archive runs;
+  remove secondary master publication and automatic yearly/monthly workbooks.
+- Avoid new Excel table objects and synchronize existing table column metadata.
+- Preserve distinct FLT3 assays when patient and well identifiers match.
+- Make supplemental FLT3 diagnostic CSV exports opt-in.
+
 ## 1.2.1 — 2026-10-22
 
 ### Fixed

@@ -242,6 +242,11 @@ def run_pipeline(
         print_warning("Ingen gyldige entries etter analyse – avslutter.")
         return [] if return_entries else None
 
+    from core.report_identity import operator_name
+    settings = run_context.settings_snapshot if run_context else None
+    for entry in entries:
+        entry.setdefault("operator", operator_name(settings=settings))
+
     if make_dit_reports:
         build_general_html_report(entries, assay_dir, run_label=assay_dir.name or fsa_dir.name)
 

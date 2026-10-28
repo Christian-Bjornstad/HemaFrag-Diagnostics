@@ -196,8 +196,6 @@ def test_rule_based_interpretation_round_trip(isolated_settings):
         ("clonality", "tracking_excel_path", "_browse_excel_path"),
         ("flt3", "tracking_excel_path", "_browse_excel_path"),
         ("general", "tracking_excel_path", "_browse_excel_path"),
-        ("clonality", "global_tracking_excel_path", "_browse_global_tracking_excel_path"),
-        ("flt3", "global_tracking_excel_path", "_browse_global_tracking_excel_path"),
     ],
 )
 def test_selecting_and_saving_existing_tracking_workbook_preserves_contents(

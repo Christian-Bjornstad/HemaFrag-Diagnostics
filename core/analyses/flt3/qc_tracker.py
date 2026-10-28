@@ -32,6 +32,7 @@ FLT3_TRACKING_FILENAME = "FLT3_Tracking.xlsx"
 FLT3_NPM1_QC_TRACKER_FILENAME = FLT3_TRACKING_FILENAME
 
 RUN_SHEET_COLUMNS = [
+    "Operator",
     "Month",
     "RunDate",
     "DIT",
@@ -292,7 +293,7 @@ def build_tracking_base_row(entry: dict) -> dict:
     run_date = str(entry.get("run_date") or "").strip() or parse_pcr_date_from_filename(file_name) or ""
     run_code = parse_run_code_from_filename(file_name) or ""
     well = str(entry.get("well_id") or "").strip() or parse_well_from_filename(file_name) or ""
-    identity_key = f"{source_run_dir}::{file_name}" if control else f"{source_run_dir}::{make_run_key(file_name)}::{well or file_name}"
+    identity_key = f"{source_run_dir}::{file_name}" if control else f"{source_run_dir}::{make_run_key(file_name)}::{entry.get('assay') or ''}::{entry.get('analysis_type') or ''}::{well or file_name}"
     dit = str(entry.get("dit") or extract_dit_from_name(file_name) or "").strip().upper()
     specimen_id = normalize_specimen_id(entry.get("specimen_id")) or dit
     sample_kind = "control" if control else ("patient" if dit else "unassigned")
@@ -309,6 +310,7 @@ def build_tracking_base_row(entry: dict) -> dict:
     )
 
     return {
+        "Operator": str(entry.get("operator") or ""),
         "Month": _month_bucket(run_date),
         "IdentityKey": identity_key,
         "File": file_name,
@@ -371,6 +373,8 @@ def update_flt3_npm1_qc_tracker(
     runs_df: pd.DataFrame,
     peaks_df: pd.DataFrame,
 ) -> None:
+    if excel_path is None:
+        return
     excel_path.parent.mkdir(parents=True, exist_ok=True)
     runs_df = _reindex_columns(runs_df, RUN_SHEET_COLUMNS)
     peaks_df = _reindex_columns(peaks_df, PEAK_SHEET_COLUMNS)
@@ -497,23 +501,8 @@ def resolve_global_flt3_tracking_path(settings: Mapping | None = None) -> Path |
 def update_global_flt3_tracking_workbook(
     entries: list[dict], *, settings: Mapping | None = None,
 ) -> Path | None:
-    if not entries:
-        return None
-    path = resolve_global_flt3_tracking_path(settings)
-    if path is None:
-        print_warning(
-            "[TRACKING] FLT3 master workbook is disabled. Set 'Master Tracking Excel File' in FLT3 Settings to enable it."
-        )
-        return None
-    try:
-        update_flt3_npm1_qc_tracker_workbook(path, entries)
-    except Exception as exc:
-        print_warning(
-            f"[TRACKING] Could not update optional FLT3 master workbook {path}: {exc}. "
-            "The local run workbook and reports were kept."
-        )
-        return None
-    return path
+    """Retired secondary publication; tracking has a single destination."""
+    return None
 
 
 def build_flt3_npm1_tracker_frames(entries: list[dict]) -> tuple[pd.DataFrame, pd.DataFrame]:

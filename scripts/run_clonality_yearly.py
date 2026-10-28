@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from config import APP_SETTINGS
+from config import APP_SETTINGS, resolve_analysis_excel_output_path
 from core.clonality_backfill import run_clonality_backfill
 from scripts.combine_clonality_yearly_overview import combine_run_root
 
@@ -190,7 +190,7 @@ def run_yearly_validation(
                     input_root=source,
                     month=month_key,
                     output_base=month_dir,
-                    tracking_excel_path=month_dir / "track-clonality.xlsx",
+                    tracking_excel_path=resolve_analysis_excel_output_path("clonality", month_dir, "Tracking.xlsx"),
                     state_file=month_dir / "backfill_state.json",
                     max_workers=max(1, int(max_workers)),
                     folder_workers=max(1, int(folder_workers)),
@@ -230,19 +230,8 @@ def run_yearly_validation(
     finally:
         APP_SETTINGS["engine"]["use_rust"] = previous_rust
 
-    workbook_path: Path | None = None
+    workbook_path = resolve_analysis_excel_output_path("clonality", run_root, "Tracking.xlsx")
     cancelled = cancelled or bool(cancel_event and cancel_event.is_set())
-    if not cancelled:
-        try:
-            workbook_path = combine_run_root(
-                run_root,
-                run_root / f"track-clonality-{year}-overview.xlsx",
-                year_label=year,
-                include_sl=include_sl,
-            )
-        except FileNotFoundError:
-            workbook_path = None
-
     manifest["status"] = (
         "cancelled"
         if cancelled

@@ -3,8 +3,10 @@
 ## First use
 
 Choose the assay workflow and configure input and output folders in Settings.
-Set the optional master tracking workbook for that assay only if a shared
-workbook should be updated. A blank master path disables shared updates.
+Set **Tracking Excel File** for each assay workflow to the single workbook you
+want to maintain. A blank field disables Excel output. Old master settings are
+used only when no tracking path exists; saving Settings migrates that path.
+No additional local, master, monthly, or yearly workbooks are created.
 General profiles also specify ladder, size-standard channel, sample channels,
 and base-pair range.
 
@@ -58,3 +60,7 @@ different size standard.
 
 The [Norwegian user manual](HemaFrag_Brukerveiledning.docx) provides the detailed
 operator walkthrough.
+
+The Author field in shared settings appears as Operatør in HTML reports and as
+Operator in tracking rows. New tracking sheets use filtered ranges without
+Excel table objects. Existing operator columns, formulas, and history are retained.

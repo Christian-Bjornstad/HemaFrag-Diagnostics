@@ -239,7 +239,7 @@ def test_yearly_orchestration_cancels_between_months_without_combining(
     assert any(event["event"] == "run_cancelled" for event in events)
 
 
-def test_cancellation_during_combine_reports_completed_output(tmp_path, monkeypatch):
+def test_archive_does_not_create_an_extra_combined_workbook(tmp_path, monkeypatch):
     source = tmp_path / "input"
     source.mkdir()
     cancel_event = threading.Event()
@@ -261,8 +261,9 @@ def test_cancellation_during_combine_reports_completed_output(tmp_path, monkeypa
     )
 
     assert result["status"] == "completed"
-    assert result["cancellation_requested"] is True
-    assert result["combined_workbook_path"] == str(workbook.resolve())
+    assert result["cancellation_requested"] is False
+    assert result["combined_workbook_path"] == ""
+    assert not workbook.exists()
 
 
 def test_archive_runner_support_modules_are_available():

@@ -524,8 +524,6 @@ def run_batch_jobs(
     log(f"[BATCH] Starting batch run of {total} jobs.")
 
     agg_outdir = output_base / (aggregate_outdir_name or OUTDIR_NAME) if aggregate_dit_reports else None
-    if agg_outdir is not None:
-        agg_outdir.mkdir(exist_ok=True, parents=True)
 
     run_manifest = None
     try:
@@ -564,41 +562,11 @@ def run_batch_jobs(
     def _clonality_tracking_path(default_dir: Path) -> Path:
         from core.analyses.clonality.tracking_excel import CLONALITY_TRACKING_FILENAME
 
-        if run_context is not None:
-            configured = str(analysis_batch.get("tracking_excel_path") or "").strip()
-            if not configured:
-                return tracking_excel_path or default_dir / CLONALITY_TRACKING_FILENAME
-            path = Path(configured).expanduser()
-            if configured.endswith(("/", "\\")) or path.suffix.lower() != ".xlsx":
-                path /= CLONALITY_TRACKING_FILENAME
-            return tracking_excel_path or path
         return tracking_excel_path or resolve_analysis_excel_output_path(
-            "clonality",
-            default_dir,
-            CLONALITY_TRACKING_FILENAME,
+            "clonality", default_dir, CLONALITY_TRACKING_FILENAME,
+            settings=(run_context.settings_copy() if run_context else None),
         )
 
-    def _update_global_clonality_tracking(entries: list[Any]) -> None:
-        if active_analysis != "clonality" or not entries:
-            return
-        try:
-            from core.analyses.clonality.tracking_excel import (
-                update_clonality_tracking_workbook,
-                update_global_clonality_tracking_workbook,
-            )
-
-            if run_context is None:
-                global_path = update_global_clonality_tracking_workbook(entries)
-            else:
-                configured = str(analysis_batch.get("global_tracking_excel_path") or "").strip()
-                global_path = Path(configured).expanduser() if configured else None
-                if global_path is not None:
-                    update_clonality_tracking_workbook(global_path, entries, **tracking_context_kwargs)
-            if global_path is not None:
-                log(f"[BATCH] Updated global clonality tracking workbook: {global_path}")
-        except Exception as exc:
-            log(f"[WARN] Could not update global clonality tracking workbook: {exc}")
-    
     # Storage for cross-folder aggregation
     all_collected_entries_by_job: dict[int, list[Any]] = {}
     qc_report_entries_by_job: dict[int, list[Any]] = {}
@@ -913,7 +881,6 @@ def run_batch_jobs(
                                     qc_entries,
                                     **tracking_context_kwargs,
                                 )
-                            _update_global_clonality_tracking(qc_entries)
                         log(f"[BATCH] Collected {len(qc_entries)} tracking entries from QC job {job_name}.")
                 else:
                     run_qc_job(
@@ -1264,7 +1231,6 @@ def run_batch_jobs(
                     dit_report_entries,
                     **tracking_context_kwargs,
                 )
-                _update_global_clonality_tracking(dit_report_entries)
             log(f"[BATCH] Successfully built aggregated DIT reports in {agg_outdir}")
         except Exception as e:
             aggregation_failed = True
@@ -1296,7 +1262,6 @@ def run_batch_jobs(
                 dit_report_entries,
                 **tracking_context_kwargs,
             )
-            _update_global_clonality_tracking(dit_report_entries)
         if block_dit_for_ladder_review:
             log("[BATCH] Blocked aggregated DIT HTML report generation due to unresolved ladder review cases.")
         else:

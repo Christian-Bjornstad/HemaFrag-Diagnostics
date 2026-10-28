@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from config import APP_SETTINGS
+from config import APP_SETTINGS, resolve_analysis_excel_output_path
 from core.analyses.clonality.ladder_review_gate import (
     write_ladder_review_gate,
 )
@@ -239,7 +239,7 @@ def run_yearly_validation(
                     aggregate_dit_reports=True,
                     continue_on_error=True,
                     max_workers=max(1, int(max_workers)),
-                    tracking_excel_path=month_dir / "FLT3_Tracking.xlsx",
+                    tracking_excel_path=resolve_analysis_excel_output_path("flt3", month_dir, "Tracking.xlsx"),
                     aggregate_outdir_name="reports_archive",
                     skip_html_reports=bool(skip_html_reports),
                     cancel_event=cancel_event,
@@ -306,17 +306,8 @@ def run_yearly_validation(
         APP_SETTINGS.clear()
         APP_SETTINGS.update(settings_backup)
 
-    workbook_path: Path | None = None
+    workbook_path = resolve_analysis_excel_output_path("flt3", run_root, "Tracking.xlsx")
     cancelled = cancelled or bool(cancel_event and cancel_event.is_set())
-    if not cancelled:
-        try:
-            workbook_path = combine_run_root(
-                run_root,
-                run_root / f"track-flt3-{year}-overview.xlsx",
-                year_label=year,
-            )
-        except FileNotFoundError:
-            workbook_path = None
     manifest["status"] = (
         "cancelled"
         if cancelled

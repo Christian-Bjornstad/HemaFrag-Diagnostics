@@ -656,17 +656,17 @@ def resolve_analysis_excel_output_path(
     default_dir: Path,
     default_filename: str,
     settings: Dict[str, Any] | None = None,
-) -> Path:
+) -> Path | None:
     """Resolve the configured Excel output path for an analysis.
 
-    Empty settings fall back to ``default_dir / default_filename``.
+    Blank tracking disables Excel output. Legacy master is used only if tracking is blank.
     A configured directory path uses ``default_filename`` inside that directory.
     """
-    default_path = Path(default_dir).expanduser() / default_filename
     profile = get_analysis_settings(analysis_id, settings)
-    configured = str(profile.get("batch", {}).get("tracking_excel_path", "")).strip()
+    batch = profile.get("batch", {})
+    configured = str(batch.get("tracking_excel_path") or batch.get("global_tracking_excel_path") or "").strip()
     if not configured:
-        return default_path
+        return None
 
     configured_path = Path(configured).expanduser()
     if configured.endswith((os.sep, "/")):

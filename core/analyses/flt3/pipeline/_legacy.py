@@ -7085,6 +7085,8 @@ def update_flt3_npm1_qc_tracker_workbook(
     excel_path: Path,
     entries: list[dict],
 ) -> None:
+    if excel_path is None:
+        return
     runs_df, peaks_df = _build_flt3_npm1_tracker_frames(entries)
     update_flt3_npm1_qc_tracker(
         excel_path,
@@ -7310,10 +7312,15 @@ def run_pipeline(
             f"{review_bundle['cases_path']} for Ladder Editor."
         )
 
+    from core.report_identity import operator_name
+    for entry in entries:
+        entry.setdefault("operator", operator_name())
+
     output_started = time.perf_counter()
     _calculate_ratios(entries)
-    generate_flt3_peak_report(entries, assay_dir)
-    generate_flt3_bp_validation_report(entries, assay_dir)
+    if APP_SETTINGS.get("engine", {}).get("export_diagnostic_csv", False):
+        generate_flt3_peak_report(entries, assay_dir)
+        generate_flt3_bp_validation_report(entries, assay_dir)
     output_seconds = time.perf_counter() - output_started
     resolved_tracking_excel_path = tracking_excel_path or resolve_analysis_excel_output_path(
         "flt3",
