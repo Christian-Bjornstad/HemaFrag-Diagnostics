@@ -11,7 +11,8 @@ import time
 import numpy as np
 import pandas as pd
 
-from config import resolve_analysis_excel_output_path
+from config import APP_SETTINGS, resolve_analysis_excel_output_path
+from core.run_context import RunContext
 from fraggler.fraggler import (
     FsaFile,
     calculate_best_combination_of_size_standard_peaks,
@@ -7203,11 +7204,14 @@ def run_pipeline(
     tracking_excel_path: Path | None = None,
     update_tracking_workbook: bool = True,
     progress_callback=None,
+    *,
+    run_context: RunContext | None = None,
 ) -> list[dict] | None:
     """
     Kjor FLT3-pipeline pa alle .fsa-filer i fsa_dir.
     """
     pipeline_started = time.perf_counter()
+    settings = run_context.settings_snapshot if run_context is not None else APP_SETTINGS
     fsa_dir, assay_dir = normalize_pipeline_paths(fsa_dir, base_outdir, assay_folder_name)
 
     scan_started = time.perf_counter()
@@ -7314,11 +7318,11 @@ def run_pipeline(
 
     from core.report_identity import operator_name
     for entry in entries:
-        entry.setdefault("operator", operator_name())
+        entry.setdefault("operator", operator_name(settings=settings))
 
     output_started = time.perf_counter()
     _calculate_ratios(entries)
-    if APP_SETTINGS.get("engine", {}).get("export_diagnostic_csv", False):
+    if settings.get("engine", {}).get("export_diagnostic_csv", False):
         generate_flt3_peak_report(entries, assay_dir)
         generate_flt3_bp_validation_report(entries, assay_dir)
     output_seconds = time.perf_counter() - output_started
@@ -7326,6 +7330,7 @@ def run_pipeline(
         "flt3",
         assay_dir,
         FLT3_QC_TRENDS_FILENAME,
+        settings,
     )
     tracking_started = time.perf_counter()
     if update_tracking_workbook:

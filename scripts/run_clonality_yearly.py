@@ -242,7 +242,7 @@ def run_yearly_validation(
     )
     manifest["failed_items"] = failures
     manifest["combined_workbook_path"] = (
-        str(workbook_path.resolve()) if workbook_path else ""
+        str(workbook_path.resolve()) if workbook_path and workbook_path.is_file() else ""
     )
     manifest["review_bundles"] = _review_bundles(run_root)
     manifest["updated_at_utc"] = _utc_now()

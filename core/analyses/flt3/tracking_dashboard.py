@@ -11,6 +11,7 @@ from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+from core.tracking_dashboard_formulas import install_live_tracking_dashboard
 
 
 HEADER_FILL = PatternFill("solid", fgColor="174A5B")
@@ -122,6 +123,7 @@ def refresh_flt3_tracking_dashboard(excel_path: Path) -> None:
                 dashboard,
                 assay_count=min(len(assay_summary), 12),
             )
+            install_live_tracking_dashboard(wb, analysis="flt3")
 
         wb.save(excel_path)
     finally:
@@ -644,13 +646,16 @@ def _add_review_validation(ws) -> None:
     column = headers.get("ReviewStatus")
     if not column:
         return
+    validation_end = max(ws.max_row + 5000, 5000)
+    target = f"{get_column_letter(column)}2:{get_column_letter(column)}{validation_end}"
+    for validation in ws.data_validations.dataValidation:
+        if validation.type == "list" and validation.formula1 == '"Not reviewed,Reviewed,Follow-up"':
+            validation.sqref = target
+            return
     validation = DataValidation(
         type="list",
         formula1='"Not reviewed,Reviewed,Follow-up"',
         allow_blank=True,
     )
     ws.add_data_validation(validation)
-    validation_end = max(ws.max_row + 5000, 5000)
-    validation.add(
-        f"{get_column_letter(column)}2:{get_column_letter(column)}{validation_end}"
-    )
+    validation.add(target)

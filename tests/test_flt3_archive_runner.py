@@ -176,7 +176,8 @@ def test_flt3_yearly_runner_writes_review_bundle_and_manifest(
     assert cases.is_file()
     assert summary["review_case_count"] == 1
     assert summary["run_manifest_path"].endswith("run.json")
-    assert captured["tracking_excel_path"] is None
+    from config import resolve_analysis_excel_output_path
+    assert captured["tracking_excel_path"] == resolve_analysis_excel_output_path("flt3", tmp_path, "Tracking.xlsx")
 
 
 def test_flt3_yearly_runner_propagates_cancellation_and_skips_combine(

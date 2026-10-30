@@ -39,7 +39,7 @@ def run_pipeline(
     )
     context_kwargs = (
         {"run_context": run_context}
-        if run_context is not None and run_context.analysis_id in {"general", "clonality"}
+        if run_context is not None and run_context.analysis_id in {"general", "clonality", "flt3"}
         else {}
     )
     return mod.run_pipeline(

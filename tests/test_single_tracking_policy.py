@@ -16,6 +16,11 @@ def test_only_selected_workbook_is_resolved(analysis, tmp_path):
     settings['analyses'][analysis]['batch']['tracking_excel_path'] = ''
     assert resolve_analysis_excel_output_path(analysis, tmp_path, 'extra.xlsx', settings) == tmp_path / 'old-master.xlsx'
     settings['analyses'][analysis]['batch']['global_tracking_excel_path'] = ''
+    settings['analyses'][analysis]['batch']['output_base'] = str(tmp_path)
+    expected_name = 'HemaFrag_FLT3_All_Runs.xlsx' if analysis == 'flt3' else 'HemaFrag_Clonality_All_Runs.xlsx'
+    assert resolve_analysis_excel_output_path(analysis, tmp_path / 'run-one', 'extra.xlsx', settings) == tmp_path / 'Tracking' / expected_name
+    assert resolve_analysis_excel_output_path(analysis, tmp_path / 'run-two', 'extra.xlsx', settings) == tmp_path / 'Tracking' / expected_name
+    settings['analyses'][analysis]['batch']['tracking_excel_enabled'] = False
     assert resolve_analysis_excel_output_path(analysis, tmp_path, 'extra.xlsx', settings) is None
 
 
@@ -98,11 +103,30 @@ def test_settings_migrates_legacy_master_and_allows_disabling(qapp, monkeypatch,
     saved = config.load_settings(config.SETTINGS_PATH)['analyses']['flt3']['batch']
     assert saved['tracking_excel_path'] == str(tmp_path / 'chosen.xlsx')
     assert saved['global_tracking_excel_path'] == ''
-    page.tracking_excel_path.clear()
+    page.chk_tracking_excel.setChecked(False)
     assert page.save()
     saved = config.load_settings(config.SETTINGS_PATH)
     assert config.resolve_analysis_excel_output_path('flt3', tmp_path, 'extra.xlsx', saved) is None
     assert not list(tmp_path.glob('*.xlsx'))
+
+
+def test_empty_settings_do_not_use_live_operator_configuration(monkeypatch, tmp_path):
+    import config
+    monkeypatch.setitem(config.APP_SETTINGS['analyses']['flt3']['batch'], 'tracking_excel_path', 'private.xlsx')
+    assert config.get_analysis_settings('flt3', {})['batch']['tracking_excel_path'] == ''
+
+
+@pytest.mark.parametrize('analysis', ['clonality', 'flt3'])
+def test_automatic_tracking_checkbox_and_placeholder(qapp, tmp_path, analysis):
+    import config
+    from gui_qt.tabs.tab_settings import TabAnalysisSettings
+    profile = config.APP_SETTINGS['analyses'][analysis]['batch']
+    profile.update(tracking_excel_path='', global_tracking_excel_path='', output_base=str(tmp_path))
+    page = TabAnalysisSettings(analysis)
+    assert page.chk_tracking_excel.isChecked()
+    assert 'Tracking' in page.tracking_excel_path.placeholderText()
+    assert page.save()
+    assert config.resolve_analysis_excel_output_path(analysis, tmp_path / 'run', 'extra.xlsx').parent == tmp_path / 'Tracking'
 
 
 @pytest.mark.parametrize('analysis,assays', [

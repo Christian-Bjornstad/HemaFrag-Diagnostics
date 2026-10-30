@@ -3,9 +3,35 @@
 ## First use
 
 Choose the assay workflow and configure input and output folders in Settings.
-Set **Tracking Excel File** for each assay workflow to the single workbook you
-want to maintain. A blank field disables Excel output. Old master settings are
-used only when no tracking path exists; saving Settings migrates that path.
+Excel tracking is enabled automatically for Clonality and FLT3. With **Tracking
+Excel File** blank, the app creates one workbook per analysis under the profile's
+**Default Output Folder**:
+
+- `Tracking/HemaFrag_Clonality_All_Runs.xlsx`
+- `Tracking/HemaFrag_FLT3_All_Runs.xlsx`
+
+Patient runs, QC runs, archive runs and reviewed reruns update the same file.
+Choose an existing workbook to keep using its history, or enter a new path.
+Old master paths remain supported and migrate when Settings is saved. Uncheck
+**Update Excel automatically after runs** to disable tracking explicitly.
+Changing the output folder changes the automatic destination; select an explicit
+tracking path if the history must remain in a fixed shared location.
+
+The **Dashboard** contains live Excel formulas for volumes, QC review, manual
+adjustments, accepted fits, assay/control summaries and the latest twelve months.
+Clonality includes marker deviation summaries; FLT3 includes positive calls and
+control ratios. Missing numerical measurements remain blank. These are summaries
+of stored analysis results, not a new clinical interpretation.
+
+**Runs** is the dashboard's source. Edit **ReviewStatus** and **TrackingNote**
+there. Marking a row **Reviewed** reduces **Awaiting review** while preserving
+its recorded QC issue. Excel recalculates the dashboard and charts when source
+fields change. Each app update extends the formulas, refreshes categories, and
+retains row identities, history, operator columns, formulas and extra worksheets.
+The patient/control tabs provide filtered subsets of the run ledger.
+
+Close the workbook in Excel while running an analysis. A locked workbook cannot
+be replaced; the previous file stays intact and the app reports the save failure.
 No additional local, master, monthly, or yearly workbooks are created.
 General profiles also specify ladder, size-standard channel, sample channels,
 and base-pair range.

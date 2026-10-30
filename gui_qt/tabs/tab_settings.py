@@ -101,11 +101,15 @@ class TabAnalysisSettings(QWidget):
         layout.addRow("Default Output Folder:", row_out)
 
         row_excel = QHBoxLayout()
+        self.chk_tracking_excel = QCheckBox("Update Excel automatically after runs")
+        layout.addRow(self.chk_tracking_excel)
         self.tracking_excel_path = QLineEdit()
-        self.tracking_excel_path.setPlaceholderText("Leave blank to disable Excel tracking")
         self.tracking_excel_path.setToolTip(
-            "Choose an existing workbook to keep its tracking history, or enter a path for a new workbook."
+            "Leave blank to use the automatic Tracking file. Choose an existing workbook "
+            "to retain its history, or enter a new file path. Close the file in Excel during runs."
         )
+        self.default_output.textChanged.connect(self._update_tracking_placeholder)
+        self.chk_tracking_excel.toggled.connect(self.tracking_excel_path.setEnabled)
         btn_browse_excel = QPushButton("Browse...")
         btn_browse_excel.clicked.connect(self._browse_excel_path)
         row_excel.addWidget(self.tracking_excel_path, stretch=1)
@@ -207,6 +211,9 @@ class TabAnalysisSettings(QWidget):
         self.default_input.setText(batch_settings.get("base_input_dir", str(Path.home())))
         self.default_output.setText(batch_settings.get("output_base", str(Path.home())))
         self.tracking_excel_path.setText(batch_settings.get("tracking_excel_path") or batch_settings.get("global_tracking_excel_path") or "")
+        self.chk_tracking_excel.setChecked(bool(batch_settings.get("tracking_excel_enabled", True)))
+        self.tracking_excel_path.setEnabled(self.chk_tracking_excel.isChecked())
+        self._update_tracking_placeholder()
         self.global_tracking_excel_path.setText(
             str(batch_settings.get("global_tracking_excel_path", "") or "")
         )
@@ -242,6 +249,7 @@ class TabAnalysisSettings(QWidget):
         batch_settings["base_input_dir"] = self.default_input.text().strip()
         batch_settings["output_base"] = self.default_output.text().strip()
         batch_settings["tracking_excel_path"] = self.tracking_excel_path.text().strip()
+        batch_settings["tracking_excel_enabled"] = self.chk_tracking_excel.isChecked()
         batch_settings["global_tracking_excel_path"] = ""
         batch_settings["aggregate_by_patient"] = self.chk_agg_pat.isChecked()
         batch_settings["patient_id_regex"] = self.patient_regex.text().strip()
@@ -282,6 +290,17 @@ class TabAnalysisSettings(QWidget):
             return
         self.dirty_lbl.setText("Unsaved profile changes" if dirty else "")
         self.dirty_lbl.setStyleSheet("color: #b45309; font-weight: 500;")
+
+    def _update_tracking_placeholder(self) -> None:
+        name = {
+            "clonality": "HemaFrag_Clonality_All_Runs.xlsx",
+            "flt3": "HemaFrag_FLT3_All_Runs.xlsx",
+        }.get(self.analysis_id)
+        if name:
+            folder = Path(self.default_output.text().strip() or Path.home()) / "Tracking"
+            self.tracking_excel_path.setPlaceholderText(str(folder / name))
+        else:
+            self.tracking_excel_path.setPlaceholderText("Optional Excel file")
 
     def _connect_dirty_signals(self) -> None:
         for widget in self.findChildren(QLineEdit):

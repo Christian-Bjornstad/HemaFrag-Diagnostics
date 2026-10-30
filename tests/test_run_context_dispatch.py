@@ -70,7 +70,7 @@ def test_parallel_contexts_dispatch_despite_global_mutation(monkeypatch, tmp_pat
     assert {global_analysis for _, global_analysis in seen} == {"flt3"}
 
 
-@pytest.mark.parametrize("analysis_id", ["general", "clonality"])
+@pytest.mark.parametrize("analysis_id", ["general", "clonality", "flt3"])
 def test_pipeline_forwards_context_to_context_aware_analysis(monkeypatch, tmp_path, analysis_id):
     from core import pipeline
 

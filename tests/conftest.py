@@ -35,6 +35,8 @@ def isolated_operator_state(monkeypatch, tmp_path):
     previous = copy.deepcopy(config.APP_SETTINGS)
     config.APP_SETTINGS.clear()
     config.APP_SETTINGS.update(copy.deepcopy(config.DEFAULT_SETTINGS))
+    for profile in config.APP_SETTINGS["analyses"].values():
+        profile["batch"]["output_base"] = str(tmp_path / "output")
     monkeypatch.setattr(config, "SETTINGS_PATH", tmp_path / "settings.yaml")
     monkeypatch.setattr(config, "LEGACY_SETTINGS_PATH", tmp_path / "legacy.yaml")
     monkeypatch.setenv("HEMAFRAG_SETTINGS_PATH", str(tmp_path / "settings.yaml"))

@@ -2,8 +2,15 @@
 
 ## Unreleased
 
+- Fix FLT3 patient/QC completion failing with `APP_SETTINGS is not defined`.
+- Use captured FLT3 settings for operator, tracking destination and diagnostic
+  exports; support immutable settings snapshots in the shared profile resolver.
+- Automatically create separate Clonality/FLT3 tracking histories in the output
+  folder, with an explicit setting to disable tracking.
+- Add live Excel dashboard formulas, review follow-up, monthly trends and charts;
+  verify recalculation after source edits in desktop Excel when installed.
 - Include configured operator in reports and tracking rows.
-- Use a single optional tracking workbook per analysis, including archive runs;
+- Use a single tracking workbook per analysis, including archive runs;
   remove secondary master publication and automatic yearly/monthly workbooks.
 - Avoid new Excel table objects and synchronize existing table column metadata.
 - Preserve distinct FLT3 assays when patient and well identifiers match.

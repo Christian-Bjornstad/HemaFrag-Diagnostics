@@ -112,7 +112,7 @@ class Flt3TrackingOutputTests(unittest.TestCase):
             dashboard = wb["Dashboard"]
             self.assertEqual(dashboard["A16"].value, "Assay")
             self.assertEqual(dashboard["A17"].value, "FLT3-D835")
-            self.assertEqual(dashboard["E6"].value, 0)
+            self.assertEqual(dashboard["E6"].data_type, "f")
             wb.close()
 
     def test_flt3_tracking_preserves_rox500_qc_sheets_in_shared_global_workbook(self) -> None:

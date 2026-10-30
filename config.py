@@ -102,8 +102,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
-                # Optional shared/master workbook. Blank disables global updates
-                # until the operator selects a reachable file in Settings.
+                "tracking_excel_enabled": True,
+                # Retain legacy paths until the profile is saved in Settings.
                 "global_tracking_excel_path": "",
                 "run_date_filter": "latest",
                 "aggregate_by_patient": True,
@@ -145,6 +145,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
                 "base_input_dir": str(Path.home()),
                 "output_base": str(Path.home()),
                 "tracking_excel_path": "",
+                "tracking_excel_enabled": True,
                 "global_tracking_excel_path": "",
                 "run_date_filter": "latest",
                 "aggregate_by_patient": True,
@@ -227,11 +228,11 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
 # LOAD / SAVE
 # ============================================================
 
-def _deep_update(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+def _deep_update(base: Dict[str, Any], override: Mapping[str, Any]) -> Dict[str, Any]:
     """Recursively merge *override* into *base*."""
     result = copy.deepcopy(base)
     for k, v in override.items():
-        if isinstance(v, dict) and isinstance(result.get(k), dict):
+        if isinstance(v, Mapping) and isinstance(result.get(k), dict):
             result[k] = _deep_update(result[k], v)
         else:
             result[k] = v
@@ -587,6 +588,8 @@ def _validate_settings(settings: Dict[str, Any]) -> None:
             profile_batch["output_base"] = defaults["batch"]["output_base"]
         if not isinstance(profile_batch.get("tracking_excel_path"), str):
             profile_batch["tracking_excel_path"] = defaults["batch"].get("tracking_excel_path", "")
+        if analysis_id in {"clonality", "flt3"} and not isinstance(profile_batch.get("tracking_excel_enabled"), bool):
+            profile_batch["tracking_excel_enabled"] = True
         if not isinstance(profile_batch.get("global_tracking_excel_path"), str):
             profile_batch["global_tracking_excel_path"] = defaults["batch"].get("global_tracking_excel_path", "")
         # Older settings shipped with a Mac-only T7 path. On Windows that path
@@ -639,15 +642,15 @@ def _validate_settings(settings: Dict[str, Any]) -> None:
             _normalize_general_pipeline_settings(profile_pipeline)
 
 
-def get_analysis_settings(analysis_id: str | None = None, settings: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def get_analysis_settings(analysis_id: str | None = None, settings: Mapping[str, Any] | None = None) -> Dict[str, Any]:
     """Return the merged per-analysis settings profile."""
-    settings = settings or APP_SETTINGS
+    settings = APP_SETTINGS if settings is None else settings
     analysis_id = analysis_id or settings.get("active_analysis", "clonality")
     analysis_defaults = DEFAULT_SETTINGS.get("analyses", {}).get(
         analysis_id,
         DEFAULT_SETTINGS["analyses"]["clonality"],
     )
-    stored = settings.setdefault("analyses", {}).get(analysis_id, {})
+    stored = settings.get("analyses", {}).get(analysis_id, {})
     return _deep_update(analysis_defaults, stored)
 
 
@@ -655,18 +658,28 @@ def resolve_analysis_excel_output_path(
     analysis_id: str,
     default_dir: Path,
     default_filename: str,
-    settings: Dict[str, Any] | None = None,
+    settings: Mapping[str, Any] | None = None,
 ) -> Path | None:
     """Resolve the configured Excel output path for an analysis.
 
-    Blank tracking disables Excel output. Legacy master is used only if tracking is blank.
+    Clonality and FLT3 default to one history file in the profile's output folder.
+    Explicitly disabling tracking takes precedence over automatic and legacy paths.
     A configured directory path uses ``default_filename`` inside that directory.
     """
     profile = get_analysis_settings(analysis_id, settings)
     batch = profile.get("batch", {})
+    if not batch.get("tracking_excel_enabled", True):
+        return None
     configured = str(batch.get("tracking_excel_path") or batch.get("global_tracking_excel_path") or "").strip()
     if not configured:
-        return None
+        filenames = {
+            "clonality": "HemaFrag_Clonality_All_Runs.xlsx",
+            "flt3": "HemaFrag_FLT3_All_Runs.xlsx",
+        }
+        if analysis_id not in filenames:
+            return None
+        output_base = Path(batch.get("output_base") or default_dir).expanduser()
+        return output_base / "Tracking" / filenames[analysis_id]
 
     configured_path = Path(configured).expanduser()
     if configured.endswith((os.sep, "/")):

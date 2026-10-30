@@ -10,6 +10,7 @@ from openpyxl.chart.series import SeriesLabel
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from core.tracking_dashboard_formulas import install_live_tracking_dashboard
 
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
@@ -94,8 +95,9 @@ def refresh_clonality_tracking_dashboard(
         _add_dashboard_charts(
             dashboard,
             assay_count=min(len(assay_summary), 12),
-            pk_count=min(len(pk_summary), 12),
+            pk_count=min(len(pk_summary), 12) if pk_summary["MeanAbsDeltaBP"].notna().any() else 0,
         )
+        install_live_tracking_dashboard(wb, analysis="clonality")
         wb.save(excel_path)
     finally:
         wb.close()
@@ -372,7 +374,7 @@ def _add_dashboard_charts(ws, *, assay_count: int, pk_count: int) -> None:
         )
         assay_chart.legend = None
         assay_chart.series[0].tx = SeriesLabel(v="Files")
-        ws.add_chart(assay_chart, "A35")
+        ws.add_chart(assay_chart, "A47")
 
     if pk_count:
         pk_chart = BarChart()
@@ -394,7 +396,7 @@ def _add_dashboard_charts(ws, *, assay_count: int, pk_count: int) -> None:
         )
         pk_chart.legend = None
         pk_chart.series[0].tx = SeriesLabel(v="Mean |delta bp|")
-        ws.add_chart(pk_chart, "J35")
+        ws.add_chart(pk_chart, "J47")
 
 
 def _remove_obsolete_columns(ws) -> None:
