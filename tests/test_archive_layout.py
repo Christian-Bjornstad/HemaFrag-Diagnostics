@@ -27,8 +27,8 @@ def test_archive_actions_fit_laptop_viewport(width):
     app.processEvents()
     try:
         assert page.width() <= scroll.viewport().width()
-        for button in (page.btn_run, page.btn_combine, page.btn_review_ladders,
-                       page.btn_refresh_workbook, page.btn_open_run, page.btn_open_workbook):
+        for button in (page.btn_run, page.btn_review_ladders,
+                       page.btn_open_run, page.btn_open_workbook):
             assert button.isVisible()
             right = button.mapTo(page, button.rect().topRight()).x()
             assert right < scroll.viewport().width()

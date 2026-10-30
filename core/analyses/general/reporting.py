@@ -188,12 +188,13 @@ def build_general_html_report(entries: list[dict], assay_outdir: Path, run_label
     html_lines.append(_build_plotly_reflow_script())
     html_lines.extend(["</head>", "<body>"])
 
+    from core.report_identity import operator_html
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
     html_lines.append(
         f"""
 <div class='report-header no-print'>
   <h1>{escape(safe_label)}_General_Report</h1>
-  <div class='meta'>{len(entries)} analyserte filer &nbsp;&bull;&nbsp; Generert: {generated}</div>
+  <div class='meta'>{len(entries)} analyserte filer &nbsp;&bull;&nbsp; Generert: {generated} &nbsp;&bull;&nbsp; {operator_html(entries)}</div>
 </div>
 """
     )

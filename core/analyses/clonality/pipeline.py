@@ -1296,6 +1296,10 @@ def run_pipeline(
         print_warning("Ingen gyldige entries etter analyse – avslutter.")
         return [] if return_entries else None
 
+    from core.report_identity import operator_name
+    for entry in entries:
+        entry.setdefault("operator", operator_name(settings=settings))
+
     if any(entry.get("ladder_review_required") for entry in entries):
         from core.analyses.clonality.ladder_review_gate import write_ladder_review_gate
 

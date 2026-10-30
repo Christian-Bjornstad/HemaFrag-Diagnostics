@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import re
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -11,7 +10,6 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.formula.translate import Translator
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
 
 
 def _excel_value(value):
@@ -27,13 +25,6 @@ def _excel_value(value):
         except (AttributeError, ValueError):
             pass
     return value
-
-
-def _table_name(sheet_name: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_]", "_", sheet_name)
-    if not safe or safe[0].isdigit():
-        safe = f"T_{safe}"
-    return f"HemaFrag_{safe}"[:255]
 
 
 def _headers(ws) -> dict[str, int]:
@@ -96,31 +87,24 @@ def _copy_formula_columns(ws, source_row: int, target_row: int, generated_column
 def _refresh_table(ws) -> None:
     if not _headers(ws):
         return
+    # Preserve existing operator tables and structured-reference formulas,
+    # but synchronize their column definitions when the schema has grown.
     ref = f"A1:{get_column_letter(ws.max_column)}{max(ws.max_row, 2)}"
-    tables = list(ws.tables.values())
-    if tables:
-        tables[0].ref = ref
-        return
-    base_name = _table_name(ws.title)
-    used_names = {
-        table.name.lower()
-        for sheet in ws.parent.worksheets
-        for table in sheet.tables.values()
-    } | {name.lower() for name in ws.parent.defined_names}
-    name = base_name
-    suffix = 2
-    while name.lower() in used_names:
-        name = f"{base_name[:245]}_{suffix}"
-        suffix += 1
-    table = Table(displayName=name, ref=ref)
-    table.tableStyleInfo = TableStyleInfo(
-        name="TableStyleMedium2",
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    ws.add_table(table)
+    from openpyxl.worksheet.table import TableColumn
+    from openpyxl.utils.cell import range_boundaries
+    for table in ws.tables.values():
+        if len(ws.tables) == 1 and table.ref.startswith("A1:"):
+            table.ref = ref
+        first_col, first_row, last_col, _ = range_boundaries(table.ref)
+        columns = []
+        for index in range(first_col, last_col + 1):
+            cell = ws.cell(first_row, index)
+            cell.value = str(cell.value or f"Column{index}")
+            columns.append(TableColumn(id=index, name=cell.value))
+        table.tableColumns = columns
+        if table.autoFilter is not None:
+            table.autoFilter.ref = table.ref
+    ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
 
 
 def upsert_frame(

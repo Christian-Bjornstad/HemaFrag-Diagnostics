@@ -354,7 +354,7 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             self.assertEqual(runs.iloc[0]["SampleKind"], "unassigned")
             self.assertTrue(patients.empty)
 
-    def test_aggregated_batch_uses_one_local_tracking_workbook_and_global_dashboard(self) -> None:
+    def test_aggregated_batch_uses_only_legacy_selected_workbook(self) -> None:
         import core.batch as batch
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -412,12 +412,10 @@ class ClonalityTrackingOutputTests(unittest.TestCase):
             self.assertFalse((output_root / "HemaFrag_QC_Trends.xlsx").exists())
 
             local_workbook = output_root / "reports_test" / "Clonality_Tracking.xlsx"
-            self.assertTrue(local_workbook.exists())
+            self.assertFalse(local_workbook.exists())
             self.assertTrue(global_path.exists())
 
-            local_runs = pd.read_excel(local_workbook, sheet_name="Runs", engine="openpyxl")
             global_runs = pd.read_excel(global_path, sheet_name="Runs", engine="openpyxl")
-            self.assertEqual(set(local_runs["SampleKind"]), {"patient", "control"})
             self.assertEqual(set(global_runs["SampleKind"]), {"patient", "control"})
 
 

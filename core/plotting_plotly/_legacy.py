@@ -1761,6 +1761,8 @@ def build_interactive_assay_batch_plot_html(
 
     html_parts: list[str] = []
     html_parts.append(f"<h2>{escape(title)}</h2>")
+    from core.report_identity import operator_html
+    html_parts.append(f"<p>{operator_html(entries)}</p>")
 
     # Vi inkluderer Plotly-script første gang
     plotly_script_included = False

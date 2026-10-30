@@ -22,7 +22,7 @@ from core.log import log
 
 DEFAULT_INPUT_ROOT = Path("/Users/christian/Desktop/DATA/Klonalitet/2025_data")
 DEFAULT_OUTPUT_BASE = Path("/Users/christian/Desktop/FINAL")
-DEFAULT_TRACKING_EXCEL = Path("/Users/christian/Desktop/Excel_HemaFrag/track-clonality.xlsx")
+DEFAULT_TRACKING_EXCEL = None
 DEFAULT_STATE_FILE = Path("/Users/christian/Desktop/Excel_HemaFrag/backfill_2025_state.json")
 BACKFILL_REPORT_DIRNAME = "reports_backfill"
 STATE_VERSION = 1
@@ -68,7 +68,7 @@ def run_clonality_backfill(
     input_root: Path = DEFAULT_INPUT_ROOT,
     month: str | None = None,
     output_base: Path = DEFAULT_OUTPUT_BASE,
-    tracking_excel_path: Path = DEFAULT_TRACKING_EXCEL,
+    tracking_excel_path: Path | None = None,
     state_file: Path = DEFAULT_STATE_FILE,
     max_workers: int | None = None,
     folder_workers: int | None = None,
@@ -79,9 +79,12 @@ def run_clonality_backfill(
 ) -> dict[str, Any]:
     input_root = Path(input_root).expanduser()
     output_base = Path(output_base).expanduser()
-    tracking_excel_path = Path(tracking_excel_path).expanduser()
+    from config import resolve_analysis_excel_output_path
+    tracking_excel_path = (Path(tracking_excel_path).expanduser() if tracking_excel_path else
+                           resolve_analysis_excel_output_path("clonality", output_base, "Tracking.xlsx"))
     state_file = Path(state_file).expanduser()
-    tracking_excel_path.parent.mkdir(parents=True, exist_ok=True)
+    if tracking_excel_path is not None:
+        tracking_excel_path.parent.mkdir(parents=True, exist_ok=True)
     state_file.parent.mkdir(parents=True, exist_ok=True)
     setup_started = time.monotonic()
 
@@ -425,7 +428,7 @@ def run_clonality_backfill(
                 continue
 
             outer_workers = 1 if not defer_tracking_refresh else _resolve_folder_workers(folder_workers, len(eligible_folders))
-            use_isolated_tracking_path = defer_tracking_refresh and outer_workers > 1
+            use_isolated_tracking_path = False
             batch_max_workers = 1 if outer_workers > 1 else max_workers
             if outer_workers > 1:
                 with ThreadPoolExecutor(max_workers=outer_workers) as executor:
@@ -468,7 +471,7 @@ def run_clonality_backfill(
         for month_key in sorted(touched_months):
             _write_month_summary(state, tracking_excel_path, state_file.parent, month_key)
 
-        if defer_tracking_refresh and tracking_excel_path.exists():
+        if defer_tracking_refresh and tracking_excel_path is not None and tracking_excel_path.exists():
             from core.analyses.clonality.tracking_dashboard import refresh_clonality_tracking_dashboard
 
             refresh_clonality_tracking_dashboard(tracking_excel_path)
@@ -774,7 +777,7 @@ def _write_month_summary(
     ladder_review_count = 0
     pk_exception_count = 0
 
-    if tracking_excel_path.exists():
+    if tracking_excel_path is not None and tracking_excel_path.exists():
         try:
             with pd.ExcelFile(tracking_excel_path, engine="openpyxl") as xls:
                 has_patient = "Patient_Runs" in xls.sheet_names

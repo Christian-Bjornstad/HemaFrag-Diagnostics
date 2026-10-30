@@ -710,6 +710,7 @@ def _create_html_header(
     html_lines: list[str],
     *,
     display_name: str,
+    entries: list[dict] | None = None,
 ):
     """Appends the HTML head and page header to html_lines."""
     html_lines.extend(["<!DOCTYPE html>", "<html lang='no'>", "<head>", "<meta charset='utf-8'>"])
@@ -722,9 +723,11 @@ def _create_html_header(
     html_lines.append(_build_plotly_reflow_script())
     html_lines.extend(["</head>", "<body>"])
 
+    from core.report_identity import operator_html
     gen_date = datetime.now().strftime("%Y-%m-%d %H:%M")
     meta = [f"År: {year}"] if year else []
     meta.extend([f"{num_entries} analyserte filer", f"Generert: {gen_date}"])
+    meta.append(operator_html(entries))
     meta_str = " &nbsp;&bull;&nbsp; ".join(meta)
     
     html_lines.append(f"""
@@ -1602,9 +1605,11 @@ def build_flt3_qc_html_report(entries: list[dict], qc_rows: list[dict], assay_ou
     html_lines.append(_build_plotly_reflow_script())
     html_lines.extend(["</head>", "<body>"])
 
+    from core.report_identity import operator_html
     gen_date = datetime.now().strftime("%Y-%m-%d %H:%M")
     run_dirs = sorted({str(e.get("source_run_dir") or "") for e in control_entries if e.get("source_run_dir")})
     meta = [f"{len(control_entries)} kontrollfiler", f"{len(run_dirs)} kjoringer", f"Generert: {gen_date}"]
+    meta.append(operator_html(control_entries))
     html_lines.append(
         f"""
 <div class='report-header no-print'>
@@ -1743,7 +1748,7 @@ def build_dit_html_reports(entries: list[dict], assay_outdir: Path):
         for e in dit_entries: assays[e["assay"]].append(e)
 
         html_lines: list[str] = []
-        _create_html_header(dit, year, len(dit_entries), assay_outdir, html_lines, display_name=display_name)
+        _create_html_header(dit, year, len(dit_entries), assay_outdir, html_lines, display_name=display_name, entries=dit_entries)
         _render_file_summary_table(dit_entries, html_lines)
 
         html_lines.append("<h2>Assay-spesifikke oversikter</h2>")

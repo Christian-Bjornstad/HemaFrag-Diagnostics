@@ -603,7 +603,12 @@ def run_qc_job(
         qc_outdir = base_outdir / OUTDIR_NAME
         qc_outdir.mkdir(parents=True, exist_ok=True)
         out_html = qc_outdir / out_html_name
-        excel_path = base_outdir / excel_name
+        from config import APP_SETTINGS, resolve_analysis_excel_output_path
+        analysis = run_context.analysis_id if run_context else APP_SETTINGS.get("active_analysis", "clonality")
+        excel_path = tracking_excel_path or resolve_analysis_excel_output_path(
+            analysis, base_outdir, excel_name,
+            settings=run_context.settings_copy() if run_context else None,
+        )
 
         entries = run_pipeline(
             fsa_dir=effective_in,
@@ -625,7 +630,9 @@ def run_qc_job(
             raise RuntimeError("No QC entries found (check file names or skipped unreadable files).")
         if not skip_html_reports:
             build_qc_html(entries, out_html, rules, excel_path)
-        if update_qc_trends:
+        # Clonality/FLT3 tracking already contains QC. Do not run a second,
+        # independently locked legacy writer against the same workbook.
+        if update_qc_trends and analysis not in {"clonality", "flt3"} and excel_path is not None:
             run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             update_excel_trends(excel_path, entries, rules, run_ts)
 

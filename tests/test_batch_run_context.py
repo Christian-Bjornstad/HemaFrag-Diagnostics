@@ -168,5 +168,4 @@ def test_context_selects_clonality_tracking_path_without_global_settings(tmp_pat
 
     assert paths == [
         (selected, context.settings_snapshot),
-        (snapshot_global, context.settings_snapshot),
     ]

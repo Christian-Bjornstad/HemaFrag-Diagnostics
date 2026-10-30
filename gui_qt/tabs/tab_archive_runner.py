@@ -137,7 +137,7 @@ class TabArchiveRunner(QWidget):
         self.title = QLabel("Archive Runner")
         self.title.setObjectName("PageTitle")
         self.subtitle = QLabel(
-            "Run year-scale clonality backfills with safe fresh output folders, explicit resume support, and an optional combined yearly workbook."
+            "Run year-scale clonality backfills with safe fresh output folders, explicit resume support, and the configured analysis tracking workbook."
         )
         self.subtitle.setObjectName("PageSubtitle")
         self.subtitle.setWordWrap(True)
@@ -312,10 +312,11 @@ class TabArchiveRunner(QWidget):
         self.btn_run.setObjectName("PrimaryButton")
         self.btn_run.clicked.connect(self.on_run_yearly)
         self.btn_combine = QPushButton("Build Combined Workbook")
+        self.btn_combine.hide()
         self.btn_combine.clicked.connect(self.on_build_combined_workbook)
         self.btn_open_run = QPushButton("Open Run Folder")
         self.btn_open_run.clicked.connect(self.on_open_run_folder)
-        self.btn_open_workbook = QPushButton("Open Combined Workbook")
+        self.btn_open_workbook = QPushButton("Open Tracking Workbook")
         self.btn_open_workbook.clicked.connect(self.on_open_combined_workbook)
         self.btn_review_ladders = QPushButton("Review Failed Ladders")
         self.btn_review_ladders.clicked.connect(self.on_review_failed_ladders)
@@ -323,6 +324,7 @@ class TabArchiveRunner(QWidget):
             "Open an archive ladder-review bundle in Ladder Studio, save corrections, and rerun the reviewed files."
         )
         self.btn_refresh_workbook = QPushButton("Refresh Workbook")
+        self.btn_refresh_workbook.hide()
         self.btn_refresh_workbook.clicked.connect(self.on_build_combined_workbook)
         self.btn_refresh_workbook.setToolTip(
             "Rebuild the yearly workbook from month outputs after ladder corrections or reruns."
@@ -381,7 +383,7 @@ class TabArchiveRunner(QWidget):
 
         self.workbook_lbl = QLabel("—")
         self.workbook_lbl.setWordWrap(True)
-        form.addRow("Combined Workbook:", self.workbook_lbl)
+        form.addRow("Tracking Workbook:", self.workbook_lbl)
         return card
 
     def _on_settings_saved(self, analysis_id: str) -> None:
@@ -608,27 +610,10 @@ class TabArchiveRunner(QWidget):
         return path if path.exists() else None
 
     def _guess_workbook_path(self) -> Path | None:
-        if self._current_run_root is None:
-            return None
-        prefix = "track-flt3" if self._current_analysis_id == "flt3" else "track-clonality"
-        overview = self._current_run_root / f"{prefix}-{self.year_input.text().strip()}-overview.xlsx"
-        if overview.exists():
-            return overview
-        # Fallback to month-specific workbook if only one month was run
-        months_dir = self._current_run_root / "month_runs"
-        if months_dir.exists():
-            for mdir in months_dir.iterdir():
-                if mdir.is_dir():
-                    names = (
-                        ("FLT3_Tracking.xlsx",)
-                        if self._current_analysis_id == "flt3"
-                        else ("track-clonality.xlsx", "Clonality_Tracking.xlsx")
-                    )
-                    for name in names:
-                        wb = mdir / name
-                        if wb.exists():
-                            return wb
-        return None
+        from config import resolve_analysis_excel_output_path
+        return resolve_analysis_excel_output_path(
+            self._current_analysis_id, Path.home(), "Tracking.xlsx",
+        )
 
     def _month_counts(self) -> dict[str, int]:
         year_label = self.year_input.text().strip()

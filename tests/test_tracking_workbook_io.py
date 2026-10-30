@@ -72,7 +72,8 @@ def test_tracking_rows_upsert_and_extend_user_formula_columns(tmp_path):
     assert sheet["C2"].value == "=B2*2"
     assert sheet["B3"].value == 5
     assert sheet["C3"].value == "=B3*2"
-    assert list(sheet.tables.values())[0].ref == "A1:C3"
+    assert not sheet.tables
+    assert sheet.auto_filter.ref == "A1:C3"
     workbook.close()
 
 

@@ -139,9 +139,12 @@ hr { border: none; border-top: 1px solid #e6e6e6; margin: 1.2rem 0; }
     html.append("</head>")
     html.append("<body>")
 
+    from core.report_identity import operator_html
+    html.append(f"<p class='small'>{operator_html(entries)}</p>")
     html.append("<h1>QC – HemaFrag Diagnostics</h1>")
     html.append(f"<p class='small'>Generert: {now}. Antall QC-filer: <strong>{len(entries)}</strong>.</p>")
-    html.append(f"<p class='small'>Excel trends: <code>{html_escape(excel_path.name)}</code> (oppdateres ved hver kjøring).</p>")
+    if excel_path is not None:
+        html.append(f"<p class='small'>Excel trends: <code>{html_escape(excel_path.name)}</code> (oppdateres ved hver kjøring).</p>")
 
     # Oversiktstabell
     html.append("<h2>Oversikt</h2>")

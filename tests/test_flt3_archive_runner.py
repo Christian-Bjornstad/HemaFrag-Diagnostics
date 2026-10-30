@@ -176,7 +176,7 @@ def test_flt3_yearly_runner_writes_review_bundle_and_manifest(
     assert cases.is_file()
     assert summary["review_case_count"] == 1
     assert summary["run_manifest_path"].endswith("run.json")
-    assert captured["tracking_excel_path"].name == "FLT3_Tracking.xlsx"
+    assert captured["tracking_excel_path"] is None
 
 
 def test_flt3_yearly_runner_propagates_cancellation_and_skips_combine(
@@ -234,7 +234,7 @@ def test_flt3_yearly_runner_propagates_cancellation_and_skips_combine(
     assert result["combined_workbook_path"] == ""
 
 
-def test_flt3_cancellation_during_combine_reports_completed_output(tmp_path, monkeypatch):
+def test_archive_does_not_create_an_extra_combined_workbook(tmp_path, monkeypatch):
     source = tmp_path / "input"
     source.mkdir()
     cancel_event = threading.Event()
@@ -256,8 +256,9 @@ def test_flt3_cancellation_during_combine_reports_completed_output(tmp_path, mon
     )
 
     assert result["status"] == "completed"
-    assert result["cancellation_requested"] is True
-    assert result["combined_workbook_path"] == str(workbook.resolve())
+    assert result["cancellation_requested"] is False
+    assert result["combined_workbook_path"] == ""
+    assert not workbook.exists()
 
 
 def test_archive_tab_switches_to_flt3_runner(qapp):

@@ -102,7 +102,7 @@ class TabAnalysisSettings(QWidget):
 
         row_excel = QHBoxLayout()
         self.tracking_excel_path = QLineEdit()
-        self.tracking_excel_path.setPlaceholderText("Leave blank to save beside the report output")
+        self.tracking_excel_path.setPlaceholderText("Leave blank to disable Excel tracking")
         self.tracking_excel_path.setToolTip(
             "Choose an existing workbook to keep its tracking history, or enter a path for a new workbook."
         )
@@ -116,13 +116,6 @@ class TabAnalysisSettings(QWidget):
         self.global_tracking_excel_path.setPlaceholderText(
             "Optional; leave blank to disable the shared master workbook"
         )
-        if self.analysis_id in {"clonality", "flt3"}:
-            row_master_excel = QHBoxLayout()
-            btn_browse_master = QPushButton("Browse...")
-            btn_browse_master.clicked.connect(self._browse_global_tracking_excel_path)
-            row_master_excel.addWidget(self.global_tracking_excel_path, stretch=1)
-            row_master_excel.addWidget(btn_browse_master)
-            layout.addRow("Master Tracking Excel File:", row_master_excel)
 
         return card
 
@@ -213,7 +206,7 @@ class TabAnalysisSettings(QWidget):
         interpretation_settings = analysis_settings.get("interpretation", {})
         self.default_input.setText(batch_settings.get("base_input_dir", str(Path.home())))
         self.default_output.setText(batch_settings.get("output_base", str(Path.home())))
-        self.tracking_excel_path.setText(batch_settings.get("tracking_excel_path", ""))
+        self.tracking_excel_path.setText(batch_settings.get("tracking_excel_path") or batch_settings.get("global_tracking_excel_path") or "")
         self.global_tracking_excel_path.setText(
             str(batch_settings.get("global_tracking_excel_path", "") or "")
         )
@@ -249,7 +242,7 @@ class TabAnalysisSettings(QWidget):
         batch_settings["base_input_dir"] = self.default_input.text().strip()
         batch_settings["output_base"] = self.default_output.text().strip()
         batch_settings["tracking_excel_path"] = self.tracking_excel_path.text().strip()
-        batch_settings["global_tracking_excel_path"] = self.global_tracking_excel_path.text().strip()
+        batch_settings["global_tracking_excel_path"] = ""
         batch_settings["aggregate_by_patient"] = self.chk_agg_pat.isChecked()
         batch_settings["patient_id_regex"] = self.patient_regex.text().strip()
         batch_settings["aggregate_dit_reports"] = self.chk_agg_dit.isChecked()
